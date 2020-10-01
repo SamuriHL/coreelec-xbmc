@@ -17911,8 +17911,39 @@ msgctxt "#34130"
 msgid "384.0"
 msgstr ""
 
-#empty strings from id 34131 to 34200
-#34131-34200 reserved for future use
+
+#. Indicates if Audio Engine should include lfe when downmixing
+#: system/settings/settings.xml
+msgctxt "#34131"
+msgid "Include LFE when downmixing"
+msgstr ""
+
+#. Description of setting with label #34131 "Include LFE when downmixing"
+#: system/settings/settings.xml
+msgctxt "#34132"
+msgid "If enabled, this setting will include lfe channel into the mixing when there is no dedicated LFE output channel available. This only makes sense for full range speakers."
+msgstr ""
+
+#. Description of setting with label #34131 "Include LFE when downmixing"
+#: system/settings/settings.xml
+msgctxt "#34133"
+msgid "Off"
+msgstr ""
+
+#. Description of setting with label #34131 "Include LFE when downmixing"
+#: system/settings/settings.xml
+msgctxt "#34134"
+msgid "50%"
+msgstr ""
+
+#. Description of setting with label #34131 "Include LFE when downmixing"
+#: system/settings/settings.xml
+msgctxt "#34135"
+msgid "100%"
+msgstr ""
+
+#empty strings from id 34136 to 34200
+#34136-34200 reserved for future use
 
 #: xbmc/PlayListPlayer.cpp
 msgctxt "#34201"
