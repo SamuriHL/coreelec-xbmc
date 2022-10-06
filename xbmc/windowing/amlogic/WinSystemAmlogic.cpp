@@ -37,8 +37,9 @@
 
 using namespace KODI;
 
-CWinSystemAmlogic::CWinSystemAmlogic() :
-  m_libinput(new CLibInputHandler)
+CWinSystemAmlogic::CWinSystemAmlogic()
+:  m_nativeWindow(NULL)
+,  m_libinput(new CLibInputHandler)
 {
   const char *env_framebuffer = getenv("FRAMEBUFFER");
 
@@ -52,7 +53,6 @@ CWinSystemAmlogic::CWinSystemAmlogic() :
   }
 
   m_nativeDisplay = EGL_NO_DISPLAY;
-  m_nativeWindow = static_cast<EGLNativeWindowType>(NULL);
 
   m_displayWidth = 0;
   m_displayHeight = 0;
@@ -61,14 +61,6 @@ CWinSystemAmlogic::CWinSystemAmlogic() :
   m_delayDispReset = false;
 
   m_libinput->Start();
-}
-
-CWinSystemAmlogic::~CWinSystemAmlogic()
-{
-  if(m_nativeWindow)
-  {
-    m_nativeWindow = static_cast<EGLNativeWindowType>(NULL);
-  }
 }
 
 bool CWinSystemAmlogic::InitWindowSystem()
@@ -144,6 +136,12 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_displayHeight = res.iScreenHeight;
   m_fRefreshRate  = res.fRefreshRate;
 
+  if (m_nativeWindow == NULL)
+    m_nativeWindow = new fbdev_window;
+
+  m_nativeWindow->width = m_nWidth;
+  m_nativeWindow->height = m_nHeight;
+
   if ((m_bWindowCreated && aml_get_native_resolution(&current_resolution)) &&
     current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
     current_resolution.iScreenWidth == res.iScreenWidth && current_resolution.iScreenHeight == res.iScreenHeight &&
@@ -173,13 +171,6 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_stereo_mode = stereo_mode;
   m_bFullScreen = fullScreen;
 
-#ifdef _FBDEV_WINDOW_H_
-  fbdev_window *nativeWindow = new fbdev_window;
-  nativeWindow->width = res.iWidth;
-  nativeWindow->height = res.iHeight;
-  m_nativeWindow = static_cast<EGLNativeWindowType>(nativeWindow);
-#endif
-
   aml_set_native_resolution(res, m_framebuffer_name, stereo_mode);
 
   if (!m_delayDispReset)
@@ -197,7 +188,11 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogic::DestroyWindow()
 {
-  m_nativeWindow = static_cast<EGLNativeWindowType>(NULL);
+  if (m_nativeWindow != NULL)
+  {
+    delete(m_nativeWindow);
+    m_nativeWindow = NULL;
+  }
 
   return true;
 }
