@@ -20,10 +20,13 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/Resolution.h"
 #include "platform/linux/powermanagement/LinuxPowerSyscall.h"
+#include "resources/LocalizeStrings.h"
+#include "resources/ResourcesComponent.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
+#include "settings/lib/SettingsManager.h"
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
@@ -63,6 +66,21 @@ CWinSystemAmlogic::CWinSystemAmlogic()
   m_libinput->Start();
 }
 
+void CWinSystemAmlogic::SettingOptionsComponentsFiller(const SettingConstPtr& setting,
+                                                 std::vector<IntegerSettingOption>& list,
+                                                 int& current)
+{
+  int dv_cap = aml_display_get_dv_cap();
+
+  if ((dv_cap & DV_RGB_444_8BIT) != 0)
+    list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(14426),
+                      AML_DV_TV_LED);
+
+  if ((dv_cap & LL_YCbCr_422_12BIT) != 0)
+    list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(14427),
+                      AML_DV_PLAYER_LED);
+}
+
 bool CWinSystemAmlogic::InitWindowSystem()
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -97,6 +115,32 @@ bool CWinSystemAmlogic::InitWindowSystem()
       setting->SetVisible(false);
       settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
     }
+
+    setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
+    if (setting)
+    {
+      setting->SetVisible(false);
+      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, AML_DV_TV_LED);
+    }
+  }
+  else
+  {
+    CServiceBroker::GetSettingsComponent()->GetSettings()->
+      GetSettingsManager()->RegisterSettingOptionsFiller("dv_led_modes", SettingOptionsComponentsFiller);
+
+    int dv_cap = aml_display_get_dv_cap();
+    AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
+      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
+    AML_DISPLAY_DV_LED new_value = old_value;
+
+    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT))
+      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & LL_YCbCr_422_12BIT) != 0 ? AML_DV_PLAYER_LED : -1);
+
+    if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT))
+      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & DV_RGB_444_8BIT) != 0 ? AML_DV_TV_LED : -1);
+
+    if (new_value != old_value)
+      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
