@@ -138,7 +138,6 @@ void CAdvancedSettings::Initialize()
   m_threadApplicationMaxOtherTaskTime = 6; // Max time for other tasks on main thread when video running (ms)
 
   m_audioApplyDrc = -1.0f;
-  m_VideoPlayerIgnoreDTSinWAV = false;
 
   //default hold time of 25 ms, this allows a 20 hertz sine to pass undistorted
   m_limiterHold = 0.025f;
@@ -627,7 +626,6 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
       GetCustomRegexps(pAudioExcludes, m_audioExcludeFromScanRegExps);
 
     XMLUtils::GetFloat(pElement, "applydrc", m_audioApplyDrc);
-    XMLUtils::GetBoolean(pElement, "VideoPlayerignoredtsinwav", m_VideoPlayerIgnoreDTSinWAV);
 
     XMLUtils::GetFloat(pElement, "limiterhold", m_limiterHold, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "limiterrelease", m_limiterRelease, 0.001f, 100.0f);
