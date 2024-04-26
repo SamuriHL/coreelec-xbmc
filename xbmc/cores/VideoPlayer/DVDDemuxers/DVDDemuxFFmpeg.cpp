@@ -28,6 +28,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SystemClock.h"
+#include "utils/AMLUtils.h"
 #include "utils/FontUtils.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StreamUtils.h"
@@ -215,6 +216,7 @@ CDVDDemuxFFmpeg::CDVDDemuxFFmpeg() : CDVDDemux()
   m_streaminfo = true; /* set to true if we want to look for streams before playback */
   m_checkTransportStream = false;
   m_dtsAtDisplayTime = DVD_NOPTS_VALUE;
+  m_dv_dual_stream = false;
 }
 
 CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
@@ -1236,6 +1238,11 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 
     pPacket->iStreamId = stream->uniqueId;
     pPacket->demuxerId = GetDemuxerId();
+    if (stream->type == StreamType::VIDEO)
+    {
+      pPacket->isDualStream = static_cast<CDemuxStreamVideo*>(stream)->isDualStream;
+      pPacket->isELPackage = static_cast<CDemuxStreamVideo*>(stream)->isELStream;
+    }
   }
   return pPacket;
 }
@@ -1603,6 +1610,20 @@ void CDVDDemuxFFmpeg::DisposeStreams()
   m_parsers.clear();
 }
 
+void CDVDDemuxFFmpeg::RemoveStream(CDemuxStream *stream)
+{
+  std::map<int, CDemuxStream*>::iterator it;
+  for(it = m_streams.begin(); it != m_streams.end(); ++it)
+  {
+    if (it->second == stream)
+    {
+      delete it->second;
+      m_streams.erase(it);
+      break;
+    }
+  }
+}
+
 CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 {
   AVStream* pStream = m_pFormatContext->streams[streamIdx];
@@ -1727,15 +1748,134 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
         const AVPacketSideData* sideData = nullptr;
 
-        if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
-        {
-
-          sideData =
-              av_packet_side_data_get(pStream->codecpar->coded_side_data,
-                                      pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
-          if (sideData && sideData->size)
+        std::vector<CDemuxStream*> streams = GetStreams();
+        for (auto* s : streams) {
+          if (s->type == StreamType::VIDEO)
           {
-            st->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
+            CDemuxStreamVideo *vs = static_cast<CDemuxStreamVideo*>(s);
+            if (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION || st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+            {
+              m_dv_dual_stream = true;
+              break;
+            }
+          }
+        }
+
+        if (m_dv_dual_stream)
+        {
+          // got video enhancement layer as second stream
+          if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+          {
+            CDemuxStreamVideo *bl_video_stream = nullptr;
+            sideData =
+                av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                                        pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
+
+            if (aml_dolby_vision_enabled())
+            {
+              // force dovi side data to base layer stream
+              for (auto* s : streams) {
+                if (s->type == StreamType::VIDEO)
+                {
+                  if (static_cast<CDemuxStreamVideo*>(s)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION)
+                  {
+                    bl_video_stream = static_cast<CDemuxStreamVideo*>(s);
+                    break;
+                  }
+                }
+              }
+
+              // use dovi side data
+              if (bl_video_stream)
+              {
+                bl_video_stream->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
+                if (sideData && sideData->size)
+                  bl_video_stream->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
+                // manual set dovi side data to P7
+                else
+                {
+                  bl_video_stream->dovi.dv_version_major = 1;
+                  bl_video_stream->dovi.dv_version_minor = 0;
+                  bl_video_stream->dovi.dv_profile = 7;
+                  bl_video_stream->dovi.dv_level = 6;
+                  bl_video_stream->dovi.rpu_present_flag = 1;
+                  bl_video_stream->dovi.el_present_flag = 1;
+                  bl_video_stream->dovi.bl_present_flag = 1;
+                  bl_video_stream->dovi.dv_bl_signal_compatibility_id = 6;
+                }
+                bl_video_stream->isDualStream = true;
+                st->isELStream = true;
+                st->isDualStream = true;
+
+                CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - Dolby Vision configuration record is copied from el stream id {} to bl stream id {}",
+                          streamIdx, bl_video_stream->uniqueId);
+              }
+            }
+
+            if (!bl_video_stream)
+            {
+              if (!aml_dolby_vision_enabled())
+                CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream from dual layer stream because Dolby Vision is disabled");
+              else
+                CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream from dual layer stream because base layer stream was not found");
+              pStream->discard = AVDISCARD_ALL;
+              delete stream;
+              m_dv_dual_stream = false;
+              return nullptr;
+            }
+          }
+          // got video base layer as second stream
+          else
+          {
+            CDemuxStream *el_stream = nullptr;
+            CDemuxStreamVideo *el_video_stream = nullptr;
+            for (auto* s : streams) {
+              if (s->type == StreamType::VIDEO)
+              {
+                if (static_cast<CDemuxStreamVideo*>(s)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+                {
+                  el_stream = s;
+                  el_video_stream = static_cast<CDemuxStreamVideo*>(el_stream);
+                  break;
+                }
+              }
+            }
+
+            // force dovi side data from enhancement layer stream
+            if (aml_dolby_vision_enabled() && el_video_stream)
+            {
+              el_video_stream->isDualStream = true;
+              el_video_stream->isELStream = true;
+              st->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
+              st->dovi = el_video_stream->dovi;
+              st->isDualStream = true;
+
+              CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - Dolby Vision configuration record is copied from el stream id {} to bl stream id {}",
+                        el_video_stream->uniqueId, streamIdx);
+            }
+            else if (el_video_stream)
+            {
+              CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding enhancement layer stream from dual layer stream because Dolby Vision is disabled");
+              RemoveStream(el_stream);
+              m_dv_dual_stream = false;
+            }
+            else if (!el_video_stream)
+            {
+              CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - Dolby Vision video enhancement layer stream was not found");
+              m_dv_dual_stream = false;
+            }
+          }
+        }
+        else
+        {
+          if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+          {
+            sideData =
+                av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                                        pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
+
+            if (sideData && sideData->size)
+              st->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
           }
         }
 
@@ -1966,7 +2106,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
     {
       // UHD BD have a secondary video stream called by Dolby as enhancement layer.
       // This is not used by streaming services and devices (ATV, Nvidia Shield, XONE).
-      if (pStream->id == 0x1015)
+      if (pStream->id == 0x1015 && !aml_dolby_vision_enabled())
       {
         CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream");
         pStream->discard = AVDISCARD_ALL;
@@ -2602,10 +2742,11 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
 StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
 {
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  bool convert_dual_stream((pStream->id == 0x1015) && aml_dolby_vision_enabled());
 
   if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
                               pStream->codecpar->nb_coded_side_data,
-                              AV_PKT_DATA_DOVI_CONF)) // DoVi
+                              AV_PKT_DATA_DOVI_CONF) || convert_dual_stream) // DoVi
     hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
   else if (pStream->codecpar->color_trc == AVCOL_TRC_SMPTE2084) // HDR10
     hdrType = StreamHdrType::HDR_TYPE_HDR10;
