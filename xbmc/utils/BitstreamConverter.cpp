@@ -15,8 +15,6 @@
 #endif
 
 #include "BitstreamConverter.h"
-#include "BitstreamReader.h"
-#include "BitstreamWriter.h"
 #include "HevcSei.h"
 #include "HDR10.h"
 #include "HDR10Plus.h"
@@ -33,6 +31,7 @@
 extern "C"
 {
 #include <libavutil/mastering_display_metadata.h>
+#include <libavutil/intreadwrite.h>
 #ifdef HAVE_LIBDOVI
 #include <libdovi/rpu_parser.h>
 #endif
@@ -805,7 +804,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData, int iSize, double pts)
           uint8_t *nal_start = pData;
           while (nal_start < end)
           {
-            nal_size = BS_RB24(nal_start);
+            nal_size = AV_RB24(nal_start);
             avio_wb32(pb, nal_size);
             nal_start += 3;
             avio_write(pb, nal_start, nal_size);
@@ -1578,7 +1577,7 @@ void CBitstreamConverter::BitstreamAllocAndCopy(uint8_t** poutbuf,
   memcpy(*poutbuf + sps_pps_size + nal_header_size + offset, in, in_size);
   if (!offset)
   {
-    BS_WB32(*poutbuf + sps_pps_size, 1);
+    AV_WB32(*poutbuf + sps_pps_size, 1);
   }
   else if (nal_header_size == 4)
   {
@@ -1684,7 +1683,7 @@ int CBitstreamConverter::isom_write_avcc(AVIOContext *pb, const uint8_t *data, i
   if (len > 6)
   {
     /* check for h264 start code */
-    if (BS_RB32(data) == 0x00000001 || BS_RB24(data) == 0x000001)
+    if (AV_RB32(data) == 0x00000001 || AV_RB24(data) == 0x000001)
     {
       uint8_t *buf= nullptr, *end, *start;
       uint32_t sps_size=0, pps_size=0;
@@ -1701,7 +1700,7 @@ int CBitstreamConverter::isom_write_avcc(AVIOContext *pb, const uint8_t *data, i
       {
         uint32_t size;
         uint8_t  nal_type;
-        size = std::min<uint32_t>(BS_RB32(buf), end - buf - 4);
+        size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
         buf += 4;
         nal_type = buf[0] & 0x1f;
         if (nal_type == 7) /* SPS */
