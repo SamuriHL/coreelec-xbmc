@@ -2313,6 +2313,12 @@ std::string CDVDDemuxFFmpeg::GetStreamCodecName(int iStreamId)
     if (stream->codec == AV_CODEC_ID_TRUEHD && stream->profile == FF_PROFILE_TRUEHD_ATMOS)
       return "truehd_atmos";
 
+    if (stream->codec == AV_CODEC_ID_EAC3 && stream->profile == AV_PROFILE_EAC3_DDP_ATMOS)
+      return "eac3_ddp_atmos";
+
+    if (stream->codec == AV_CODEC_ID_TRUEHD && stream->profile == AV_PROFILE_TRUEHD_ATMOS)
+      return "truehd_atmos";
+
     const AVCodec* codec = avcodec_find_decoder(stream->codec);
     if (codec)
       strName = avcodec_get_name(codec->id);
