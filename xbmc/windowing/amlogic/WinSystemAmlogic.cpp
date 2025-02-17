@@ -258,9 +258,6 @@ bool CWinSystemAmlogic::InitWindowSystem()
   RETRO::CRPProcessInfoAmlogic::RegisterRendererFactory(new RETRO::CRendererFactoryOpenGLES);
   CRendererAML::Register();
 
-  if (aml_get_cpufamily_id() <= AML_GXL)
-    aml_set_framebuffer_resolution(1920, 1080, m_framebuffer_name);
-
   auto setting = settings->GetSetting(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
   if (setting)
   {
