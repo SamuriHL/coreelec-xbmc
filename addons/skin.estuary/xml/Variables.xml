@@ -682,8 +682,14 @@
 		<value>$INFO[ListItem.Icon]</value>
 	</variable>
 	<variable name="ActiveVideoPlayerSubtitleLanguage">
-		<value condition="VideoPlayer.SubtitlesEnabled">[B]$INFO[VideoPlayer.SubtitlesLanguage][/B]</value>
-		<value>[B]$LOCALIZE[1223][/B]</value>
+		<value condition="!VideoPlayer.HasSubtitles">[COLOR dimgrey]$LOCALIZE[36623][/COLOR]</value>
+		<value condition="VideoPlayer.HasSubtitles + !VideoPlayer.SubtitlesEnabled">[COLOR dimgrey][UPPERCASE]$INFO[VideoPlayer.SubtitlesLanguage][/UPPERCASE]  $LOCALIZE[1223][/COLOR]</value>
+		<value condition="VideoPlayer.HasSubtitles + VideoPlayer.SubtitlesEnabled + !String.IsEmpty(VideoPlayer.SubtitlesLanguage)">[UPPERCASE]$INFO[VideoPlayer.SubtitlesLanguage][/UPPERCASE]</value>
+		<value condition="VideoPlayer.HasSubtitles + VideoPlayer.SubtitlesEnabled + String.IsEmpty(VideoPlayer.SubtitlesLanguage)">[COLOR dimgrey]$LOCALIZE[13205][/COLOR]</value>
+	</variable>
+	<variable name="ActiveVideoPlayerAudioLanguage">
+		<value condition="!String.IsEmpty(VideoPlayer.AudioLanguage)">[UPPERCASE]$INFO[VideoPlayer.AudioLanguage][/UPPERCASE]</value>
+		<value condition="String.IsEmpty(VideoPlayer.AudioLanguage)">[COLOR dimgrey]$LOCALIZE[13205][/COLOR]</value>
 	</variable>
 	<variable name="VideoListPosterVar">
 		<value condition="!String.IsEmpty(Container(6).ListItem.Art(poster))">$INFO[Container(6).ListItem.Art(poster)]</value>
@@ -699,16 +705,7 @@
 		<value condition="!String.IsEmpty(Container(6).ListItem.Art(thumb))">$INFO[Container(6).ListItem.Art(thumb)]</value>
 		<value condition="!String.IsEmpty(Container(50).ListItem.Art(landscape))">$INFO[Container(50).ListItem.Art(landscape)]</value>
 		<value condition="!String.IsEmpty(Container(50).ListItem.Art(thumb))">$INFO[Container(50).ListItem.Art(thumb)]</value>
-		<value>$INFO[ListItem.Art(thumb)]</value>	
-	</variable>
-	<variable name="VideoResolutionTypeVar">
-		<value condition="String.IsEqual(ListItem.VideoResolution,480)">SD</value>
-		<value condition="String.IsEqual(ListItem.VideoResolution,540)">SD</value>
-		<value condition="String.IsEqual(ListItem.VideoResolution,576)">SD</value>
-		<value condition="String.IsEqual(ListItem.VideoResolution,720)">HD</value>
-		<value condition="String.IsEqual(ListItem.VideoResolution,1080)">HD</value>			
-		<value condition="String.IsEqual(ListItem.VideoResolution,4K)">UHD</value>
-		<value condition="String.IsEqual(ListItem.VideoResolution,8K)">UHD</value>	
+		<value>$INFO[ListItem.Art(thumb)]</value>
 	</variable>
 	<variable name="VideoCodecVar">
 		<value condition="String.IsEqual(ListItem.VideoCodec,av1)">AV1</value>
