@@ -29,6 +29,7 @@
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
 
 #include <functional>
@@ -91,7 +92,7 @@ bool CDVDInputStreamBluray::IsEOF()
   return false;
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& xmlstate) const
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& xmlstate)
 {
   BlurayState blurayState;
   if (!m_blurayStateSerializer.XMLToBlurayState(blurayState, xmlstate))
@@ -102,7 +103,10 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& x
   return bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest() const {
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest()
+{
+  int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
+
   BLURAY_TITLE_INFO *s = nullptr;
   for(int i=0; i < m_nTitles; i++)
   {

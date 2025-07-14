@@ -898,8 +898,10 @@ void CVideoPlayer::CloseDemuxer()
 void CVideoPlayer::OpenDefaultStreams(bool reset)
 {
   // if input stream dictate, we will open later
-  if (m_dvd.iSelectedAudioStream >= 0 ||
-      m_dvd.iSelectedSPUStream >= 0)
+  // unless we are loading a bluray playlist directly in which case set now
+  const bool noBlurayMenu{m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+                          m_State.menuType == MenuType::NONE};
+  if (!noBlurayMenu && (m_dvd.iSelectedAudioStream >= 0 || m_dvd.iSelectedSPUStream >= 0))
     return;
 
   bool valid;
@@ -1264,16 +1266,19 @@ void CVideoPlayer::Prepare()
   }
 
   bool discStateRestored = false;
-  if (std::shared_ptr<CDVDInputStream::IMenus> ptr = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
+  if (std::shared_ptr<CDVDInputStream::IMenus> ptr =
+          std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
   {
     logM(LOGINFO, "CVideoPlayer", "playing a file with menus");
 
     if (!m_playerOptions.state.empty() && !(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
                                             m_State.menuType == MenuType::NONE))
+
     {
       discStateRestored = ptr->SetState(m_playerOptions.state);
     }
-    else if(std::shared_ptr<CDVDInputStreamNavigator> nav = std::dynamic_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream))
+    else if (std::shared_ptr<CDVDInputStreamNavigator> nav =
+                 std::dynamic_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream))
     {
       nav->EnableSubtitleStream(m_processInfo->GetVideoSettings().m_SubtitleOn);
     }
