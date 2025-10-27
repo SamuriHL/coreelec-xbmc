@@ -21,8 +21,6 @@ else ifeq ($(OS),darwin_embedded)
   PILPATH=$(PREFIX)/share/$(APP_NAME)/addons/script.module.pil
   PILPATHLIB=$(PILPATH)/lib
   PYTHONPATH=$(PILPATH):$(PYTHON_SITE_PKG)
-else ifeq ($(TARGET_PLATFORM),webos)
-  PILPATHLIB=$(PYTHON_SITE_PKG)/..
 endif
 
 SED_FLAG=-i
@@ -53,7 +51,7 @@ export HARFBUZZ_ROOT=$(PREFIX)
 export FRIBIDI_ROOT=$(PREFIX)
 export ZLIB_ROOT
 
-BUILD_OPTS=--plat-name $(OS)-$(CPU) --disable-jpeg2000 --disable-webp --disable-imagequant --disable-tiff --disable-webp --disable-webpmux --disable-xcb --disable-lcms --disable-platform-guessing
+BUILD_OPTS=--plat-name $(OS)-$(CPU) --disable-jpeg2000 --disable-webp --disable-imagequant --disable-tiff --disable-xcb --disable-lcms --disable-platform-guessing
 
 export CC CFLAGS
 export PYTHONXINCLUDE=$(PREFIX)/include/python$(PYTHON_VERSION)
@@ -76,20 +74,18 @@ else ifeq ($(OS),darwin_embedded)
 endif
 
 .installed-$(PLATFORM): $(PLATFORM) $(PILPATHLIB)
-	cd $(PLATFORM); $(NATIVEPREFIX)/bin/python3 setup.py build_ext $(BUILD_OPTS) install --install-lib $(PILPATH)
+	cd $(PLATFORM); $(NATIVEPREFIX)/bin/python3 setup.py build_py build_ext $(BUILD_OPTS) install --install-lib $(PILPATH) bdist_egg
 ifeq ($(OS),android)
-	cd $(PILPATHLIB) && unzip -o ../Pillow-*.egg
+	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATHLIB)
 	cd $(PILPATHLIB)/PIL && \
           sed $(SED_FLAG) -e 's/import sys/import os, sys /' \
                           -e '/__file__/ s/_imaging/lib_imaging/g' \
                           -e 's/pkg_resources.resource_filename(__name__,/os.path.join(os.environ["KODI_ANDROID_LIBS"], /' \
                               _imaging*.py
-	cd $(PILPATH) && rm -rf Pillow-*.egg
 else ifeq ($(OS),darwin_embedded)
-	cd $(PILPATHLIB) && unzip -o ../Pillow-*.egg
-	cd $(PILPATH) && rm -rf Pillow-*.egg
+	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATHLIB)
 else ifeq ($(TARGET_PLATFORM),webos)
-	cd $(PILPATHLIB) && unzip -o $(PILPATH)/Pillow-*.egg && rm -f $(PILPATH)/Pillow-*.egg
+	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATH)
 endif
 	touch $@
 
