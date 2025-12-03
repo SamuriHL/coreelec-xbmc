@@ -475,6 +475,12 @@ void CVideoPlayerAudio::ClockAlign(double presentPts) const
     renderPts = m_pClock->GetClock();
     diff = (renderPts - presentPts);
   }
+  else if (diff > DVD_MSEC_TO_TIME(10))  // if clock is ahead by more than 10ms, adjust it back
+  {
+    m_pClock->Discontinuity(presentPts);
+    renderPts = presentPts;
+    diff = 0;
+  }
 
   logM(LOGDEBUG, "CVideoPlayerAudio", "render:[{:.3f}] presenting:[{:.3f}] "
                                       "diff:[{:.3f}] delay:[{:.3f}]",
