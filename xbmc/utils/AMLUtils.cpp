@@ -952,7 +952,7 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO &res)
       case 23:
       case 29:
       case 59:
-        res.fRefreshRate = (rrate + 1)/1.001f;
+        res.fRefreshRate = (float)((rrate + 1)/1.001f);
         break;
       default:
         res.fRefreshRate = (float)rrate;

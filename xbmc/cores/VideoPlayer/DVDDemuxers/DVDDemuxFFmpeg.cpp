@@ -1027,7 +1027,7 @@ double CDVDDemuxFFmpeg::ConvertTimestamp(int64_t pts, int den, int num) const {
   const std::shared_ptr<CDVDInputStream::IMenus> menuInterface =
       std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
   if ((!menuInterface || menuInterface->GetSupportedMenuType() != MenuType::NATIVE) &&
-      m_pFormatContext->start_time != AV_NOPTS_VALUE)
+      m_pFormatContext->start_time != static_cast<int64_t>(AV_NOPTS_VALUE))
   {
     starttime = static_cast<double>(m_pFormatContext->start_time) / AV_TIME_BASE;
   }
@@ -1384,7 +1384,7 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
     seek_pts = av_rescale(static_cast<int64_t>(m_startTime + time / 1000), st->time_base.den,
                           st->time_base.num);
   }
-  else if (m_pFormatContext->start_time != AV_NOPTS_VALUE && !ismp3 && !m_bSup)
+  else if (m_pFormatContext->start_time != (int64_t)AV_NOPTS_VALUE && !ismp3 && !m_bSup)
     seek_pts += m_pFormatContext->start_time;
 
   int ret;
@@ -2082,7 +2082,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
     }
 
     // generic stuff
-    if (pStream->duration != AV_NOPTS_VALUE)
+    if (pStream->duration != (int64_t)AV_NOPTS_VALUE)
       stream->iDuration = (int)((pStream->duration / AV_TIME_BASE) & 0xFFFFFFFF);
 
     stream->codec = pStream->codecpar->codec_id;

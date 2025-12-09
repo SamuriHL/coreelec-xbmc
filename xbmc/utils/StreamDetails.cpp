@@ -493,7 +493,7 @@ void CStreamDetails::Archive(CArchive& ar)
     {
       // the type goes before the actual item.  When loading we need
       // to know the type before we can construct an instance to serialize
-      ar << iter->m_eType;
+      ar << (int)iter->m_eType;
       ar << (*iter);
     }
   }

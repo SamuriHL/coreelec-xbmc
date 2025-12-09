@@ -1307,7 +1307,8 @@ void CVideoPlayer::Prepare()
   {
     if (m_playerOptions.startpercent > 0 && m_pDemuxer)
     {
-      int playerStartTime = static_cast<int>(m_pDemuxer->GetStreamLength() * (m_playerOptions.startpercent / 100.0));
+      int playerStartTime = static_cast<int>((static_cast<double>(
+          m_pDemuxer->GetStreamLength() * (m_playerOptions.startpercent / 100.0))));
       starttime = m_Edl.GetTimeAfterRestoringCuts(playerStartTime);
     }
     else
@@ -2213,7 +2214,7 @@ void CVideoPlayer::HandlePlaySpeed()
           error /= errorwin;
         }
         CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::Process - ffd/rwd: lastpts:{:.3f} clock:{:.3f} lastseekpts:{:.3f} speed:{:d} error:{:.3f}",
-          m_SpeedState.lastpts / 1000000.0, m_clock.GetClock() / 1000000.0, m_SpeedState.lastseekpts / 1000000.0, m_playSpeed, error / 1000000.0);
+          m_SpeedState.lastpts / 1000000.0, m_clock.GetClock() / 1000000.0, m_SpeedState.lastseekpts / 1000000.0, (int)m_playSpeed, error / 1000000.0);
 
         if (std::abs(error) > DVD_MSEC_TO_TIME(1000))
         {
@@ -3466,7 +3467,7 @@ void CVideoPlayer::SeekPercentage(float iPercent)
   if (!iTotalTime)
     return;
 
-  SeekTime(iTotalTime * iPercent / 100);
+  SeekTime((int64_t)(iTotalTime * iPercent / 100));
 }
 
 float CVideoPlayer::GetPercentage()
@@ -4650,7 +4651,7 @@ bool CVideoPlayer::OnAction(const CAction &action)
             {
               CServiceBroker::GetAppMessenger()->PostMsg(
                   TMSG_GUI_ACTION, WINDOW_INVALID, -1,
-                  new CAction(ACTION_TRIGGER_OSD));
+                  static_cast<void*>(new CAction(ACTION_TRIGGER_OSD)));
               return false;
             }
           }

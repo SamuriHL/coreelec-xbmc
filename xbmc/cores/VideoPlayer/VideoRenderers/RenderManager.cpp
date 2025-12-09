@@ -1380,7 +1380,7 @@ void CRenderManager::CheckEnableClockSync()
 
   if (m_fps != 0)
   {
-    double fps = m_fps;
+    double fps = static_cast<double>(m_fps);
     double refreshrate, clockspeed;
     int missedvblanks;
     if (m_dvdClock.GetClockInfo(missedvblanks, clockspeed, refreshrate))
