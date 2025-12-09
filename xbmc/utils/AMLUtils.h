@@ -149,3 +149,10 @@ std::string aml_video_fps_info();
 std::string aml_video_fps_drop();
 void aml_pin_thread_to_core(unsigned int core_id);
 void aml_wait(useconds_t uSeconds);
+
+void aml_reset_audio_from_vs10_change();
+void aml_reset_audio_from_player_open();
+void aml_reset_audio_from_player_pause();
+void aml_reset_audio_from_window_home();
+void aml_reset_audio_from_play_from_beginning();
+void aml_reset_audio_from_play_from_resume();

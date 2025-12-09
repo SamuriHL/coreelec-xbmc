@@ -28,6 +28,7 @@
 #include "utils/XMLUtils.h"
 #include "utils/log.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
+#include "utils/AMLUtils.h"
 
 #include <algorithm>
 #include <climits>
@@ -1327,6 +1328,46 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
   // load in the settings overrides
   CServiceBroker::GetSettingsComponent()->GetSettings()->LoadHidden(pRootElement);
+}
+
+void CAdvancedSettings::SetAlgoForReset(int num_resets)
+{
+  m_algoForReset = num_resets;
+}
+
+int CAdvancedSettings::GetAlgoForReset() const
+{
+  return m_algoForReset;
+}
+
+void CAdvancedSettings::SetLastResetTime(double reset_time)
+{
+  m_lastResetTime = reset_time;
+}
+
+double CAdvancedSettings::GetLastResetTime() const
+{
+  return m_lastResetTime;
+}
+
+void CAdvancedSettings::SetResetSync(bool reset_sync)
+{
+  m_resetSync = reset_sync;
+}
+
+bool CAdvancedSettings::GetResetSync() const
+{
+  return m_resetSync;
+}
+
+void CAdvancedSettings::SetResetSeek(bool reset_seek)
+{
+  m_resetSeek = reset_seek;
+}
+
+bool CAdvancedSettings::GetResetSeek() const
+{
+  return m_resetSeek;
 }
 
 void CAdvancedSettings::Clear()

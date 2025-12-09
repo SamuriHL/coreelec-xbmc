@@ -38,6 +38,8 @@
 #include "guilib/GUIWindowManager.h"
 #include "ServiceBroker.h"
 
+#include "settings/AdvancedSettings.h"
+
 #include "platform/linux/SysfsPath.h"
 
 #include "linux/fb.h"
@@ -100,12 +102,22 @@ static void aml_dv_wait_dv_std_vsif_packet()
   }
 }
 
+void aml_reset_audio_from_vs10_change()
+{
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+}
+
 void aml_dv_set_vs10_mode(unsigned int mode)
 {
   if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
     aml_dv_on(mode);
   else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
     aml_dv_off();
+
+  aml_reset_audio_from_vs10_change();
 }
 
 void aml_dv_wait_video_off(int timeout)
@@ -1505,4 +1517,56 @@ void aml_wait(useconds_t uSeconds)
    }
 
    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, nullptr);
+}
+
+void aml_reset_audio_from_player_open()
+{
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+  if (aml_get_cpufamily_id() == AML_G12B)
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(2);
+  else
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(3);
+}
+
+void aml_reset_audio_from_player_pause()
+{
+  if (aml_get_cpufamily_id() == AML_G12B)
+  {
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(false);
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(0);
+  }
+}
+
+void aml_reset_audio_from_window_home()
+{
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+  if (aml_get_cpufamily_id() == AML_G12B)
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
+  else
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(0);
+}
+
+void aml_reset_audio_from_play_from_beginning()
+{
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+  if (aml_get_cpufamily_id() == AML_G12B)
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(2);
+  else
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(3);
+}
+
+void aml_reset_audio_from_play_from_resume()
+{
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
 }

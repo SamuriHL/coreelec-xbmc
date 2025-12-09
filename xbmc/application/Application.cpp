@@ -2597,6 +2597,7 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
   }
 
   const auto appVolume = GetComponent<CApplicationVolumeHandling>();
+  aml_reset_audio_from_player_open();
   appPlayer->OpenFile(item, options, m_ServiceManager->GetPlayerCoreFactory(), player, *this);
   appPlayer->SetVolume(appVolume->GetVolumeRatio());
   appPlayer->SetMute(appVolume->IsMuted());

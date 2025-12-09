@@ -401,6 +401,22 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_videoDecoderH264Offset;
     unsigned int m_videoDecoderStreamTypeStreamMinOrderedBufferQueueCount;
 
+    void SetAlgoForReset(int num_resets);
+    int GetAlgoForReset() const;
+    int m_algoForReset;
+
+    void SetLastResetTime(double reset_time);
+    double GetLastResetTime() const;
+    double m_lastResetTime;
+
+    void SetResetSync(bool reset_sync);
+    bool GetResetSync() const;
+    bool m_resetSync;
+
+    void SetResetSeek(bool reset_seek);
+    bool GetResetSeek() const;
+    bool m_resetSeek;
+
   private:
     void Initialize();
     void Clear();

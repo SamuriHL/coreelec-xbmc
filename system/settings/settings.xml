@@ -4298,6 +4298,24 @@
           </constraints>
           <control type="spinner" format="string" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.audio.seamlessbranch" type="integer" label="60594" help="60595" parent="coreelec.amlogic.dolbyvision.type">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>1</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>
+          </dependencies>
+          <constraints>
+            <options>
+              <option label="60596">0</option>  <!-- Off -->
+              <option label="60597">1</option>  <!-- 1 -->
+              <option label="60598">2</option>  <!-- 2 -->
+              <option label="60599">3</option>  <!-- 3 -->
+            </options>
+          </constraints>
+          <control type="spinner" format="string" />
+        </setting>
       </group>
     </category>
     <category id="cache" label="439" help="36399">

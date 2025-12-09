@@ -270,6 +270,7 @@ bool CDolbyVisionAML::Setup()
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT, true);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE, true);
   set_visible(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI, true);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH, true);
 
   // Register for ui dv mode change - to change on the fly.
   std::set<std::string> settingSet;

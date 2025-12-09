@@ -21,6 +21,10 @@
 #include "utils/MathUtils.h"
 #include "utils/log.h"
 
+#include "utils/AMLUtils.h"
+#include "cores/DataCacheCore.h"
+#include "ServiceBroker.h"
+
 #include <mutex>
 
 #ifdef TARGET_RASPBERRY_PI
@@ -30,6 +34,8 @@
 #include <sstream>
 #include <iomanip>
 #include <math.h>
+
+#include <unistd.h>
 
 using namespace std::chrono_literals;
 
@@ -498,6 +504,116 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     }
     else
     {
+      int algoValue = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH);
+      if (algoValue != 0)
+      {
+        auto advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+        bool resetSync = advancedSettings->GetResetSync();
+
+        if (resetSync)
+        {
+          m_audioSink.AbortAddPackets();
+          m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESYNC));
+          m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+          advancedSettings->SetResetSync(false);
+        }
+
+        bool resetSeek = advancedSettings->GetResetSeek();
+        int algoForReset = advancedSettings->GetAlgoForReset();
+        if (algoValue == 3) resetSeek = false;
+
+        if (resetSeek && (algoForReset != 0))
+        {
+          bool hasAtmos = ((m_streaminfo.profile == FF_PROFILE_EAC3_DDP_ATMOS) ||
+                           (m_streaminfo.profile == FF_PROFILE_TRUEHD_ATMOS));
+
+          if ((!hasAtmos) && (algoForReset > 1))
+          {
+            algoValue = 0;
+            algoForReset = 0;
+            advancedSettings->SetAlgoForReset(0);
+          }
+
+          double iTimeValue = 0.0;
+          double offsetValue = 0.0;
+          bool performOffset = false;
+          switch (algoValue)
+          {
+            case 1:
+              iTimeValue = 2250.0;
+              offsetValue = 1500.0;
+              performOffset = false;
+              break;
+            case 2:
+              iTimeValue = 5000.0;
+              offsetValue = 2000.0;
+              performOffset = true;
+              break;
+            default:
+              break;
+          }
+          bool timeToReset = false;
+          double offset = 0;
+          double lastResetTime = advancedSettings->GetLastResetTime();
+          double currentTime = m_pClock->GetAbsoluteClock() / 1000.0;
+          if (lastResetTime == 0.0)
+          {
+            lastResetTime = currentTime;
+            advancedSettings->SetLastResetTime(lastResetTime);
+          }
+          double iTime = m_pClock->GetClock() / 1000.0;
+          switch (algoForReset)
+          {
+            case 1:
+              timeToReset = ((currentTime - lastResetTime) > 2250.0);
+              offset = 1500.0;
+              performOffset = (aml_get_cpufamily_id() == AML_G12B) ? false : true;
+              break;
+            case 2:
+              timeToReset = (iTime > iTimeValue);
+              offset = offsetValue;
+              break;
+            case 3:
+              timeToReset = (iTime > 45000.0);
+              offset = 10000.0;
+              performOffset = true;
+              break;
+            default:
+              break;
+          }
+          if (timeToReset)
+          {
+            int blackout_policy = aml_blackout_policy(1);
+            CDVDMsgPlayerSeek::CMode mode;
+            mode.time = iTime - offset;
+            mode.backward = true;
+            mode.accurate = true;
+            mode.trickplay = true;
+            mode.sync = true;
+            mode.restore = false;
+            m_messageParent.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+
+            if (algoForReset == 3) usleep(250000);
+
+            if (performOffset)
+            {
+              mode.time = (int)offset;
+              mode.relative = true;
+              mode.backward = false;
+              mode.accurate = false;
+              mode.trickplay = true;
+              mode.sync = true;
+              m_messageParent.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            }
+
+            advancedSettings->SetResetSeek(false);
+            advancedSettings->SetLastResetTime(0.0);
+            advancedSettings->SetAlgoForReset(0);
+            aml_blackout_policy(blackout_policy);
+          }
+        }
+      }
+
       audioframe.pts += DVD_MSEC_TO_TIME(m_renderManager.GetVideoLatencyTweak() +
                                          m_renderManager.GetAudioLatencyTweak() -
                                          m_renderManager.GetDelay());
