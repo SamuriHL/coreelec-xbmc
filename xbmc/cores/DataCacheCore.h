@@ -107,7 +107,9 @@ public:
   void SetAudioDecoderName(std::string name);
   std::string GetAudioDecoderName();
   void SetAudioChannels(std::string channels);
+  void SetAudioChannelsSink(std::string channels);
   std::string GetAudioChannels();
+  std::string GetAudioChannelsSink();
   void SetAudioSampleRate(int sampleRate);
   int GetAudioSampleRate();
   void SetAudioBitsPerSample(int bitsPerSample);
@@ -295,6 +297,7 @@ protected:
   {
     std::string decoderName;
     std::string channels;
+    std::string channels_sink;
     int sampleRate;
     int bitsPerSample;
     double liveBitRate = 0;
