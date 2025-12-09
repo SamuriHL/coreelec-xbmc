@@ -302,11 +302,15 @@ static double pq_to_nits(uint16_t pq) {
   switch (pq) {
     case 0:    { return 0; }
     case 7:    { return 0.0001; }
-    case 62:   { return 0.0050; }
-    case 3079: { return 1000; }
-    case 3388: { return 2000; }
-    case 3696: { return 4000; }
-    case 4095: { return 10000; }
+    case 10:   { return 0.0002; }
+    case 17:   { return 0.0005; }
+    case 26:   { return 0.001; }
+    case 38:   { return 0.002; }
+    case 62:   { return 0.005; }
+    case 3079: { return 1000.0; }
+    case 3388: { return 2000.0; }
+    case 3696: { return 4000.0; }
+    case 4095: { return 10000.0; }
   }
 
   // Normalize 12-bit PQ value to 0-1 range
