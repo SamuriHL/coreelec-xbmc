@@ -68,13 +68,6 @@ public:
     return m_info.pts;
   }
 
-  double GetCurrentFramePts() override
-  {
-    std::lock_guard lock(m_info_section);
-
-    return m_info.fpts;
-  }
-
   bool IsStalled() const override { return m_stalled;  }
   bool IsPassthrough() const override;
 

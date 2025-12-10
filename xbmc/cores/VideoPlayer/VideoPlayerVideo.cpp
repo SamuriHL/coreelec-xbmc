@@ -1068,11 +1068,6 @@ double CVideoPlayerVideo::GetCurrentPts()
   return renderPts;
 }
 
-double CVideoPlayerVideo::GetCurrentFramePts()
-{
-  return m_renderManager.GetFramePts();
-}
-
 #define MAXFRAMERATEDIFF   0.01
 #define MAXFRAMESERR    1000
 
