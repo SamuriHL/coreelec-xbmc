@@ -126,27 +126,23 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
         hint.codec == AV_CODEC_ID_VC1 ||
         hint.codec == AV_CODEC_ID_AV1)
     {
-      CLog::LogF(LOGERROR, "Codec id {} require extradata.", hint.codec);
+      logM(LOGERROR, "CVideoPlayerVideo", "Codec id {} require extradata.", hint.codec);
       return false;
     }
     // clang-format on
   }
 
-  CLog::Log(LOGINFO, "Creating video codec with codec id: {:d}", hint.codec);
+  logM(LOGINFO, "CVideoPlayerVideo", "Creating video codec with codec id: {:d}", hint.codec);
   hint.pClock = m_pClock;
 
   if (m_messageQueue.IsInited())
   {
     if (m_pVideoCodec && !m_processInfo.IsVideoHwDecoder())
-    {
       hint.codecOptions |= CODEC_ALLOW_FALLBACK;
-    }
 
     std::unique_ptr<CDVDVideoCodec> codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
-    if (!codec)
-    {
-      CLog::Log(LOGINFO, "CVideoPlayerVideo::OpenStream - could not open video codec");
-    }
+
+    if (!codec) logM(LOGINFO, "CVideoPlayerVideo", "could not open video codec");
 
     SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec)), 0);
   }
@@ -158,12 +154,14 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
     std::unique_ptr<CDVDVideoCodec> codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
     if (!codec)
     {
-      CLog::Log(LOGERROR, "CVideoPlayerVideo::OpenStream - could not open video codec");
+      logM(LOGERROR, "CVideoPlayerVideo", "could not open video codec");
       return false;
     }
 
     OpenStream(hint, std::move(codec));
-    CLog::Log(LOGINFO, "Creating video thread");
+
+    logM(LOGINFO, "CVideoPlayerVideo", "Creating video thread");
+
     m_messageQueue.Init();
     Create();
   }
@@ -222,10 +220,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   if( m_fFrameRate > 120 || m_fFrameRate < 5 )
   {
-    CLog::Log(LOGERROR,
-              "CVideoPlayerVideo::OpenStream - Invalid framerate {}, using forced 25fps and just "
-              "trust timestamps",
-              (int)m_fFrameRate);
+    logM(LOGERROR, "CVideoPlayerVideo", "Invalid framerate {} using forced 25fps and trust timestamps", (int)m_fFrameRate);
     m_fFrameRate = 50;
     m_processInfo.SetVideoInterlaced(true);
   }
@@ -253,7 +248,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
     codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
     if (!codec)
     {
-      CLog::Log(LOGERROR, "CVideoPlayerVideo::OpenStream - could not open video codec");
+      logM(LOGERROR, "CVideoPlayerVideo", "could not open video codec");
       m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_ABORT));
       StopThread();
     }
@@ -280,14 +275,14 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   m_messageQueue.Abort();
 
   // wait for decode_video thread to end
-  CLog::Log(LOGINFO, "waiting for video thread to exit");
+  logM(LOGINFO, "CVideoPlayerVideo", "waiting for video thread to exit");
 
   m_bAbortOutput = true;
   StopThread();
 
   m_messageQueue.End();
 
-  CLog::Log(LOGINFO, "deleting video codec");
+  logM(LOGINFO, "CVideoPlayerVideo", "deleting video codec");
   m_pVideoCodec.reset();
 
   if (m_picture.videoBuffer)
@@ -336,10 +331,10 @@ inline MsgQueueReturnCode CVideoPlayerVideo::GetMessage(std::shared_ptr<CDVDMsg>
 }
 
 void CVideoPlayerVideo::Process()
-{  
-  aml_pin_thread_to_core(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_threadVideoPlayerVideoCore); 
+{
+  aml_pin_thread_to_core(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_threadVideoPlayerVideoCore);
 
-  CLog::Log(LOGINFO, "running thread: video_thread");
+  logM(LOGINFO, "CVideoPlayerVideo", "running thread: video_thread");
 
   double pts = 0;
   double frametime = (double)DVD_TIME_BASE / m_fFrameRate;
@@ -384,7 +379,7 @@ void CVideoPlayerVideo::Process()
     if (MSGQ_IS_ERROR(ret))
     {
       if (!m_messageQueue.ReceivedAbortRequest())
-        CLog::Log(LOGERROR, "MSGQ_IS_ERROR returned true ({})", ret);
+        logM(LOGERROR, "CVideoPlayerVideo", "MSGQ_IS_ERROR returned true ({})", ret);
 
       break;
     }
@@ -432,8 +427,7 @@ void CVideoPlayerVideo::Process()
             break;
         }
 
-        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe detected, switching to forced {:f} fps",
-                  m_fFrameRate);
+        logM(LOGDEBUG, "CVideoPlayerVideo", "Stillframe detected, switching to forced {:f} fps", m_fFrameRate);
         m_stalled = true;
         pts += frametime * 4;
       }
@@ -452,11 +446,10 @@ void CVideoPlayerVideo::Process()
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
       if (std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_VIDEO))
-      {
-        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_SYNCHRONIZE");
-      }
+        logM(LOGDEBUG, "CVideoPlayerVideo", "CDVDMsg::GENERAL_SYNCHRONIZE");
       else
         SendMessage(pMsg, 1); /* push back as prio message, to process other prio messages */
+
       m_droppingStats.Reset();
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESYNC))
@@ -468,7 +461,7 @@ void CVideoPlayerVideo::Process()
       m_rewindStalled = false;
       m_renderManager.ShowVideo(true);
 
-      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_RESYNC({:f})", pts);
+      logM(LOGDEBUG, "CVideoPlayerVideo", "CDVDMsg::GENERAL_RESYNC({:f})", pts);
       if (m_processInfo.IsVideoHwDecoder())
       {
         vfmtCheckCount = 16;
@@ -477,7 +470,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_SET_ASPECT))
     {
-      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::VIDEO_SET_ASPECT");
+      logM(LOGDEBUG, "CVideoPlayerVideo", "CDVDMsg::VIDEO_SET_ASPECT");
       m_fForcedAspectRatio = static_cast<float>(*std::static_pointer_cast<CDVDMsgDouble>(pMsg));
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
@@ -568,7 +561,7 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
-      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
+      logM(LOGDEBUG, "CVideoPlayerVideo", "CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
@@ -585,7 +578,7 @@ void CVideoPlayerVideo::Process()
 
       if (m_stalled)
       {
-        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe left, switching to normal playback");
+        logM(LOGDEBUG, "CVideoPlayerVideo", "Stillframe left, switching to normal playback");
         m_stalled = false;
       }
 
@@ -679,7 +672,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   // if decoder was flushed, we need to seek back again to resume rendering
   if (decoderState == CDVDVideoCodec::VC_FLUSHED)
   {
-    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
+    logM(LOGDEBUG, "CVideoPlayerVideo", "video decoder was flushed");
+
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -695,7 +689,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_REOPEN)
   {
-    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder request reopen");
+    logM(LOGDEBUG, "CVideoPlayerVideo", "video decoder request reopen");
+
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -712,7 +707,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   // if decoder had an error, tell it to reset to avoid more problems
   if (decoderState == CDVDVideoCodec::VC_ERROR)
   {
-    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder returned error");
+    logM(LOGDEBUG, "CVideoPlayerVideo", "video decoder returned error");
+
     return false;
   }
 
@@ -855,7 +851,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
 void CVideoPlayerVideo::OnExit()
 {
-  CLog::Log(LOGINFO, "thread end: video_thread");
+  logM(LOGINFO, "CVideoPlayerVideo", "thread end: video_thread");
 }
 
 void CVideoPlayerVideo::SetSpeed(int speed)
@@ -957,7 +953,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
                                 m_hints.hdrType,
                                 m_pVideoCodec->GetAllowedReferences()))
   {
-    CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
+    logM(LOGERROR, "CVideoPlayerVideo", "failed to configure renderer");
+
     return OUTPUT_ABORT;
   }
 
@@ -978,7 +975,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (picture.iFlags & DVP_FLAG_DROPPED)
   {
     m_droppingStats.AddOutputDropGain(picture.pts, 1);
-    CLog::Log(LOGDEBUG, "{} - dropped in output", __FUNCTION__);
+    logM(LOGDEBUG, "CVideoPlayerVideo", "dropped in output");
+
     return OUTPUT_DROPPED;
   }
 
@@ -998,7 +996,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (buffer < 0)
   {
     if (m_speed != DVD_PLAYSPEED_PAUSE)
-      CLog::Log(LOGWARNING, "{} - timeout waiting for buffer", __FUNCTION__);
+      logM(LOGWARNING, "CVideoPlayerVideo", "timeout waiting for buffer");
+
     return OUTPUT_AGAIN;
   }
 
@@ -1088,6 +1087,7 @@ void CVideoPlayerVideo::CalcFrameRate()
   //see if m_pullupCorrection was able to detect a pattern in the timestamps
   //and is able to calculate the correct frame duration from it
   double frameduration = m_ptsTracker.GetFrameDuration();
+
   if (m_ptsTracker.VFRDetection())
     frameduration = m_ptsTracker.GetMinFrameDuration();
 
@@ -1101,9 +1101,8 @@ void CVideoPlayerVideo::CalcFrameRate()
 
     if (m_iFrameRateErr == MAXFRAMESERR && m_iFrameRateLength == 1)
     {
-      CLog::Log(LOGDEBUG,
-                "{} counted {} frames without being able to calculate the framerate, giving up",
-                __FUNCTION__, m_iFrameRateErr);
+      logM(LOGDEBUG, "CVideoPlayerVideo", "counted {} frames without being able to calculate the framerate, giving up", m_iFrameRateErr);
+
       m_bAllowDrop = true;
       m_iFrameRateLength = 128;
     }
@@ -1130,8 +1129,8 @@ void CVideoPlayerVideo::CalcFrameRate()
       //store the calculated framerate if it differs too much from m_fFrameRate
       if (fabs(m_fFrameRate - (m_fStableFrameRate / m_iFrameRateCount)) > MAXFRAMERATEDIFF || m_bFpsInvalid)
       {
-        CLog::Log(LOGDEBUG, "{} framerate was:{:f} calculated:{:f}", __FUNCTION__, m_fFrameRate,
-                  m_fStableFrameRate / m_iFrameRateCount);
+        logM(LOGDEBUG, "CVideoPlayerVideo", "framerate was:{:f} calculated:{:f}", m_fFrameRate, m_fStableFrameRate / m_iFrameRateCount);
+
         m_fFrameRate = m_fStableFrameRate / m_iFrameRateCount;
         m_bFpsInvalid = false;
         m_processInfo.SetVideoFps(static_cast<float>(m_fFrameRate));
@@ -1180,8 +1179,7 @@ int CVideoPlayerVideo::CalcDropRequirement(double pts)
   else if (iBufferLevel < 2)
   {
     result |= DROP_BUFFER_LEVEL;
-    CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayerVideo::CalcDropRequirement - hurry: {}",
-              iBufferLevel);
+    logComponentM(LOGDEBUG, LOGVIDEO, "CVideoPlayerVideo", "hurry: {}", iBufferLevel);
   }
 
   if (m_bAllowDrop)
@@ -1194,10 +1192,8 @@ int CVideoPlayerVideo::CalcDropRequirement(double pts)
       m_droppingStats.m_gain.push_back(gain);
       m_droppingStats.m_totalGain += gain.frames;
       result |= DROP_DROPPED;
-      CLog::Log(LOGDEBUG, LOGVIDEO,
-                "CVideoPlayerVideo::CalcDropRequirement - dropped pictures, lateframes: {}, "
-                "Bufferlevel: {}, dropped: {}",
-                lateframes, iBufferLevel, iSkippedPicture);
+      logComponentM(LOGDEBUG, LOGVIDEO, "CVideoPlayerVideo", "dropped pictures, lateframes: {}, Bufferlevel: {}, dropped: {}",
+        lateframes, iBufferLevel, iSkippedPicture);
     }
     if (iDroppedFrames > 0)
     {
@@ -1207,10 +1203,8 @@ int CVideoPlayerVideo::CalcDropRequirement(double pts)
       m_droppingStats.m_gain.push_back(gain);
       m_droppingStats.m_totalGain += iDroppedFrames;
       result |= DROP_DROPPED;
-      CLog::Log(LOGDEBUG, LOGVIDEO,
-                "CVideoPlayerVideo::CalcDropRequirement - dropped in decoder, lateframes: {}, "
-                "Bufferlevel: {}, dropped: {}",
-                lateframes, iBufferLevel, iDroppedFrames);
+      logComponentM(LOGDEBUG, LOGVIDEO, "CVideoPlayerVideo", "dropped in decoder, lateframes: {}, Bufferlevel: {}, dropped: {}",
+        lateframes, iBufferLevel, iDroppedFrames);
     }
   }
 
