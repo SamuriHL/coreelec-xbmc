@@ -11385,6 +11385,50 @@ void CGUIInfoManager::UpdateAVInfo()
     appPlayer->GetSubtitleStreamInfo(CURRENT_STREAM, subtitle);
 
     m_infoProviders.UpdateAVInfo(audio, video, subtitle);
+
+    int channels = audio.channels;
+    std::string audio_layout = "Null";               // Null
+    switch (channels)
+    {
+    case 0:
+      audio_layout = "No Channels";                   // No Channels
+      break;
+    case 1:
+      audio_layout = "Mono";                           // 1.0
+      break;
+    case 2:
+      audio_layout = "FL, FR";                          // 2.0
+      break;
+    case 3:
+      audio_layout = "FL, FR, LFE";                      // 2.1
+      break;
+    case 4:
+      audio_layout = "FL, FR, BL, BR";                    // 4.0
+      break;
+    case 5:
+      audio_layout = "FL, FR, LFE, BL, BR";                // 4.1
+      break;
+    case 6:
+      audio_layout = "FL, FR, FC, LFE, SL, SR";             // 5.1
+      break;
+    case 7:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, BC";          // 6.1
+      break;
+    case 8:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, SL, SR";       // 7.1
+      break;
+    case 9:
+      audio_layout = "Undefined";                               // Undefined
+      break;
+    case 10:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, SL, SR, FWL, FWR"; // 9.1
+      break;
+    default:
+      audio_layout = "Unknown";                                    // Unknown
+      break;
+    }
+
+    CServiceBroker::GetDataCacheCore().SetAudioChannels(audio_layout);
   }
 }
 
