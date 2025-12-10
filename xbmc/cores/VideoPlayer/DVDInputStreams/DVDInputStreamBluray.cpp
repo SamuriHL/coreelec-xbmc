@@ -29,7 +29,6 @@
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
-#include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
 
 #include <functional>
@@ -92,7 +91,7 @@ bool CDVDInputStreamBluray::IsEOF()
   return false;
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& xmlstate)
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& xmlstate) const
 {
   BlurayState blurayState;
   if (!m_blurayStateSerializer.XMLToBlurayState(blurayState, xmlstate))
@@ -103,23 +102,23 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& x
   return bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest()
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest() const
 {
   int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
-
-  BLURAY_TITLE_INFO *s = nullptr;
-  for(int i=0; i < m_nTitles; i++)
+  
+  BLURAY_TITLE_INFO* s = nullptr;
+  for (int i = 0; i < titles; i++)
   {
-    BLURAY_TITLE_INFO *t = bd_get_title_info(m_bd, i, 0);
-    if(!t)
+    BLURAY_TITLE_INFO* t = bd_get_title_info(m_bd, i, 0);
+    if (!t)
     {
       CLog::Log(LOGDEBUG, "get_main_title - unable to get title {}", i);
       continue;
     }
-    if(!s || s->duration < t->duration)
+    if (!s || s->duration < t->duration)
       std::swap(s, t);
 
-    if(t)
+    if (t)
       bd_free_title_info(t);
   }
   return s;
@@ -507,7 +506,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_DISCONTINUITY:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
-    m_hold = HOLD_STILL;
+    m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
+    m_hold = HOLD_NONE;
     break;
 
     /* playback position */
@@ -602,7 +602,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     m_menu = (m_event.param != 0);
     if (!m_menu)
       m_isInMainMenu = false;
-    m_player->OnDiscNavResult(&m_event.param, BD_EVENT_MENU);
+      m_player->OnDiscNavResult(&m_event.param, BD_EVENT_MENU);
     break;
 
   case BD_EVENT_IDLE:
