@@ -1431,8 +1431,14 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
     if (m_sps_pps_context.first_idr && (unit_type == nal_sps || unit_type == nal_pps))
       m_sps_pps_context.idr_sps_pps_seen = 1;
 
-    if (!m_start_decode && IsIDR(unit_type))
-      m_start_decode = true;
+    if (m_hints.codec == AV_CODEC_ID_H264)
+    {
+      if (!m_start_decode && (unit_type == nal_sps || IsIDR(unit_type))) m_start_decode = true;
+    }
+    else
+    {
+      if (!m_start_decode && IsIDR(unit_type)) m_start_decode = true;
+    }
 
     // prepend only to the first access unit of an IDR picture, if no sps/pps already present
     if (m_sps_pps_context.first_idr && IsIDR(unit_type) && !m_sps_pps_context.idr_sps_pps_seen)
