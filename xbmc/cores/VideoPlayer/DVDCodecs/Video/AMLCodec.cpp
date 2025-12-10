@@ -2430,7 +2430,8 @@ bool CAMLCodec::GetNextOrderedBuffer()
     size = m_orderedBufferQueue.size();
   }
 
-  if (size < m_minOrderedBufferQueueCount) // wait until have at least min buffers
+  if (!m_drain &&
+      (size < m_minOrderedBufferQueueCount)) // wait until have at least min buffers
   {
     logM(LOGINFO, "CAMLCodec", "buffer size:[{}]", size);
     return false;
@@ -2438,6 +2439,8 @@ bool CAMLCodec::GetNextOrderedBuffer()
 
   {
     std::scoped_lock lock(m_orderedBufferQueueMutex);
+    if (m_orderedBufferQueue.empty()) return false;
+
     orderedBuffer = m_orderedBufferQueue.top();
     m_orderedBufferQueue.pop();
   }
@@ -2470,7 +2473,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
                                                                                         m_tp_last_frame);
   float buffer_level = GetBufferLevel();
 
-  if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level) && GetNextOrderedBuffer())
+  if (((m_buffer_level_ready && (buffer_level > m_minimum_buffer_level)) || m_drain) &&
+      GetNextOrderedBuffer())
   {
      m_tp_last_frame = std::chrono::system_clock::now();
 
@@ -2501,6 +2505,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 
     return CDVDVideoCodec::VC_PICTURE;
   }
+
+  if (m_drain)
+    return CDVDVideoCodec::VC_EOF;
 
   if (buffer_level > (IsDecStreamTypeStream() ? 100.0f : 10.0f))
     return CDVDVideoCodec::VC_NONE;
