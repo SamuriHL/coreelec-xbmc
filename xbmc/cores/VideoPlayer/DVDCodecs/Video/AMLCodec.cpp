@@ -2375,8 +2375,8 @@ void CAMLCodec::DequeueToOrderedBufferQueue()
       // Both below use the pts server data offset to obtain pts values and both look to need the same additional time offset to the pts value.
       if (IsDecStreamTypeStream())
         pts += m_decoder_stream_type_stream_offset; // Offset for type STREAM (Used for FEL)
-      else if (IsH264())
-        pts += m_decoder_h264_offset;               // Offset for H264
+      else if (IsH264() && !m_hints.interlaced)
+        pts += m_decoder_h264_offset;               // Offset for H264 - non-interlaced content
 
       {
         std::scoped_lock lock(m_orderedBufferQueueMutex);
