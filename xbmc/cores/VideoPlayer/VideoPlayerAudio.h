@@ -68,6 +68,13 @@ public:
     return m_info.pts;
   }
 
+  double GetCurrentPacketDelay() override
+  {
+    std::lock_guard lock(m_info_section);
+
+    return m_info.packetDelay;
+  }
+
   bool IsStalled() const override { return m_stalled;  }
   bool IsPassthrough() const override;
 
@@ -116,7 +123,7 @@ protected:
   {
     std::string      info;
     double           pts = DVD_NOPTS_VALUE;
-    double           fpts = DVD_NOPTS_VALUE;
+    double           packetDelay = 0.0;
     bool             passthrough = false;
   };
 

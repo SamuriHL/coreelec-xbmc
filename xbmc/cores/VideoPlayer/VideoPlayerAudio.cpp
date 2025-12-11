@@ -196,7 +196,7 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   SInfo info;
   info.info        = s.str();
   info.pts         = DVD_NOPTS_VALUE;
-  info.fpts        = DVD_NOPTS_VALUE;
+  info.packetDelay = 0.0;
   info.passthrough = false;
 
   {
@@ -228,7 +228,7 @@ void CVideoPlayerAudio::UpdatePlayerInfo()
   SInfo info;
   info.info        = s.str();
   info.pts         = m_audioSink.GetPlayingPts();
-  info.fpts        = m_audioSink.GetPlayingFramePts();
+  info.packetDelay = m_audioSink.GetPlayingPacketDelay();
   info.passthrough = m_pAudioCodec && m_pAudioCodec->NeedPassthrough();
 
   {

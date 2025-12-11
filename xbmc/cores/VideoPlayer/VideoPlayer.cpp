@@ -3324,10 +3324,12 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
   static double bufferAudio[BUFFER_SIZE] = {0};
   static double bufferVideo[BUFFER_SIZE] = {0};
   static double bufferDelta[BUFFER_SIZE] = {0};
+  static double bufferDelay[BUFFER_SIZE] = {0};
 
   static double sumAudio = 0;
   static double sumVideo = 0;
   static double sumDelta = 0;
+  static double sumDelay = 0;
 
   if (!m_bStop && (m_playSpeed == DVD_PLAYSPEED_NORMAL))
   {
@@ -3336,6 +3338,7 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     double clock = m_clock.GetClock();
     double apts = m_VideoPlayerAudio->GetCurrentPts();
     double vpts = m_VideoPlayerVideo->GetCurrentPts();
+    double aPacketDelay = m_VideoPlayerAudio->GetCurrentPacketDelay();
 
     bool have_apts = (apts != DVD_NOPTS_VALUE);
     bool have_vpts = (vpts != DVD_NOPTS_VALUE);
@@ -3360,6 +3363,11 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     sumVideo += dDiffVideo;          // add new value to sum
     bufferVideo[index] = dDiffVideo; // store new value at the index of "oldest"
 
+    // Moving Average Packet Delay of Audio
+    sumDelay -= bufferDelay[index];      // subtract "oldest" value from sum
+    sumDelay += aPacketDelay;            // add new value to sum
+    bufferDelay[index] = aPacketDelay;   // store new value at the index of "oldest"
+
     index = (index + 1) % BUFFER_SIZE;            // next slot in ring buffers, wraps back to 0 for last index entry @ 127
     bufferFilled = bufferFilled || (index == 0);  // buffer already filled or index wrapped i.e. all buffer slots now have a value so filled
     int filled = bufferFilled ? BUFFER_SIZE : index;
@@ -3368,6 +3376,7 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     double dDiffDeltaMovingAverage = sumDelta / filled;
     double dDiffAudioMovingAverage = sumAudio / filled;
     double dDiffVideoMovingAverage = sumVideo / filled;
+    double dPacketDelayMovingAverage = sumDelay / filled;
 
     std::string strBuf;
 
@@ -3381,8 +3390,8 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
                                     m_State.cache_offset * 100.0);
     }
 
-    strGeneralInfo = StringUtils::Format("P: a/v:{: 6.3f}, a/c:{: 6.3f}, v/c:{: 6.3f}, {}",
-        dDiffDeltaMovingAverage, dDiffAudioMovingAverage, dDiffVideoMovingAverage,
+    strGeneralInfo = StringUtils::Format("P: a/v:{: 6.3f}, a/c:{: 6.3f}, v/c:{: 6.3f}, pd/c:{: 6.3f} {}",
+        dDiffDeltaMovingAverage, dDiffAudioMovingAverage, dDiffVideoMovingAverage, dPacketDelayMovingAverage,
         strBuf);
   }
   else if (!resetDone)
@@ -3394,10 +3403,12 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     memset(bufferAudio, 0, sizeof(bufferAudio));
     memset(bufferVideo, 0, sizeof(bufferVideo));
     memset(bufferDelta, 0, sizeof(bufferDelta));
+    memset(bufferDelay, 0, sizeof(bufferDelay));
 
     sumAudio = 0;
     sumVideo = 0;
     sumDelta = 0;
+    sumDelay = 0;
 
     resetDone = true;
   }

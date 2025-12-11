@@ -29,9 +29,9 @@ CAudioSinkAE::CAudioSinkAE(CDVDClock *clock) : m_pClock(clock)
   m_iBitsPerSample = 0;
   m_sampleRate = 0;
   m_bPaused = true;
-  m_playingPts = DVD_NOPTS_VALUE; //silence coverity uninitialized warning, is set elsewhere
-  m_playingFramePts = DVD_NOPTS_VALUE;
-  m_timeOfPts = 0.0; //silence coverity uninitialized warning, is set elsewhere
+  m_playingPts = DVD_NOPTS_VALUE;
+  m_playingPacketDelay = 0.0;
+  m_timeOfPts = 0.0;
   m_syncError = 0.0;
   m_syncErrorTime = 0;
   m_addPacketUnlockTime = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_audioAddPacketUnlockTime;
@@ -89,7 +89,7 @@ void CAudioSinkAE::Destroy(bool finish)
   m_bPassthrough = false;
   m_bPaused = true;
   m_playingPts = DVD_NOPTS_VALUE;
-  m_playingFramePts = DVD_NOPTS_VALUE;
+  m_playingPacketDelay = 0.0;
 }
 
 unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
@@ -157,8 +157,8 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     lock.lock();
   } while (!m_bAbort);
 
-  m_playingPts = audioframe.pts + audioframe.duration - GetDelay();
-  m_playingFramePts = audioframe.pts + audioframe.duration;
+  m_playingPts = audioframe.pts + audioframe.duration;
+  m_playingPacketDelay = GetDelay();
   m_timeOfPts = m_pClock->GetAbsoluteClock();
 
   return total - frames;
@@ -196,7 +196,7 @@ void CAudioSinkAE::Pause()
     m_pAudioStream->Pause();
   CLog::Log(LOGDEBUG,"CDVDAudio::Pause - pausing audio stream");
   m_playingPts = DVD_NOPTS_VALUE;
-  m_playingFramePts = DVD_NOPTS_VALUE;
+  m_playingPacketDelay = 0.0;
 }
 
 void CAudioSinkAE::Resume()
@@ -231,7 +231,7 @@ void CAudioSinkAE::Flush()
     CLog::Log(LOGDEBUG,"CDVDAudio::Flush - flush audio stream");
   }
   m_playingPts = DVD_NOPTS_VALUE;
-  m_playingFramePts = DVD_NOPTS_VALUE;
+  m_playingPacketDelay = 0.0;
   m_syncError = 0.0;
   m_syncErrorTime = 0;
 }
@@ -309,11 +309,8 @@ double CAudioSinkAE::GetPlayingPts()
   return m_playingPts;
 }
 
-double CAudioSinkAE::GetPlayingFramePts() const {
-  if (m_playingFramePts == DVD_NOPTS_VALUE)
-    return 0.0;
-
-  return m_playingFramePts;
+double CAudioSinkAE::GetPlayingPacketDelay() const {
+  return m_playingPacketDelay;
 }
 
 double CAudioSinkAE::GetSyncError() const {
