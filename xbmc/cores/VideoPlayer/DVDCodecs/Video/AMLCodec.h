@@ -245,14 +245,9 @@ struct pq_ctrl_s {
 	unsigned char reserved;
 };
 
-struct OrderedBuffer
+struct DequeuedBuffer
 {
   v4l2_buffer buffer;
-  uint64_t pts;
-
-  friend bool operator>(const OrderedBuffer& lhs, const OrderedBuffer& rhs) {
-    return lhs.pts > rhs.pts;
-  }
 };
 
 #define VE_CM  'C'
@@ -306,12 +301,12 @@ private:
   float         GetBufferLevel();
   float         GetBufferLevel(int new_chunk, int &data_len, int &free_len) const;
 
-  void          StartDequeueToOrderedBufferQueue();
-  void          StopDequeueToOrderedBufferQueue();
-  void          DequeueToOrderedBufferQueue();
+  void          StartDequeueThread();
+  void          StopDequeueThread();
+  void          DequeueThread();
 
-  bool          GetNextOrderedBuffer();
-  void          ClearOrderedBufferQueue();
+  bool          GetNextDequeuedBuffer();
+  void          ClearDequeuedBufferQueue();
 
   unsigned int  GetDecoderVideoRate() const;
   std::string   GetHDRStaticMetadata() const;
@@ -367,10 +362,9 @@ private:
   float            m_minimum_buffer_level;
 
   std::mutex       m_ioControlMutex;
-  std::mutex       m_orderedBufferQueueMutex;
+  std::mutex       m_dequeuedBufferQueueMutex;
 
-  uint             m_minOrderedBufferQueueCount = 1;
-  std::priority_queue<OrderedBuffer, std::vector<OrderedBuffer>, std::greater<OrderedBuffer>> m_orderedBufferQueue;
-  std::atomic<bool> m_orderedBufferQueueRunning{false};
-  std::thread      m_dequeueToOrderedBufferQueueThread;
+  std::deque<DequeuedBuffer> m_dequeuedBufferQueue;
+  std::atomic<bool> m_dequeueThreadRunning{false};
+  std::thread      m_dequeueThread;
 };

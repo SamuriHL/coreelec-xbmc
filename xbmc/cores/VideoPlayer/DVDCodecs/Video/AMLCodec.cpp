@@ -1960,9 +1960,7 @@ bool CAMLCodec::OpenDecoder(bool restart)
   SetSpeed(m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
-  m_minOrderedBufferQueueCount = IsDecStreamTypeStream() ? m_decoder_stream_type_stream_min_queue_count : 1;
-
-  StartDequeueToOrderedBufferQueue();
+  StartDequeueThread();
 
   return true;
 }
@@ -2018,7 +2016,7 @@ void CAMLCodec::CloseDecoder(bool restart)
 {
   logNoFormatM(LOGINFO, "CAMLCodec");
 
-  StopDequeueToOrderedBufferQueue();
+  StopDequeueThread();
 
   SetPollDevice(-1);
 
@@ -2097,7 +2095,7 @@ void CAMLCodec::Reset()
   m_state = 0;
   m_buffer_level_ready = false;
 
-  ClearOrderedBufferQueue();
+  ClearDequeuedBufferQueue();
 
   SetSpeed(m_speed);
 
@@ -2327,32 +2325,21 @@ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len) con
   return level;
 }
 
-void CAMLCodec::StartDequeueToOrderedBufferQueue()
+void CAMLCodec::StartDequeueThread()
 {
   logNoFormatM(LOGINFO, "CAMLCodec");
 
-  ClearOrderedBufferQueue();
+  ClearDequeuedBufferQueue();
 
-  m_orderedBufferQueueRunning = true;
-  m_dequeueToOrderedBufferQueueThread = std::thread(&CAMLCodec::DequeueToOrderedBufferQueue, this);
+  m_dequeueThreadRunning = true;
+  m_dequeueThread = std::thread(&CAMLCodec::DequeueThread, this);
 }
 
-void CAMLCodec::DequeueToOrderedBufferQueue()
+void CAMLCodec::DequeueThread()
 {
-  while (m_orderedBufferQueueRunning)
+  while (m_dequeueThreadRunning)
   {
     if (!m_amlVideoFile)
-    {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
-    }
-
-    bool full = false;
-    {
-      std::scoped_lock lock(m_orderedBufferQueueMutex);
-      full = (m_orderedBufferQueue.size() >= m_minOrderedBufferQueueCount);
-    }
-    if (full)
     {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
       continue;
@@ -2369,23 +2356,13 @@ void CAMLCodec::DequeueToOrderedBufferQueue()
 
     if (ret == 0)
     {
-      auto pts = static_cast<uint64_t>(static_cast<uint32_t>(vbuf.timestamp.tv_sec)) << 32;
-      pts += static_cast<uint32_t>(vbuf.timestamp.tv_usec);
-
-      // Both below use the pts server data offset to obtain pts values and both look to need the same additional time offset to the pts value.
-      if (IsDecStreamTypeStream())
-        pts += m_decoder_stream_type_stream_offset; // Offset for type STREAM (Used for FEL)
-      else if (IsH264() && !m_hints.interlaced)
-        pts += m_decoder_h264_offset;               // Offset for H264 - non-interlaced content
-
       {
-        std::scoped_lock lock(m_orderedBufferQueueMutex);
-        m_orderedBufferQueue.push({vbuf, pts});
+        std::scoped_lock lock(m_dequeuedBufferQueueMutex);
+        m_dequeuedBufferQueue.push_back({vbuf});
       }
 
-      logM(LOGINFO, "CAMLCodec", "Queued buffer index:[{}] pts:[{}]", vbuf.index, pts);
+      logM(LOGINFO, "CAMLCodec", "Queued buffer index:[{}]", vbuf.index);
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
       continue;
     }
 
@@ -2395,66 +2372,55 @@ void CAMLCodec::DequeueToOrderedBufferQueue()
       continue;
     }
 
-    if (ret != EAGAIN)
-    {
-      logM(LOGERROR, "CAMLCodec", "VIDIOC_DQBUF failed: [{}] [{}]", ret, strerror(ret));
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      continue;
-    }
+    logM(LOGERROR, "CAMLCodec", "VIDIOC_DQBUF failed: [{}] [{}]", ret, strerror(ret));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 }
 
-void CAMLCodec::StopDequeueToOrderedBufferQueue()
+void CAMLCodec::StopDequeueThread()
 {
   logNoFormatM(LOGINFO, "CAMLCodec");
 
-  m_orderedBufferQueueRunning = false;
-  if (m_dequeueToOrderedBufferQueueThread.joinable()) m_dequeueToOrderedBufferQueueThread.join();
+  m_dequeueThreadRunning = false;
+  if (m_dequeueThread.joinable())
+    m_dequeueThread.join();
 
-  ClearOrderedBufferQueue();
+  ClearDequeuedBufferQueue();
 }
 
-void CAMLCodec::ClearOrderedBufferQueue()
+void CAMLCodec::ClearDequeuedBufferQueue()
 {
-  std::scoped_lock lock(m_orderedBufferQueueMutex);
-  m_orderedBufferQueue = {};
+  std::scoped_lock lock(m_dequeuedBufferQueueMutex);
+  m_dequeuedBufferQueue.clear();
 }
 
-bool CAMLCodec::GetNextOrderedBuffer()
+bool CAMLCodec::GetNextDequeuedBuffer()
 {
-  OrderedBuffer orderedBuffer;
+  DequeuedBuffer dequeuedBuffer;
   std::size_t size;
 
   {
-    std::scoped_lock lock(m_orderedBufferQueueMutex);
-    size = m_orderedBufferQueue.size();
+    std::scoped_lock lock(m_dequeuedBufferQueueMutex);
+    if (m_dequeuedBufferQueue.empty()) return false;
+
+    dequeuedBuffer = m_dequeuedBufferQueue.front();
+    m_dequeuedBufferQueue.pop_front();
+    size = m_dequeuedBufferQueue.size();
   }
 
-  if (!m_drain &&
-      (size < m_minOrderedBufferQueueCount)) // wait until have at least min buffers
-  {
-    logM(LOGINFO, "CAMLCodec", "buffer size:[{}]", size);
-    return false;
-  }
+  auto pts = static_cast<uint64_t>(static_cast<uint32_t>(dequeuedBuffer.buffer.timestamp.tv_sec)) << 32;
+  pts += static_cast<uint32_t>(dequeuedBuffer.buffer.timestamp.tv_usec);
 
-  {
-    std::scoped_lock lock(m_orderedBufferQueueMutex);
-    if (m_orderedBufferQueue.empty()) return false;
-
-    orderedBuffer = m_orderedBufferQueue.top();
-    m_orderedBufferQueue.pop();
-  }
+  // Both below use the pts server data offset to obtain pts values and both look to need the same additional time offset to the pts value.
+  if (IsH264() && !m_hints.interlaced)
+    pts += m_decoder_h264_offset;  // Offset for H264 - non-interlaced content
 
   m_last_pts = m_cur_pts;
-  m_cur_pts = orderedBuffer.pts;
-  m_bufferIndex = orderedBuffer.buffer.index;
+  m_cur_pts = pts;
+  m_bufferIndex = dequeuedBuffer.buffer.index;
 
   if (m_cur_pts <= m_last_pts)
     logM(LOGWARNING, "CAMLCodec", "current pts:[{}] <= last pts:[{}]", m_cur_pts, m_last_pts);
-
-  m_last_pts = m_cur_pts;
-  m_cur_pts = orderedBuffer.pts;
-  m_bufferIndex = orderedBuffer.buffer.index;
 
   logM(LOGINFO, "CAMLCodec", "buffer size:[{}] index:[{}] pts:[{}]", size, m_bufferIndex, m_cur_pts);
 
@@ -2473,8 +2439,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
                                                                                         m_tp_last_frame);
   float buffer_level = GetBufferLevel();
 
-  if (((m_buffer_level_ready && (buffer_level > m_minimum_buffer_level)) || m_drain) &&
-      GetNextOrderedBuffer())
+    if (((m_buffer_level_ready && (buffer_level > m_minimum_buffer_level)) || m_drain) &&
+      GetNextDequeuedBuffer())
   {
      m_tp_last_frame = std::chrono::system_clock::now();
 
