@@ -863,7 +863,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     {
       uint32_t size;
       uint8_t nal_type;
-      size = std::min<uint32_t>(BS_RB32(buf), end - buf - 4);
+      size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
@@ -901,7 +901,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     {
       uint32_t size;
       uint8_t nal_type;
-      size = std::min<uint32_t>(BS_RB32(buf), end - buf - 4);
+      size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
