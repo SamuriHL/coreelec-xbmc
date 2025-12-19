@@ -27,6 +27,7 @@
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fmt/format.h>
 
 extern "C"
@@ -111,6 +112,33 @@ enum {
   SEI_POST_FILTER_HINTS,
   SEI_TONE_MAPPING
 };
+
+static bool IsValidPtsForInjection(double pts)
+{
+  return std::isfinite(pts) && pts >= 0.0;
+}
+
+static constexpr char PTS_MARKER[] = "PTS_US64=";
+
+static bool AppendPtsToDoviRpuNalu(std::vector<uint8_t>& nalu, uint64_t ptsUs64)
+{
+  // Expect the final rbsp_trailing_bits byte.
+  if (nalu.size() < 1 || nalu.back() != 0x80)
+    return false;
+
+  std::vector<uint8_t> trailer;
+  trailer.reserve(sizeof(PTS_MARKER) - 1 + 16 + 1);
+  trailer.insert(trailer.end(),
+                 reinterpret_cast<const uint8_t*>(PTS_MARKER),
+                 reinterpret_cast<const uint8_t*>(PTS_MARKER) + (sizeof(PTS_MARKER) - 1));
+  const std::string ptsHex = fmt::format("{:016X}", ptsUs64);
+  trailer.insert(trailer.end(), ptsHex.begin(), ptsHex.end());
+  trailer.push_back(static_cast<uint8_t>(';'));
+
+  // Insert trailer right before the final 0x80 byte.
+  nalu.insert(nalu.end() - 1, trailer.begin(), trailer.end());
+  return true;
+}
 
 /*
  *  GStreamer h264 parser
@@ -1338,8 +1366,11 @@ void CBitstreamConverter::ProcessDoViRpuWrap(uint8_t *nal_buf, int32_t nal_size,
 void CBitstreamConverter::ProcessDoViRpu(uint8_t *nal_buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, double pts) const {
 
 #ifdef HAVE_LIBDOVI
+
   const DoviData* rpu_data = nullptr;
-  if (m_convert_dovi != DOVIMode::MODE_NONE) {
+
+  if (m_convert_dovi != DOVIMode::MODE_NONE)
+  {
     DOVIELType dovi_el_type = DOVIELType::TYPE_NONE;
     rpu_data = convert_dovi_rpu_nal(nal_buf, nal_size, m_convert_dovi, m_first_frame, dovi_el_type);
     if (rpu_data)
@@ -1356,14 +1387,33 @@ void CBitstreamConverter::ProcessDoViRpu(uint8_t *nal_buf, int32_t nal_size, uin
         m_dataCacheCore.SetVideoSourceDoViStreamInfo(dovi_stream_info);
       }
 
-      m_hints.dovi.el_present_flag = 0; // EL removed in both converstion cases - to MEL and to P8.1
-      if (m_convert_dovi == DOVIMode::MODE_TO81) {
+      m_hints.dovi.el_present_flag = 0; // EL removed in both conversion cases - to MEL and to P8.1
+      if (m_convert_dovi == DOVIMode::MODE_TO81)
+      {
         m_hints.dovi.dv_profile = 8;
         m_hints.dovi.dv_bl_signal_compatibility_id = 1;
       }
     }
   }
   get_dovi_rpu_info(nal_buf, nal_size, m_first_frame, m_hints.dovi_el_type, m_hints.dovi, pts, m_dataCacheCore);
+
+  std::vector<uint8_t> nalu;
+
+  // Inject the pts into the DoVi RPU NALU for FEL (STREAM_TYPE_STREAM)
+  // So can be obtained in sync with frame by the kernel driver
+  if ((m_convert_dovi == DOVIMode::MODE_NONE) &&
+      (m_hints.dovi_el_type == DOVIELType::TYPE_FEL) &&
+      IsValidPtsForInjection(pts) &&
+      nal_buf && (nal_size > 0))
+  {
+    nalu.assign(nal_buf, nal_buf + nal_size);
+    if (AppendPtsToDoviRpuNalu(nalu, static_cast<uint64_t>(pts)))
+    {
+      nal_buf = nalu.data();
+      nal_size = static_cast<int32_t>(nalu.size());
+    }
+  }
+
 #endif
 
   BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, nal_buf, nal_size, HEVC_NAL_UNSPEC62);
