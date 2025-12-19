@@ -129,8 +129,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     static void GetCustomRegexps(TiXmlElement *pRootElement, std::vector<std::string> &settings);
     static void GetCustomExtensions(TiXmlElement *pRootElement, std::string& extensions);
 
-    unsigned int m_threadApplicationCore;       
-    unsigned int m_threadVideoPlayerVideoCore; 
+    unsigned int m_threadApplicationCore;
+    unsigned int m_threadVideoPlayerVideoCore;
     unsigned int m_threadActiveAECore;
 
     unsigned int m_threadApplicationMaxOtherTaskTime;
@@ -397,9 +397,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     float m_videoDecoderStreamBuffer;
     float m_videoDecoderMinimumBuffer;
     float m_videoDecoderMinimumStreamBuffer;
-    int m_videoDecoderStreamTypeStreamOffset;
     int m_videoDecoderH264Offset;
-    unsigned int m_videoDecoderStreamTypeStreamMinOrderedBufferQueueCount;
 
     void SetAlgoForReset(int num_resets);
     int GetAlgoForReset() const;
