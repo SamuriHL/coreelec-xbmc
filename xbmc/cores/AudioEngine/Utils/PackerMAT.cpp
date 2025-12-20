@@ -47,6 +47,19 @@ CPackerMAT::CPackerMAT()
   m_buffer.reserve(MAT_BUFFER_SIZE);
 }
 
+void CPackerMAT::Reset()
+{
+  m_state = {};
+  m_buffer.clear();
+  m_bufferCount = 0;
+  m_outputQueue.clear();
+  m_offsetQueue.clear();
+  m_discontinuityQueue.clear();
+  m_lastOutputSamplesOffset = 0;
+  m_lastOutputHadDiscontinuity = false;
+  m_pendingDiscontinuity = false;
+}
+
 // On a high level, a MAT frame consists of a sequence of padded TrueHD frames
 // The size of the padded frame can be determined from the frame time/sequence code in the frame header,
 // since it varies to accommodate spikes in bitrate.
@@ -58,9 +71,10 @@ CPackerMAT::CPackerMAT()
 bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 {
   TrueHDMajorSyncInfo info;
+  bool isMajorSync = (AV_RB32(data + 4) == FORMAT_MAJOR_SYNC);
 
   // get the ratebits and output timing from the sync frame
-  if (AV_RB32(data + 4) == FORMAT_MAJOR_SYNC)
+  if (isMajorSync)
   {
     info = ParseTrueHDMajorSyncHeaders(data, size);
 
@@ -81,14 +95,26 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
   const uint16_t frameSamples = 40 << (m_state.ratebits & 7);
   m_state.outputTiming += frameSamples;
 
+  // Detect stream discontinuity via outputTiming mismatch (seamless branch points).
+  // LAV Filters approach: detect discontinuity BEFORE padding calculation and
+  // preemptively set a reasonable default padding to prevent overflow.
   if (info.outputTimingPresent)
   {
     if (m_state.outputTimingValid && (info.outputTiming != m_state.outputTiming))
     {
-      CLog::Log(LOGWARNING,
-                "CPackerMAT::PackTrueHD: detected a stream discontinuity -> output timing "
-                "expected: {}, found: {}",
+      CLog::Log(LOGDEBUG, "CPackerMAT::PackTrueHD: detected stream discontinuity "
+                "(seamless branch), expected outputTiming={}, actual={}",
                 m_state.outputTiming, info.outputTiming);
+
+      // Reset frame timing state and use default padding (like LAV Filters)
+      // NOTE: Do NOT reset prevMatFramesize - LAV keeps it for proper padding calculation
+      m_state.prevFrametimeValid = false;
+      m_state.numberOfSamplesOffset = 0;
+      // Standard padding: 40 samples * (64 >> ratebits) bytes = 2560 bytes for 48kHz
+      spaceSize = 40 * (64 >> (m_state.ratebits & 7));
+
+      // Mark discontinuity to propagate to output (LAV-style discontinuity flag)
+      m_pendingDiscontinuity = true;
     }
     m_state.outputTiming = info.outputTiming;
     m_state.outputTimingValid = true;
@@ -107,17 +133,12 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 
   m_state.padding += (spaceSize - m_state.prevMatFramesize);
 
-  // detect seeks and re-initialize internal state i.e. skip stream
-  // until the next major sync frame
-  if (m_state.padding > MAT_BUFFER_SIZE * 5)
-  {
-    CLog::Log(LOGINFO, "CPackerMAT::PackTrueHD: seek detected, re-initializing MAT packer state");
-    m_state = {};
-    m_state.init = true;
-    m_buffer.clear();
-    m_bufferCount = 0;
-    return false;
-  }
+  // LAV Filters has no overflow safety net - it trusts the early discontinuity detection.
+  // If padding goes negative, WritePadding() will simply skip (padding <= 0 check).
+  // If padding is excessively large, it will be consumed over multiple MAT frames.
+  // We only clamp negative padding to 0 to prevent issues in WritePadding loop.
+  if (m_state.padding < 0)
+    m_state.padding = 0;
 
   // store frame time of the previous frame
   m_state.prevFrametime = frameTime;
@@ -187,14 +208,33 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 
 std::vector<uint8_t> CPackerMAT::GetOutputFrame()
 {
-  std::vector<uint8_t> buffer;
-
   if (m_outputQueue.empty())
     return {};
 
-  buffer = std::move(m_outputQueue.front());
-
+  std::vector<uint8_t> buffer = std::move(m_outputQueue.front());
   m_outputQueue.pop_front();
+
+  // Store the samples offset for this frame (caller can retrieve via GetSamplesOffset)
+  if (!m_offsetQueue.empty())
+  {
+    m_lastOutputSamplesOffset = m_offsetQueue.front();
+    m_offsetQueue.pop_front();
+  }
+  else
+  {
+    m_lastOutputSamplesOffset = 0;
+  }
+
+  // Store the discontinuity flag for this frame (caller can retrieve via HadDiscontinuity)
+  if (!m_discontinuityQueue.empty())
+  {
+    m_lastOutputHadDiscontinuity = m_discontinuityQueue.front();
+    m_discontinuityQueue.pop_front();
+  }
+  else
+  {
+    m_lastOutputHadDiscontinuity = false;
+  }
 
   return buffer;
 }
@@ -338,8 +378,12 @@ void CPackerMAT::FlushPacket()
   const uint16_t frameSamples = 40 << (m_state.ratebits & 7);
   const uint32_t MATSamples = (frameSamples * 24);
 
-  // push MAT packet to output queue
+  // push MAT packet to output queue along with current samples offset and discontinuity flag
+  // (like LAV Filters, the offset is captured BEFORE updating, so it applies to this frame)
   m_outputQueue.emplace_back(std::move(m_buffer));
+  m_offsetQueue.push_back(m_state.numberOfSamplesOffset);
+  m_discontinuityQueue.push_back(m_pendingDiscontinuity);
+  m_pendingDiscontinuity = false; // Clear after queuing
 
   // we expect 24 frames per MAT frame, so calculate an offset from that
   // this is done after delivery, because it modifies the duration of the frame,

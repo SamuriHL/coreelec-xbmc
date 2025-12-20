@@ -34,6 +34,9 @@ public:
 
   bool PackTrueHD(const uint8_t* data, int size);
   std::vector<uint8_t> GetOutputFrame();
+  int GetSamplesOffset() const { return m_lastOutputSamplesOffset; }
+  bool HadDiscontinuity() const { return m_lastOutputHadDiscontinuity; }
+  void Reset();
 
 private:
   struct MATState
@@ -76,10 +79,15 @@ private:
   TrueHDMajorSyncInfo ParseTrueHDMajorSyncHeaders(const uint8_t* p, int buffsize) const;
 
   MATState m_state{};
+  int m_lastOutputSamplesOffset{0}; // samples offset returned by last GetOutputFrame() call
+  bool m_lastOutputHadDiscontinuity{false}; // discontinuity flag for last GetOutputFrame()
 
   uint32_t m_bufferCount{0};
   std::vector<uint8_t> m_buffer;
   std::deque<std::vector<uint8_t>> m_outputQueue;
+  std::deque<int> m_offsetQueue; // samples offset for each queued MAT frame
+  std::deque<bool> m_discontinuityQueue; // discontinuity flag for each queued MAT frame
+  bool m_pendingDiscontinuity{false}; // set when discontinuity detected, cleared when MAT flushed
 };
 
 class CBitStream
