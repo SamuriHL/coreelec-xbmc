@@ -12,6 +12,7 @@
 #include "DVDCodecs/DVDFactoryCodec.h"
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Video/DVDVideoCodecFFmpeg.h"
+#include "DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
@@ -1036,6 +1037,14 @@ std::string CVideoPlayerVideo::GetPlayerInfo()
     s << ", pc:none";
 
   return s.str();
+}
+
+int CVideoPlayerVideo::GetDecoderDequeueBufferCount() const
+{
+  auto* aml = dynamic_cast<CDVDVideoCodecAmlogic*>(m_pVideoCodec.get());
+  if (!aml) return -1;
+
+  return aml->GetDequeueBufferCount();
 }
 
 int CVideoPlayerVideo::GetVideoBitrate()

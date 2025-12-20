@@ -2389,6 +2389,12 @@ void CAMLCodec::ClearDequeuedBufferQueue()
   m_dequeuedBufferQueue.clear();
 }
 
+std::size_t CAMLCodec::GetDequeuedBufferCount() const
+{
+  std::scoped_lock lock(m_dequeuedBufferQueueMutex);
+  return m_dequeuedBufferQueue.size();
+}
+
 bool CAMLCodec::GetNextDequeuedBuffer()
 {
   DequeuedBuffer dequeuedBuffer;

@@ -3380,6 +3380,11 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
 
     std::string strBuf;
 
+    std::string extraBuf;
+    const int decoderDequeueCount = m_VideoPlayerVideo ? m_VideoPlayerVideo->GetDecoderDequeueBufferCount() : -1;
+    if (decoderDequeueCount >= 0)
+      extraBuf += StringUtils::Format(", dec-q:{:d}", decoderDequeueCount);
+
     std::lock_guard lock(m_StateSection);
 
     if (m_State.cache_bytes >= 0)
@@ -3390,9 +3395,12 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
                                     m_State.cache_offset * 100.0);
     }
 
-    strGeneralInfo = StringUtils::Format("P: a/v:{: 6.3f}, a/c:{: 6.3f}, v/c:{: 6.3f}, pd/c:{: 6.3f} {}",
-        dDiffDeltaMovingAverage, dDiffAudioMovingAverage, dDiffVideoMovingAverage, dPacketDelayMovingAverage,
-        strBuf);
+    if (!strBuf.empty()) extraBuf += " " + strBuf;
+
+    strGeneralInfo = StringUtils::Format(
+        "P: a/v:{: 6.3f}, a/c:{: 6.3f}, v/c:{: 6.3f}, pd/c:{: 6.3f}{}",
+        dDiffDeltaMovingAverage, dDiffAudioMovingAverage, dDiffVideoMovingAverage,
+        dPacketDelayMovingAverage, extraBuf);
   }
   else if (!resetDone)
   {

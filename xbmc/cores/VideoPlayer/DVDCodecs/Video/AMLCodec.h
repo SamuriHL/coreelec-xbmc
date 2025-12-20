@@ -260,6 +260,8 @@ public:
   CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints);
   virtual ~CAMLCodec();
 
+  std::size_t   GetDequeuedBufferCount() const;
+
   bool          OpenDecoder(bool restart);
   void          CloseDecoder(bool restart);
   void          Reset();
@@ -360,7 +362,7 @@ private:
   float            m_minimum_buffer_level;
 
   std::mutex       m_ioControlMutex;
-  std::mutex       m_dequeuedBufferQueueMutex;
+  mutable std::mutex       m_dequeuedBufferQueueMutex;
 
   std::deque<DequeuedBuffer> m_dequeuedBufferQueue;
   std::atomic<bool> m_dequeueThreadRunning{false};

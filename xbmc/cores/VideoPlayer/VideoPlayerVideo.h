@@ -79,6 +79,8 @@ public:
   int GetVideoBitrate() override;
   bool SupportsExtention() const override { return m_pVideoCodec && m_pVideoCodec->SupportsExtention(); }
 
+  int GetDecoderDequeueBufferCount() const override;
+
   // classes
   CDVDOverlayContainer* m_pOverlayContainer;
   CDVDClock* m_pClock;
