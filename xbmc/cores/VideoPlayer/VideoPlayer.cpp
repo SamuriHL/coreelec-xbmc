@@ -3385,6 +3385,8 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     if (decoderDequeueCount >= 0)
       extraBuf += StringUtils::Format(", dec-q:{:d}", decoderDequeueCount);
 
+    extraBuf += StringUtils::Format(", rm-q:{:d}", m_renderManager.GetQueuedFrames());
+
     std::lock_guard lock(m_StateSection);
 
     if (m_State.cache_bytes >= 0)

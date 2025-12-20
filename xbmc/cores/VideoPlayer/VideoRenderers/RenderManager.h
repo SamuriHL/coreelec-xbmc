@@ -119,6 +119,8 @@ public:
    */
   bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
 
+  int GetQueuedFrames() const { return static_cast<int>(m_queued.size()); }
+
   double GetRenderPts();
   double GetFramePts();
 
