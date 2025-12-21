@@ -655,8 +655,8 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         int algoForReset = advancedSettings->GetAlgoForReset();
         if (resetSeek && (algoForReset != 0))
         {
-          bool hasAtmos = ((m_streaminfo.profile == FF_PROFILE_EAC3_DDP_ATMOS) ||
-                           (m_streaminfo.profile == FF_PROFILE_TRUEHD_ATMOS));
+          bool hasAtmos = ((m_streaminfo.profile == AV_PROFILE_EAC3_DDP_ATMOS) ||
+                           (m_streaminfo.profile == AV_PROFILE_TRUEHD_ATMOS));
 
           if ((!hasAtmos) && (algoForReset > 1))
           {
