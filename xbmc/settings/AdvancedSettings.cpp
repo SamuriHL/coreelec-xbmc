@@ -181,10 +181,10 @@ void CAdvancedSettings::Initialize()
   m_videoDefaultLatency = 0.0;
 
   m_videoDecoderTimeout = 5;
-  m_videoDecoderBuffer = 5.0f;
-  m_videoDecoderStreamBuffer = 90.0f;
-  m_videoDecoderMinimumBuffer = 5.0f;
-  m_videoDecoderMinimumStreamBuffer = 50.0f;
+  m_videoDecoderBuffer = 10.0f;
+  m_videoDecoderStreamBuffer = 10.0f;
+  m_videoDecoderMinimumBuffer = 10.0f;
+  m_videoDecoderMinimumStreamBuffer = 10.0f;
 
   m_videoDecoderH264Offset = 750; // 750 msec
 
