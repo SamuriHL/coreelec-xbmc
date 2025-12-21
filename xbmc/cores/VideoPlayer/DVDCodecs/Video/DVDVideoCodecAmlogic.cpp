@@ -123,7 +123,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
       switch(m_hints.profile)
       {
-        case FF_PROFILE_MPEG2_422:
+        case AV_PROFILE_MPEG2_422:
           logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "MPEG2 unsupported hints.profile({:d})", m_hints.profile);
           goto FAIL;
       }
@@ -150,13 +150,13 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       }
       switch(hints.profile)
       {
-        case FF_PROFILE_H264_HIGH_10:
-        case FF_PROFILE_H264_HIGH_10_INTRA:
-        case FF_PROFILE_H264_HIGH_422:
-        case FF_PROFILE_H264_HIGH_422_INTRA:
-        case FF_PROFILE_H264_HIGH_444_PREDICTIVE:
-        case FF_PROFILE_H264_HIGH_444_INTRA:
-        case FF_PROFILE_H264_CAVLC_444:
+        case AV_PROFILE_H264_HIGH_10:
+        case AV_PROFILE_H264_HIGH_10_INTRA:
+        case AV_PROFILE_H264_HIGH_422:
+        case AV_PROFILE_H264_HIGH_422_INTRA:
+        case AV_PROFILE_H264_HIGH_444_PREDICTIVE:
+        case AV_PROFILE_H264_HIGH_444_INTRA:
+        case AV_PROFILE_H264_CAVLC_444:
           logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "H264 unsupported hints.profile({:d})", m_hints.profile);
           goto FAIL;
       }
@@ -302,7 +302,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
         logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "HEVC hardware decoder is not supported on current platform");
         goto FAIL;
       }
-      if ((hints.profile == FF_PROFILE_HEVC_MAIN_10) && !aml_support_hevc_10bit())
+      if ((hints.profile == AV_PROFILE_HEVC_MAIN_10) && !aml_support_hevc_10bit())
       {
         logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "HEVC 10-bit hardware decoder is not supported on current platform");
         goto FAIL;
