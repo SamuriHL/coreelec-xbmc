@@ -163,7 +163,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
         passthroughCodec->SetLavSeamlessBranchEnabled(true);
 
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio::OpenStream - LAV passthrough: {}",
-                enableLavFull ? "FULL" : 
+                enableLavFull ? "FULL" :
                 (enableLavSeamlessBranch ? "SEAMLESS BRANCH ONLY" : "disabled"));
 
       // If we're already in sync (codec recreation during playback, e.g., display reset),
@@ -463,7 +463,7 @@ void CVideoPlayerAudio::Process()
         m_pcmJitterTracker.Reset();
         m_pcmOutputClock = LOCAL_NOPTS;
         m_pcmResyncTimestamp = true;
-      }      
+      }
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
@@ -488,7 +488,7 @@ void CVideoPlayerAudio::Process()
         m_pcmJitterTracker.Reset();
         m_pcmOutputClock = LOCAL_NOPTS;
         m_pcmResyncTimestamp = true;
-      }      
+      }
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
     {
@@ -579,34 +579,6 @@ void CVideoPlayerAudio::Process()
     }
   }
 }
-
-void CVideoPlayerAudio::ClockAlign(double presentPts) const
-{
-  double renderPts = m_pClock->GetClock();
-  double diff = (renderPts - presentPts);
-  double delay = diff;
-
-  if ((diff < 0) && (diff > -1000000))
-  {
-    double wait = -diff;
-    aml_wait(static_cast<useconds_t>(wait));
-
-    renderPts = m_pClock->GetClock();
-    diff = (renderPts - presentPts);
-  }
-  else if (diff > DVD_MSEC_TO_TIME(10))  // if clock is ahead by more than 10ms, adjust it back
-  {
-    m_pClock->Discontinuity(presentPts);
-    renderPts = presentPts;
-    diff = 0;
-  }
-
-  logM(LOGDEBUG, "CVideoPlayerAudio", "render:[{:.3f}] presenting:[{:.3f}] "
-                                      "diff:[{:.3f}] delay:[{:.3f}]",
-                                      (renderPts / DVD_TIME_BASE), (presentPts / DVD_TIME_BASE),
-                                      (diff / DVD_TIME_BASE), (delay / DVD_TIME_BASE));
-}
-
 
 bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 {
@@ -817,7 +789,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         audioframe.pts = m_pcmOutputClock;
       }
     }
-    
+
     if (audioframe.format.m_sampleRate && m_streaminfo.samplerate != (int) audioframe.format.m_sampleRate)
     {
       // The sample rate has changed or we just got it for the first time
@@ -903,9 +875,6 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       }
     }
   }
-
-  if (audioframe.passthrough && audioframe.hasTimestamp)
-    ClockAlign(audioframe.pts);
 
   CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio::OutputPacket: pts:{:.3f} curr_pts:{:.3f} clock:{:.3f} level:{:d}",
     audioframe.pts / DVD_TIME_BASE, m_info.pts / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, GetLevel());
@@ -1084,7 +1053,7 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
         passthroughCodec->ResetLavSyncState();
 
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio::SwitchCodecIfNeeded - LAV passthrough: {} (state changed)",
-                lavFullEnabled ? "FULL" : 
+                lavFullEnabled ? "FULL" :
                 (lavSeamlessBranchEnabled ? "SEAMLESS BRANCH ONLY" : "disabled"));
     }
   }

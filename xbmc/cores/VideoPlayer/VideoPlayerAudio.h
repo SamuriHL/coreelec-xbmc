@@ -147,7 +147,4 @@ protected:
   AudioSync::CFloatingAverage<double, PCM_JITTER_WINDOW_SIZE> m_pcmJitterTracker;
   double m_pcmOutputClock{0.0};       // Separate running output timestamp (like LAV's m_rtStart)
   bool m_pcmResyncTimestamp{true};    // Flag to resync on next valid PTS (like LAV's m_bResyncTimestamp)
-
-private:
-  void ClockAlign(double presentPts) const;
 };
