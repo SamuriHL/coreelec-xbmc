@@ -2078,6 +2078,13 @@ void CVideoPlayer::HandlePlaySpeed()
       if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_VideoPlayerVideo->GetLevel());
+      
+      // LAV sync fix: When using LAV passthrough sync with both
+      // audio and video streams, we MUST wait for video to have a valid PTS before syncing.
+      // Otherwise, we'll sync based on audio-only timing which causes A/V desync.
+      int algoValue = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH);
+      bool enableLavStyle = ((algoValue == 3) || (algoValue == 5));
+      bool waitingForVideoPts = enableLavStyle && (m_CurrentVideo.id >= 0) && (m_CurrentVideo.starttime == DVD_NOPTS_VALUE);
 
       if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
           m_playSpeed == DVD_PLAYSPEED_PAUSE)
@@ -2118,8 +2125,15 @@ void CVideoPlayer::HandlePlaySpeed()
       m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
       m_VideoPlayerAudio->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
-      m_VideoPlayerVideo->SendMessage(
-          std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
+
+      // Only send RESYNC to audio if video PTS is valid (LAV sync fix)
+      // This prevents audio from syncing to garbage during video startup
+      if (!waitingForVideoPts)
+      {
+        m_VideoPlayerVideo->SendMessage(
+            std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
+      }
+
       SetCaching(CACHESTATE_DONE);
       UpdatePlayState(0);
 
