@@ -119,7 +119,8 @@ public:
    */
   bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
 
-  int GetQueuedFrames() const { return static_cast<int>(m_queued.size()); }
+  int GetQueuedFrames() const;
+  int GetQueueSize() const;
 
   double GetRenderPts();
   double GetFramePts();
@@ -164,7 +165,7 @@ protected:
   CDebugRenderer m_debugRenderer;
   mutable CCriticalSection m_statelock;
   CCriticalSection m_resolutionlock;
-  CCriticalSection m_presentlock;
+  mutable CCriticalSection m_presentlock;
   CCriticalSection m_datalock;
   bool m_bTriggerUpdateResolution = false;
   bool m_bRenderGUI = true;

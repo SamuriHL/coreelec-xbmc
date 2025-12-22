@@ -2093,7 +2093,7 @@ void CVideoPlayer::HandlePlaySpeed()
       if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_VideoPlayerVideo->GetLevel());
-      
+
       // LAV sync fix: When using LAV passthrough sync with both
       // audio and video streams, we MUST wait for video to have a valid PTS before syncing.
       // Otherwise, we'll sync based on audio-only timing which causes A/V desync.
@@ -3407,15 +3407,12 @@ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
     double dDiffVideoMovingAverage = sumVideo / filled;
     double dPacketDelayMovingAverage = sumDelay / filled;
 
-    std::string strBuf;
-
     std::string extraBuf;
-    const int decoderDequeueCount = m_VideoPlayerVideo ? m_VideoPlayerVideo->GetDecoderDequeueBufferCount() : -1;
-    if (decoderDequeueCount >= 0)
-      extraBuf += StringUtils::Format(", dec-q:{:d}", decoderDequeueCount);
+    extraBuf += StringUtils::Format(", rm-q:{:d}/{:d}",
+                                    m_renderManager.GetQueuedFrames(),
+                                    m_renderManager.GetQueueSize());
 
-    extraBuf += StringUtils::Format(", rm-q:{:d}", m_renderManager.GetQueuedFrames());
-
+    std::string strBuf;
     std::lock_guard lock(m_StateSection);
 
     if (m_State.cache_bytes >= 0)

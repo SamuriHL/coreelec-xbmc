@@ -80,8 +80,6 @@ public:
   virtual const char* GetName(void) override { return (const char*)m_pFormatName; }
   virtual bool SupportsExtention() { return true; }
 
-  int GetDequeueBufferCount() const;
-
 protected:
   void Close(void);
   void FrameRateTracking(uint8_t *pData, int iSize, double dts, double pts);

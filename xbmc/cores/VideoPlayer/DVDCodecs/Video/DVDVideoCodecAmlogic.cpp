@@ -87,13 +87,6 @@ bool CDVDVideoCodecAmlogic::Register()
   return true;
 }
 
-int CDVDVideoCodecAmlogic::GetDequeueBufferCount() const
-{
-  if (!m_Codec) return -1;
-
-  return static_cast<int>(m_Codec->GetDequeuedBufferCount());
-}
-
 bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
   if (!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEAMCODEC))

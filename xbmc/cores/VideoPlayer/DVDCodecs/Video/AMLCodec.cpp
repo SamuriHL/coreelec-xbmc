@@ -1955,8 +1955,6 @@ bool CAMLCodec::OpenDecoder(bool restart)
   SetSpeed(m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
-  StartDequeueThread();
-
   return true;
 }
 
@@ -2010,8 +2008,6 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map) const
 void CAMLCodec::CloseDecoder(bool restart)
 {
   logNoFormatM(LOGINFO, "CAMLCodec");
-
-  StopDequeueThread();
 
   SetPollDevice(-1);
 
@@ -2089,8 +2085,6 @@ void CAMLCodec::Reset()
   m_last_pts = DVD_NOPTS_VALUE;
   m_state = 0;
   m_buffer_level_ready = false;
-
-  ClearDequeuedBufferQueue();
 
   SetSpeed(m_speed);
 
@@ -2277,6 +2271,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
   int ret;
   auto vbuf = v4l2_buffer();
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  vbuf.memory = V4L2_MEMORY_MMAP;
   vbuf.index = index;
 
   if (drop)
@@ -2320,97 +2315,34 @@ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len) con
   return level;
 }
 
-void CAMLCodec::StartDequeueThread()
+bool CAMLCodec::TryDequeueCaptureBuffer(v4l2_buffer& vbuf)
 {
-  logNoFormatM(LOGINFO, "CAMLCodec");
+  if (!m_amlVideoFile) return false;
 
-  ClearDequeuedBufferQueue();
+  vbuf = v4l2_buffer();
+  vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  vbuf.memory = V4L2_MEMORY_MMAP;
 
-  m_dequeueThreadRunning = true;
-  m_dequeueThread = std::thread(&CAMLCodec::DequeueThread, this);
-}
-
-void CAMLCodec::DequeueThread()
-{
-  while (m_dequeueThreadRunning)
+  std::scoped_lock lock(m_ioControlMutex);
+  if (m_amlVideoFile->IOControl(VIDIOC_DQBUF, &vbuf) < 0)
   {
-    if (!m_amlVideoFile)
-    {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
-    }
+    const int err = errno;
+    if (err == EAGAIN || err == ENODEV) return false;
 
-    auto vbuf = v4l2_buffer();
-    vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    int ret = 0;
-    {
-      std::scoped_lock lock(m_ioControlMutex);
-      ret = (m_amlVideoFile->IOControl(VIDIOC_DQBUF, &vbuf) < 0) ? errno : 0;
-    }
-
-    if (ret == 0)
-    {
-      {
-        std::scoped_lock lock(m_dequeuedBufferQueueMutex);
-        m_dequeuedBufferQueue.push_back({vbuf});
-      }
-
-      logM(LOGINFO, "CAMLCodec", "Queued buffer index:[{}]", vbuf.index);
-
-      continue;
-    }
-
-    if (ret == EAGAIN)
-    {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
-    }
-
-    logM(LOGERROR, "CAMLCodec", "VIDIOC_DQBUF failed: [{}] [{}]", ret, strerror(ret));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    logM(LOGERROR, "CAMLCodec", "VIDIOC_DQBUF failed: [{}] [{}]", err, strerror(err));
+    return false;
   }
-}
 
-void CAMLCodec::StopDequeueThread()
-{
-  logNoFormatM(LOGINFO, "CAMLCodec");
-
-  m_dequeueThreadRunning = false;
-  if (m_dequeueThread.joinable())
-    m_dequeueThread.join();
-
-  ClearDequeuedBufferQueue();
-}
-
-void CAMLCodec::ClearDequeuedBufferQueue()
-{
-  std::scoped_lock lock(m_dequeuedBufferQueueMutex);
-  m_dequeuedBufferQueue.clear();
-}
-
-std::size_t CAMLCodec::GetDequeuedBufferCount() const
-{
-  std::scoped_lock lock(m_dequeuedBufferQueueMutex);
-  return m_dequeuedBufferQueue.size();
+  return true;
 }
 
 bool CAMLCodec::GetNextDequeuedBuffer()
 {
-  DequeuedBuffer dequeuedBuffer;
-  std::size_t size;
+  v4l2_buffer vbuf;
+  if (!TryDequeueCaptureBuffer(vbuf)) return false;
 
-  {
-    std::scoped_lock lock(m_dequeuedBufferQueueMutex);
-    if (m_dequeuedBufferQueue.empty()) return false;
-
-    dequeuedBuffer = m_dequeuedBufferQueue.front();
-    m_dequeuedBufferQueue.pop_front();
-    size = m_dequeuedBufferQueue.size();
-  }
-
-  auto pts = static_cast<uint64_t>(static_cast<uint32_t>(dequeuedBuffer.buffer.timestamp.tv_sec)) << 32;
-  pts += static_cast<uint32_t>(dequeuedBuffer.buffer.timestamp.tv_usec);
+  auto pts = static_cast<uint64_t>(static_cast<uint32_t>(vbuf.timestamp.tv_sec)) << 32;
+  pts += static_cast<uint32_t>(vbuf.timestamp.tv_usec);
 
   // Both below use the pts server data offset to obtain pts values and both look to need the same additional time offset to the pts value.
   if (IsH264() && !m_hints.interlaced)
@@ -2418,12 +2350,10 @@ bool CAMLCodec::GetNextDequeuedBuffer()
 
   m_last_pts = m_cur_pts;
   m_cur_pts = pts;
-  m_bufferIndex = dequeuedBuffer.buffer.index;
+  m_bufferIndex = vbuf.index;
 
-  if (m_cur_pts <= m_last_pts)
+  if ((m_last_pts != DVD_NOPTS_VALUE) && (m_cur_pts <= m_last_pts))
     logM(LOGWARNING, "CAMLCodec", "current pts:[{}] <= last pts:[{}]", m_cur_pts, m_last_pts);
-
-  logM(LOGINFO, "CAMLCodec", "buffer size:[{}] index:[{}] pts:[{}]", size, m_bufferIndex, m_cur_pts);
 
   return true;
 }

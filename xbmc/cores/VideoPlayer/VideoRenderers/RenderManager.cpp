@@ -1359,6 +1359,18 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
   return true;
 }
 
+int CRenderManager::GetQueuedFrames() const
+{
+  std::lock_guard lock(m_presentlock);
+  return static_cast<int>(m_queued.size());
+}
+
+int CRenderManager::GetQueueSize() const
+{
+  std::lock_guard lock(m_presentlock);
+  return m_QueueSize;
+}
+
 double CRenderManager::GetRenderPts()
 {
   std::lock_guard lock(m_presentlock);

@@ -1039,14 +1039,6 @@ std::string CVideoPlayerVideo::GetPlayerInfo()
   return s.str();
 }
 
-int CVideoPlayerVideo::GetDecoderDequeueBufferCount() const
-{
-  auto* aml = dynamic_cast<CDVDVideoCodecAmlogic*>(m_pVideoCodec.get());
-  if (!aml) return -1;
-
-  return aml->GetDequeueBufferCount();
-}
-
 int CVideoPlayerVideo::GetVideoBitrate()
 {
   return (int)m_videoStats.GetBitrate();

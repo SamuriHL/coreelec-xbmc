@@ -21,6 +21,7 @@
 #include <linux/videodev2.h>
 #include <deque>
 #include <atomic>
+#include <cstdint>
 
 extern "C" {
 #include <amcodec/codec.h>
@@ -245,11 +246,6 @@ struct pq_ctrl_s {
 	unsigned char reserved;
 };
 
-struct DequeuedBuffer
-{
-  v4l2_buffer buffer;
-};
-
 #define VE_CM  'C'
 #define AMVECM_IOC_S_PQ_CTRL  _IOW(_VE_CM, 0x69, struct vpp_pq_ctrl_s)
 #define AMVECM_IOC_G_PQ_CTRL  _IOR(_VE_CM, 0x6a, struct vpp_pq_ctrl_s)
@@ -259,8 +255,6 @@ class CAMLCodec
 public:
   CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints);
   virtual ~CAMLCodec();
-
-  std::size_t   GetDequeuedBufferCount() const;
 
   bool          OpenDecoder(bool restart);
   void          CloseDecoder(bool restart);
@@ -303,12 +297,8 @@ private:
   float         GetBufferLevel();
   float         GetBufferLevel(int new_chunk, int &data_len, int &free_len) const;
 
-  void          StartDequeueThread();
-  void          StopDequeueThread();
-  void          DequeueThread();
-
+  bool          TryDequeueCaptureBuffer(v4l2_buffer& vbuf);
   bool          GetNextDequeuedBuffer();
-  void          ClearDequeuedBufferQueue();
 
   unsigned int  GetDecoderVideoRate() const;
   std::string   GetHDRStaticMetadata() const;
@@ -362,9 +352,4 @@ private:
   float            m_minimum_buffer_level;
 
   std::mutex       m_ioControlMutex;
-  mutable std::mutex       m_dequeuedBufferQueueMutex;
-
-  std::deque<DequeuedBuffer> m_dequeuedBufferQueue;
-  std::atomic<bool> m_dequeueThreadRunning{false};
-  std::thread      m_dequeueThread;
 };
