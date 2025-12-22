@@ -601,6 +601,13 @@ bool CProcessInfo::IsTempoAllowed(float tempo)
   return false;
 }
 
+unsigned int CProcessInfo::GetMaxPassthroughOffSyncDuration() const
+{
+  return CServiceBroker::GetSettingsComponent()
+      ->GetAdvancedSettings()
+      ->m_maxPassthroughOffSyncDuration;
+}
+
 void CProcessInfo::SetGuiRender(bool gui)
 {
   std::lock_guard lock(m_stateSection);
