@@ -1826,6 +1826,9 @@ bool CAMLCodec::OpenDecoder(bool restart)
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);
 
+  // HEVC increase dynamic buffer margin
+  CSysfsPath("/sys/module/amvdec_h265/parameters/dynamic_buf_num_margin", 16);
+
   switch(am_private->video_format)
   {
     default:
