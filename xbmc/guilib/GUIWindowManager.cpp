@@ -998,6 +998,7 @@ bool CGUIWindowManager::SwitchToFullScreen(bool force /* = false */)
 
   if (windowID != WINDOW_INVALID && (force || windowID != activeWindowID))
   {
+    aml_reset_audio_from_window_home();
     if (force)
       ForceActivateWindow(windowID);
     else

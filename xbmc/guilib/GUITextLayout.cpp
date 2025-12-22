@@ -16,8 +16,6 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
-#include <algorithm>
-#include <functional>
 #include <limits>
 
 CGUIString::CGUIString(iString start, iString end, bool carriageReturn)
