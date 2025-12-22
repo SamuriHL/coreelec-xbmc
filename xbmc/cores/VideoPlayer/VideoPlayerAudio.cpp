@@ -95,7 +95,7 @@ CVideoPlayerAudio::CVideoPlayerAudio(
   m_messageQueue.SetMaxTimeSize(messageQueueTimeSize);
 
   // Need to reinstate or better way.
-  // m_disconAdjustTimeMs = processInfo.GetMaxPassthroughOffSyncDuration();
+  m_disconAdjustTimeMs = processInfo.GetMaxPassthroughOffSyncDuration();
 }
 
 CVideoPlayerAudio::~CVideoPlayerAudio()
