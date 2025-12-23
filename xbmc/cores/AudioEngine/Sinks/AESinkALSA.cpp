@@ -995,13 +995,13 @@ bool CAESinkALSA::InitializeHW(const ALSAConfig &inconfig, ALSAConfig &outconfig
   snd_pcm_hw_params_get_period_size_max(hw_params, &periodSize, nullptr);
 
   /*
-   We want to make sure, that we have max 200 ms Buffer with
-   a periodSize of approx 50 ms. Choosing a higher bufferSize
-   will cause problems with menu sounds. Buffer will be increased
-   after those are fixed.
+   For PCM/UI sounds keep latency low (approx 50ms period, 200ms buffer).
+   For passthrough prefer stability and A/V sync over latency.
   */
-  periodSize  = std::min(periodSize, (snd_pcm_uframes_t) sampleRate / 20);
-  bufferSize  = std::min(bufferSize, (snd_pcm_uframes_t) sampleRate / 5);
+  const snd_pcm_uframes_t periodCap = static_cast<snd_pcm_uframes_t>(sampleRate / (m_passthrough ? 10 : 20));
+  const snd_pcm_uframes_t bufferCap = static_cast<snd_pcm_uframes_t>(sampleRate / (m_passthrough ? 2 : 5));
+  periodSize = std::min(periodSize, periodCap);
+  bufferSize = std::min(bufferSize, bufferCap);
 
   /*
    According to upstream we should set buffer size first - so make sure it is always at least
@@ -1110,7 +1110,20 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig) const
   snd_pcm_sw_params_set_tstamp_mode      (m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
   snd_pcm_sw_params_set_tstamp_type      (m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC);
 
-  snd_pcm_sw_params_set_start_threshold  (m_pcm, sw_params, INT_MAX);
+  // For passthrough, start only when the buffer is (almost) full for better stability/sync.
+  // For PCM keep existing low-latency behavior.
+  if (m_passthrough)
+  {
+    snd_pcm_uframes_t bufferSize = 0;
+    snd_pcm_uframes_t periodSize = 0;
+    snd_pcm_get_params(m_pcm, &bufferSize, &periodSize);
+    const snd_pcm_uframes_t startThreshold = (bufferSize > periodSize) ? (bufferSize - periodSize) : bufferSize;
+    snd_pcm_sw_params_set_start_threshold(m_pcm, sw_params, startThreshold);
+  }
+  else
+  {
+    snd_pcm_sw_params_set_start_threshold(m_pcm, sw_params, INT_MAX);
+  }
   snd_pcm_sw_params_set_silence_threshold(m_pcm, sw_params, 0);
   snd_pcm_sw_params_get_boundary         (sw_params, &boundary);
   snd_pcm_sw_params_set_silence_size     (m_pcm, sw_params, boundary);
