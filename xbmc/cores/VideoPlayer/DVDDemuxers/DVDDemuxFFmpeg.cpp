@@ -1619,6 +1619,14 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
       return nullptr;
     }
 
+    // FFmpeg adds the image attachments as video streams
+    if ((pStream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0)
+    {
+      CLog::LogF(LOGDEBUG, "discarding image attachment");
+      pStream->discard = AVDISCARD_ALL;
+      return nullptr;
+    }
+
     CDemuxStream* stream = nullptr;
 
     switch (pStream->codecpar->codec_type)
@@ -1931,8 +1939,24 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
       }
       case AVMEDIA_TYPE_DATA:
       {
-        stream = new CDemuxStream();
-        stream->type = STREAM_DATA;
+        if (pStream->codecpar->codec_tag == MKTAG('w', 'v', 't', 't'))
+        {
+          // WebVTT ISOBMFF format
+          CDemuxStreamSubtitleFFmpeg* st = new CDemuxStreamSubtitleFFmpeg(pStream);
+          if (av_dict_get(pStream->metadata, "title", nullptr, 0))
+            st->m_description = av_dict_get(pStream->metadata, "title", nullptr, 0)->value;
+
+          stream = st;
+
+          // To use COverlayCodecWebVTT decoder set codec id and extradata
+          pStream->codecpar->codec_id = AV_CODEC_ID_WEBVTT;
+          stream->extraData = FFmpegExtraData(reinterpret_cast<const uint8_t*>("fmp4"), 4);
+        }
+        else
+        {
+          stream = new CDemuxStream();
+          stream->type = STREAM_DATA;
+        }
         break;
       }
       case AVMEDIA_TYPE_SUBTITLE:
