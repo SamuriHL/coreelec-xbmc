@@ -34,6 +34,8 @@
 #include <string>
 #include <string_view>
 
+#include <time.h>
+
 #include <sys/utsname.h>
 
 using namespace std::chrono_literals;
@@ -1103,6 +1105,11 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig) const
   memset(sw_params, 0, snd_pcm_sw_params_sizeof());
 
   snd_pcm_sw_params_current              (m_pcm, sw_params);
+
+  // Enable monotonic timestamps so GetDelay() can account for measurement age.
+  snd_pcm_sw_params_set_tstamp_mode      (m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
+  snd_pcm_sw_params_set_tstamp_type      (m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC);
+
   snd_pcm_sw_params_set_start_threshold  (m_pcm, sw_params, INT_MAX);
   snd_pcm_sw_params_set_silence_threshold(m_pcm, sw_params, 0);
   snd_pcm_sw_params_get_boundary         (sw_params, &boundary);
@@ -1141,16 +1148,108 @@ void CAESinkALSA::GetDelay(AEDelayStatus& status)
     status.SetDelay(0);
     return;
   }
+
+  // Prefer a single status query (delay + timestamp) for better accuracy.
+  snd_pcm_status_t* pcmStatus;
+  snd_pcm_status_alloca(&pcmStatus);
+  if (snd_pcm_status(m_pcm, pcmStatus) == 0)
+  {
+    if (m_delayMethod != 1)
+    {
+      m_delayMethod = 1;
+      logM(LOGINFO, "CAESinkALSA", "using snd_pcm_status() (status-based){}", m_passthrough ? " [passthrough]" : "");
+    }
+
+    snd_pcm_sframes_t frames = snd_pcm_status_get_delay(pcmStatus);
+
+    if (frames < 0)
+    {
+      snd_pcm_forward(m_pcm, -frames);
+      frames = 0;
+    }
+
+    double delaySeconds = static_cast<double>(frames) * m_formatSampleRateMul;
+
+    // If the driver provides a monotonic hw timestamp, compensate for the age of the measurement.
+    // This reduces jitter and improves A/V sync stability for passthrough where bursts are large.
+    snd_htimestamp_t htstamp{};
+    int htstampSource = 0;
+
+    // Prefer audio_htstamp (timestamp of the audio stream position) when available.
+    snd_pcm_status_get_audio_htstamp(pcmStatus, &htstamp);
+    if (htstamp.tv_sec != 0 || htstamp.tv_nsec != 0)
+    {
+      htstampSource = 1;
+    }
+    else
+    {
+      // Fallback to hw timestamp when audio_htstamp is not provided by the driver.
+      snd_pcm_status_get_htstamp(pcmStatus, &htstamp);
+      if (htstamp.tv_sec != 0 || htstamp.tv_nsec != 0)
+        htstampSource = 2;
+    }
+
+    if (htstampSource != 0)
+    {
+      if (m_loggedHtstampSource != htstampSource)
+      {
+        m_loggedHtstampSource = htstampSource;
+        logM(LOGINFO, "CAESinkALSA", "using {}{}",
+             htstampSource == 1 ? "snd_pcm_status_get_audio_htstamp()" : "snd_pcm_status_get_htstamp()",
+             m_passthrough ? " [passthrough]" : "");
+      }
+
+      timespec nowTs{};
+      if (clock_gettime(CLOCK_MONOTONIC, &nowTs) == 0)
+      {
+        time_t secDiff = nowTs.tv_sec - htstamp.tv_sec;
+        long nsecDiff = nowTs.tv_nsec - htstamp.tv_nsec;
+        if (nsecDiff < 0)
+        {
+          --secDiff;
+          nsecDiff += 1000000000L;
+        }
+
+        double ageSeconds = static_cast<double>(secDiff) + static_cast<double>(nsecDiff) / 1e9;
+
+        // Guard against occasional driver glitches (stale timestamps / time jumps).
+        const double unclampedAgeSeconds = ageSeconds;
+        if (ageSeconds < 0.0) ageSeconds = 0.0;
+        if (ageSeconds > 0.5) ageSeconds = 0.5;
+
+        if (!m_loggedHtstampClamp && ageSeconds != unclampedAgeSeconds)
+        {
+          m_loggedHtstampClamp = true;
+          logM(LOGDEBUG, "CAESinkALSA", "clamped htstamp age {} -> {} using {}{}",
+               unclampedAgeSeconds, ageSeconds,
+               htstampSource == 1 ? "snd_pcm_status_get_audio_htstamp()" : "snd_pcm_status_get_htstamp()",
+               m_passthrough ? " [passthrough]" : "");
+        }
+
+        if (ageSeconds > 0.0)
+          delaySeconds = std::max(0.0, delaySeconds - ageSeconds);
+      }
+    }
+
+    status.SetDelay(delaySeconds);
+    return;
+  }
+
+  // Fallback for drivers that don't support snd_pcm_status().
+  if (m_delayMethod != 2)
+  {
+    m_delayMethod = 2;
+    logM(LOGINFO, "CAESinkALSA", "using snd_pcm_delay() (legacy fallback){}", m_passthrough ? " [passthrough]" : "");
+  }
+
   snd_pcm_sframes_t frames = 0;
   snd_pcm_delay(m_pcm, &frames);
-
   if (frames < 0)
   {
     snd_pcm_forward(m_pcm, -frames);
     frames = 0;
   }
-
-  status.SetDelay((double)frames * m_formatSampleRateMul);
+  status.SetDelay(static_cast<double>(frames) * m_formatSampleRateMul);
 }
 
 double CAESinkALSA::GetCacheTotal()

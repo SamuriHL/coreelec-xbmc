@@ -83,6 +83,11 @@ private:
   bool m_fragmented = false;
   unsigned int m_originalPeriodSize = AE_MIN_PERIODSIZE;
 
+  // logging control, log which Delay approach is in use
+  int m_delayMethod = 0;
+  int m_loggedHtstampSource = 0;
+  bool m_loggedHtstampClamp = false;
+
   struct ALSAConfig
   {
     unsigned int sampleRate;
