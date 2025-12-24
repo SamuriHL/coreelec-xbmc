@@ -103,8 +103,8 @@ public:
                           bool stereoupmix,
                           AEQuality quality,
                           float sublevel);
-  bool HasInputLevel(int level);
-  float GetDelay();
+  bool HasInputLevel(int level) const;
+  float GetDelay() const;
   void Flush();
   void SetDrain(bool drain) const;
   bool IsDrained() const;
