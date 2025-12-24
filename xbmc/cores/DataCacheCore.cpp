@@ -14,6 +14,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
+#include "utils/log.h"
 
 #include <mutex>
 #include <utility>
