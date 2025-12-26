@@ -2347,9 +2347,7 @@ bool CAMLCodec::GetNextDequeuedBuffer()
   auto pts = static_cast<uint64_t>(static_cast<uint32_t>(vbuf.timestamp.tv_sec)) << 32;
   pts += static_cast<uint32_t>(vbuf.timestamp.tv_usec);
 
-  // Both below use the pts server data offset to obtain pts values and both look to need the same additional time offset to the pts value.
-  if (IsH264() && !m_hints.interlaced)
-    pts += m_decoder_h264_offset;  // Offset for H264 - non-interlaced content
+  if (IsH264()) pts += m_decoder_h264_offset;
 
   m_last_pts = m_cur_pts;
   m_cur_pts = pts;
