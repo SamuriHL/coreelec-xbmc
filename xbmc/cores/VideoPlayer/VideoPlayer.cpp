@@ -2092,6 +2092,7 @@ void CVideoPlayer::ProcessSubData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
   CheckStreamChanges(m_CurrentSubtitle, pStream);
 
+  CheckContinuity(m_CurrentSubtitle, pPacket);
   UpdateTimestamps(m_CurrentSubtitle, pPacket);
 
   bool drop = false;
@@ -2707,6 +2708,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
         current.type == StreamType::AUDIO ? m_CurrentVideo.lastdts : m_CurrentAudio.lastdts;
 
     if (m_CurrentAudio.id == -1 || m_CurrentVideo.id == -1 ||
+       current.type == StreamType::SUBTITLE ||
        current.lastdts == DVD_NOPTS_VALUE ||
        fabs(this_dts - that_dts) < DVD_MSEC_TO_TIME(1000))
     {
