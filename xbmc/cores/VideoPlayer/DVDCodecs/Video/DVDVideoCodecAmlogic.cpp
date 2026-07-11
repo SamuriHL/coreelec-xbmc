@@ -504,6 +504,17 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       if (m_hints.dovi.dv_profile > 0)
         m_streamMeta.flags.push_back("rpu-removed");
     }
+
+    // Non-DV source routed through the VS10 engine (dv_profile == 0): strip
+    // HDR10+ dynamic metadata (VS10 consumes only static HDR10) and any stray
+    // DoVi RPU so they can't conflict with the forced VS10 conversion. Native DV
+    // streams (dv_profile != 0) are untouched.
+    if (m_hints.dovi.dv_profile == 0 &&
+        aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    {
+      m_bitstream->SetRemoveHdr10Plus(true);
+      m_bitstream->SetRemoveDovi(true);
+    }
   }
 
   if (m_hints.contentLightMetadata)

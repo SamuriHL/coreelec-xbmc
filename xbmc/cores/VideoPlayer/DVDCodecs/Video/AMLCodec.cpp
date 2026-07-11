@@ -2133,8 +2133,12 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
   bool device_support_dv(aml_support_dolby_vision());
   bool display_support_dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
   bool user_dv_disable(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  // VS10 engine can output SDR/HDR10 to a non-DV display, so allow the DV core
+  // to be enabled even when the display itself does not advertise DV support.
+  bool vs10_active(aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS);
   bool dv_enable(device_support_dv && !user_dv_disable &&
-    hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && (display_support_dv || hints.dovi.dv_profile == 5));
+    hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+    (display_support_dv || hints.dovi.dv_profile == 5 || vs10_active));
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder Amlogic device {} support DV, DV is {} by user, display {} support DV, DV system is {}",
     device_support_dv ? "does" : "does not", user_dv_disable ? "disabled" : "enabled",
     display_support_dv ? "does" : "does not", dv_enable ? "enabled" : "disabled");
@@ -2159,7 +2163,17 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     if (hints.dovi.dv_profile == 0)
     {
       CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
-      if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
+      unsigned int vs10_mode = aml_dv_get_vs10_pending();
+      if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      {
+        // VS10 engine: force the user-selected output mode for this source type
+        // (SDR/HDR10/DV) rather than always converting to DV.
+        CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
+        if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+          aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
+            GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+      }
+      else if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_IPT + 1) % 6);
       else
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_IPT_TUNNEL + 1) % 6);
@@ -2168,6 +2182,17 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     {
       CSysfsPath("/sys/class/amvecm/enable_hdr10plus", 0);
       am_private->gcodec.dv_enable = 1;
+      // VS10 for native DV sources: optionally convert DV to SDR/HDR10 output
+      // (vs10.dv = SDR/HDR10). Default (IPT/native) leaves the DV tunnel intact.
+      unsigned int vs10_mode = aml_dv_get_vs10_pending();
+      if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+      {
+        CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
+        CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
+        if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+          aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
+            GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+      }
     }
 
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
