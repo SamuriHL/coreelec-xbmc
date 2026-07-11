@@ -151,6 +151,11 @@ public:
     m_doviL5DetLeft = left;
     m_doviL5DetRight = right;
   }
+  // L5 "osdst": when the osd-unmask setting is on AND an overlay (OSD/subtitle) is
+  // on screen, force L5 to zero so the letterbox bars are not masked over the
+  // overlay. m_doviL5OverlayVisible is refreshed per-packet from the GUI state.
+  void SetDoviL5OsdUnmask(bool value) { m_doviL5OsdUnmask = value; }
+  void SetDoviL5OverlayVisible(bool value) { m_doviL5OverlayVisible = value; }
   // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
   // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
   // bypass inputs are only consulted when the mode is CMV40_SMART.
@@ -228,6 +233,8 @@ protected:
   uint16_t m_doviL5DetBottom{0};
   uint16_t m_doviL5DetLeft{0};
   uint16_t m_doviL5DetRight{0};
+  bool m_doviL5OsdUnmask{false};
+  bool m_doviL5OverlayVisible{false};
   enum DOVICMv40Mode m_append_cmv40{CMV40_NONE};
   int m_smart_display_nits{0};
   int m_smart_threshold_pct{20};

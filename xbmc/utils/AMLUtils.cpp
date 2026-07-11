@@ -1205,6 +1205,27 @@ void aml_dv_detect_active_area_stop()
     s_detectThread.join();
 }
 
+// DV L5 "osdst": the GUI thread reports OSD/subtitle visibility here; the video
+// thread reads the combined state so the RPU L5 masking can be lifted while an
+// overlay is shown (otherwise OSD/subs in the letterbox bar region get masked).
+static std::atomic<bool> s_dvOsdVisible{false};
+static std::atomic<bool> s_dvSubsVisible{false};
+
+void aml_dv_set_osd_visible(bool visible)
+{
+  s_dvOsdVisible.store(visible);
+}
+
+void aml_dv_set_subtitles_visible(bool visible)
+{
+  s_dvSubsVisible.store(visible);
+}
+
+bool aml_dv_l5_overlay_visible()
+{
+  return s_dvOsdVisible.load() || s_dvSubsVisible.load();
+}
+
 bool aml_video_started()
 {
   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};
