@@ -384,7 +384,6 @@ CBitstreamConverter::CBitstreamConverter()
   m_convert_dovi = false;
   m_removeDovi = false;
   m_removeHdr10Plus = false;
-  m_setDoviZeroLevel5 = false;
   m_combine = false;
 }
 
@@ -2165,14 +2164,15 @@ bool AppendCMv40(DOVICMv40Mode mode, const DoviVdrDmData* vdr, DoviRpuOpaque* rp
 // Processes Dolby Vision RPU
 //   - Sets `m_doviIsFEL` flag to true when DV is profile 7 / FEL
 //   - Converts to profile 8.1 if `m_convert_dovi` is enabled
-//   - Sets level 5 metadata to 0 offsets if `m_setDoviZeroLevel5` is enabled
+//   - Applies the L5 active-area mode (zero / detected offsets) if not SOURCE
 //
 // The returned data must be freed with `dovi_data_free`
 // May be NULL if no processing was done or if parsing errored
 const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSize)
 {
   // early exit if no processing option is enabled and EL type is alredy tested
-  if (m_doviELTested && !m_convert_dovi && !m_setDoviZeroLevel5 && m_append_cmv40 == CMV40_NONE)
+  if (m_doviELTested && !m_convert_dovi && m_doviL5Mode == DOVI_L5_SOURCE &&
+      m_append_cmv40 == CMV40_NONE)
     return NULL;
 
   DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nalSize);
@@ -2204,10 +2204,32 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     processed = true;
   }
 
-  if (ret == 0 && m_setDoviZeroLevel5)
+  // L5 active-area (letterbox) offsets. ZERO forces the whole frame active;
+  // DETECT injects the background detector's offsets, but only when the source
+  // RPU carries no L5 of its own (respect a correctly-authored stream).
+  if (ret == 0 && m_doviL5Mode == DOVI_L5_ZERO)
   {
     ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
     processed = true;
+  }
+  else if (ret == 0 && m_doviL5Mode == DOVI_L5_DETECT && m_doviL5DetectedValid &&
+           (m_doviL5DetTop || m_doviL5DetBottom || m_doviL5DetLeft || m_doviL5DetRight))
+  {
+    const DoviVdrDmData* l5vdr = dovi_rpu_get_vdr_dm_data(rpu);
+    const bool sourceHasL5 =
+        l5vdr && l5vdr->dm_data.level5 &&
+        (l5vdr->dm_data.level5->active_area_left_offset ||
+         l5vdr->dm_data.level5->active_area_right_offset ||
+         l5vdr->dm_data.level5->active_area_top_offset ||
+         l5vdr->dm_data.level5->active_area_bottom_offset);
+    if (!sourceHasL5)
+    {
+      ret = dovi_rpu_set_active_area_offsets(rpu, m_doviL5DetLeft, m_doviL5DetRight,
+                                             m_doviL5DetTop, m_doviL5DetBottom);
+      processed = true;
+    }
+    if (l5vdr)
+      dovi_rpu_free_vdr_dm_data(l5vdr);
   }
 
   // CMv4.0 append (optionally per-frame "Smart"): append CMv4.0 metadata to
