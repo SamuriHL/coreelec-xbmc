@@ -27,12 +27,66 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
 extern "C"
 {
 #include <libavutil/hdr_dynamic_metadata.h>
 }
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
+
+namespace
+{
+// Decode the display's Dolby Vision VSVDB (from sysfs) target max luminance, in
+// nits, for the Smart CMv4.0 bypass default. Supports VSVDB version 2 (the
+// common HDMI DV case); returns 0 if unavailable/unsupported so the caller
+// keeps the manual override behaviour.
+int GetDisplayVsvdbMaxNits()
+{
+  // VSVDB v2 5-bit "Maximum Luminance (PQ)" index -> nits (Dolby table).
+  static const int lut_v2[32] = {
+      96,   113,  132,  155,  181,  211,  245,  285,  332,  385,  447,
+      518,  601,  696,  807,  934,  1082, 1252, 1450, 1678, 1943, 2250,
+      2607, 3020, 3501, 4060, 4710, 5467, 6351, 7382, 8588, 10000};
+
+  std::ifstream f("/sys/class/amhdmitx/amhdmitx0/dv_cap");
+  if (!f.is_open())
+    return 0;
+  const std::string cap((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  const std::string tag = "VSVDB: ";
+  const size_t p = cap.find(tag);
+  if (p == std::string::npos)
+    return 0;
+  const size_t start = p + tag.size();
+  const size_t end = cap.find_first_of(" \t\r\n", start);
+  const std::string hex = cap.substr(start, (end == std::string::npos ? cap.size() : end) - start);
+  std::vector<uint8_t> b;
+  for (size_t i = 0; i + 1 < hex.size(); i += 2)
+  {
+    try
+    {
+      b.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+    catch (...)
+    {
+      return 0;
+    }
+  }
+  // DV payload starts at b[5] (after 0xEB, ext-tag 0x01, 3-byte IEEE OUI).
+  if (b.size() < 8)
+    return 0;
+  const int version = (b[5] >> 5) & 0x07;
+  if (version != 2)
+    return 0;
+  const int idx = (b[7] >> 3) & 0x1F; // Maximum Luminance (PQ) index
+  return lut_v2[idx];
+}
+} // namespace
 
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
 {
@@ -343,6 +397,32 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             m_hints.dovi.el_present_flag = false;
             m_bitstream->SetConvertDovi(true);
             m_streamMeta.flags.push_back("converted");
+          }
+
+          // Smart CMv4.0 append: push mode + smart-bypass inputs to the
+          // bitstream (read once at stream open, like the DV settings above).
+          if (!user_dv_disable)
+          {
+            const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+            const int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+            if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
+            {
+              // Display peak nits: manual override wins; otherwise auto-read the
+              // display's VSVDB (EDID) max luminance and fill the setting field
+              // so the user sees the detected default (0 = auto).
+              int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+              if (nits <= 0)
+              {
+                nits = GetDisplayVsvdbMaxNits();
+                if (nits > 0)
+                  settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS, nits);
+              }
+              // set the bypass inputs BEFORE the mode (SetAppendCMv40 resets the sentinel)
+              m_bitstream->SetSmartBypassDisplayNits(nits);
+              m_bitstream->SetSmartBypassThresholdPct(
+                  settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
+            }
+            m_bitstream->SetAppendCMv40(static_cast<DOVICMv40Mode>(cmv40));
           }
         }
       }
