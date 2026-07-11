@@ -19,6 +19,8 @@
 #include "HevcSei.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 extern "C"
 {
@@ -2119,6 +2121,47 @@ bool CBitstreamConverter::h264_sequence_header(const uint8_t *data, const uint32
 }
 
 #ifdef HAVE_LIBDOVI
+namespace
+{
+// ST.2084 (PQ) inverse-EOTF constants, for content peak nits from L1 max_pq.
+constexpr double ST2084_M1 = 2610.0 / 16384.0;
+constexpr double ST2084_M2 = 2523.0 / 4096.0 * 128.0;
+constexpr double ST2084_C1 = 3424.0 / 4096.0;
+constexpr double ST2084_C2 = 2413.0 / 4096.0 * 32.0;
+constexpr double ST2084_C3 = 2392.0 / 4096.0 * 32.0;
+constexpr double ST2084_Y_MAX = 10000.0;
+
+// 12-bit PQ code value -> nits (with a few exact fast-paths).
+int max_pq_to_nits(int pq)
+{
+  if (pq < 2055) return 96;
+  if (pq >= 4095) return 10000;
+  const double e = pq / 4095.0;
+  const double p = std::pow(e, 1.0 / ST2084_M2);
+  const double num = std::max(p - ST2084_C1, 0.0);
+  const double den = ST2084_C2 - ST2084_C3 * p;
+  if (std::abs(den) < std::numeric_limits<double>::epsilon())
+    return 0;
+  return static_cast<int>(std::round(ST2084_Y_MAX * std::pow(num / den, 1.0 / ST2084_M1)));
+}
+
+// Append CMv4.0 safe-default metadata to a CMv2.9 RPU (in place; caller emits).
+// No-op if already CMv4.0 (level254 present) or the mode does not call for an
+// append on this stream (NO_L2 requires an empty L2 block).
+bool AppendCMv40(DOVICMv40Mode mode, const DoviVdrDmData* vdr, DoviRpuOpaque* rpu)
+{
+  if (!vdr || !rpu)
+    return false;
+  if (vdr->dm_data.level254)
+    return false;
+  const bool level2IsEmpty = (vdr->dm_data.level2.len == 0);
+  const bool shouldAppend = (mode == CMV40_ALWAYS) || level2IsEmpty;
+  if (!shouldAppend)
+    return false;
+  return dovi_rpu_add_cmv40_safe_default_metadata(rpu) == 1;
+}
+} // namespace
+
 // Processes Dolby Vision RPU
 //   - Sets `m_doviIsFEL` flag to true when DV is profile 7 / FEL
 //   - Converts to profile 8.1 if `m_convert_dovi` is enabled
@@ -2129,7 +2172,7 @@ bool CBitstreamConverter::h264_sequence_header(const uint8_t *data, const uint32
 const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSize)
 {
   // early exit if no processing option is enabled and EL type is alredy tested
-  if (m_doviELTested && !m_convert_dovi && !m_setDoviZeroLevel5)
+  if (m_doviELTested && !m_convert_dovi && !m_setDoviZeroLevel5 && m_append_cmv40 == CMV40_NONE)
     return NULL;
 
   DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nalSize);
@@ -2165,6 +2208,50 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
   {
     ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
     processed = true;
+  }
+
+  // CMv4.0 append (optionally per-frame "Smart"): append CMv4.0 metadata to
+  // CMv2.9 RPUs, unless (Smart) the frame content peak exceeds the display peak
+  // by the threshold, in which case CMv2.9 is kept so its L2 trims apply.
+  if (ret == 0 && m_append_cmv40 != CMV40_NONE)
+  {
+    const DoviVdrDmData* vdr = dovi_rpu_get_vdr_dm_data(rpu);
+    DOVICMv40Mode effectiveMode = m_append_cmv40;
+    if (m_append_cmv40 == CMV40_SMART)
+    {
+      const bool level2IsEmpty = !vdr || (vdr->dm_data.level2.len == 0);
+      const bool hasData = (m_smart_display_nits > 0 && vdr && vdr->dm_data.level1);
+      const int contentNits =
+          hasData ? max_pq_to_nits(static_cast<int>(vdr->dm_data.level1->max_pq)) : 0;
+      const int threshold = m_smart_display_nits * (100 + m_smart_threshold_pct) / 100;
+      const bool bypass = !level2IsEmpty && hasData && (contentNits > threshold);
+      effectiveMode = bypass ? CMV40_NONE : CMV40_ALWAYS;
+      CLog::Log(LOGDEBUG,
+                "CBitstreamConverter::processDoviRpu - Smart CMv4.0 frame: content {}nits "
+                "display {}nits threshold {}nits ({}%) -> {}",
+                contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
+                bypass ? "bypass" : "append");
+      if (effectiveMode != m_smart_last_effective)
+      {
+        if (level2IsEmpty)
+          CLog::Log(LOGINFO, "CBitstreamConverter::processDoviRpu - Smart CMv4.0: no L2 trims, "
+                             "appending CMv4.0 (evaluated per-frame)");
+        else if (!hasData)
+          CLog::Log(LOGINFO, "CBitstreamConverter::processDoviRpu - Smart CMv4.0: display nits "
+                             "unavailable, defaulting to append (evaluated per-frame)");
+        else
+          CLog::Log(LOGINFO,
+                    "CBitstreamConverter::processDoviRpu - Smart CMv4.0: content {}nits display "
+                    "{}nits threshold {}nits ({}%) -> {} (decision changed; evaluated per-frame)",
+                    contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
+                    bypass ? "bypass (no append)" : "append CMv4.0");
+        m_smart_last_effective = effectiveMode;
+      }
+    }
+    if (effectiveMode != CMV40_NONE && AppendCMv40(effectiveMode, vdr, rpu))
+      processed = true;
+    if (vdr)
+      dovi_rpu_free_vdr_dm_data(vdr);
   }
 
   if (ret == 0 && processed)
