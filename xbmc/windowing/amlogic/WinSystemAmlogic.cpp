@@ -376,17 +376,23 @@ bool CWinSystemAmlogic::InitWindowSystem()
       settings->SetBool(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5, true);
     }
 
-    // Hide the Dolby Vision VS10 engine settings on devices/displays without DV
-    // (their spinner fillers are only registered in the DV-supported branch).
-    for (const auto& vs10Id : {CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG,
-                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV})
+    // Hide the Dolby Vision VS10 / Smart CMv4.0 / VSVDB settings on devices or
+    // displays without DV (their spinner fillers are only registered, and their
+    // sysfs targets only exist, in the DV-supported branch).
+    for (const auto& dvId : {CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE})
     {
-      setting = settings->GetSetting(vs10Id);
+      setting = settings->GetSetting(dvId);
       if (setting)
         setting->SetVisible(false);
     }
