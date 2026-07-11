@@ -2147,6 +2147,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     // enable Dolby Vision
     CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'Y');
 
+    // optional VSVDB max-luminance override (force_vsvdb/vsvdb_data), or clear it
+    aml_dv_apply_vsvdb();
+
     // use player led mode when enabled
     CSysfsPath dolby_vision_ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
     if (dolby_vision_ll_policy.Exists())
@@ -2497,6 +2500,9 @@ void CAMLCodec::CloseDecoder()
       dolby_vision_policy.Set(AMDV_FOLLOW_SOURCE);
     else
       CSysfsPath("/sys/class/amvecm/enable_hdr10plus", 1);
+
+    // stop injecting a custom VSVDB so the desktop/other apps see the real EDID
+    aml_dv_clear_vsvdb();
 
     dolby_vision_enable.Set('N');
   }
