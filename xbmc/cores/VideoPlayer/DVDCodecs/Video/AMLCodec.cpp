@@ -2150,6 +2150,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     // enable Dolby Vision
     AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 1);
 
+    // optional VSVDB max-luminance override (force_vsvdb/vsvdb_data), or clear it
+    aml_dv_apply_vsvdb();
+
     // use player led mode when enabled
     if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
             CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
@@ -2497,6 +2500,9 @@ void CAMLCodec::CloseDecoder()
       AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FOLLOW_SOURCE);
     else
       AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 1);
+
+    // stop injecting a custom VSVDB so the desktop/other apps see the real EDID
+    aml_dv_clear_vsvdb();
 
     AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
   }
