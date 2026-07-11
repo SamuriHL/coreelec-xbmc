@@ -46,8 +46,17 @@ CVideoReferenceClock::~CVideoReferenceClock()
 
 void CVideoReferenceClock::Start()
 {
-  if(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK) && !IsRunning())
-    Create();
+  if (IsRunning())
+    return;
+
+  // Gate the vblank reference clock on the CoreELEC hardware-vsync toggle
+  // (default on). Users who hit a regression with the AML hardware vsync clock
+  // can fall back to legacy system-clock timing without rebuilding.
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (settings && !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK))
+    return;
+
+  Create();
 }
 
 void CVideoReferenceClock::UpdateClock(int NrVBlanks, uint64_t time)
@@ -136,7 +145,9 @@ void CVideoReferenceClock::UpdateClockInternal(int NrVBlanks, bool CheckMissed)
   {
     m_MissedVblanks += NrVBlanks;      //tell the vblank clock how many vblanks it missed
     m_TotalMissedVblanks += NrVBlanks; //for the codec information screen
-    m_VblankTime += m_SystemFrequency * static_cast<int64_t>(NrVBlanks) / MathUtils::round_int(m_RefreshRate); //set the vblank time forward
+    // double divide so fractional rates (23.976/29.97/59.94) don't round up to integer
+    m_VblankTime += static_cast<int64_t>(
+        static_cast<double>(m_SystemFrequency) / m_RefreshRate * NrVBlanks); //set the vblank time forward
   }
 
   if (NrVBlanks > 0) //update the clock with the adjusted frequency if we have any vblanks
