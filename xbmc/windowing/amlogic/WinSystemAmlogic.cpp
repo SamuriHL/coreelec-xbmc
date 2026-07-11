@@ -407,7 +407,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
     // Live-apply the VSVDB max-luminance override when the shared display-peak
     // value or the force toggle changes during DV playback.
     vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE});
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE});
 
     int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
     AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
@@ -484,7 +485,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
 
   const std::string& settingId = setting->GetId();
   if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE)
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE)
     return;
 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
