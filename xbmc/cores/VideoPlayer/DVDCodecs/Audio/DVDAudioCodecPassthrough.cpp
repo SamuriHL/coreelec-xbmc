@@ -5,10 +5,11 @@
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *  See LICENSES/README.md for more information.
  *
- *  The optional "LAV Audio" passthrough A/V sync path (m_lavStyleSyncEnabled,
- *  gated behind the audiooutput.lavsync setting) is derived from LAV Filters by
- *  Hendrik Leppkes (Nevcairiel): https://github.com/Nevcairiel/LAVFilters
- *  When disabled, this file uses stock Kodi PTS handling.
+ *  The "LAV Audio" passthrough A/V sync path (m_lavStyleSyncEnabled) is derived
+ *  from LAV Filters by Hendrik Leppkes (Nevcairiel):
+ *  https://github.com/Nevcairiel/LAVFilters
+ *  It is always on for normal playback; the only exclusion is realtime/PVR
+ *  streams (see VideoPlayerAudio, which enables it via !IsRealtimeStream()).
  */
 
 #include "DVDAudioCodecPassthrough.h"
