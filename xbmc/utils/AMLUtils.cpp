@@ -443,6 +443,30 @@ void aml_dv_apply_vsvdb()
   // Patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keep the rest.
   b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
 
+  // Optional colour-space / primary override: replace only the v2 primary fields
+  // (Gx/Gy/Rx/Bx/Ry/By in bytes 8-11), preserving the display's version, DM-version,
+  // capability and dv-type bits. 0 = keep the display's advertised primaries (max-lum
+  // patch only). Values are the Dolby VSVDB v2 primary fields (coord minus per-channel
+  // base, x256), i.e. Gx: 43=BT.2020 / 67=DCI-P3 / 76=BT.709.
+  const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
+  const char* csName = "display";
+  if (cs >= 1 && cs <= 3 && n >= 12)
+  {
+    static const int primaries[3][6] = {
+        // Rx, Ry, Gx, Gy, Bx, By
+        {14, 17, 67, 48, 6, 7}, // DCI-P3
+        {21, 10, 43, 76, 1, 3}, // BT.2020
+        {3, 20, 76, 25, 6, 7},  // BT.709
+    };
+    static const char* const csNames[3] = {"DCI-P3", "BT.2020", "BT.709"};
+    const int* p = primaries[cs - 1];
+    csName = csNames[cs - 1];
+    b[8] = ((p[2] & 0x7F) << 1) | (b[8] & 0x01);  // Gx (keep 12-bit 4:4:4 bit)
+    b[9] = ((p[3] & 0x7F) << 1) | (b[9] & 0x01);  // Gy (keep 10-bit 4:4:4 bit)
+    b[10] = ((p[0] & 0x1F) << 3) | (p[4] & 0x07); // Rx | Bx
+    b[11] = ((p[1] & 0x1F) << 3) | (p[5] & 0x07); // Ry | By
+  }
+
   // Emit the full block as comma-separated decimals for vsvdb_data, enable inject.
   std::string data;
   for (size_t i = 0; i < n; i++)
@@ -456,8 +480,8 @@ void aml_dv_apply_vsvdb()
   // open; at open force_vsvdb is already 0 so the toggle is a harmless no-op.
   CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 0);
   CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 1);
-  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB max-lum override -> {} nits (idx {}), data [{}]",
-            __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, data);
+  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
+            __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
 }
 
 bool aml_video_started()
