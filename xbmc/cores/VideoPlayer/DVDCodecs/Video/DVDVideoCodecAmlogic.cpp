@@ -387,9 +387,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             const int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
             if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
             {
-              // Display peak nits: manual override wins; otherwise auto-read the
-              // display's VSVDB (EDID) max luminance and fill the setting field
-              // so the user sees the detected default (0 = auto).
+              // Display peak nits for the Smart bypass threshold. The same
+              // display.maxnits value also drives the VSVDB force-inject (see
+              // aml_dv_apply_vsvdb), so the Smart threshold and the peak the amdv
+              // core tone-maps to stay consistent by construction. 0 = auto-read
+              // the display's real VSVDB (EDID) max luminance and fill the field.
               int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
               if (nits <= 0)
               {
