@@ -382,14 +382,24 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           bool user_dv_disable = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
               CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE);
 
-          if (!user_dv_disable && CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-                  CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_TV_LED)
+          // Dolby Vision L5 active-area (letterbox) mode: Source / Zero / Auto-
+          // detect. Applies in both LED modes (the DV core masks bars from the RPU
+          // L5 regardless). Auto-detect spawns a background luma scan, but only for
+          // a real DV RPU stream (profile 5/7/8) - not the VS10 fake-DV path.
+          if (!user_dv_disable)
           {
-            const bool zeroLevel5 = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-                CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5);
-            m_bitstream->SetDoviZeroLevel5(zeroLevel5);
-            if (zeroLevel5)
+            const int l5mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+                CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
+            m_bitstream->SetDoviL5Mode(l5mode);
+            // keep upstream's side-data flag meaningful under our 3-mode setting
+            if (l5mode == DOVI_L5_ZERO)
               m_streamMeta.flags.push_back("l5-zeroed");
+            const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
+                                 m_hints.dovi.dv_profile == 8);
+            if (l5mode == 2 && realDV)
+              aml_dv_detect_active_area_start();
+            else
+              aml_dv_detect_active_area_stop();
           }
 
           if ((m_hints.dovi.dv_profile == 4 || m_hints.dovi.dv_profile == 7) && !user_dv_disable &&
@@ -558,6 +568,9 @@ void CDVDVideoCodecAmlogic::Close(void)
     m_metadataToken = 0;
   }
 
+  // Stop any in-flight L5 active-area detection thread.
+  aml_dv_detect_active_area_stop();
+
   m_videoBufferPool = nullptr;
 
   if (m_Codec)
@@ -629,6 +642,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
     if (m_bitstream)
     {
+      // Push the latest detected L5 active-area offsets to the bitstream; the
+      // background detector may finish a few seconds into playback. Only DOVI_L5_
+      // DETECT mode consumes them (cheap atomic reads otherwise).
+      {
+        uint16_t l5t, l5b, l5l, l5r;
+        const bool l5valid = aml_dv_detect_active_area_get(l5t, l5b, l5l, l5r);
+        m_bitstream->SetDoviL5DetectedOffsets(l5valid, l5t, l5b, l5l, l5r);
+      }
+
       if (packet.isDualStream && aml_dolby_vision_enabled())
       {
         CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
