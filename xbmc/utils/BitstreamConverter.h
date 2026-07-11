@@ -95,6 +95,17 @@ public:
   static bool CanStartDecode(const uint8_t* buf, int buf_size);
 };
 
+// Dolby Vision CMv4.0 append mode (coreelec.amlogic.dolbyvision.cmv40.append).
+// Appends CMv4.0 metadata to CMv2.9 titles. SMART decides per-frame whether to
+// append (see CBitstreamConverter::processDoviRpu).
+enum DOVICMv40Mode : int
+{
+  CMV40_NONE = 0,   // Off - never append
+  CMV40_NO_L2,      // append only when the stream lacks L2 trims
+  CMV40_ALWAYS,     // always append
+  CMV40_SMART,      // per-frame: append unless content peak > display*(1+pct)
+};
+
 class CBitstreamConverter
 {
 public:
@@ -117,6 +128,12 @@ public:
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
   void SetDoviZeroLevel5(bool value) { m_setDoviZeroLevel5 = value; }
+  // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
+  // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
+  // bypass inputs are only consulted when the mode is CMV40_SMART.
+  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; }
+  void SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
+  void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
   bool GetIsHdrPlus() const { return m_IsHdr10Plus; }
 
@@ -183,6 +200,10 @@ protected:
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   bool m_setDoviZeroLevel5;
+  enum DOVICMv40Mode m_append_cmv40{CMV40_NONE};
+  int m_smart_display_nits{0};
+  int m_smart_threshold_pct{20};
+  DOVICMv40Mode m_smart_last_effective{CMV40_SMART};
   bool m_doviIsFEL{false};
   bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
