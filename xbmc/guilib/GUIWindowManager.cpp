@@ -43,6 +43,7 @@
 #include "settings/windows/GUIWindowSettingsCategory.h"
 #include "settings/windows/GUIWindowSettingsScreenCalibration.h"
 #include "threads/SingleLock.h"
+#include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
@@ -1484,16 +1485,23 @@ void CGUIWindowManager::AfterRender()
 
   // make copy of vector as we may remove items from it as we go
   auto activeDialogs = m_activeDialogs;
+  bool anyDialogRunning = false;
   for (const auto& window : activeDialogs)
   {
     if (window->IsDialogRunning())
     {
+      anyDialogRunning = true;
       window->AfterRender();
       // Dialog state can affect visibility states
       if (pWindow && window->IsControlDirty())
         pWindow->MarkDirtyRegion();
     }
   }
+
+  // DV L5 "osdst": any dialog/OSD or the DVD/video menu over the video means an
+  // overlay may sit in the letterbox bar region; report it so the DV L5 path can
+  // temporarily un-mask the bars (see CBitstreamConverter::processDoviRpu).
+  aml_dv_set_osd_visible(anyDialogRunning || IsWindowVisible(WINDOW_VIDEO_MENU));
 }
 
 void CGUIWindowManager::FrameMove()
