@@ -9091,6 +9091,22 @@ msgctxt "#14427"
 msgid "Player-Led"
 msgstr ""
 
+msgctxt "#14430"
+msgid "Use display as clock (hardware vsync)"
+msgstr ""
+
+msgctxt "#14431"
+msgid "Drive the video reference clock from the Amlogic display's real hardware vsync (FBIO_WAITFORVSYNC_64) instead of estimating from the system clock. Gives display-locked A/V sync with whole-frame audio corrections at matched refresh rates. Enabled by default; disable to fall back to legacy system-clock timing. Automatically falls back to software timing during HDMI mode switches or vsync stalls."
+msgstr ""
+
+msgctxt "#14432"
+msgid "Latch software timing on sustained vsync stall"
+msgstr ""
+
+msgctxt "#14433"
+msgid "If the hardware vsync stalls for longer than any plausible HDMI mode switch (e.g. chronically wedged sink), stop re-probing and stay on software timing for the rest of playback instead of paying the periodic re-probe hiccup. Resets on stop. Leave off unless you see repeated vsync-stall warnings in the log."
+msgstr ""
+
 #: xbmc/music/MusicDatabase.cpp
 #: xbmc/video/VideoDatabase.cpp
 msgctxt "#15011"
