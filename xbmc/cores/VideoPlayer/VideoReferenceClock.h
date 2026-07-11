@@ -29,11 +29,13 @@ class CVideoReferenceClock : CThread
     bool    GetClockInfo(int& MissedVblanks, double& ClockSpeed, double& RefreshRate) const;
 
     void UpdateClock(int NrVBlanks, uint64_t time);
+    // Public so the AML videosync can refresh the reference rate on a
+    // mid-playback display mode switch that doesn't trigger OnResetDisplay.
+    void    UpdateRefreshrate();
 
   private:
     void    Process() override;
     void Start();
-    void    UpdateRefreshrate();
     void UpdateClockInternal(int NrVBlanks, bool CheckMissed);
     double  UpdateInterval() const;
     int64_t TimeOfNextVblank() const;
