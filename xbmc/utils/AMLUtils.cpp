@@ -316,6 +316,107 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
   return ((convert_to_dv && !!user_convert_to_dv && !!dv_user_enabled) == 1);
 }
 
+// --- Dolby Vision VS10 engine ------------------------------------------------
+// The VS10 engine forces the amdolby_vision output mode so incoming HDR flavors
+// are converted to a chosen output. CE22 drives this the same way its native
+// SDR2DV/HDR2DV conversion does (see CAMLCodec::OpenDecoder/CloseDecoder):
+// dolby_vision_enable=Y, dolby_vision_policy=AMDV_FORCE_OUTPUT_MODE, then the
+// amdolby_vision/dv_mode node with the kernel's (mode + 1) % 6 encoding. The
+// module params live under aml_media on CE22 (driver is linked into aml_media.ko).
+#define AMDV_FOLLOW_SOURCE      (unsigned int)(1)
+#define AMDV_FORCE_OUTPUT_MODE  (unsigned int)(2)
+
+bool aml_display_support_hdr_pq()
+{
+  bool support = false;
+  CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
+  if (hdr_cap.Exists())
+    support = (hdr_cap.Get<std::string>().value().find("SMPTE ST 2084: 1") != std::string::npos);
+  return support;
+}
+
+bool aml_display_support_hdr_hlg()
+{
+  bool support = false;
+  CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
+  if (hdr_cap.Exists())
+    support = (hdr_cap.Get<std::string>().value().find("Hybrid Log-Gamma: 1") != std::string::npos);
+  return support;
+}
+
+// VS10 output mode resolved at stream-open and consumed in CAMLCodec::OpenDecoder.
+static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
+unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
+
+unsigned int aml_vs10_by_setting(const std::string& setting)
+{
+  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(setting);
+}
+
+unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth)
+{
+  switch (hdrType)
+  {
+    case StreamHdrType::HDR_TYPE_NONE:
+      return aml_vs10_by_setting(bitDepth == 10 ? CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10
+                                                : CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8);
+    case StreamHdrType::HDR_TYPE_HDR10:
+      return aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10);
+    case StreamHdrType::HDR_TYPE_HDR10PLUS:
+      return aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS);
+    case StreamHdrType::HDR_TYPE_HLG:
+      return aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG);
+    case StreamHdrType::HDR_TYPE_DOLBYVISION:
+      return aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+    default:
+      return DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  }
+}
+
+unsigned int aml_dv_dolby_vision_mode()
+{
+  CSysfsPath dolby_vision_mode{"/sys/module/aml_media/parameters/dolby_vision_mode"};
+  if (dolby_vision_mode.Exists())
+    return dolby_vision_mode.Get<unsigned int>().value();
+  return DOLBY_VISION_OUTPUT_MODE_BYPASS;
+}
+
+void aml_dv_set_vs10_mode(unsigned int mode)
+{
+  CSysfsPath dolby_vision_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
+  CSysfsPath dolby_vision_policy{"/sys/module/aml_media/parameters/dolby_vision_policy"};
+  bool dv_enabled(dolby_vision_enable.Exists() &&
+                  StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value(), "Y"));
+
+  if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+  {
+    // Stop forcing an output mode: let the pipeline follow the source. Mirrors
+    // CAMLCodec::CloseDecoder's disable path.
+    if (dv_enabled && dolby_vision_policy.Exists() &&
+        dolby_vision_policy.Get<int>().value() == static_cast<int>(AMDV_FORCE_OUTPUT_MODE))
+      dolby_vision_policy.Set(AMDV_FOLLOW_SOURCE);
+    CSysfsPath("/sys/class/amdolby_vision/dv_mode", (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", __FUNCTION__);
+    return;
+  }
+
+  // Force the requested VS10 output mode.
+  dolby_vision_enable.Set('Y');
+  dolby_vision_policy.Set(AMDV_FORCE_OUTPUT_MODE);
+  CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
+  CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
+            __FUNCTION__, mode, (mode + 1) % 6);
+}
+
+void aml_dv_set_hdr10_osd_brightness(int nits)
+{
+  // OSD graphics peak luminance for VS10 HDR10 output. The donor wrote
+  // dolby_vision_graphic_max; CE22's kernel exposes amdv_graphic_max instead.
+  CSysfsPath("/sys/module/aml_media/parameters/dv_graphic_blend_test", 0);
+  CSysfsPath("/sys/module/aml_media/parameters/amdv_graphic_max", nits);
+}
+
 bool aml_video_started()
 {
   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};
