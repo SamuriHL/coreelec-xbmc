@@ -25,6 +25,16 @@ enum AML_DISPLAY_DV_LED
 #define DV_RGB_444_8BIT     (int)(1<<3)
 #define LL_YCbCr_422_12BIT  (int)(1<<5)
 
+// Dolby Vision VS10 engine output modes (kernel amdv output-mode enum). The
+// VS10 engine converts the incoming HDR flavor to one of these outputs; BYPASS
+// means no VS10 conversion (native passthrough).
+#define DOLBY_VISION_OUTPUT_MODE_IPT         (unsigned int)(0)
+#define DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL  (unsigned int)(1)
+#define DOLBY_VISION_OUTPUT_MODE_HDR10       (unsigned int)(2)
+#define DOLBY_VISION_OUTPUT_MODE_SDR10       (unsigned int)(3)
+#define DOLBY_VISION_OUTPUT_MODE_SDR8        (unsigned int)(4)
+#define DOLBY_VISION_OUTPUT_MODE_BYPASS      (unsigned int)(5)
+
 #define AML_GXBB    0x1F
 #define AML_GXL     0x21
 #define AML_GXM     0x22
@@ -56,6 +66,19 @@ bool aml_support_avs3();
 bool aml_support_dolby_vision();
 bool aml_dolby_vision_enabled();
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+bool aml_display_support_hdr_pq();
+bool aml_display_support_hdr_hlg();
+// Dolby Vision VS10 engine.
+unsigned int aml_vs10_by_setting(const std::string& setting);
+unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth);
+// Carries the VS10 output mode resolved at stream-open (from the real source
+// hdrType, before VideoPlayer fakes it to DOLBYVISION) down to CAMLCodec, which
+// applies it. BYPASS means "no VS10 conversion for this stream".
+void aml_dv_set_vs10_pending(unsigned int mode);
+unsigned int aml_dv_get_vs10_pending();
+unsigned int aml_dv_dolby_vision_mode();
+void aml_dv_set_vs10_mode(unsigned int mode);
+void aml_dv_set_hdr10_osd_brightness(int nits);
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
