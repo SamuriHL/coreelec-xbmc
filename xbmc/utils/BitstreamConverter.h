@@ -106,6 +106,15 @@ enum DOVICMv40Mode : int
   CMV40_SMART,      // per-frame: append unless content peak > display*(1+pct)
 };
 
+// DV Level 5 (active-area / letterbox) handling for the RPU. See
+// CBitstreamConverter::processDoviRpu.
+enum DOVIL5Mode : int
+{
+  DOVI_L5_SOURCE = 0, // leave the RPU's L5 offsets as authored
+  DOVI_L5_ZERO,       // force 0,0,0,0 (full frame active - old dovizerolevel5=on)
+  DOVI_L5_DETECT,     // inject detected active-area offsets when source L5 is empty
+};
+
 class CBitstreamConverter
 {
 public:
@@ -127,7 +136,21 @@ public:
   void SetConvertDovi(bool value) { m_convert_dovi = value; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
-  void SetDoviZeroLevel5(bool value) { m_setDoviZeroLevel5 = value; }
+  // Compat shim for the other platforms (WebOS/Android) that still drive the
+  // stock boolean: on -> Zero, off -> Source.
+  void SetDoviZeroLevel5(bool value) { m_doviL5Mode = value ? DOVI_L5_ZERO : DOVI_L5_SOURCE; }
+  void SetDoviL5Mode(int mode) { m_doviL5Mode = mode; }
+  // Detected active-area offsets (valid only when the detector has finished);
+  // used in DOVI_L5_DETECT mode when the source RPU carries no L5.
+  void SetDoviL5DetectedOffsets(bool valid, uint16_t top, uint16_t bottom, uint16_t left,
+                                uint16_t right)
+  {
+    m_doviL5DetectedValid = valid;
+    m_doviL5DetTop = top;
+    m_doviL5DetBottom = bottom;
+    m_doviL5DetLeft = left;
+    m_doviL5DetRight = right;
+  }
   // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
   // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
   // bypass inputs are only consulted when the mode is CMV40_SMART.
@@ -199,7 +222,12 @@ protected:
   bool m_convert_dovi;
   bool m_removeDovi;
   bool m_removeHdr10Plus;
-  bool m_setDoviZeroLevel5;
+  int m_doviL5Mode{DOVI_L5_SOURCE};
+  bool m_doviL5DetectedValid{false};
+  uint16_t m_doviL5DetTop{0};
+  uint16_t m_doviL5DetBottom{0};
+  uint16_t m_doviL5DetLeft{0};
+  uint16_t m_doviL5DetRight{0};
   enum DOVICMv40Mode m_append_cmv40{CMV40_NONE};
   int m_smart_display_nits{0};
   int m_smart_threshold_pct{20};
