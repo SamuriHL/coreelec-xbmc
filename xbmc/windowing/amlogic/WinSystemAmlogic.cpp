@@ -404,6 +404,11 @@ bool CWinSystemAmlogic::InitWindowSystem()
     vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDRHLG", VS10HdrHlgFiller);
     vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10DV", VS10DvFiller);
 
+    // Live-apply the VSVDB max-luminance override when the shared display-peak
+    // value or the force toggle changes during DV playback.
+    vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE});
+
     int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
     AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
       settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
@@ -466,7 +471,29 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
 bool CWinSystemAmlogic::DestroyWindowSystem()
 {
+  auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  if (settingsComponent)
+    settingsComponent->GetSettings()->GetSettingsManager()->UnregisterCallback(this);
   return true;
+}
+
+void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+{
+  if (!setting)
+    return;
+
+  const std::string& settingId = setting->GetId();
+  if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE)
+    return;
+
+  // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
+  // otherwise the new value is picked up at the next decoder open. aml_dv_apply_vsvdb
+  // toggles force_vsvdb to re-latch the updated block into the running DV core.
+  CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
+  if (dv_enable.Exists() &&
+      StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
+    aml_dv_apply_vsvdb();
 }
 
 bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
