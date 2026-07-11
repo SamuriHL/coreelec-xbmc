@@ -147,6 +147,20 @@ CPackerMAT::CPackerMAT()
   m_buffer.reserve(MAT_BUFFER_SIZE);
 }
 
+// Full reset of packer state (used by the caller on codec reset/seek).
+void CPackerMAT::Reset()
+{
+  m_state = {};
+  m_buffer.clear();
+  m_bufferCount = 0;
+  m_outputQueue.clear();
+  m_offsetQueue.clear();
+  m_discontinuityQueue.clear();
+  m_lastOutputSamplesOffset = 0;
+  m_lastOutputHadDiscontinuity = false;
+  m_pendingDiscontinuity = false;
+}
+
 // On a high level, a MAT frame consists of a sequence of padded TrueHD frames
 // The size of the padded frame can be determined from the frame time/sequence code in the frame header,
 // since it varies to accommodate spikes in bitrate.
@@ -227,6 +241,9 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 
       CLog::Log(LOGDEBUG, "CPackerMAT::PackTrueHD: carrying forward {} padding (offset {} - {})",
                 m_state.padding, m_state.nOutputTimeOffset, currentFrameOutputOffset);
+
+      // flag the discontinuity so the caller can be notified for this MAT frame
+      m_pendingDiscontinuity = true;
     }
     m_state.outputTiming = info.outputTiming;
     m_state.outputTimingValid = true;
@@ -304,6 +321,9 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
     }
   }
 
+  // count the samples in this frame for the samples-offset calculation
+  m_state.samples += frameSamples;
+
   // write actual audio data to the buffer
   int remaining = FillDataBuffer(data, size, Type::DATA);
 
@@ -340,6 +360,23 @@ std::vector<uint8_t> CPackerMAT::GetOutputFrame()
 
   std::vector<uint8_t> buffer = std::move(m_outputQueue.front());
   m_outputQueue.pop_front();
+
+  // surface the samples offset and discontinuity flag for this MAT frame
+  if (!m_offsetQueue.empty())
+  {
+    m_lastOutputSamplesOffset = m_offsetQueue.front();
+    m_offsetQueue.pop_front();
+  }
+  else
+    m_lastOutputSamplesOffset = 0;
+
+  if (!m_discontinuityQueue.empty())
+  {
+    m_lastOutputHadDiscontinuity = m_discontinuityQueue.front();
+    m_discontinuityQueue.pop_front();
+  }
+  else
+    m_lastOutputHadDiscontinuity = false;
 
   return buffer;
 }
@@ -483,6 +520,22 @@ void CPackerMAT::FlushPacket()
 
   // push MAT packet to output queue
   m_outputQueue.emplace_back(std::move(m_buffer));
+
+  // queue the samples offset and discontinuity flag alongside this MAT frame
+  // (captured before updating the offset, so it applies to this frame).
+  const uint16_t frameSamples = 40 << (m_state.ratebits & 7);
+  const uint32_t MATSamples = (frameSamples * 24);
+
+  m_offsetQueue.push_back(m_state.numberOfSamplesOffset);
+  m_discontinuityQueue.push_back(m_pendingDiscontinuity);
+  m_pendingDiscontinuity = false;
+
+  // we expect 24 frames per MAT frame, so calculate an offset from that
+  if (MATSamples != m_state.samples)
+    m_state.numberOfSamplesOffset +=
+        static_cast<int32_t>(m_state.samples) - static_cast<int32_t>(MATSamples);
+
+  m_state.samples = 0;
 
   m_buffer.clear();
   m_bufferCount = 0;
