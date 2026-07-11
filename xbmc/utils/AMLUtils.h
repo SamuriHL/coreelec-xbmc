@@ -83,6 +83,11 @@ unsigned int aml_dv_get_vs10_pending();
 unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_set_vs10_mode(unsigned int mode);
 void aml_dv_set_hdr10_osd_brightness(int nits);
+// Dolby Vision VSVDB max-luminance override: patch the display's advertised v2
+// VSVDB block and inject it via aml_media force_vsvdb/vsvdb_data. apply() reads
+// the settings and enables/disables accordingly; clear() disables injection.
+void aml_dv_apply_vsvdb();
+void aml_dv_clear_vsvdb();
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
