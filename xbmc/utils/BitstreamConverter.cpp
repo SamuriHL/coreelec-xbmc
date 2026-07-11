@@ -2170,9 +2170,15 @@ bool AppendCMv40(DOVICMv40Mode mode, const DoviVdrDmData* vdr, DoviRpuOpaque* rp
 // May be NULL if no processing was done or if parsing errored
 const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSize)
 {
+  // L5 "osdst": while an overlay is shown, zero L5 so the bars are not masked over
+  // the OSD/subtitles. Takes priority over the L5 mode; forces processing even in
+  // SOURCE mode (so the source L5 is suppressed while the overlay is up, and
+  // restored the moment it hides).
+  const bool l5OverlaySuppress = m_doviL5OsdUnmask && m_doviL5OverlayVisible;
+
   // early exit if no processing option is enabled and EL type is alredy tested
   if (m_doviELTested && !m_convert_dovi && m_doviL5Mode == DOVI_L5_SOURCE &&
-      m_append_cmv40 == CMV40_NONE)
+      !l5OverlaySuppress && m_append_cmv40 == CMV40_NONE)
     return NULL;
 
   DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nalSize);
@@ -2204,10 +2210,16 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     processed = true;
   }
 
-  // L5 active-area (letterbox) offsets. ZERO forces the whole frame active;
-  // DETECT injects the background detector's offsets, but only when the source
-  // RPU carries no L5 of its own (respect a correctly-authored stream).
-  if (ret == 0 && m_doviL5Mode == DOVI_L5_ZERO)
+  // L5 active-area (letterbox) offsets. Overlay-suppress (osdst) wins: zero the
+  // offsets while an OSD/subtitle is up. Otherwise ZERO forces the whole frame
+  // active; DETECT injects the background detector's offsets, but only when the
+  // source RPU carries no L5 of its own (respect a correctly-authored stream).
+  if (ret == 0 && l5OverlaySuppress)
+  {
+    ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
+    processed = true;
+  }
+  else if (ret == 0 && m_doviL5Mode == DOVI_L5_ZERO)
   {
     ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
     processed = true;
