@@ -220,6 +220,55 @@ void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *dat
   }
 }
 
+namespace
+{
+// Dolby Vision VS10 engine: option fillers for the per-source-type output-mode
+// spinners. Offered outputs are gated on real display capability (HDR10/DV);
+// there is no force-modes override on CE22, so unsupported outputs are hidden.
+std::string vs10_label(int id)
+{
+  return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(id);
+}
+
+// SDR8 / SDR10 sources.
+void VS10SdrFiller(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current)
+{
+  list.clear();
+  list.emplace_back(vs10_label(60063), DOLBY_VISION_OUTPUT_MODE_BYPASS); // Off
+  list.emplace_back(vs10_label(60064), DOLBY_VISION_OUTPUT_MODE_SDR10);  // SDR
+  if (aml_display_support_hdr_pq()) list.emplace_back(vs10_label(60065), DOLBY_VISION_OUTPUT_MODE_HDR10);
+  if (aml_display_support_dv())     list.emplace_back(vs10_label(60066), DOLBY_VISION_OUTPUT_MODE_IPT);
+}
+
+// HDR10 / HDR10+ sources (Off only offered when the display can take HDR10).
+void VS10Hdr10Filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current)
+{
+  list.clear();
+  if (aml_display_support_hdr_pq()) list.emplace_back(vs10_label(60063), DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  list.emplace_back(vs10_label(60064), DOLBY_VISION_OUTPUT_MODE_SDR10);
+  if (aml_display_support_hdr_pq()) list.emplace_back(vs10_label(60065), DOLBY_VISION_OUTPUT_MODE_HDR10);
+  if (aml_display_support_dv())     list.emplace_back(vs10_label(60066), DOLBY_VISION_OUTPUT_MODE_IPT);
+}
+
+// HLG sources.
+void VS10HdrHlgFiller(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current)
+{
+  list.clear();
+  if (aml_display_support_hdr_hlg()) list.emplace_back(vs10_label(60063), DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  list.emplace_back(vs10_label(60064), DOLBY_VISION_OUTPUT_MODE_SDR10);
+  if (aml_display_support_hdr_pq())  list.emplace_back(vs10_label(60065), DOLBY_VISION_OUTPUT_MODE_HDR10);
+  if (aml_display_support_dv())      list.emplace_back(vs10_label(60066), DOLBY_VISION_OUTPUT_MODE_IPT);
+}
+
+// DV sources (Off == native DV tunnel via IPT).
+void VS10DvFiller(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current)
+{
+  list.clear();
+  list.emplace_back(vs10_label(60064), DOLBY_VISION_OUTPUT_MODE_SDR10); // SDR
+  if (aml_display_support_dv()) list.emplace_back(vs10_label(60063), DOLBY_VISION_OUTPUT_MODE_IPT); // Off = native DV
+}
+} // namespace
+
 bool CWinSystemAmlogic::InitWindowSystem()
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -274,11 +323,34 @@ bool CWinSystemAmlogic::InitWindowSystem()
       setting->SetVisible(false);
       settings->SetBool(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5, true);
     }
+
+    // Hide the Dolby Vision VS10 engine settings on devices/displays without DV
+    // (their spinner fillers are only registered in the DV-supported branch).
+    for (const auto& vs10Id : {CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG,
+                               CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV})
+    {
+      setting = settings->GetSetting(vs10Id);
+      if (setting)
+        setting->SetVisible(false);
+    }
   }
   else
   {
     CServiceBroker::GetSettingsComponent()->GetSettings()->
       GetSettingsManager()->RegisterSettingOptionsFiller("dv_led_modes", SettingOptionsComponentsFiller);
+
+    // Dolby Vision VS10 engine per-source-type output-mode fillers.
+    auto* vs10Mgr = CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager();
+    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR8", VS10SdrFiller);
+    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR10", VS10SdrFiller);
+    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDR10", VS10Hdr10Filler);
+    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDRHLG", VS10HdrHlgFiller);
+    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10DV", VS10DvFiller);
 
     int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
     AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
