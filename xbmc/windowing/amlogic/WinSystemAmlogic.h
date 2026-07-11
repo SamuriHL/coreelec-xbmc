@@ -11,6 +11,7 @@
 
 #include "platform/linux/input/LibInputHandler.h"
 #include "rendering/gles/RenderSystemGLES.h"
+#include "settings/lib/ISettingCallback.h"
 #include "threads/CriticalSection.h"
 #include "windowing/WinSystem.h"
 #include "threads/SystemClock.h"
@@ -21,7 +22,7 @@
 
 class IDispResource;
 
-class CWinSystemAmlogic : public CWinSystemBase
+class CWinSystemAmlogic : public CWinSystemBase, public ISettingCallback
 {
 public:
   CWinSystemAmlogic();
@@ -29,6 +30,10 @@ public:
 
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
+
+  // ISettingCallback: live-apply the Dolby Vision VSVDB max-luminance override
+  // when the display-peak/override settings change during DV playback.
+  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 
   bool CreateNewWindow(const std::string& name,
                        bool fullScreen,
