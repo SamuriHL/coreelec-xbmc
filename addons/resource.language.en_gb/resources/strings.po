@@ -25712,3 +25712,111 @@ msgstr ""
 msgctxt "#60331"
 msgid "Display peak brightness in nits for the Smart CMv4.0 bypass decision. 0 = auto-detect from the display's EDID (Dolby Vision VSVDB); on first Smart playback the detected value is filled in here. Set a value to override the detected default with your display's measured or known peak brightness."
 msgstr ""
+
+#. Label of Dolby Vision VS10 SDR8 output setting
+#: system/settings/settings.xml
+msgctxt "#60051"
+msgid "DV VS10 for SDR8 video"
+msgstr ""
+
+#. Description of setting with label #60051
+#: system/settings/settings.xml
+msgctxt "#60052"
+msgid "Select output format when playing 8-bit SDR content. Off = passthrough. SDR BT.2020 content always bypasses VS10 to preserve the original color gamut."
+msgstr ""
+
+#. Label of Dolby Vision VS10 SDR10 output setting
+#: system/settings/settings.xml
+msgctxt "#60053"
+msgid "DV VS10 for SDR10 video"
+msgstr ""
+
+#. Description of setting with label #60053
+#: system/settings/settings.xml
+msgctxt "#60054"
+msgid "Select output format when playing 10-bit SDR content. Off = passthrough. SDR BT.2020 content always bypasses VS10 to preserve the original color gamut."
+msgstr ""
+
+#. Label of Dolby Vision VS10 HDR10 output setting
+#: system/settings/settings.xml
+msgctxt "#60055"
+msgid "DV VS10 for HDR10 video"
+msgstr ""
+
+#. Description of setting with label #60055
+#: system/settings/settings.xml
+msgctxt "#60056"
+msgid "Select output format when playing HDR10 content. Off = native HDR10 passthrough."
+msgstr ""
+
+#. Label of Dolby Vision VS10 HDR10+ output setting
+#: system/settings/settings.xml
+msgctxt "#60057"
+msgid "DV VS10 for HDR10+ video"
+msgstr ""
+
+#. Description of setting with label #60057
+#: system/settings/settings.xml
+msgctxt "#60058"
+msgid "Select output format when playing HDR10+ content. Only static HDR10 metadata is used - dynamic HDR10+ metadata is not passed to the DV engine."
+msgstr ""
+
+#. Label of Dolby Vision VS10 HLG output setting
+#: system/settings/settings.xml
+msgctxt "#60059"
+msgid "DV VS10 for HLG video"
+msgstr ""
+
+#. Description of setting with label #60059
+#: system/settings/settings.xml
+msgctxt "#60060"
+msgid "Select output format when playing HLG content. Off = native HLG passthrough."
+msgstr ""
+
+#. Label of Dolby Vision VS10 DV output setting
+#: system/settings/settings.xml
+msgctxt "#60061"
+msgid "DV VS10 for DV video"
+msgstr ""
+
+#. Description of setting with label #60061
+#: system/settings/settings.xml
+msgctxt "#60062"
+msgid "Select output format when playing Dolby Vision content. Off = native DV tunnel. SDR = convert to SDR."
+msgstr ""
+
+#. Dolby Vision VS10 output option: Off / passthrough
+#: system/settings/settings.xml
+msgctxt "#60063"
+msgid "Off"
+msgstr ""
+
+#. Dolby Vision VS10 output option: SDR
+#: system/settings/settings.xml
+msgctxt "#60064"
+msgid "SDR"
+msgstr ""
+
+#. Dolby Vision VS10 output option: HDR10
+#: system/settings/settings.xml
+msgctxt "#60065"
+msgid "HDR10"
+msgstr ""
+
+#. Dolby Vision VS10 output option: Dolby Vision
+#: system/settings/settings.xml
+msgctxt "#60066"
+msgid "DV"
+msgstr ""
+
+#. Label of Dolby Vision VS10 HDR10 OSD peak brightness setting
+#: system/settings/settings.xml
+msgctxt "#60069"
+msgid "HDR10 OSD peak brightness (nits)"
+msgstr ""
+
+#. Description of setting with label #60069
+#: system/settings/settings.xml
+msgctxt "#60070"
+msgid "Set the maximum luminance for OSD graphics (GUI, subtitles) in nits when VS10 HDR10 output is active. Overrides the general DV OSD brightness for HDR10 output specifically. Default 316 matches the compositor's built-in value for HDR10."
+msgstr ""
