@@ -471,6 +471,16 @@ void aml_dv_apply_vsvdb()
     return;
   }
 
+  // Shared display peak value (0 = auto): nothing to force onto the panel, so
+  // leave its real advertised VSVDB in place.
+  int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+  if (nits <= 0)
+  {
+    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0) - not injecting", __FUNCTION__);
+    aml_dv_clear_vsvdb();
+    return;
+  }
+
   int b[16];
   size_t n = aml_read_display_vsvdb(b, 16);
   // Need the v2 payload byte b[7]; version is in b[5] bits 7:5.
@@ -483,7 +493,6 @@ void aml_dv_apply_vsvdb()
   }
 
   // Snap the requested nits to the nearest Dolby PQ max-luminance step.
-  int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM);
   int idx = 0, best = 0x7fffffff;
   for (int i = 0; i < 32; i++)
   {
