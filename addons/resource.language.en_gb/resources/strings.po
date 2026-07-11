@@ -25730,3 +25730,33 @@ msgstr ""
 msgctxt "#60347"
 msgid "BT.709"
 msgstr ""
+
+#. Label of Dolby Vision L5 active-area (letterbox) mode setting
+#: system/settings/settings.xml
+msgctxt "#60348"
+msgid "Level 5 active area (letterbox)"
+msgstr ""
+
+#. Description of setting with label #60348
+#: system/settings/settings.xml
+msgctxt "#60349"
+msgid "Controls the Dolby Vision Level 5 active-area (letterbox/pillarbox) offsets written into the RPU. 'Source' leaves the stream's own L5 as authored. 'Zero' forces the whole frame active (fixes displays that mis-crop DV). 'Auto-detect' background-scans the file for black bars and injects the offsets when the source carries no L5, so letterbox bars mask to true black instead of being raised to grey by the DV trims."
+msgstr ""
+
+#. Dolby Vision L5 mode option: use the source RPU's own L5 offsets
+#: system/settings/settings.xml
+msgctxt "#60350"
+msgid "Source"
+msgstr ""
+
+#. Dolby Vision L5 mode option: force zero offsets (full frame active)
+#: system/settings/settings.xml
+msgctxt "#60351"
+msgid "Zero (full frame)"
+msgstr ""
+
+#. Dolby Vision L5 mode option: auto-detect the active area from the video
+#: system/settings/settings.xml
+msgctxt "#60352"
+msgid "Auto-detect"
+msgstr ""
