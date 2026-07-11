@@ -8,18 +8,17 @@
 
 #include "VideoSyncAML.h"
 #include "ServiceBroker.h"
-#include "windowing/GraphicContext.h"
 #include "cores/VideoPlayer/VideoReferenceClock.h"
+#include "threads/Thread.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
-#include "threads/Thread.h"
+#include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
-#include <sys/poll.h>
+#include "windowing/amlogic/WinSystemAmlogic.h"
 
-#include <chrono>
-#include <thread>
-
-extern CEvent g_aml_sync_event;
+#include <unistd.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
 : CVideoSync(clock)
@@ -36,57 +35,93 @@ bool CVideoSyncAML::Setup()
   m_abort = false;
 
   CServiceBroker::GetWinSystem()->Register(this);
-  CLog::Log(LOGDEBUG, "CVideoReferenceClock: setting up AML");
+  CLog::Log(LOGDEBUG, "CVideoSyncAML: setting up (DRM vblank)");
 
+  // CE22 runs the display on DRM/KMS (mesondrmfb). The reference clock is the
+  // DRM CRTC vblank sequence, read non-blocking via drmCrtcGetSequence — the
+  // same mechanism CVideoSyncGbm uses. The legacy OSD-fb FBIO_WAITFORVSYNC
+  // ioctl is not implemented on the DRM fbdev, so it can't be used here.
+  auto winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem)
+  {
+    CLog::Log(LOGWARNING, "CVideoSyncAML: no Amlogic win system, falling back to system clock");
+    return false;
+  }
+
+  m_fd = winSystem->GetDRMDeviceFd();
+  m_crtcId = winSystem->GetDRMCrtcId();
+  if (m_fd < 0 || m_crtcId == 0)
+  {
+    CLog::Log(LOGWARNING,
+              "CVideoSyncAML: no DRM device/crtc (fd:{} crtc:{}), falling back to system clock",
+              m_fd, m_crtcId);
+    return false;
+  }
+
+  uint64_t ns = 0;
+  int s = drmCrtcGetSequence(m_fd, m_crtcId, &m_sequence, &ns);
+  if (s != 0)
+  {
+    CLog::Log(LOGWARNING,
+              "CVideoSyncAML: drmCrtcGetSequence failed ({}), falling back to system clock", s);
+    m_fd = -1;
+    return false;
+  }
+  // ns is CLOCK_MONOTONIC; CurrentHostCounter() is the same domain on Linux, so
+  // this offset re-bases the vblank timestamps into the reference clock's units.
+  m_offset = CurrentHostCounter() - ns;
+
+  CLog::Log(LOGINFO, "CVideoSyncAML: using DRM vblank (fd:{} crtc:{} seq:{})",
+            m_fd, m_crtcId, m_sequence);
   return true;
 }
 
 void CVideoSyncAML::Run(CEvent& stopEvent)
 {
-  // We use the wall clock for timeout handling (no AML h/w, startup)
-  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-  unsigned int waittime (3000 / m_fps);
-  uint64_t numVBlanks (0);
-
   /* This shouldn't be very busy and timing is important so increase priority */
   CThread::GetCurrentThread()->SetPriority(ThreadPriority::ABOVE_NORMAL);
 
   while (!stopEvent.Signaled() && !m_abort)
   {
-    int countVSyncs(1);
-    if( !g_aml_sync_event.Wait(std::chrono::milliseconds(waittime)))
+    uint64_t sequence = 0, ns = 0;
+    usleep(1000);
+    int s = drmCrtcGetSequence(m_fd, m_crtcId, &sequence, &ns);
+    if (s != 0)
     {
-      std::chrono::milliseconds elapsed(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count());
-      uint64_t curVBlanks = (m_fps * elapsed.count()) / 1000;
-      int64_t lastVBlankTime((curVBlanks * 1000) / m_fps);
-      if (elapsed.count() > lastVBlankTime)
-      {
-        lastVBlankTime = (++curVBlanks * 1000) / m_fps;
-        std::this_thread::sleep_for(std::chrono::milliseconds(lastVBlankTime - elapsed.count()));
-      }
-      countVSyncs = curVBlanks - numVBlanks;
-      numVBlanks = curVBlanks;
+      CLog::Log(LOGWARNING,
+                "CVideoSyncAML: drmCrtcGetSequence failed ({}), stopping vblank clock", s);
+      break;
     }
-    else
-      ++numVBlanks;
 
-    uint64_t now = CurrentHostCounter();
+    if (sequence == m_sequence)
+      continue;
 
-    m_refClock->UpdateClock(countVSyncs, now);
+    m_refClock->UpdateClock(static_cast<int>(sequence - m_sequence), m_offset + ns);
+    m_sequence = sequence;
   }
 }
 
 void CVideoSyncAML::Cleanup()
 {
-  CLog::Log(LOGDEBUG, "CVideoReferenceClock: cleaning up AML");
+  CLog::Log(LOGDEBUG, "CVideoSyncAML: cleaning up");
+  // m_fd is borrowed from the win system's DRM device — do not close it.
+  m_fd = -1;
   CServiceBroker::GetWinSystem()->Unregister(this);
 }
 
 float CVideoSyncAML::GetFps()
 {
   m_fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
-  CLog::Log(LOGDEBUG, "CVideoReferenceClock: fps: {:.3f}", m_fps);
+  CLog::Log(LOGDEBUG, "CVideoSyncAML: fps: {:.3f}", m_fps);
   return m_fps;
+}
+
+void CVideoSyncAML::RefreshChanged()
+{
+  // A refresh-rate change moves the CRTC timing; abort so the reference clock
+  // re-runs Setup and re-anchors the vblank sequence to the new rate.
+  if (m_fps != CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS())
+    m_abort = true;
 }
 
 void CVideoSyncAML::OnResetDisplay()
