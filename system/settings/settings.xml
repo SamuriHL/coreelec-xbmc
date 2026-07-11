@@ -4201,6 +4201,31 @@
           </constraints>
           <control type="spinner" format="string" />
         </setting>
+        <!-- Dolby Vision VSVDB: override the display-advertised DV max luminance -->
+        <setting id="coreelec.amlogic.dolbyvision.vsvdb.maxlum.override" type="boolean" label="60340" help="60341">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.amlogic.dolbyvision.vsvdb.max.luminance" type="integer" label="60342" help="60343" parent="coreelec.amlogic.dolbyvision.vsvdb.maxlum.override">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>1000</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.vsvdb.maxlum.override" operator="is">true</dependency>
+          </dependencies>
+          <constraints>
+            <minimum>96</minimum>
+            <step>10</step>
+            <maximum>10000</maximum>
+          </constraints>
+          <control type="slider" format="integer" />
+        </setting>
       </group>
     </category>
     <category id="cache" label="439" help="36399">
