@@ -8,6 +8,9 @@
 
 #include "utils/StreamDetails.h"
 
+#include <cstdint>
+#include <string>
+
 enum AML_SUPPORT_H264_4K2K
 {
   AML_SUPPORT_H264_4K2K_UNINIT = -1,
@@ -84,6 +87,26 @@ void aml_dv_set_hdr10_osd_brightness(int nits);
 // the settings and enables/disables accordingly; clear() disables injection.
 void aml_dv_apply_vsvdb();
 void aml_dv_clear_vsvdb();
+// Dolby Vision L5 active-area detection: a background thread software-decodes the
+// playing file and finds the letterbox/pillarbox bars from luma; the offsets are
+// injected into the DV RPU by CBitstreamConverter (no kernel params).
+enum DvDetectState
+{
+  DV_DETECT_FAILED = 0,
+  DV_DETECT_SKIP_NON16X9 = 1,
+  DV_DETECT_SKIP_IMAX = 2,
+  DV_DETECT_SKIPPED = 3,
+  DV_DETECT_OK = 4,
+  DV_DETECT_RUNNING = 5,
+  DV_DETECT_INACTIVE = 6
+};
+void aml_dv_detect_set_file(const std::string& path);
+void aml_dv_detect_active_area_start();
+void aml_dv_detect_active_area_stop();
+int aml_dv_detect_active_area_state();
+// Returns true when detection has completed (state OK); fills the offsets either way.
+bool aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left,
+                                   uint16_t& right);
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
