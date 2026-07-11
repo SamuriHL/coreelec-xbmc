@@ -107,6 +107,12 @@ int aml_dv_detect_active_area_state();
 // Returns true when detection has completed (state OK); fills the offsets either way.
 bool aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left,
                                    uint16_t& right);
+// DV L5 "osdst": GUI thread reports OSD/subtitle visibility; the codec reads the
+// combined state and pushes it to the bitstream so L5 masking can be lifted while
+// an overlay is on screen (keeps OSD/subs in the letterbox bars visible).
+void aml_dv_set_osd_visible(bool visible);
+void aml_dv_set_subtitles_visible(bool visible);
+bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
