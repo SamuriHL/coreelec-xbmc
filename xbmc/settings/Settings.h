@@ -480,6 +480,13 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND = "coreelec.amlogic.dolbyvision.cmv40.append";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD = "coreelec.amlogic.dolbyvision.cmv40.smart.threshold";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS = "coreelec.amlogic.dolbyvision.display.maxnits";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8 = "coreelec.amlogic.dolbyvision.vs10.sdr8";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10 = "coreelec.amlogic.dolbyvision.vs10.sdr10";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10 = "coreelec.amlogic.dolbyvision.vs10.hdr10";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS = "coreelec.amlogic.dolbyvision.vs10.hdr10.osd.brightness";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS = "coreelec.amlogic.dolbyvision.vs10.hdr10plus";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG = "coreelec.amlogic.dolbyvision.vs10.hdrhlg";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_DV = "coreelec.amlogic.dolbyvision.vs10.dv";
   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
   static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
   static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";
