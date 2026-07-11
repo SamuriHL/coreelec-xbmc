@@ -388,12 +388,14 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           // a real DV RPU stream (profile 5/7/8) - not the VS10 fake-DV path.
           if (!user_dv_disable)
           {
-            const int l5mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-                CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
+            const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
+            const int l5mode = dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
             m_bitstream->SetDoviL5Mode(l5mode);
             // keep upstream's side-data flag meaningful under our 3-mode setting
             if (l5mode == DOVI_L5_ZERO)
               m_streamMeta.flags.push_back("l5-zeroed");
+            m_bitstream->SetDoviL5OsdUnmask(
+                dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
             const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
                                  m_hints.dovi.dv_profile == 8);
             if (l5mode == 2 && realDV)
@@ -649,6 +651,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         uint16_t l5t, l5b, l5l, l5r;
         const bool l5valid = aml_dv_detect_active_area_get(l5t, l5b, l5l, l5r);
         m_bitstream->SetDoviL5DetectedOffsets(l5valid, l5t, l5b, l5l, l5r);
+        // osdst: refresh overlay (OSD/subtitle) visibility for the L5 un-mask.
+        m_bitstream->SetDoviL5OverlayVisible(aml_dv_l5_overlay_visible());
       }
 
       if (packet.isDualStream && aml_dolby_vision_enabled())

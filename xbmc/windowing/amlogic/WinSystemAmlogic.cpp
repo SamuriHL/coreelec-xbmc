@@ -391,7 +391,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE})
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK})
     {
       setting = settings->GetSetting(dvId);
       if (setting)

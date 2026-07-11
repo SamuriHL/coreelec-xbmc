@@ -25898,3 +25898,15 @@ msgstr ""
 msgctxt "#60352"
 msgid "Auto-detect"
 msgstr ""
+
+#. Label of Dolby Vision L5 "show OSD/subtitles over letterbox bars" setting
+#: system/settings/settings.xml
+msgctxt "#60353"
+msgid "Show OSD/subtitles over letterbox bars"
+msgstr ""
+
+#. Description of setting with label #60353
+#: system/settings/settings.xml
+msgctxt "#60354"
+msgid "When the active-area (letterbox) offsets are being applied - Source or Auto-detect above - the Dolby Vision engine masks the black bars, which can also hide OSD or subtitles drawn in the bar region. Enable this to temporarily lift the mask (set Level 5 to zero) whenever the OSD, a dialog, or subtitles are on screen, so overlays in the bars stay visible. No effect in Zero mode."
+msgstr ""
