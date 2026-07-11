@@ -87,12 +87,12 @@ protected:
   bool SwitchCodecIfNeeded();
   void SetSyncType(bool passthrough);
   /*!
-   * \brief Apply the audiooutput.lavsync setting to the current codec if it is
-   * a passthrough codec, rebasing its internal clock when already in sync.
+   * \brief Enable LAV-style A/V sync on the current codec if it is a passthrough
+   * codec, rebasing its internal clock when already in sync.
    *
-   * No-op for decoded audio, realtime/live streams, and when the setting is off.
-   * The passthrough A/V sync model is derived from LAV Filters by Hendrik
-   * Leppkes (Nevcairiel).
+   * Always on for normal passthrough playback; a no-op for decoded audio and
+   * realtime/live streams (excluded via !IsRealtimeStream()). The passthrough
+   * A/V sync model is derived from LAV Filters by Hendrik Leppkes (Nevcairiel).
    */
   void ConfigureLavAudioSync();
 
