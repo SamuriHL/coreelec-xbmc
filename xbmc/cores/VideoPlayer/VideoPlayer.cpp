@@ -4382,8 +4382,15 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       res = OpenAudioStream(hint, reset);
       break;
     case StreamType::VIDEO:
-      // fake Dolby Vision type when using Dolby Vision VS-Engine
-      if (aml_convert_to_dv_by_vs_engine(hint.hdrType))
+    {
+      // Resolve the Dolby Vision VS10 output mode from the *real* source type
+      // (before it is faked to DV below) and stash it for CAMLCodec. Then fake
+      // Dolby Vision when either the legacy SDR2DV/HDR2DV toggle or a non-bypass
+      // VS10 selection wants the DV engine engaged.
+      const unsigned int vs10Mode = aml_vs10_by_hdrtype(hint.hdrType, hint.bitdepth);
+      aml_dv_set_vs10_pending(vs10Mode);
+      if (aml_convert_to_dv_by_vs_engine(hint.hdrType) ||
+          vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
         hint.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
       res = OpenVideoStream(hint, reset);
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
@@ -4402,6 +4409,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
                   view.Width(), view.Height());
       }
       break;
+    }
     case StreamType::SUBTITLE:
       res = OpenSubtitleStream(hint);
       break;
@@ -5359,6 +5367,21 @@ bool CVideoPlayer::OnAction(const CAction &action)
 
     case ACTION_PLAYER_PROCESS_INFO:
       CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Player, "OnProcessInfo");
+      return true;
+
+    // Dolby Vision VS10 engine: switch the output mode live during playback.
+    // "Original" reverts to follow-source (native DV or native SDR/HDR as-is).
+    case ACTION_VS10_ORIGINAL:
+      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+      return true;
+    case ACTION_VS10_SDR:
+      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10);
+      return true;
+    case ACTION_VS10_HDR10:
+      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10);
+      return true;
+    case ACTION_VS10_DV:
+      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
       return true;
   }
 
