@@ -25498,3 +25498,39 @@ msgstr ""
 msgctxt "#60341"
 msgid "Inject the peak luminance set above into the display's Dolby Vision VSVDB (EDID), so the DV engine actually tone-maps for that brightness instead of the value the TV advertises. Useful when the TV over- or under-reports its real peak. Only the max-luminance field is changed; all other VSVDB data is kept. Snapped to the nearest Dolby PQ step. Requires a display with a v2 VSVDB and a peak value above (0 = auto does nothing)."
 msgstr ""
+
+#. Label of Dolby Vision VSVDB colour-space override setting
+#: system/settings/settings.xml
+msgctxt "#60342"
+msgid "Colour space (VSVDB)"
+msgstr ""
+
+#. Description of setting with label #60342
+#: system/settings/settings.xml
+msgctxt "#60343"
+msgid "Override the colour primaries advertised in the injected Dolby Vision VSVDB, so the DV engine tone-maps for a specific gamut. 'Display' keeps the panel's own advertised primaries and only changes the peak luminance above. The other options force standard primaries; the display's version and capability bits are preserved. Requires a v2 VSVDB display."
+msgstr ""
+
+#. VSVDB colour space option: keep the display's advertised primaries
+#: system/settings/settings.xml
+msgctxt "#60344"
+msgid "Display (keep advertised)"
+msgstr ""
+
+#. VSVDB colour space option: DCI-P3
+#: system/settings/settings.xml
+msgctxt "#60345"
+msgid "DCI-P3"
+msgstr ""
+
+#. VSVDB colour space option: BT.2020
+#: system/settings/settings.xml
+msgctxt "#60346"
+msgid "BT.2020"
+msgstr ""
+
+#. VSVDB colour space option: BT.709
+#: system/settings/settings.xml
+msgctxt "#60347"
+msgid "BT.709"
+msgstr ""
