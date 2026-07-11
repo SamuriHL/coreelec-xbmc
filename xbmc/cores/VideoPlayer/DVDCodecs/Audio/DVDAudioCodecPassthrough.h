@@ -5,10 +5,9 @@
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *  See LICENSES/README.md for more information.
  *
- *  The optional "LAV Audio" passthrough A/V sync (gated behind the
- *  audiooutput.lavsync setting, OFF by default) is derived from LAV Filters by
- *  Hendrik Leppkes (Nevcairiel): https://github.com/Nevcairiel/LAVFilters
- *  When disabled, this codec uses stock Kodi PTS handling.
+ *  The "LAV Audio" passthrough A/V sync is derived from LAV Filters by Hendrik
+ *  Leppkes (Nevcairiel): https://github.com/Nevcairiel/LAVFilters
+ *  It is always on for normal playback; only realtime/PVR streams are excluded.
  */
 
 #pragma once
