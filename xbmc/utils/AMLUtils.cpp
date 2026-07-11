@@ -512,6 +512,10 @@ void aml_dv_apply_vsvdb()
     data += std::to_string(b[i] & 0xff);
   }
   CSysfsPath("/sys/module/aml_media/parameters/vsvdb_data", data);
+  // Toggle force_vsvdb 0->1 so the DV core re-latches the new block. This makes
+  // the override apply live mid-stream (setting change), not just at decoder
+  // open; at open force_vsvdb is already 0 so the toggle is a harmless no-op.
+  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 0);
   CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 1);
   CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB max-lum override -> {} nits (idx {}), data [{}]",
             __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, data);
