@@ -25486,3 +25486,27 @@ msgstr ""
 msgctxt "#60070"
 msgid "Set the maximum luminance for OSD graphics (GUI, subtitles) in nits when VS10 HDR10 output is active. Overrides the general DV OSD brightness for HDR10 output specifically. Default 316 matches the compositor's built-in value for HDR10."
 msgstr ""
+
+#. Label of Dolby Vision VSVDB max-luminance override setting
+#: system/settings/settings.xml
+msgctxt "#60340"
+msgid "Override display DV max luminance"
+msgstr ""
+
+#. Description of setting with label #60340
+#: system/settings/settings.xml
+msgctxt "#60341"
+msgid "Replace the peak luminance the display advertises in its Dolby Vision VSVDB (EDID) with your own value, so the DV engine tone-maps for the brightness you set. Useful when the TV over- or under-reports its real peak brightness. Only the max-luminance field is changed; all other VSVDB data is kept. Requires a display with a v2 VSVDB."
+msgstr ""
+
+#. Label of Dolby Vision VSVDB max-luminance value setting
+#: system/settings/settings.xml
+msgctxt "#60342"
+msgid "DV max luminance (nits)"
+msgstr ""
+
+#. Description of setting with label #60342
+#: system/settings/settings.xml
+msgctxt "#60343"
+msgid "Target peak luminance in nits written into the injected VSVDB. Snapped to the nearest Dolby PQ step. Lower it to make the DV engine tone-map for a dimmer panel (lifts mid-tones, less highlight clipping); raise it for a brighter panel."
+msgstr ""

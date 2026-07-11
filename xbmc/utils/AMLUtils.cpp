@@ -417,6 +417,97 @@ void aml_dv_set_hdr10_osd_brightness(int nits)
   CSysfsPath("/sys/module/aml_media/parameters/amdv_graphic_max", nits);
 }
 
+// --- Dolby Vision VSVDB max-luminance override -------------------------------
+// The display advertises its DV capabilities (primaries + max/min luminance) in
+// a VSVDB block via EDID. CE22 can inject a replacement block through the stock
+// aml_media params force_vsvdb (0/1) + vsvdb_data (comma-separated decimal bytes).
+// We read the display's own v2 VSVDB, patch only its 5-bit "Maximum Luminance
+// (PQ)" field to the user's target, and re-inject it - so every other field
+// (version/primaries) is preserved exactly. v2 layout matches
+// DVDVideoCodecAmlogic::GetDisplayVsvdbMaxNits(): block = [0xEB, 0x01, OUI(3)]
+// then payload at b[5]; version = (b[5]>>5)&7; max-lum index = (b[7]>>3)&0x1F.
+
+// VSVDB v2 5-bit max-luminance (PQ) index -> nits (Dolby table).
+static const int vsvdb_v2_max_lum_lut[32] = {
+    96,   113,  132,  155,  181,  211,  245,  285,  332,  385,  447,
+    518,  601,  696,  807,  934,  1082, 1252, 1450, 1678, 1943, 2250,
+    2607, 3020, 3501, 4060, 4710, 5467, 6351, 7382, 8588, 10000};
+
+// Read the display's advertised VSVDB block (hex after "VSVDB: " in dv_cap) into
+// bytes[]; returns the byte count (0 on failure).
+static size_t aml_read_display_vsvdb(int bytes[], size_t max)
+{
+  CSysfsPath dv_cap{"/sys/class/amhdmitx/amhdmitx0/dv_cap"};
+  if (!dv_cap.Exists())
+    return 0;
+  std::string cap = dv_cap.Get<std::string>().value();
+  const std::string tag = "VSVDB: ";
+  size_t p = cap.find(tag);
+  if (p == std::string::npos)
+    return 0;
+  size_t start = p + tag.size();
+  size_t end = cap.find_first_of(" \t\r\n", start);
+  std::string hex = cap.substr(start, (end == std::string::npos ? cap.size() : end) - start);
+  size_t n = 0;
+  for (size_t i = 0; (i + 1 < hex.size()) && (n < max); i += 2)
+  {
+    try { bytes[n++] = static_cast<int>(std::stoul(hex.substr(i, 2), nullptr, 16)); }
+    catch (...) { return 0; }
+  }
+  return n;
+}
+
+void aml_dv_clear_vsvdb()
+{
+  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 0);
+}
+
+void aml_dv_apply_vsvdb()
+{
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE))
+  {
+    aml_dv_clear_vsvdb();
+    return;
+  }
+
+  int b[16];
+  size_t n = aml_read_display_vsvdb(b, 16);
+  // Need the v2 payload byte b[7]; version is in b[5] bits 7:5.
+  if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
+  {
+    CLog::Log(LOGINFO, "AMLUtils::{} - no v2 VSVDB from display ({} bytes) - not injecting",
+              __FUNCTION__, static_cast<int>(n));
+    aml_dv_clear_vsvdb();
+    return;
+  }
+
+  // Snap the requested nits to the nearest Dolby PQ max-luminance step.
+  int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM);
+  int idx = 0, best = 0x7fffffff;
+  for (int i = 0; i < 32; i++)
+  {
+    int d = vsvdb_v2_max_lum_lut[i] - nits;
+    if (d < 0) d = -d;
+    if (d < best) { best = d; idx = i; }
+  }
+
+  // Patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keep the rest.
+  b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
+
+  // Emit the full block as comma-separated decimals for vsvdb_data, enable inject.
+  std::string data;
+  for (size_t i = 0; i < n; i++)
+  {
+    if (i) data += ",";
+    data += std::to_string(b[i] & 0xff);
+  }
+  CSysfsPath("/sys/module/aml_media/parameters/vsvdb_data", data);
+  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 1);
+  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB max-lum override -> {} nits (idx {}), data [{}]",
+            __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, data);
+}
+
 bool aml_video_started()
 {
   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};
