@@ -10,6 +10,7 @@
 
 #include "AudioSinkAE.h"
 #include "DVDClock.h"
+#include "DVDCodecs/Audio/FloatingAverage.h"
 #include "DVDMessageQueue.h"
 #include "DVDStreamInfo.h"
 #include "IVideoPlayer.h"
@@ -85,6 +86,15 @@ protected:
   //! codec changes, in which case we may want to switch passthrough on/off.
   bool SwitchCodecIfNeeded();
   void SetSyncType(bool passthrough);
+  /*!
+   * \brief Apply the audiooutput.lavsync setting to the current codec if it is
+   * a passthrough codec, rebasing its internal clock when already in sync.
+   *
+   * No-op for decoded audio, realtime/live streams, and when the setting is off.
+   * The passthrough A/V sync model is derived from LAV Filters by Hendrik
+   * Leppkes (Nevcairiel).
+   */
+  void ConfigureLavAudioSync();
 
   CDVDMessageQueue m_messageQueue;
   CDVDMessageQueue& m_messageParent;
@@ -124,5 +134,16 @@ protected:
   bool m_displayReset = false;
   unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
   int m_disconAdjustCounter = 0;
+
+  //============================================================================
+  // LAV jitter tracking for PCM / decoded (non-passthrough) audio. Always on
+  // except realtime/PVR. Derived from LAV Filters by Hendrik Leppkes (Nevcairiel).
+  //============================================================================
+  bool m_lavStylePcmSyncEnabled{false};
+  static constexpr size_t PCM_JITTER_WINDOW_SIZE = 64;
+  static constexpr double PCM_JITTER_THRESHOLD = 10000.0; // 10 ms in DVD_TIME_BASE units
+  CFloatingAverage<double, PCM_JITTER_WINDOW_SIZE> m_pcmJitterTracker;
+  double m_pcmOutputClock{0.0}; // running output timestamp (LAV's m_rtStart)
+  bool m_pcmResyncTimestamp{true}; // resync on next valid PTS (LAV's m_bResyncTimestamp)
 };
 
