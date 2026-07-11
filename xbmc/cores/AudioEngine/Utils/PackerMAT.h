@@ -32,6 +32,17 @@ public:
   bool PackTrueHD(const uint8_t* data, int size);
   std::vector<uint8_t> GetOutputFrame();
 
+  // Samples offset carried by the last GetOutputFrame() MAT frame, for TrueHD
+  // sub-MAT-frame drift compensation by the caller.
+  int GetSamplesOffset() const { return m_lastOutputSamplesOffset; }
+
+  // True when the last GetOutputFrame() MAT frame spanned a detected stream
+  // discontinuity (seamless branch point).
+  bool HadDiscontinuity() const { return m_lastOutputHadDiscontinuity; }
+
+  // Fully reset packer state (used by the caller on codec reset/seek).
+  void Reset();
+
 private:
   struct MATState
   {
@@ -64,6 +75,10 @@ private:
     // frame-time to output-time offset, used to size the padding carry-forward
     // on the next branch point.
     int32_t nOutputTimeOffset;
+
+    // MAT-frame sample accounting used to derive the samples offset.
+    uint32_t samples; // number of samples accumulated in current MAT frame
+    int32_t numberOfSamplesOffset; // offset vs samples in a standard MAT frame (40 * 24)
   };
 
   void WriteHeader();
@@ -78,4 +93,12 @@ private:
   uint32_t m_bufferCount{0};
   std::vector<uint8_t> m_buffer;
   std::deque<std::vector<uint8_t>> m_outputQueue;
+
+  // Per-MAT-frame samples offset / discontinuity flag, queued as frames are
+  // produced and surfaced via GetSamplesOffset() / HadDiscontinuity().
+  int m_lastOutputSamplesOffset{0};
+  bool m_lastOutputHadDiscontinuity{false};
+  std::deque<int> m_offsetQueue;
+  std::deque<bool> m_discontinuityQueue;
+  bool m_pendingDiscontinuity{false};
 };
