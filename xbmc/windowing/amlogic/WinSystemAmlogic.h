@@ -52,6 +52,13 @@ public:
 
   void MonitorStart();
   void MonitorStop();
+
+  // DRM/KMS handles for the hardware-vsync reference clock (CVideoSyncAML).
+  // CE22 runs the display on DRM (mesondrmfb), so the vsync source is the DRM
+  // vblank sequence, not the legacy OSD-fb ioctl.
+  int GetDRMDeviceFd() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_handle() : -1; }
+  uint32_t GetDRMCrtcId() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_crtc_id() : 0; }
+  bool GetDRMConnected() const { return m_amlDisplay && m_amlDisplay->aml_get_display_connected(); }
 protected:
   std::string m_framebuffer_name;
   EGLDisplay m_nativeDisplay;

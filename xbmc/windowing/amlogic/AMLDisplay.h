@@ -82,6 +82,7 @@ public:
   virtual ~CAMLDRMUtils();
 
   int aml_get_drmDevice_handle() const { return m_fd; }
+  uint32_t aml_get_drmDevice_crtc_id() const { return m_crtc ? m_crtc->crtc_id : 0; }
   void aml_init_drmDevice();
   void aml_drmDevice_vsync();
   std::string aml_get_drmDevice_mode();
@@ -136,6 +137,7 @@ public:
   CAMLDisplay();
 
   int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }
+  uint32_t aml_get_Device_crtc_id() const { return m_amlDRMUtils->aml_get_drmDevice_crtc_id(); }
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   void aml_drmDevice_vsync() { m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
