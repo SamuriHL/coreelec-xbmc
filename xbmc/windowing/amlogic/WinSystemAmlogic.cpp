@@ -390,7 +390,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE})
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE})
     {
       setting = settings->GetSetting(dvId);
       if (setting)
@@ -415,6 +416,11 @@ bool CWinSystemAmlogic::InitWindowSystem()
     vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE});
+
+    // The stock videoplayer.dovizerolevel5 boolean is superseded on Amlogic by
+    // the richer dolbyvision.l5.mode (Source/Zero/Auto-detect); hide it here.
+    if (auto zl5 = settings->GetSetting(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5))
+      zl5->SetVisible(false);
 
     int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
     AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
