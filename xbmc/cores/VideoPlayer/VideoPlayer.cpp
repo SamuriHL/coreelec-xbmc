@@ -3981,6 +3981,10 @@ void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
     std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)->EnableSubtitleStream(bVisible);
 
+  // DV L5 "osdst": subtitles may sit in the letterbox bar region; report their
+  // visibility so the DV L5 path can un-mask the bars while they're shown.
+  aml_dv_set_subtitles_visible(bVisible);
+
   CServiceBroker::GetDataCacheCore().SignalSubtitleInfoChange();
 }
 
