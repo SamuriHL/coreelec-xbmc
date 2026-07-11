@@ -476,6 +476,17 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     if (caps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
         m_hints.dovi.dv_profile != 5)
       m_bitstream->SetRemoveDovi(true);
+
+    // Non-DV source routed through the VS10 engine (dv_profile == 0): strip
+    // HDR10+ dynamic metadata (VS10 consumes only static HDR10) and any stray
+    // DoVi RPU so they can't conflict with the forced VS10 conversion. Native DV
+    // streams (dv_profile != 0) are untouched.
+    if (m_hints.dovi.dv_profile == 0 &&
+        aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    {
+      m_bitstream->SetRemoveHdr10Plus(true);
+      m_bitstream->SetRemoveDovi(true);
+    }
   }
 
   CLog::Log(LOGINFO, "{}: Opened Amlogic Codec", __MODULE_NAME__);
