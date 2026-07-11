@@ -3998,7 +3998,7 @@
           <level>2</level>
           <default>0</default>
           <dependencies>
-            <dependency type="visible" setting="coreelec.amlogic.dolbyvisionled" operator="is">0</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
           </dependencies>
           <constraints>
             <options>
@@ -4015,7 +4015,7 @@
           <level>2</level>
           <default>20</default>
           <dependencies>
-            <dependency type="visible" setting="coreelec.amlogic.dolbyvisionled" operator="is">0</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
             <dependency type="visible" setting="coreelec.amlogic.dolbyvision.cmv40.append" operator="is">3</dependency>
           </dependencies>
           <constraints>
