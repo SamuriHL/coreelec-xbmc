@@ -1488,23 +1488,19 @@ void CGUIWindowManager::AfterRender()
 
   // make copy of vector as we may remove items from it as we go
   auto activeDialogs = m_activeDialogs;
-  bool anyDialogRunning = false;
   for (const auto& window : activeDialogs)
   {
     if (window->IsDialogRunning())
     {
-      anyDialogRunning = true;
       window->AfterRender();
       // Dialog state can affect visibility states
       if (pWindow && window->IsControlDirty())
         pWindow->MarkDirtyRegion();
     }
   }
-
-  // DV L5 "osdst": any dialog/OSD or the DVD/video menu over the video means an
-  // overlay may sit in the letterbox bar region; report it so the DV L5 path can
-  // temporarily un-mask the bars (see CBitstreamConverter::processDoviRpu).
-  aml_dv_set_osd_visible(anyDialogRunning || IsWindowVisible(WINDOW_VIDEO_MENU));
+  // NOTE: DV L5 "osdst" OSD visibility is refreshed in FrameMove (per-frame,
+  // unthrottled), NOT here - AfterRender is skipped during steady fullscreen
+  // video when the GUI has no dirty regions, which would freeze the value.
 }
 
 void CGUIWindowManager::FrameMove()
@@ -1529,10 +1525,22 @@ void CGUIWindowManager::FrameMove()
   // update any dialogs - we take a copy of the vector as some dialogs may close themselves
   // during this call
   auto dialogs = m_activeDialogs;
+  bool anyDialogRunning = false;
   for (const auto& window : dialogs)
   {
     window->FrameMove();
+    if (window->IsDialogRunning())
+      anyDialogRunning = true;
   }
+
+  // DV L5 "osdst": refresh OSD/menu visibility here (per-frame, unthrottled) and
+  // NOT in AfterRender. AfterRender is skipped during steady fullscreen video
+  // whenever the GUI layer has no dirty regions (see CApplication::Render's
+  // m_skipGuiRender), which would freeze the last-written value - if it latched
+  // true (playback-start info flash, a notification, the pause OSD) the DV L5
+  // bars would stay un-masked (grey) for the whole title. FrameMove runs every
+  // frame regardless of the GUI-render skip. See CBitstreamConverter::processDoviRpu.
+  aml_dv_set_osd_visible(anyDialogRunning || IsWindowVisible(WINDOW_VIDEO_MENU));
 
   CServiceBroker::GetGUI()->GetInfoManager().UpdateAVInfo();
 }
