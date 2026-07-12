@@ -362,8 +362,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
           // Dolby Vision L5 active-area (letterbox) mode: Source / Zero / Auto-
           // detect. Applies in both LED modes (the DV core masks bars from the RPU
-          // L5 regardless). Auto-detect spawns a background luma scan, but only for
-          // a real DV RPU stream (profile 5/7/8) - not the VS10 fake-DV path.
+          // L5 regardless), only for a real DV RPU stream (profile 5/7/8).
+          //  - Hard-cropped (non-16:9 coded frame, e.g. 3840x1600): the display
+          //    scaler adds bars the source RPU L5 can't describe. Derive them
+          //    geometrically and inject them - in Source AND Auto (not Zero).
+          //  - 16:9 coded frame + Auto: background luma-scan for baked-in bars.
           if (!user_dv_disable)
           {
             const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -373,10 +376,23 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
                 dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
             const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
                                  m_hints.dovi.dv_profile == 8);
-            if (l5mode == 2 && realDV)
-              aml_dv_detect_active_area_start();
+            const int cw = m_hints.width, ch = m_hints.height;
+            const bool preCropped = realDV && cw > 0 && ch > 0 &&
+                                    ((cw * 9 / 16 > ch + 40) || (ch * 16 / 9 > cw + 40));
+            if (l5mode != 1 /*Zero*/ && preCropped)
+            {
+              aml_dv_detect_active_area_stop();          // no scan needed
+              aml_dv_set_geometric_active_area(cw, ch);  // synchronous geometric offsets
+              m_bitstream->SetDoviL5Geometric(true);
+            }
             else
-              aml_dv_detect_active_area_stop();
+            {
+              m_bitstream->SetDoviL5Geometric(false);
+              if (l5mode == 2 /*Auto*/ && realDV)
+                aml_dv_detect_active_area_start();
+              else
+                aml_dv_detect_active_area_stop();
+            }
           }
 
           if ((m_hints.dovi.dv_profile == 4 || m_hints.dovi.dv_profile == 7) && !user_dv_disable &&
