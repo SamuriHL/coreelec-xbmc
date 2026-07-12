@@ -2176,9 +2176,17 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
   // restored the moment it hides).
   const bool l5OverlaySuppress = m_doviL5OsdUnmask && m_doviL5OverlayVisible;
 
+  // Inject the detected/geometric active-area offsets when: DETECT mode (luma-
+  // detected bars), or geometric (hard-cropped display bars, which apply in SOURCE
+  // too). Never in ZERO mode. Source-L5 precedence is checked per-frame below.
+  const bool l5ApplyOffsets =
+      m_doviL5DetectedValid && m_doviL5Mode != DOVI_L5_ZERO &&
+      (m_doviL5Mode == DOVI_L5_DETECT || m_doviL5Geometric) &&
+      (m_doviL5DetTop || m_doviL5DetBottom || m_doviL5DetLeft || m_doviL5DetRight);
+
   // early exit if no processing option is enabled and EL type is alredy tested
   if (m_doviELTested && !m_convert_dovi && m_doviL5Mode == DOVI_L5_SOURCE &&
-      !l5OverlaySuppress && m_append_cmv40 == CMV40_NONE)
+      !l5OverlaySuppress && !l5ApplyOffsets && m_append_cmv40 == CMV40_NONE)
     return NULL;
 
   DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nalSize);
@@ -2224,8 +2232,7 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
     processed = true;
   }
-  else if (ret == 0 && m_doviL5Mode == DOVI_L5_DETECT && m_doviL5DetectedValid &&
-           (m_doviL5DetTop || m_doviL5DetBottom || m_doviL5DetLeft || m_doviL5DetRight))
+  else if (ret == 0 && l5ApplyOffsets)
   {
     const DoviVdrDmData* l5vdr = dovi_rpu_get_vdr_dm_data(rpu);
     const bool sourceHasL5 =
