@@ -319,6 +319,21 @@ bool aml_dolby_vision_enabled()
   return ((dv_enabled && !!dv_user_enabled) == 1);
 }
 
+bool aml_dv_core_active()
+{
+  // True when the Dolby Vision core will actually process this stream, INCLUDING
+  // the VS10 path on a non-DV display (box supports DV, the user hasn't disabled
+  // DV, and either the display advertises DV or a non-bypass VS10 mode is
+  // pending). Mirrors the dv_enable decision in CAMLCodec::OpenDecoder so the
+  // BL+EL merge and RPU handling stay consistent with whether the core runs.
+  const bool dv_user_enabled(!CServiceBroker::GetSettingsComponent()->GetSettings()->
+    GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  if (!aml_support_dolby_vision() || !dv_user_enabled)
+    return false;
+  return aml_display_support_dv() ||
+         aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS;
+}
+
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 {
   static int convert_to_dv = -1;
