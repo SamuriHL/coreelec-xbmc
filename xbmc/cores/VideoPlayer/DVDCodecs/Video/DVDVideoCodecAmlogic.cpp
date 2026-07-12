@@ -497,6 +497,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     if (m_hints.dovi.dv_profile == 0 &&
         aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS)
     {
+      // Note: this discards HDR10+ dynamic metadata. It only fires when a VS10
+      // per-source mode is set to non-bypass; the shipped defaults are bypass so
+      // HDR10+ passes through untouched unless the user opts in.
+      CLog::Log(LOGINFO, "{}: VS10 engaged (pending mode {}) on non-DV source - "
+                         "stripping HDR10+/DoVi dynamic metadata", __MODULE_NAME__,
+                aml_dv_get_vs10_pending());
       m_bitstream->SetRemoveHdr10Plus(true);
       m_bitstream->SetRemoveDovi(true);
     }
