@@ -4193,7 +4193,7 @@
         <setting id="coreelec.amlogic.dolbyvision.vs10.hdr10" type="integer" label="60055" help="60056">
           <requirement>HAVE_AMCODEC</requirement>
           <level>2</level>
-          <default>2</default>
+          <default>5</default>
           <dependencies>
             <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
           </dependencies>
