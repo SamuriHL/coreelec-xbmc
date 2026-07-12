@@ -26,6 +26,7 @@
 #include "platform/linux/RBP.h"
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <math.h>
@@ -43,6 +44,16 @@ inline bool IsValidPts(double pts)
 {
   return (pts >= 0.0) && (pts <= MAX_REASONABLE_PTS);
 }
+
+// Passthrough vsync-clock lipsync gate: when the vblank reference clock drives
+// CDVDClock, CDVDClock::ErrorAdjust already quantizes corrections to whole frame
+// times inside a +20/-27ms window. Tighten the outer SYNC_DISCON gate to that
+// window so it governs steady-state lipsync instead of the coarse
+// maxpassthroughoffsyncduration (~50ms), which otherwise lets passthrough
+// audio-behind drift accumulate before any correction fires (a seek re-anchors
+// it). Ported from the CE21 LAV build (was gated there on m_lavFullSyncEnabled;
+// here LAV is always-on for passthrough so the gate is unconditional).
+constexpr unsigned int DISCON_VSYNC_ADJUST_TIME_MS = 20;
 } // namespace
 
 class CDVDMsgAudioCodecChange : public CDVDMsg
@@ -657,7 +668,23 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   {
     double syncerror = m_audioSink.GetSyncError();
 
-    if (std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
+    // While the vsync reference clock is master, let ErrorAdjust's own quantized
+    // +20/-27ms window govern lipsync by tightening the outer gate to it. Only
+    // applies while the vblank clock runs; GetVsyncAdjust() != 0 is the same
+    // discriminator ErrorAdjust uses for its quantized path. Without this,
+    // audio-behind drift on the passthrough path accumulates to
+    // m_disconAdjustTimeMs (~50ms) before any correction and only a seek/flush
+    // re-anchors it.
+    unsigned int adjustTimeMs = m_disconAdjustTimeMs;
+    if (m_pClock->GetVsyncAdjust() != 0)
+    {
+      int missedvblanks;
+      double clockspeed, refreshrate;
+      if (m_pClock->GetClockInfo(missedvblanks, clockspeed, refreshrate))
+        adjustTimeMs = std::min(adjustTimeMs, DISCON_VSYNC_ADJUST_TIME_MS);
+    }
+
+    if (std::abs(syncerror) > DVD_MSEC_TO_TIME(adjustTimeMs))
     {
       double correction = m_pClock->ErrorAdjust(syncerror, "CVideoPlayerAudio::OutputPacket");
       if (correction != 0)
