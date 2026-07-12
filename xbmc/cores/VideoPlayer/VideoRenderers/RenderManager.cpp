@@ -660,6 +660,12 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     m_overlays.SetVideoRect(src, dst, view);
     m_overlays.Render(m_presentsource);
 
+    // DV L5 "osdst": report whether a subtitle/overlay is actually painted this
+    // frame - per-frame accurate (forced subs + in-window regular subs only, NOT
+    // mere track enablement), so the DV L5 path un-masks the letterbox bars only
+    // while text is really on screen. See CBitstreamConverter::processDoviRpu.
+    aml_dv_set_subtitles_visible(m_overlays.HasVisibleOverlay(m_presentsource));
+
     if (m_renderDebug)
     {
       if (m_renderDebugVideo)
