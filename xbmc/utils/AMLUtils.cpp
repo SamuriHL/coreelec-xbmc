@@ -808,9 +808,13 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
     int lrGap = ((int)refW > codecCtx->width) ? ((int)refW - codecCtx->width) / 2 : 0;
     if (tbGap > 20 || lrGap > 20)
     {
-      CLog::Log(LOGINFO, "DetectActiveArea: pre-cropped {}x{} - no bars to scan",
+      // Hard-cropped: no bars are baked into the coded frame, but the display
+      // scaler adds them when it centres the frame in a 16:9 output. Publish the
+      // geometric offsets instead of scanning (the codec normally handles this
+      // path up-front from m_hints; this is the safety net).
+      CLog::Log(LOGINFO, "DetectActiveArea: pre-cropped {}x{} - using geometric offsets",
                 codecCtx->width, codecCtx->height);
-      s_detectState.store(DV_DETECT_SKIP_NON16X9);
+      aml_dv_set_geometric_active_area(codecCtx->width, codecCtx->height);
       goto cleanup;
     }
   }
@@ -1264,6 +1268,34 @@ void aml_dv_detect_active_area_stop()
   s_detectState.store(DV_DETECT_FAILED);
   if (s_detectThread.joinable())
     s_detectThread.join();
+}
+
+void aml_dv_set_geometric_active_area(int codedW, int codedH)
+{
+  // Hard-cropped (non-16:9 coded frame) content, e.g. 3840x1600, is centred in a
+  // 16:9 output so the display scaler adds letterbox/pillarbox bars the source RPU
+  // L5 cannot describe (the whole coded frame is active). Derive those bars purely
+  // geometrically - the frame vs its 16:9 envelope - and publish them as the
+  // active-area offsets, so BitstreamConverter injects them (matching the donor
+  // builds' kernel level5_h_o). No pixel scan / background decode needed.
+  uint16_t top = 0, bottom = 0, left = 0, right = 0;
+  if (codedW > 0 && codedH > 0)
+  {
+    const int refH = codedW * 9 / 16; // 16:9 envelope height at this width
+    const int refW = codedH * 16 / 9; // 16:9 envelope width at this height
+    if (refH > codedH) // wider than 16:9 -> letterbox (top/bottom bars)
+      top = bottom = static_cast<uint16_t>((refH - codedH) / 2);
+    else if (refW > codedW) // taller than 16:9 -> pillarbox (left/right bars)
+      left = right = static_cast<uint16_t>((refW - codedW) / 2);
+  }
+  s_detectedTop.store(top);
+  s_detectedBottom.store(bottom);
+  s_detectedLeft.store(left);
+  s_detectedRight.store(right);
+  s_detectState.store((top || bottom || left || right) ? DV_DETECT_OK : DV_DETECT_SKIP_NON16X9);
+  s_detectStable.store(true);
+  CLog::Log(LOGINFO, "AMLUtils::{} - geometric active area {}x{} -> T={} B={} L={} R={}",
+            __FUNCTION__, codedW, codedH, top, bottom, left, right);
 }
 
 // DV L5 "osdst": the GUI thread reports OSD/subtitle visibility here; the video
