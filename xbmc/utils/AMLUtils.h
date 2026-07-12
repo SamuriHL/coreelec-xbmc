@@ -107,6 +107,10 @@ enum DvDetectState
 void aml_dv_detect_set_file(const std::string& path);
 void aml_dv_detect_active_area_start();
 void aml_dv_detect_active_area_stop();
+// Geometric letterbox for hard-cropped (non-16:9 coded) content: derive the
+// display-scaling bars from the coded resolution and publish them as the
+// active-area offsets (no pixel scan). Applied in Source/Auto (not Zero).
+void aml_dv_set_geometric_active_area(int codedW, int codedH);
 int aml_dv_detect_active_area_state();
 // Returns true when detection has completed (state OK); fills the offsets either way.
 bool aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left,

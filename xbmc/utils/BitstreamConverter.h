@@ -156,6 +156,10 @@ public:
   // overlay. m_doviL5OverlayVisible is refreshed per-packet from the GUI state.
   void SetDoviL5OsdUnmask(bool value) { m_doviL5OsdUnmask = value; }
   void SetDoviL5OverlayVisible(bool value) { m_doviL5OverlayVisible = value; }
+  // Geometric letterbox for hard-cropped content: the detected offsets describe
+  // display-scaling bars (not baked-in bars), so inject them even in SOURCE mode
+  // (still never overriding a real source L5).
+  void SetDoviL5Geometric(bool value) { m_doviL5Geometric = value; }
   // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
   // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
   // bypass inputs are only consulted when the mode is CMV40_SMART.
@@ -235,6 +239,7 @@ protected:
   uint16_t m_doviL5DetRight{0};
   bool m_doviL5OsdUnmask{false};
   bool m_doviL5OverlayVisible{false};
+  bool m_doviL5Geometric{false};
   enum DOVICMv40Mode m_append_cmv40{CMV40_NONE};
   int m_smart_display_nits{0};
   int m_smart_threshold_pct{20};
