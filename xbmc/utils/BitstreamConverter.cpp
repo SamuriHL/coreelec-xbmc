@@ -2184,10 +2184,10 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
       (m_doviL5Mode == DOVI_L5_DETECT || m_doviL5Geometric) &&
       (m_doviL5DetTop || m_doviL5DetBottom || m_doviL5DetLeft || m_doviL5DetRight);
 
-  // early exit if no processing option is enabled and EL type is alredy tested
-  if (m_doviELTested && !m_convert_dovi && m_doviL5Mode == DOVI_L5_SOURCE &&
-      !l5OverlaySuppress && !l5ApplyOffsets && m_append_cmv40 == CMV40_NONE)
-    return NULL;
+  // NOTE: no early-exit for SOURCE mode any more - we always parse the RPU so we
+  // can guarantee an L5 block is present (HW5 needs one to engage DM; a missing-L5
+  // RPU passed through raw gets no tone-mapping). The parse is cheap; only frames
+  // that actually need a change are re-serialized.
 
   DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nalSize);
   const DoviRpuDataHeader* header = dovi_rpu_get_header(rpu);
@@ -2218,35 +2218,40 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     processed = true;
   }
 
-  // L5 active-area (letterbox) offsets. Overlay-suppress (osdst) wins: zero the
-  // offsets while an OSD/subtitle is up. Otherwise ZERO forces the whole frame
-  // active; DETECT injects the background detector's offsets, but only when the
-  // source RPU carries no L5 of its own (respect a correctly-authored stream).
-  if (ret == 0 && l5OverlaySuppress)
+  // L5 active-area (letterbox) offsets.
+  //  - Overlay-suppress (osdst) or ZERO mode: whole frame active.
+  //  - Otherwise, decide from the source L5: respect a real (non-zero) source L5;
+  //    inject the detected/geometric offsets when the source has none; and ALWAYS
+  //    guarantee an L5 block exists (inject 0 if absent) so HW5 engages DM - a
+  //    missing-L5 RPU passed through raw gets no tone-mapping at all.
+  if (ret == 0 && (l5OverlaySuppress || m_doviL5Mode == DOVI_L5_ZERO))
   {
     ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
     processed = true;
   }
-  else if (ret == 0 && m_doviL5Mode == DOVI_L5_ZERO)
-  {
-    ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
-    processed = true;
-  }
-  else if (ret == 0 && l5ApplyOffsets)
+  else if (ret == 0)
   {
     const DoviVdrDmData* l5vdr = dovi_rpu_get_vdr_dm_data(rpu);
-    const bool sourceHasL5 =
-        l5vdr && l5vdr->dm_data.level5 &&
+    const bool hasL5Block = l5vdr && l5vdr->dm_data.level5;
+    const bool hasRealL5 =
+        hasL5Block &&
         (l5vdr->dm_data.level5->active_area_left_offset ||
          l5vdr->dm_data.level5->active_area_right_offset ||
          l5vdr->dm_data.level5->active_area_top_offset ||
          l5vdr->dm_data.level5->active_area_bottom_offset);
-    if (!sourceHasL5)
+    if (l5ApplyOffsets && !hasRealL5)
     {
       ret = dovi_rpu_set_active_area_offsets(rpu, m_doviL5DetLeft, m_doviL5DetRight,
                                              m_doviL5DetTop, m_doviL5DetBottom);
       processed = true;
     }
+    else if (!hasL5Block)
+    {
+      // missing L5 block - inject a neutral one so the DV core tone-maps
+      ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
+      processed = true;
+    }
+    // else: a real (or explicit-zero) source L5 is present -> respect it.
     if (l5vdr)
       dovi_rpu_free_vdr_dm_data(l5vdr);
   }
