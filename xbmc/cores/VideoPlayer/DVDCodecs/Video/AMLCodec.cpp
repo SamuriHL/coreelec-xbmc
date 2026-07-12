@@ -2184,6 +2184,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
       // VS10 for native DV sources: optionally convert DV to SDR/HDR10 output
       // (vs10.dv = SDR/HDR10). Default (IPT/native) leaves the DV tunnel intact.
       unsigned int vs10_mode = aml_dv_get_vs10_pending();
+      // A non-DV display can't show the native DV tunnel, so a DV source left at
+      // the default "native" output is a black/broken picture -- notably profile
+      // 5, which has no HDR10 base layer to fall back to (profile 7/8 get their
+      // RPU stripped upstream and degrade to HDR10). Coerce native/bypass to a
+      // display-compatible VS10 conversion: HDR10 if the panel takes PQ, else SDR.
+      if (!aml_display_support_dv() &&
+          vs10_mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
+          vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
+        vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
+                                                 : DOLBY_VISION_OUTPUT_MODE_SDR10;
       if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
       {
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
