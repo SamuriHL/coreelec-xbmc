@@ -4144,9 +4144,11 @@ void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
     std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)->EnableSubtitleStream(bVisible);
 
-  // DV L5 "osdst": subtitles may sit in the letterbox bar region; report their
-  // visibility so the DV L5 path can un-mask the bars while they're shown.
-  aml_dv_set_subtitles_visible(bVisible);
+  // NOTE: DV L5 "osdst" subtitle visibility is NOT reported from here - track
+  // enablement is not the same as text being on screen (an enabled sub track
+  // stays enabled for the whole film, which would keep the bars un-masked/grey
+  // the entire time). It is driven per-frame from actual overlay visibility in
+  // CRenderManager::Render instead. See CBitstreamConverter::processDoviRpu.
 
   CServiceBroker::GetDataCacheCore().SignalSubtitleInfoChange();
 }
