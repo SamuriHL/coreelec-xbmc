@@ -527,8 +527,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       // the flag waits until the converter proves the stream carries HDR10+
       m_stripHdr10Plus = true;
     }
+    // Strip the DoVi RPU only when the DV core will NOT process this stream.
+    // When VS10 engages the core on a non-DV display (aml_dv_core_active()), the
+    // RPU must survive so the core can reconstruct FEL and tone-map to HDR10/SDR.
     if (caps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
-        m_hints.dovi.dv_profile != 5)
+        m_hints.dovi.dv_profile != 5 && !aml_dv_core_active())
     {
       m_bitstream->SetRemoveDovi(true);
       if (m_hints.dovi.dv_profile > 0)
@@ -672,7 +675,10 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         m_bitstream->SetDoviL5OverlayVisible(aml_dv_l5_overlay_visible());
       }
 
-      if (packet.isDualStream && aml_dolby_vision_enabled())
+      // Merge BL+EL whenever the DV core will actually run -- including the VS10
+      // path on a non-DV display, so profile 7 FEL titles are reconstructed
+      // (BL+EL+RPU) and tone-mapped by VS10 rather than played base-layer-only.
+      if (packet.isDualStream && aml_dv_core_active())
       {
         CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
           packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
