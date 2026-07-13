@@ -73,6 +73,13 @@ std::string GetFontFamily(std::vector<uint8_t>& buffer);
 std::string GetFontFamily(const std::string& filepath);
 
 /*!
+ *  \brief Check if ttf binary data is a valid font.
+ *  \param binary data of the font file
+ *  \return True if it is a valid font
+ */
+bool ValidateTTF(const std::vector<uint8_t>& buffer);
+
+/*!
  *  \brief Check if a filename have a supported font extension.
  *  \param filepath The font file path
  *  \return True if it has a supported extension, otherwise false

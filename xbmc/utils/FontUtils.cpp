@@ -218,6 +218,32 @@ std::string GetFontFamily(const std::string& filepath)
   return GetFontFamily(buffer);
 }
 
+bool ValidateTTF(const std::vector<uint8_t>& buffer)
+{
+    if (buffer.size() < 32) // minimal SFNT header size
+        return false;
+
+    FT_Library m_library{nullptr};
+    FT_Init_FreeType(&m_library);
+    if (!m_library)
+    {
+      CLog::LogF(LOGERROR, "Unable to initialize freetype library");
+      return false;
+    }
+
+    FT_Face face{nullptr};
+    if (FT_New_Memory_Face(m_library, reinterpret_cast<const FT_Byte*>(buffer.data()), buffer.size(),
+                           0, &face) != 0)
+    {
+      FT_Done_FreeType(m_library);
+      return false; // invalid TTF/OTF/SFNT
+    }
+
+    FT_Done_Face(face);
+    FT_Done_FreeType(m_library);
+    return true; // valid TTF/OTF/SFNT
+}
+
 bool IsSupportedFontExtension(const std::string& filepath)
 {
   return URIUtils::HasExtension(filepath, SUPPORTED_EXTENSIONS_MASK);
