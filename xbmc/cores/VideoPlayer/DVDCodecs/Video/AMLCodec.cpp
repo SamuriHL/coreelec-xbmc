@@ -2166,7 +2166,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     if (hints.dovi.dv_profile == 0)
     {
       AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FORCE_OUTPUT_MODE);
-      unsigned int vs10_mode = aml_dv_get_vs10_pending();
+      unsigned int vs10_mode = aml_dv_resolve_tunnel_mode(aml_dv_get_vs10_pending());
       aml_dv_apply_target_overrides(vs10_mode);
       if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
       {
