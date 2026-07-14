@@ -371,6 +371,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
@@ -394,6 +395,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
     // Live-apply the VSVDB max-luminance override when the shared display-peak
     // value or the force toggle changes during DV playback.
     vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE});
   }
@@ -457,17 +459,23 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
 
   const std::string& settingId = setting->GetId();
   if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE)
     return;
 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
   // otherwise the new value is picked up at the next decoder open. aml_dv_apply_vsvdb
-  // toggles force_vsvdb to re-latch the updated block into the running DV core.
+  // re-injects the updated block and re-latches it via an EDID re-parse.
   CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
   if (dv_enable.Exists() &&
       StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
-    aml_dv_apply_vsvdb();
+  {
+    // DM target overrides (peak + reference black) for the active VS10 mode.
+    aml_dv_apply_target_overrides(aml_dv_get_vs10_pending());
+    if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM)
+      aml_dv_apply_vsvdb();
+  }
 }
 
 bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
