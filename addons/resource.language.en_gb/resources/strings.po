@@ -25772,3 +25772,15 @@ msgstr ""
 msgctxt "#60354"
 msgid "When the active-area (letterbox) offsets are being applied - Source or Auto-detect above - the Dolby Vision engine masks the black bars, which can also hide OSD or subtitles drawn in the bar region. Enable this to temporarily lift the mask (set Level 5 to zero) whenever the OSD, a dialog, or subtitles are on screen, so overlays in the bars stay visible. No effect in Zero mode."
 msgstr ""
+
+#. Setting to override the Dolby Vision tone-mapping target minimum luminance (reference black)
+#: system/settings/settings.xml
+msgctxt "#60355"
+msgid "VS10 target minimum luminance (reference black)"
+msgstr ""
+
+#. Description of setting with label #60355
+#: system/settings/settings.xml
+msgctxt "#60356"
+msgid "Minimum luminance the Dolby Vision engine tone-maps to when VS10 converts to HDR10 / SDR, in units of 0.0001 nit (50 = 0.005 nit, the Dolby default). Lower it if near-black detail is being clipped (raised reference black) on VS10-processed output. 0 = keep the Dolby default. Requires the matching CoreELEC kernel; no effect otherwise."
+msgstr ""
