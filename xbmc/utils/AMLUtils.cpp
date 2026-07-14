@@ -412,6 +412,16 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   mode = aml_dv_resolve_tunnel_mode(mode);
   aml_dv_apply_target_overrides(mode);
 
+  // Keep the OSD graphics peak in step with the output mode, matching the
+  // decoder-open path: the slider only applies to VS10 HDR10 output, and a
+  // nonzero amdv_graphic_max overrides the kernel's per-format graphics table
+  // for EVERY mode, so it must be cleared when leaving HDR10 output.
+  if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+    aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
+      GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+  else
+    aml_dv_set_hdr10_osd_brightness(0);
+
   if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
   {
     // Stop forcing an output mode: let the pipeline follow the source. Mirrors
