@@ -2474,6 +2474,11 @@ void CAMLCodec::CloseDecoder()
   if (dv_enabled && dolby_vision_policy.Get<int>().value() == AMDV_FORCE_OUTPUT_MODE)
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_BYPASS + 1) % 6);
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
+  // (survives the stream) and a nonzero value overrides the kernel's per-format
+  // graphics table for every mode, so a leak here dims/brightens the OSD of all
+  // later streams, native DV included. The donor reset it in aml_dv_off().
+  aml_dv_set_hdr10_osd_brightness(0);
 
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
