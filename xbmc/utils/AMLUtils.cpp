@@ -20,6 +20,10 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "platform/linux/SysfsPath.h"
+#include "cores/DataCacheCore.h"
+#include "dialogs/GUIDialogKaiToast.h"
+#include "resources/LocalizeStrings.h"
+#include "resources/ResourcesComponent.h"
 
 // Dolby Vision L5 active-area detection (background software decode + luma scan)
 #include "URL.h"
@@ -469,6 +473,24 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   CSysfsPath dolby_vision_policy{"/sys/module/aml_media/parameters/dolby_vision_policy"};
   bool dv_enabled(dolby_vision_enable.Exists() &&
                   StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value(), "Y"));
+
+  // VS10 conversion is a hardware video-layer (VD1) feature: the DV core maps
+  // the YUV the amcodec decoder places on VD1. Software-decoded streams (codecs
+  // the AML decoder declines, e.g. small MPEG-4/XVID) are composited by GLES
+  // straight into the GUI/EGL plane and never reach VD1. Engaging the DV core
+  // for them makes the sink de-tunnel plain SDR pixels as Dolby Vision ->
+  // magenta/yellow chroma corruption. Refuse the conversion modes for SW
+  // decode; Bypass (turn DV off) stays allowed so the toggle can still undo.
+  if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+      !CServiceBroker::GetDataCacheCore().IsVideoHwDecoder())
+  {
+    CLog::Log(LOGINFO, "AMLUtils::{} - refusing VS10 mode {} for software-decoded video (no hardware video layer)",
+              __FUNCTION__, mode);
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
+                                          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60357),
+                                          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60358));
+    return;
+  }
 
   mode = aml_dv_resolve_tunnel_mode(mode);
   aml_dv_apply_target_overrides(mode);
