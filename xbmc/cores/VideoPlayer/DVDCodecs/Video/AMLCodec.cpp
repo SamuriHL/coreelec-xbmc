@@ -2163,6 +2163,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
     {
       CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
       unsigned int vs10_mode = aml_dv_get_vs10_pending();
+      aml_dv_apply_target_overrides(vs10_mode);
       if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
       {
         // VS10 engine: force the user-selected output mode for this source type
@@ -2194,6 +2195,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
           vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
         vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
                                                  : DOLBY_VISION_OUTPUT_MODE_SDR10;
+      aml_dv_apply_target_overrides(vs10_mode);
       if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
       {
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
@@ -2471,6 +2473,7 @@ void CAMLCodec::CloseDecoder()
   // disable Dolby Vision VS-Engine for non DV media
   if (dv_enabled && dolby_vision_policy.Get<int>().value() == AMDV_FORCE_OUTPUT_MODE)
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_BYPASS + 1) % 6);
+  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
 
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);

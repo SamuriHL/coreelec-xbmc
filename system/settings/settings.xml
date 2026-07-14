@@ -4037,6 +4037,20 @@
           </constraints>
           <control type="edit" format="integer" />
         </setting>
+        <!-- DM target minimum luminance (reference black) for VS10-converted output, 0.0001-nit units, 0 = Dolby default -->
+        <setting id="coreelec.amlogic.dolbyvision.target.minlum" type="integer" label="60355" help="60356">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>0</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+          </dependencies>
+          <constraints>
+            <minimum>0</minimum>
+            <maximum>1000</maximum>
+          </constraints>
+          <control type="edit" format="integer" />
+        </setting>
         <!-- Force the display peak (above) onto the panel's DV descriptor (VSVDB inject) -->
         <setting id="coreelec.amlogic.dolbyvision.vsvdb.maxlum.override" type="boolean" label="60340" help="60341" parent="coreelec.amlogic.dolbyvision.display.maxnits">
           <requirement>HAVE_AMCODEC</requirement>
