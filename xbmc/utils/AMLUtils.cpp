@@ -418,6 +418,21 @@ unsigned int aml_dv_dolby_vision_mode()
   return DOLBY_VISION_OUTPUT_MODE_BYPASS;
 }
 
+unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
+{
+  // The "Dolby Vision" VS10 output option is stored as IPT, but IPT is the
+  // player-led low-latency form. With DV output left TV-led (the default;
+  // dolby_vision_ll_policy is set to LL_DISABLE at decoder open) the sink
+  // expects the standard sink-led tunnel, and forcing IPT there gives a blank
+  // screen. Mirror the stock SDR2DV/HDR2DV fallback: player-led -> IPT,
+  // TV-led -> IPT_TUNNEL.
+  if (mode == DOLBY_VISION_OUTPUT_MODE_IPT &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->
+        GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
+    return DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+  return mode;
+}
+
 void aml_dv_apply_target_overrides(unsigned int mode)
 {
   // DM target overrides for VS10-CONVERTED output (samurihl common_drivers patch;
@@ -455,6 +470,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   bool dv_enabled(dolby_vision_enable.Exists() &&
                   StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value(), "Y"));
 
+  mode = aml_dv_resolve_tunnel_mode(mode);
   aml_dv_apply_target_overrides(mode);
 
   if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
