@@ -418,12 +418,44 @@ unsigned int aml_dv_dolby_vision_mode()
   return DOLBY_VISION_OUTPUT_MODE_BYPASS;
 }
 
+void aml_dv_apply_target_overrides(unsigned int mode)
+{
+  // DM target overrides for VS10-CONVERTED output (samurihl common_drivers patch;
+  // params absent on a stock kernel -> no-op). Only meaningful when the DV core
+  // tone-maps to HDR10/SDR: the display-peak setting steers the target max
+  // (nits) and target.minlum the target min / reference black (0.0001-nit
+  // units). Zeroed (= Dolby built-ins) for bypass and native-DV output, where
+  // the sink does the mapping.
+  CSysfsPath min_override{"/sys/module/aml_media/parameters/amdv_target_min_override"};
+  CSysfsPath max_override{"/sys/module/aml_media/parameters/amdv_target_max_override"};
+  if (!min_override.Exists() || !max_override.Exists())
+    return;
+
+  int min_lum = 0, max_nits = 0;
+  if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
+      mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
+      mode == DOLBY_VISION_OUTPUT_MODE_SDR8)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    min_lum = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM);
+    if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+      max_nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+  }
+  min_override.Set(min_lum < 0 ? 0 : min_lum);
+  max_override.Set(max_nits < 0 ? 0 : max_nits);
+  if (min_lum > 0 || max_nits > 0)
+    CLog::Log(LOGINFO, "AMLUtils::{} - DM target overrides: min {} (0.0001 nit), max {} nits",
+              __FUNCTION__, min_lum, max_nits);
+}
+
 void aml_dv_set_vs10_mode(unsigned int mode)
 {
   CSysfsPath dolby_vision_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
   CSysfsPath dolby_vision_policy{"/sys/module/aml_media/parameters/dolby_vision_policy"};
   bool dv_enabled(dolby_vision_enable.Exists() &&
                   StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value(), "Y"));
+
+  aml_dv_apply_target_overrides(mode);
 
   if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
   {
