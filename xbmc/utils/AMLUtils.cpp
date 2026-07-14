@@ -395,12 +395,19 @@ void aml_dv_set_hdr10_osd_brightness(int nits)
 // --- Dolby Vision VSVDB max-luminance override -------------------------------
 // The display advertises its DV capabilities (primaries + max/min luminance) in
 // a VSVDB block via EDID. CE22 can inject a replacement block through the stock
-// aml_media params force_vsvdb (0/1) + vsvdb_data (comma-separated decimal bytes).
+// aml_media params force_vsvdb + vsvdb_data (comma-separated decimal bytes).
+// force_vsvdb semantics (hdmitx_edid_parse.c): 0 = use the TV's block,
+// 1..4 = one of the kernel's canned preset blocks (1 would CLOBBER vsvdb_data
+// with the "source-led" preset), 255 = use the vsvdb_data we wrote. Both params
+// are plain module_params with no set-callback: they are only consumed at the
+// tail of an EDID parse, so after writing them we ask hdmitx to re-read and
+// re-parse the EDID (the "load <16 zeros>" debug command = fetch from RX).
 // We read the display's own v2 VSVDB, patch only its 5-bit "Maximum Luminance
 // (PQ)" field to the user's target, and re-inject it - so every other field
 // (version/primaries) is preserved exactly. v2 layout matches
 // DVDVideoCodecAmlogic::GetDisplayVsvdbMaxNits(): block = [0xEB, 0x01, OUI(3)]
 // then payload at b[5]; version = (b[5]>>5)&7; max-lum index = (b[7]>>3)&0x1F.
+#define FORCE_VSVDB_USE_DATA (unsigned int)(255)
 
 // VSVDB v2 5-bit max-luminance (PQ) index -> nits (Dolby table).
 static const int vsvdb_v2_max_lum_lut[32] = {
@@ -432,9 +439,49 @@ static size_t aml_read_display_vsvdb(int bytes[], size_t max)
   return n;
 }
 
+// Ask hdmitx to re-fetch the display EDID over DDC and re-parse rx caps. This
+// is what actually latches a force_vsvdb/vsvdb_data change without an HPD event.
+static void aml_hdmitx_reload_edid()
+{
+  CSysfsPath("/sys/class/amhdmitx/amhdmitx0/edid",
+             std::string("load 0000000000000000"));
+}
+
 void aml_dv_clear_vsvdb()
 {
-  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 0);
+  CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
+  if (!force_vsvdb.Exists() || force_vsvdb.Get<unsigned int>().value() == 0)
+    return; // nothing forced - keep the TV's own caps, no EDID round-trip
+  force_vsvdb.Set(0);
+  aml_hdmitx_reload_edid();
+}
+
+// The display's GENUINE VSVDB. dv_cap reflects the last-parsed EDID, so while
+// an override is in force it reports our injected block, not the panel's - if
+// we naively re-read it as the patch base, reverted settings (e.g. colour-space
+// back to "display") would keep the previously-injected values. Cache the real
+// block; if an override is already active with nothing cached (Kodi restart),
+// drop the override and re-read the EDID once to recover the panel's block.
+static size_t aml_get_display_vsvdb(int bytes[], size_t max)
+{
+  static int s_cache[16];
+  static size_t s_cache_n = 0;
+  static bool s_cached = false;
+  if (!s_cached)
+  {
+    CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
+    if (force_vsvdb.Exists() && force_vsvdb.Get<unsigned int>().value() != 0)
+    {
+      force_vsvdb.Set(0);
+      aml_hdmitx_reload_edid();
+    }
+    s_cache_n = aml_read_display_vsvdb(s_cache, 16);
+    s_cached = (s_cache_n > 0);
+  }
+  size_t n = std::min(s_cache_n, max);
+  for (size_t i = 0; i < n; i++)
+    bytes[i] = s_cache[i];
+  return n;
 }
 
 void aml_dv_apply_vsvdb()
@@ -457,7 +504,7 @@ void aml_dv_apply_vsvdb()
   }
 
   int b[16];
-  size_t n = aml_read_display_vsvdb(b, 16);
+  size_t n = aml_get_display_vsvdb(b, 16);
   // Need the v2 payload byte b[7]; version is in b[5] bits 7:5.
   if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
   {
@@ -510,12 +557,18 @@ void aml_dv_apply_vsvdb()
     if (i) data += ",";
     data += std::to_string(b[i] & 0xff);
   }
-  CSysfsPath("/sys/module/aml_media/parameters/vsvdb_data", data);
-  // Toggle force_vsvdb 0->1 so the DV core re-latches the new block. This makes
-  // the override apply live mid-stream (setting change), not just at decoder
-  // open; at open force_vsvdb is already 0 so the toggle is a harmless no-op.
-  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 0);
-  CSysfsPath("/sys/module/aml_media/parameters/force_vsvdb", 1);
+  // Skip the write + EDID round-trip when the override is already in force with
+  // this exact block (this runs at every decoder open, not just setting changes).
+  CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
+  CSysfsPath vsvdb_data{"/sys/module/aml_media/parameters/vsvdb_data"};
+  if (force_vsvdb.Exists() && vsvdb_data.Exists() &&
+      force_vsvdb.Get<unsigned int>().value() == FORCE_VSVDB_USE_DATA &&
+      vsvdb_data.Get<std::string>().value() == data)
+    return;
+
+  vsvdb_data.Set(data);
+  force_vsvdb.Set(FORCE_VSVDB_USE_DATA);
+  aml_hdmitx_reload_edid();
   CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
             __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
 }
