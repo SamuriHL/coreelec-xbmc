@@ -25784,3 +25784,15 @@ msgstr ""
 msgctxt "#60356"
 msgid "Minimum luminance the Dolby Vision engine tone-maps to when VS10 converts to HDR10 / SDR, in units of 0.0001 nit (50 = 0.005 nit, the Dolby default). Lower it if near-black detail is being clipped (raised reference black) on VS10-processed output. 0 = keep the Dolby default. Requires the matching CoreELEC kernel; no effect otherwise."
 msgstr ""
+
+#. Toast heading when a VS10 output mode is refused for software-decoded video
+#: xbmc/utils/AMLUtils.cpp
+msgctxt "#60357"
+msgid "VS10 not available"
+msgstr ""
+
+#. Toast body when a VS10 output mode is refused for software-decoded video
+#: xbmc/utils/AMLUtils.cpp
+msgctxt "#60358"
+msgid "Software-decoded video has no hardware video layer for the Dolby Vision engine to process."
+msgstr ""
