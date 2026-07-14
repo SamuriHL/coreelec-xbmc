@@ -86,6 +86,9 @@ void aml_dv_set_vs10_pending(unsigned int mode);
 unsigned int aml_dv_get_vs10_pending();
 unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_set_vs10_mode(unsigned int mode);
+// DM target min/max overrides for VS10-converted output (needs the samurihl
+// common_drivers kernel patch; silently no-ops on a stock kernel).
+void aml_dv_apply_target_overrides(unsigned int mode);
 void aml_dv_set_hdr10_osd_brightness(int nits);
 // Dolby Vision VSVDB max-luminance override: patch the display's advertised v2
 // VSVDB block and inject it via aml_media force_vsvdb/vsvdb_data. apply() reads
