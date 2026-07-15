@@ -1790,6 +1790,14 @@ void CVideoPlayer::Process()
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
 
+#if defined(HAVE_LIBBLURAY)
+      // reopening the streams cleared the overlay container; repost the disc
+      // menu composition (libbluray only resends graphics when they change)
+      if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+              std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        bluray->RedrawMenuOverlays();
+#endif
+
       UpdatePlayState(0);
     }
 
@@ -1890,16 +1898,37 @@ void CVideoPlayer::Process()
       CDVDInputStream::ENextStream next = m_pInputStream->NextStream();
       if(next == CDVDInputStream::NEXTSTREAM_OPEN)
       {
+        bool discard = false;
+#if defined(HAVE_LIBBLURAY)
+        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+          discard = bluray->ShouldDiscardStreamQueue();
+#endif
         CloseDemuxer();
-
         SetCaching(CACHESTATE_DONE);
-        CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
-        CloseStream(m_CurrentAudio, true);
-        CloseStream(m_CurrentVideo, true);
 
-        m_CurrentAudio.Clear();
-        m_CurrentVideo.Clear();
-        m_CurrentSubtitle.Clear();
+        if (discard)
+        {
+          // user left the disc menu for a title: drop the queued remainder of
+          // the menu loop instead of rendering it out
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
+          CloseStream(m_CurrentAudio, false);
+          CloseStream(m_CurrentVideo, false);
+
+          m_CurrentAudio.Clear();
+          m_CurrentVideo.Clear();
+          m_CurrentSubtitle.Clear();
+        }
+        else
+        {
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
+          CloseStream(m_CurrentAudio, true);
+          CloseStream(m_CurrentVideo, true);
+
+          m_CurrentAudio.Clear();
+          m_CurrentVideo.Clear();
+          m_CurrentSubtitle.Clear();
+        }
         continue;
       }
 
