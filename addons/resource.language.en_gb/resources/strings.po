@@ -8961,7 +8961,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#14311"
-msgid "Intended for Dolby Vision enabled displays. SDR content will be tone mapped by Dolby Vision VS-Engine."
+msgid "Intended for Dolby Vision enabled displays. SDR content will be tone mapped by Dolby Vision VS-Engine. Legacy all-or-nothing switch - prefer the per-source 'DV VS10 for SDR8/SDR10 video' settings below, which let you pick the output format per source type and pair with the display peak / VSVDB override for better tone mapping."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -8971,7 +8971,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#14313"
-msgid "Intended for Dolby Vision enabled displays. HDR content will be tone mapped by Dolby Vision VS-Engine."
+msgid "Intended for Dolby Vision enabled displays. HDR content will be tone mapped by Dolby Vision VS-Engine. Legacy all-or-nothing switch - prefer the per-source 'DV VS10 for HDR10/HDR10+ video' settings below, which let you pick the output format per source type and pair with the display peak / VSVDB override for better tone mapping."
 msgstr ""
 
 #empty strings from id 14305 to 15010
