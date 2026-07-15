@@ -297,7 +297,12 @@ void CDVDMessageQueue::WaitUntilEmpty()
   }
 
   CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty", m_owner);
-  auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(40s, SYNCSOURCE_ANY);
+  // A near-empty queue drains in milliseconds; the long fallback only matters
+  // when the queue never signals empty (e.g. closing the outgoing stream on a
+  // BD menu->title jump, where nothing consumes it). Cap the wait at 2s so that
+  // pathological case costs ~2s per close instead of stalling the full 40s
+  // (two sequential closes = ~80s of black screen before the title starts).
+  auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(2s, SYNCSOURCE_ANY);
   Put(msg);
   msg->Wait(m_bAbortRequest, 0);
 
