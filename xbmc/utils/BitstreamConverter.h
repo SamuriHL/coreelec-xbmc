@@ -163,7 +163,7 @@ public:
   // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
   // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
   // bypass inputs are only consulted when the mode is CMV40_SMART.
-  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; }
+  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; m_cmv40_native_logged = false; }
   void SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
   void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
@@ -244,6 +244,7 @@ protected:
   int m_smart_display_nits{0};
   int m_smart_threshold_pct{20};
   DOVICMv40Mode m_smart_last_effective{CMV40_SMART};
+  bool m_cmv40_native_logged{false};
   bool m_doviIsFEL{false};
   bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
