@@ -2263,7 +2263,21 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
   {
     const DoviVdrDmData* vdr = dovi_rpu_get_vdr_dm_data(rpu);
     DOVICMv40Mode effectiveMode = m_append_cmv40;
-    if (m_append_cmv40 == CMV40_SMART)
+    if (vdr && vdr->dm_data.level254)
+    {
+      // Native CMv4.0 RPU (level 254 present): the stream already carries the
+      // studio's CMv4.0 grade, so there is nothing to append and Smart has
+      // nothing to decide - skip the whole append path (and its per-frame
+      // evaluation/logging) rather than synthesizing metadata over it.
+      effectiveMode = CMV40_NONE;
+      if (!m_cmv40_native_logged)
+      {
+        CLog::Log(LOGINFO, "CBitstreamConverter::processDoviRpu - native CMv4.0 RPU detected - "
+                           "CMv4.0 append/Smart is a no-op for this stream");
+        m_cmv40_native_logged = true;
+      }
+    }
+    else if (m_append_cmv40 == CMV40_SMART)
     {
       const bool level2IsEmpty = !vdr || (vdr->dm_data.level2.len == 0);
       const bool hasData = (m_smart_display_nits > 0 && vdr && vdr->dm_data.level1);
