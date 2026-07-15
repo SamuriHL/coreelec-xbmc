@@ -10,10 +10,13 @@
 
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "threads/SystemClock.h"
 #include "utils/log.h"
 
+#include <limits>
 #include <math.h>
 #include <mutex>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -297,14 +300,42 @@ void CDVDMessageQueue::WaitUntilEmpty()
   }
 
   CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty", m_owner);
-  // A near-empty queue drains in milliseconds; the long fallback only matters
-  // when the queue never signals empty (e.g. closing the outgoing stream on a
-  // BD menu->title jump, where nothing consumes it). Cap the wait at 2s so that
-  // pathological case costs ~2s per close instead of stalling the full 40s
-  // (two sequential closes = ~80s of black screen before the title starts).
-  auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(2s, SYNCSOURCE_ANY);
-  Put(msg);
-  msg->Wait(m_bAbortRequest, 0);
+  // Drain for as long as the consumer keeps making progress and bail out once
+  // it stalls. A fixed timeout cannot serve both drain cases: the outgoing
+  // stream of a BD menu->title jump stops being consumed entirely (a long
+  // fixed wait stalls the title start - formerly 2x40s of black screen),
+  // while a BD menu-loop playlist transition is a legitimate realtime playout
+  // of the remaining queued content, which a short fixed cap cuts off
+  // mid-loop. The ceiling bounds consumers that trickle without real
+  // progress (e.g. sync-waiting against a stopped clock during teardown).
+  XbmcThreads::EndTime<> totalTimer(8000ms);
+  size_t lastRemaining = std::numeric_limits<size_t>::max();
+  XbmcThreads::EndTime<> stallTimer(1500ms);
+  while (!m_bAbortRequest && !totalTimer.IsTimePast())
+  {
+    size_t remaining;
+    {
+      std::unique_lock lock(m_section);
+      remaining = m_messages.size() + m_prioMessages.size();
+    }
+
+    if (remaining == 0)
+      break;
+
+    if (remaining != lastRemaining)
+    {
+      lastRemaining = remaining;
+      stallTimer.Set(1500ms);
+    }
+    else if (stallTimer.IsTimePast())
+    {
+      CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty - drain stalled, {} msgs left",
+                m_owner, remaining);
+      break;
+    }
+
+    std::this_thread::sleep_for(25ms);
+  }
 
   {
     std::unique_lock lock(m_section);
