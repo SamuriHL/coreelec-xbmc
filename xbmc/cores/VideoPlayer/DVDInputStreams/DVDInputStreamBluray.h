@@ -151,6 +151,11 @@ public:
 #ifdef HAVE_LIBBLURAY_BDJ
   void OverlayCallbackARGB(const struct bd_argb_overlay_s * const);
 #endif
+  void RedrawMenuOverlays();
+
+  /* the pending NEXTSTREAM_OPEN left the menu (user started a title): the
+   * queued remainder of the menu loop should be dropped, not rendered out */
+  bool ShouldDiscardStreamQueue() const { return m_menuAtHold && !m_menu; }
 
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
@@ -192,6 +197,7 @@ protected:
   struct clpi_cl* m_clipInfo = nullptr;
   uint32_t m_angle = 0;
   bool m_menu = false;
+  bool m_menuAtHold = false;
   bool m_isInMainMenu = false;
   bool m_hasOverlay = false;
   bool m_navmode = false;
