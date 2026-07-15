@@ -702,6 +702,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         case BD_EVENT_PLAYITEM:
           if(m_hold != HOLD_DATA)
           {
+            // menu state at the moment the stream change was signalled -
+            // consulted by the player to decide whether the queued remainder
+            // is dropped (user left the menu) or rendered out
+            m_menuAtHold = m_menu;
             m_hold = HOLD_HELD;
             return result;
           }
@@ -775,8 +779,23 @@ void CDVDInputStreamBluray::OverlayClose()
     plane.o.clear();
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
+  // menu overlays belong to disc navigation, not to a demux stream: they must
+  // survive the overlay-container flushes done on stream close/switch
+  group->SetOverlayContainerFlushable(false);
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   m_hasOverlay = false;
+#endif
+}
+
+void CDVDInputStreamBluray::RedrawMenuOverlays()
+{
+#if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+  // The player clears its overlay container when streams are reopened on a
+  // menu playlist/playitem change, but libbluray only resends graphics when
+  // they change. The current composition is retained in m_planes - repost it
+  // so the menu image survives the reopen.
+  if (m_hasOverlay)
+    OverlayFlush(-1);
 #endif
 }
 
@@ -833,6 +852,9 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced       = true;
+  // menu overlays belong to disc navigation, not to a demux stream: they must
+  // survive the overlay-container flushes done on stream close/switch
+  group->SetOverlayContainerFlushable(false);
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
 
