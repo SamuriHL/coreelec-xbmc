@@ -10,6 +10,7 @@
 
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
+#include "utils/log.h"
 
 #include <memory>
 #include <mutex>
@@ -31,6 +32,13 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
   for(int i = m_overlays.size();i>0;)
   {
     i--;
+
+    // disc menu overlays (non-flushable) are lifecycle-managed by the input
+    // stream; an unrelated overlay (e.g. a subtitle from the same stream)
+    // starting must not end them
+    if (!m_overlays[i]->IsOverlayContainerFlushable())
+      continue;
+
     if(m_overlays[i]->iPTSStopTime)
     {
       if(!m_overlays[i]->replace)
