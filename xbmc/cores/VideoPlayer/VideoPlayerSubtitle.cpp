@@ -194,8 +194,12 @@ void CVideoPlayerSubtitle::CloseStream(bool bWaitForBuffers)
 
   m_dvdspus.FlushCurrentPacket();
 
+  // Flush, not Clear: dropping every overlay would also kill BD menu overlays
+  // (marked non-flushable), which are owned by disc navigation and must
+  // survive subtitle stream close/switch - during BD menus the subtitle
+  // stream is reopened on every playlist/playitem change.
   if (!bWaitForBuffers)
-    m_pOverlayContainer->Clear();
+    m_pOverlayContainer->Flush();
 }
 
 void CVideoPlayerSubtitle::Process(double pts, double offset)
