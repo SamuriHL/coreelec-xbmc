@@ -135,16 +135,6 @@ public:
   bool CanStartDecode() const;
   void SetConvertDovi(bool value) { m_convert_dovi = value; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
-  // Profile-7 MEL -> 8.1 conversion. MEL carries a dummy enhancement layer (no
-  // residual picture; it exists only to hold the RPU in the dual-layer
-  // structure), so it can be losslessly flattened to single-layer 8.1: drop the
-  // EL and convert the RPU. Unlike SetConvertDovi this is armed, not forced -
-  // the conversion self-activates only once the RPU parse confirms MEL (FEL is
-  // left as dual-layer). Needed because MEL vs FEL is not known until the first
-  // RPU is parsed, after the codec has already been handed the profile-7 hints.
-  void SetConvertMel(bool value) { m_convert_mel = value; }
-  // True once MEL was detected and the conversion self-activated.
-  bool GetDoviMelConverted() const { return m_doviMelConverted; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
   // Compat shim for the other platforms (WebOS/Android) that still drive the
   // stock boolean: on -> Zero, off -> Source.
@@ -239,8 +229,6 @@ protected:
   AVCodecID m_codec;
   bool m_start_decode;
   bool m_convert_dovi;
-  bool m_convert_mel{false};
-  bool m_doviMelConverted{false};
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   int m_doviL5Mode{DOVI_L5_SOURCE};
