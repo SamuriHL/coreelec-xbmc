@@ -24,6 +24,23 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
 {
   std::unique_lock lock(*this);
 
+  // a disc menu composition group (non-flushable) REPLACES the previous menu
+  // composition outright: disc navigation posts the complete current
+  // composition on every change (and an empty group when the menu plane
+  // closes), so any earlier menu group is stale - without this, a menu
+  // change leaves the old menu's graphics on screen forever (non-flushable
+  // overlays are exempt from the stop-markup below and from stream flushes)
+  if (!pOverlay->IsOverlayContainerFlushable())
+  {
+    for (auto it = m_overlays.begin(); it != m_overlays.end();)
+    {
+      if (!(*it)->IsOverlayContainerFlushable())
+        it = m_overlays.erase(it);
+      else
+        ++it;
+    }
+  }
+
   // markup any non ending overlays, to finish
   // when this new one starts, there can be
   // multiple overlays queued at same start
