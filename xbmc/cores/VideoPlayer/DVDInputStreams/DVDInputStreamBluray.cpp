@@ -299,6 +299,7 @@ bool CDVDInputStreamBluray::Open()
               disc_info->num_hdmv_titles);
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - BD-J titles         : {}",
               disc_info->num_bdj_titles);
+    m_hasBdjTitles = disc_info->num_bdj_titles > 0;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - BD-J handled        : {}",
               disc_info->bdj_handled);
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - UNSUPPORTED titles  : {}",
