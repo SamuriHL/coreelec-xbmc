@@ -405,14 +405,19 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             m_hints.dovi.el_present_flag = false;
             m_bitstream->SetConvertDovi(true);
           }
-          else if (m_hints.dovi.dv_profile == 7 && !user_dv_disable)
+          else if (m_hints.dovi.dv_profile == 7 && !user_dv_disable && m_hints.stills)
           {
-            // Arm profile-7 MEL -> 8.1 flattening (see SetConvertMel). MEL vs FEL
-            // is not yet known here - it is confirmed from the first parsed RPU,
-            // at which point the conversion self-activates and the hints are
-            // corrected below (before OpenDecoder). FEL stays dual-layer. This
-            // avoids the per-frame DOLBY_BYPASS_EL storm the HW DV core raises
-            // for MEL dual-layer content (judder, esp. on BD menu clips).
+            // Arm profile-7 MEL -> 8.1 flattening (see SetConvertMel), SCOPED TO
+            // disc-menu playback (hints.stills, set only while IsInMenu). BD menu
+            // loops close/reopen the decoder every playitem, and a MEL dual-layer
+            // decoder reopened mid-session judders (drops frames) where a fresh
+            // open is smooth; flattening to single-layer 8.1 makes each reopen a
+            // clean single-layer open. Deliberately NOT applied to file/normal
+            // playback (e.g. MEL MKVs), which never mid-session reopen and play
+            // fine as dual-layer - no need to alter a working path.
+            // MEL vs FEL is confirmed from the first parsed RPU, at which point
+            // the conversion self-activates and the hints are corrected below
+            // (before OpenDecoder). FEL stays dual-layer.
             m_bitstream->SetConvertMel(true);
           }
 
