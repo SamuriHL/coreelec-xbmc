@@ -426,21 +426,6 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             m_bitstream->SetConvertDovi(true);
             m_streamMeta.flags.push_back("converted");
           }
-          else if (m_hints.dovi.dv_profile == 7 && !user_dv_disable && m_hints.stills)
-          {
-            // Arm profile-7 MEL -> 8.1 flattening (see SetConvertMel), SCOPED TO
-            // disc-menu playback (hints.stills, set only while IsInMenu). BD menu
-            // loops close/reopen the decoder every playitem, and a MEL dual-layer
-            // decoder reopened mid-session judders (drops frames) where a fresh
-            // open is smooth; flattening to single-layer 8.1 makes each reopen a
-            // clean single-layer open. Deliberately NOT applied to file/normal
-            // playback (e.g. MEL MKVs), which never mid-session reopen and play
-            // fine as dual-layer - no need to alter a working path.
-            // MEL vs FEL is confirmed from the first parsed RPU, at which point
-            // the conversion self-activates and the hints are corrected below
-            // (before OpenDecoder). FEL stays dual-layer.
-            m_bitstream->SetConvertMel(true);
-          }
 
           // Smart CMv4.0 append: push mode + smart-bypass inputs to the
           // bitstream (read once at stream open, like the DV settings above).
@@ -791,16 +776,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     {
       if (packet.pts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
-
-      // Profile-7 MEL flattening self-activated during the first RPU parse
-      // (the EL is now dropped and the RPU rewritten to 8.1): correct the hints
-      // so the decoder opens as single-layer 8.1 rather than dual-layer MEL.
-      if (m_bitstream && m_bitstream->GetDoviMelConverted() && m_hints.dovi.dv_profile == 7)
-      {
-        CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: profile 7 MEL flattened to 8.1", __FUNCTION__);
-        m_hints.dovi.dv_profile = 8;
-        m_hints.dovi.el_present_flag = false;
-      }
 
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
