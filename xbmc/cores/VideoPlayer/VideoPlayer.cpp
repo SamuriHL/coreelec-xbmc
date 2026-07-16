@@ -1877,22 +1877,29 @@ void CVideoPlayer::Process()
                      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
         }
 #endif
-        CloseDemuxer();
         SetCaching(CACHESTATE_DONE);
 
         if (seamless)
         {
-          // Same-playlist playitem advance in a menu: keep the stream players
-          // and their decoders running. The demuxer is reopened onto the new
-          // playitem, then OpenDefaultStreams reselects onto the SAME decoders
-          // (m_seamlessReopen makes the open compare ignore the demuxer id), so
-          // the DV tunnel is never dropped/re-latched. The new segment's
-          // timeline restarts, so arm the boundary re-anchor for CheckContinuity.
+          // Same-playlist playitem advance in a menu: keep EVERYTHING running -
+          // the demuxer, the stream players, and their decoders. Do NOT close/
+          // reopen the demuxer: reopening re-probes the dual-layer (BL+EL) DV
+          // program and, combined with reusing the video stream, breaks the
+          // BL/EL packet routing (BL delivery dies, only EL flows, decoder
+          // starves). libbluray feeds a continuous transport stream across the
+          // playitem boundary; the DEMUXER_RESET already posted for the
+          // BD_EVENT_DISCONTINUITY resets the demuxer in place to absorb the TS
+          // discontinuity. The new segment's timeline restarts, so arm the
+          // boundary re-anchor for CheckContinuity. Nothing here drops the DV
+          // tunnel, so no re-latch (toast / display-change black) occurs.
           CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless menu playitem continuation");
-          m_seamlessReopen = true;
           m_seamlessReanchor = true;
+          continue;
         }
-        else if (discard)
+
+        CloseDemuxer();
+
+        if (discard)
         {
           // user left the disc menu for a title: drop the queued remainder of
           // the menu loop instead of rendering it out
