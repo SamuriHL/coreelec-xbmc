@@ -1869,18 +1869,12 @@ void CVideoPlayer::Process()
                 std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
         {
           discard = bluray->ShouldDiscardStreamQueue();
-          // Take the seamless path once the video stream is up and has been
-          // playing (inited + a decent packet count). Deliberately do NOT gate
-          // on syncState==INSYNC: the menu's BL is bursty (huge I-frames) vs a
-          // steady tiny EL, so sync momentarily dips mid-loop, and gating on it
-          // made whichever boundary landed in the dip fall back to a full
-          // reopen (the ~1-2s hitch + a DV re-latch). The armed re-anchor
-          // re-establishes sync across the boundary either way. The packet
-          // count still excludes the unstable menu-entry burst (packets is not
-          // reset while we stay seamless, so it only grows once playing).
+          // Only take the seamless path from a stable pipeline. Menu entry
+          // bursts through playitems rapidly; reusing a decoder that is not yet
+          // in-sync would feed it from a torn position.
           seamless = !discard && bluray->IsSeamlessStreamChange() &&
-                     m_CurrentVideo.id >= 0 && m_CurrentVideo.inited &&
-                     m_CurrentVideo.packets > 100;
+                     m_CurrentVideo.id >= 0 &&
+                     m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
         }
 #endif
         SetCaching(CACHESTATE_DONE);
