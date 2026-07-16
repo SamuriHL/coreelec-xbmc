@@ -157,6 +157,13 @@ public:
    * queued remainder of the menu loop should be dropped, not rendered out */
   bool ShouldDiscardStreamQueue() const { return m_menuAtHold && !m_menu; }
 
+  /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist
+   * while in a menu: the stream format is unchanged, so the whole pipeline
+   * (demuxer, stream players, decoders) can keep running across the boundary
+   * (no close/reopen -> no DV re-latch/toast/black between menu loop segments).
+   * Cleared by any playlist-scope event (playlist/title/seek/angle). */
+  bool IsSeamlessStreamChange() const { return m_seamlessHold && m_menu; }
+
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
@@ -198,6 +205,7 @@ protected:
   uint32_t m_angle = 0;
   bool m_menu = false;
   bool m_menuAtHold = false;
+  bool m_seamlessHold = false;
   bool m_isInMainMenu = false;
   bool m_hasOverlay = false;
   bool m_navmode = false;
