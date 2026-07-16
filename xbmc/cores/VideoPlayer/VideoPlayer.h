@@ -628,6 +628,15 @@ protected:
 
   bool m_HasVideo;
   bool m_HasAudio;
+  // Seamless BD menu playitem continuation: on a same-playlist playitem advance
+  // the running decoders are reused instead of closed/reopened, so the DV
+  // tunnel is not dropped and re-latched (no toast / no display-change black
+  // between menu loop segments). m_seamlessReopen makes OpenAudio/VideoStream
+  // reuse the decoder when the format matches ignoring the demuxer id;
+  // m_seamlessReanchor makes CheckContinuity apply the boundary timestamp jump
+  // immediately (the new segment's timeline restarts) instead of deferring it.
+  bool m_seamlessReopen = false;
+  bool m_seamlessReanchor = false;
 
   bool m_updateStreamDetails{false};
 

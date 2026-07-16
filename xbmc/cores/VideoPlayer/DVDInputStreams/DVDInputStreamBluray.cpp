@@ -440,6 +440,21 @@ void CDVDInputStreamBluray::FreeTitleInfo()
 void CDVDInputStreamBluray::ProcessEvent() {
 
   int pid = -1, ret;
+
+  // any playlist-scope change voids a pending seamless (playitem-only) hold:
+  // the format may differ, so the player must do a full stream reopen
+  switch (m_event.event) {
+  case BD_EVENT_SEEK:
+  case BD_EVENT_TITLE:
+  case BD_EVENT_ANGLE:
+  case BD_EVENT_PLAYLIST:
+  case BD_EVENT_PLAYLIST_STOP:
+    m_seamlessHold = false;
+    break;
+  default:
+    break;
+  }
+
   switch (m_event.event) {
 
    /* errors */
@@ -706,6 +721,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // consulted by the player to decide whether the queued remainder
             // is dropped (user left the menu) or rendered out
             m_menuAtHold = m_menu;
+            // a hold from a bare playitem advance (no intervening playlist/
+            // title/seek/angle event, which ProcessEvent clears below) is a
+            // same-format continuation the player can serve by decoder reuse
+            m_seamlessHold = (m_event.event == BD_EVENT_PLAYITEM);
             m_hold = HOLD_HELD;
             return result;
           }

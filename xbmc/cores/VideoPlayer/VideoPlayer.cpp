@@ -1749,6 +1749,11 @@ void CVideoPlayer::Process()
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
 
+      // seamless reuse (if any) has been applied by OpenDefaultStreams; the
+      // re-anchor flag stays set until CheckContinuity consumes it on the first
+      // post-boundary packet.
+      m_seamlessReopen = false;
+
 #if defined(HAVE_LIBBLURAY)
       // reopening the streams cleared the overlay container; repost the disc
       // menu composition (libbluray only resends graphics when they change)
@@ -1858,19 +1863,41 @@ void CVideoPlayer::Process()
       if(next == CDVDInputStream::NEXTSTREAM_OPEN)
       {
         bool discard = false;
+        bool seamless = false;
 #if defined(HAVE_LIBBLURAY)
         if (std::shared_ptr<CDVDInputStreamBluray> bluray =
                 std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        {
           discard = bluray->ShouldDiscardStreamQueue();
+          // Only take the seamless path from a stable pipeline. Menu entry
+          // bursts through playitems rapidly; reusing a decoder that is not yet
+          // in-sync would feed it from a torn position.
+          seamless = !discard && bluray->IsSeamlessStreamChange() &&
+                     m_CurrentVideo.id >= 0 &&
+                     m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+        }
 #endif
         CloseDemuxer();
         SetCaching(CACHESTATE_DONE);
 
-        if (discard)
+        if (seamless)
+        {
+          // Same-playlist playitem advance in a menu: keep the stream players
+          // and their decoders running. The demuxer is reopened onto the new
+          // playitem, then OpenDefaultStreams reselects onto the SAME decoders
+          // (m_seamlessReopen makes the open compare ignore the demuxer id), so
+          // the DV tunnel is never dropped/re-latched. The new segment's
+          // timeline restarts, so arm the boundary re-anchor for CheckContinuity.
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless menu playitem continuation");
+          m_seamlessReopen = true;
+          m_seamlessReanchor = true;
+        }
+        else if (discard)
         {
           // user left the disc menu for a title: drop the queued remainder of
           // the menu loop instead of rendering it out
           CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
+          m_seamlessReopen = m_seamlessReanchor = false;
           CloseStream(m_CurrentAudio, false);
           CloseStream(m_CurrentVideo, false);
 
@@ -1881,6 +1908,7 @@ void CVideoPlayer::Process()
         else
         {
           CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
+          m_seamlessReopen = m_seamlessReanchor = false;
           CloseStream(m_CurrentAudio, true);
           CloseStream(m_CurrentVideo, true);
 
@@ -2739,14 +2767,20 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     double that_dts =
         current.type == StreamType::AUDIO ? m_CurrentVideo.lastdts : m_CurrentAudio.lastdts;
 
-    if (m_CurrentAudio.id == -1 || m_CurrentVideo.id == -1 ||
+    // At a seamless menu playitem boundary the timeline restart is known and
+    // coordinated across both streams, so apply the correction immediately
+    // instead of waiting for cross-stream confirmation - deferring it here is
+    // what let a per-segment offset accumulate into A/V drift on menu loops.
+    if (m_seamlessReanchor || m_CurrentAudio.id == -1 || m_CurrentVideo.id == -1 ||
        current.lastdts == DVD_NOPTS_VALUE ||
        fabs(this_dts - that_dts) < DVD_MSEC_TO_TIME(1000))
     {
       m_offset_pts += correction;
       UpdateCorrection(pPacket, correction);
       lastdts = pPacket->dts;
-      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - update correction: {:f}", correction);
+      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - update correction: {:f}{}", correction,
+                m_seamlessReanchor ? " (seamless re-anchor)" : "");
+      m_seamlessReanchor = false;
       if (current.avsync == CCurrentStream::AV_SYNC_CHECK)
         current.avsync = CCurrentStream::AV_SYNC_CONT;
     }
@@ -4345,8 +4379,18 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentAudio.id < 0 ||
-     m_CurrentAudio.hint != hint)
+  // Seamless menu continuation: the demuxer was reopened (new demuxer/stream
+  // id) but the format is unchanged - reuse the running decoder (no
+  // close/reopen -> no DV tunnel drop/re-latch) but still flush it with
+  // GENERAL_RESET at the boundary. The flush is essential: feeding a reused
+  // decoder segment after segment without one leaks its capture buffers /
+  // reference-frame state until it starves (~5s no-frame stalls after a handful
+  // of loops). GENERAL_RESET recycles that state WITHOUT reopening the decoder.
+  const bool seamlessReuse = m_seamlessReopen && m_CurrentAudio.id >= 0 &&
+                             m_CurrentAudio.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+
+  if(!seamlessReuse && (m_CurrentAudio.id < 0 ||
+     m_CurrentAudio.hint != hint))
   {
     if (!player->OpenStream(hint))
       return false;
@@ -4357,7 +4401,7 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
     m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
     m_CurrentAudio.packets = 0;
   }
-  else if (reset)
+  else if (reset || seamlessReuse)
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
 
   m_HasAudio = true;
@@ -4432,8 +4476,15 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentVideo.id < 0 ||
-     m_CurrentVideo.hint != hint)
+  // Seamless menu continuation - reuse the running decoder (kept open to avoid
+  // the DV tunnel drop/re-latch = toast + display-change black between menu
+  // loop segments) but flush it via GENERAL_RESET at the boundary; see the
+  // matching note in OpenAudioStream (a reused decoder starves without it).
+  const bool seamlessReuse = m_seamlessReopen && m_CurrentVideo.id >= 0 &&
+                             m_CurrentVideo.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+
+  if(!seamlessReuse && (m_CurrentVideo.id < 0 ||
+     m_CurrentVideo.hint != hint))
   {
     if (hint.codec == AV_CODEC_ID_MPEG2VIDEO || hint.codec == AV_CODEC_ID_H264)
       m_pCCDemuxer.reset();
@@ -4470,7 +4521,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;
     m_CurrentVideo.packets = 0;
   }
-  else if (reset)
+  else if (reset || seamlessReuse)
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
 
   m_HasVideo = true;
