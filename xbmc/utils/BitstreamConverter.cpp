@@ -2209,6 +2209,19 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
       if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
         m_doviIsFEL = true;
     }
+    // MEL (armed via SetConvertMel): the enhancement layer is a dummy with no
+    // residual, so flatten to single-layer 8.1 by turning on the same EL-drop +
+    // RPU-convert path the S5 profile-7 conversion uses. Set here, before the
+    // guessed_profile==7 convert check just below, so this very frame's RPU is
+    // already converted. FEL is left untouched (real EL, keep dual-layer).
+    if (m_convert_mel && !m_convert_dovi && !m_doviIsFEL &&
+        header->guessed_profile == 7)
+    {
+      m_convert_dovi = true;
+      m_doviMelConverted = true;
+      CLog::Log(LOGINFO, "CBitstreamConverter::processDoviRpu - profile 7 MEL: "
+                         "flattening to single-layer 8.1 (drop EL, convert RPU)");
+    }
     m_doviELTested = true;
   }
 
