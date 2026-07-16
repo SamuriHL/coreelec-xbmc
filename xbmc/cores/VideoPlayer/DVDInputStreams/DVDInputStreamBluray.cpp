@@ -480,6 +480,21 @@ void CDVDInputStreamBluray::UpdateClipInfo(unsigned int playItem)
 void CDVDInputStreamBluray::ProcessEvent() {
 
   int pid = -1, ret;
+
+  // any playlist-scope change voids a pending seamless (playitem-only) hold:
+  // the format may differ, so the player must do a full stream reopen
+  switch (m_event.event) {
+  case BD_EVENT_SEEK:
+  case BD_EVENT_TITLE:
+  case BD_EVENT_ANGLE:
+  case BD_EVENT_PLAYLIST:
+  case BD_EVENT_PLAYLIST_STOP:
+    m_seamlessHold = false;
+    break;
+  default:
+    break;
+  }
+
   switch (m_event.event) {
 
    /* errors */
@@ -546,7 +561,15 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_DISCONTINUITY:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
-    m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
+    // during a seamless menu playitem continuation the demuxer must NOT be
+    // reset: CDVDDemuxFFmpeg::Reset() is a full avformat re-probe which
+    // intermittently breaks the dual-layer (BL+EL) DV packet routing (BL
+    // delivery dies, playback coasts on the queued backlog, then starves).
+    // ffmpeg's mpegts demuxer absorbs the in-band TS discontinuity (PAT/PMT
+    // reappear, pts jump) natively; the pts jump is handled by the player's
+    // CheckContinuity.
+    if (!IsSeamlessStreamChange())
+      m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
     m_hold = HOLD_NONE;
     break;
 
@@ -749,6 +772,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // consulted by the player to decide whether the queued remainder
             // is dropped (user left the menu) or rendered out
             m_menuAtHold = m_menu;
+            // a hold from a bare playitem advance (no intervening playlist/
+            // title/seek/angle event, which ProcessEvent clears) is a
+            // same-format continuation the player can serve without teardown
+            m_seamlessHold = (m_event.event == BD_EVENT_PLAYITEM);
             m_hold = HOLD_HELD;
             return result;
           }
