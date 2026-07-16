@@ -1518,16 +1518,27 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
       return false;
 
     source_type = STREAM_SOURCE_MASK(stream->source);
+    // "same stream" must compare the demuxer too: after a BD menu->title
+    // demuxer reopen the new demuxer's video stream reuses uniqueId 0, the
+    // same id as the (orphaned) current - without the demuxerId check it is
+    // misjudged as already-current and video never reopens
     if(source_type != STREAM_SOURCE_DEMUX ||
        stream->type != current.type ||
-       stream->uniqueId == current.id)
+       (stream->uniqueId == current.id && stream->demuxerId == current.demuxerId))
       return false;
 
     if (current.type == StreamType::AUDIO && stream->dvdNavId == m_dvd.iSelectedAudioStream)
       return true;
     if (current.type == StreamType::SUBTITLE && stream->dvdNavId == m_dvd.iSelectedSPUStream)
       return true;
-    if (current.type == StreamType::VIDEO && current.id < 0)
+    // a current video stream from a DIFFERENT demuxer is orphaned - the
+    // demuxer was closed and reopened (BD menu->title discard keeps the
+    // stream players alive for decoder reuse) and its packets can never
+    // arrive again; without this the new demuxer's video stream is never
+    // opened when the disc dictates audio/subs (OpenDefaultStreams defers)
+    // and the video decoder starves on the last menu frame
+    if (current.type == StreamType::VIDEO &&
+        (current.id < 0 || stream->demuxerId != current.demuxerId))
       return true;
   }
   else
@@ -1900,11 +1911,17 @@ void CVideoPlayer::Process()
       {
         bool discard = false;
         bool seamless = false;
+        bool keepAlive = false;
 #if defined(HAVE_LIBBLURAY)
         if (std::shared_ptr<CDVDInputStreamBluray> bluray =
                 std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
         {
           discard = bluray->ShouldDiscardStreamQueue();
+          // menu->title decoder keep-alive: HDMV-only discs for now - on BD-J
+          // discs the jump crashes in avformat teardown under the JVM's
+          // signal handlers (SIGSEGV in avio_close -> JVM abort); BD-J keeps
+          // the stock close/reopen behavior until that is understood
+          keepAlive = discard && !bluray->HasBDJTitles();
           // Only take the seamless path from a stable pipeline. Menu entry
           // bursts through playitems rapidly; continuing across a boundary
           // before the streams are in sync feeds from a torn position.
@@ -1935,11 +1952,25 @@ void CVideoPlayer::Process()
 
         CloseDemuxer();
 
-        if (discard)
+        if (discard && keepAlive)
         {
           // user left the disc menu for a title: drop the queued remainder of
-          // the menu loop instead of rendering it out
+          // the menu loop instead of rendering it out. Keep the stream players
+          // and their decoders ALIVE (flush, don't close) - the title often has
+          // the same video format as the menu (e.g. both 4K DV), and
+          // reattaching the running decoder (m_bdStreamReuse, consulted in
+          // OpenAudio/VideoStream) avoids the DV tunnel drop/re-latch at the
+          // menu->title jump. A format change simply fails the reuse compare
+          // and takes the normal reopen path.
           CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
+          m_bdStreamReuse = true;
+          FlushBuffers(DVD_NOPTS_VALUE, false, true);
+        }
+        else if (discard)
+        {
+          // BD-J disc: stock discard - drop the queues and close the streams
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder (full close)");
+          m_bdStreamReuse = false;
           CloseStream(m_CurrentAudio, false);
           CloseStream(m_CurrentVideo, false);
 
@@ -1950,6 +1981,7 @@ void CVideoPlayer::Process()
         else
         {
           CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
+          m_bdStreamReuse = false;
           CloseStream(m_CurrentAudio, true);
           CloseStream(m_CurrentVideo, true);
 
@@ -1998,7 +2030,11 @@ void CVideoPlayer::Process()
 
     // see if we can find something better to play
     CheckBetterStream(m_CurrentAudio,    pStream);
-    CheckBetterStream(m_CurrentVideo,    pStream);
+    // a DV enhancement-layer packet must never promote the EL substream to
+    // the main video stream (the codec merges EL into BL; attaching the
+    // player to the EL kills BL delivery entirely = black screen)
+    if (!pPacket->isELPackage)
+      CheckBetterStream(m_CurrentVideo, pStream);
     CheckBetterStream(m_CurrentSubtitle, pStream);
     CheckBetterStream(m_CurrentTeletext, pStream);
     CheckBetterStream(m_CurrentRadioRDS, pStream);
@@ -2807,19 +2843,48 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     double that_dts =
         current.type == StreamType::AUDIO ? m_CurrentVideo.lastdts : m_CurrentAudio.lastdts;
 
+    const bool bdMenu = m_pInputStream &&
+                        m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+                        IsInMenuInternal();
+
     if (m_CurrentAudio.id == -1 || m_CurrentVideo.id == -1 ||
        current.lastdts == DVD_NOPTS_VALUE ||
        fabs(this_dts - that_dts) < DVD_MSEC_TO_TIME(1000))
     {
-      m_offset_pts += correction;
-      UpdateCorrection(pPacket, correction);
+      // BD menu loop wrap: a single global offset can make only ONE stream
+      // exactly continuous across the wrap, and the streams' gaps differ
+      // (the segment cut is not frame-aligned across audio/video). Stock
+      // applies the CONFIRMING stream's gap - usually audio - leaving video
+      // ~1-2 frames discontinuous at every wrap (a visible micro-freeze).
+      // Prefer video's own gap (recorded below when video first flagged the
+      // jump) so the wrap is visually gapless; the small audio residual is
+      // absorbed by the audio player's sync skew. The confirmation logic
+      // itself is untouched - only the applied value changes, so there is no
+      // double-apply risk.
+      double applied = correction;
+      if (bdMenu && current.type == StreamType::AUDIO && m_menuWrapVideoGap != 0.0 &&
+          fabs(m_menuWrapVideoGap - correction) < DVD_MSEC_TO_TIME(100))
+      {
+        applied = m_menuWrapVideoGap;
+        CLog::Log(LOGDEBUG,
+                  "CVideoPlayer::CheckContinuity - menu wrap: video-aligned correction {:f} (audio gap {:f})",
+                  applied, correction);
+      }
+      m_menuWrapVideoGap = 0.0;
+      m_offset_pts += applied;
+      UpdateCorrection(pPacket, applied);
       lastdts = pPacket->dts;
-      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - update correction: {:f}", correction);
+      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - update correction: {:f}", applied);
       if (current.avsync == CCurrentStream::AV_SYNC_CHECK)
         current.avsync = CCurrentStream::AV_SYNC_CONT;
     }
     else
     {
+      // record video's own gap from its FIRST unconfirmed flag of this jump -
+      // consumed above if audio ends up being the confirming stream
+      if (bdMenu && current.type == StreamType::VIDEO && m_menuWrapVideoGap == 0.0)
+        m_menuWrapVideoGap = correction;
+
       // not sure yet - flags the packets as unknown until we get confirmation on another audio/video packet
       pPacket->dts = DVD_NOPTS_VALUE;
       pPacket->pts = DVD_NOPTS_VALUE;
@@ -4535,8 +4600,12 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentAudio.id < 0 ||
-     m_CurrentAudio.hint != hint)
+  // see the matching note in OpenVideoStream (BD menu->title decoder reuse)
+  bool reuse = m_bdStreamReuse && m_CurrentAudio.id >= 0 &&
+               m_CurrentAudio.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+
+  if(!reuse && (m_CurrentAudio.id < 0 ||
+     m_CurrentAudio.hint != hint))
   {
     if (!player->OpenStream(hint))
       return false;
@@ -4622,8 +4691,26 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentVideo.id < 0 ||
-     m_CurrentVideo.hint != hint)
+  // BD menu->title jump with the stream players kept alive: reattach the
+  // running decoder when the format matches ignoring the demuxer/stream id
+  // (a new demuxer only changes the ids) and the menu stills flag (inert in
+  // the decoder; differs by definition when leaving a menu).
+  bool reuse = false;
+  if (m_bdStreamReuse && m_CurrentVideo.id >= 0)
+  {
+    CDVDStreamInfo cmp(hint);
+    cmp.stills = m_CurrentVideo.hint.stills;
+    reuse = m_CurrentVideo.hint.Equal(cmp, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenVideoStream - BD stream reuse {}",
+              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen");
+  }
+  // one-shot: the video open decision consumes the flag (video may be opened
+  // lazily per-packet when the disc dictates audio/sub streams, so it cannot
+  // be cleared on a fixed point in the reopen path)
+  m_bdStreamReuse = false;
+
+  if(!reuse && (m_CurrentVideo.id < 0 ||
+     m_CurrentVideo.hint != hint))
   {
     if (hint.codec == AV_CODEC_ID_MPEG2VIDEO || hint.codec == AV_CODEC_ID_H264)
       m_pCCDemuxer.reset();
@@ -4828,6 +4915,9 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_CurrentSubtitle.inited = false;
     m_CurrentTeletext.inited = false;
     m_CurrentRadioRDS.inited  = false;
+
+    // a video wrap-gap recorded before the flush belongs to a dead timeline
+    m_menuWrapVideoGap = 0.0;
   }
 
   m_CurrentAudio.dts         = DVD_NOPTS_VALUE;
