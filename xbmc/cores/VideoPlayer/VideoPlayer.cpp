@@ -1900,13 +1900,41 @@ void CVideoPlayer::Process()
       if(next == CDVDInputStream::NEXTSTREAM_OPEN)
       {
         bool discard = false;
+        bool seamless = false;
 #if defined(HAVE_LIBBLURAY)
         if (std::shared_ptr<CDVDInputStreamBluray> bluray =
                 std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        {
           discard = bluray->ShouldDiscardStreamQueue();
+          // Only take the seamless path from a stable pipeline. Menu entry
+          // bursts through playitems rapidly; continuing across a boundary
+          // before the streams are in sync feeds from a torn position.
+          seamless = !discard && bluray->IsSeamlessStreamChange() &&
+                     m_CurrentVideo.id >= 0 &&
+                     m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+        }
 #endif
-        CloseDemuxer();
         SetCaching(CACHESTATE_DONE);
+
+        if (seamless)
+        {
+          // Same-playlist playitem advance in a menu: keep EVERYTHING running -
+          // the demuxer, the stream players, and their decoders. Closing/
+          // reopening the demuxer re-probes the dual-layer (BL+EL) DV program
+          // and breaks BL/EL packet routing (BL delivery dies, decoder
+          // starves); closing the streams drops the DV tunnel (re-latch toast /
+          // display-change black every segment). libbluray feeds a continuous
+          // transport stream across the boundary and the DEMUXER_RESET posted
+          // for BD_EVENT_DISCONTINUITY absorbs the TS discontinuity in place.
+          // The segment's timeline restart reaches CheckContinuity as a plain
+          // backward jump, which its cross-stream confirmation resolves into
+          // exactly one global offset correction - same path a CE21 player
+          // takes for these boundaries, proven stable there.
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless menu playitem continuation");
+          continue;
+        }
+
+        CloseDemuxer();
 
         if (discard)
         {
