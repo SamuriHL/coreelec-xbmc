@@ -426,6 +426,16 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             m_bitstream->SetConvertDovi(true);
             m_streamMeta.flags.push_back("converted");
           }
+          else if (m_hints.dovi.dv_profile == 7 && !user_dv_disable)
+          {
+            // Arm profile-7 MEL -> 8.1 flattening (see SetConvertMel). MEL vs FEL
+            // is not yet known here - it is confirmed from the first parsed RPU,
+            // at which point the conversion self-activates and the hints are
+            // corrected below (before OpenDecoder). FEL stays dual-layer. This
+            // avoids the per-frame DOLBY_BYPASS_EL storm the HW DV core raises
+            // for MEL dual-layer content (judder, esp. on BD menu clips).
+            m_bitstream->SetConvertMel(true);
+          }
 
           // Smart CMv4.0 append: push mode + smart-bypass inputs to the
           // bitstream (read once at stream open, like the DV settings above).
@@ -776,6 +786,16 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     {
       if (packet.pts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
+
+      // Profile-7 MEL flattening self-activated during the first RPU parse
+      // (the EL is now dropped and the RPU rewritten to 8.1): correct the hints
+      // so the decoder opens as single-layer 8.1 rather than dual-layer MEL.
+      if (m_bitstream && m_bitstream->GetDoviMelConverted() && m_hints.dovi.dv_profile == 7)
+      {
+        CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: profile 7 MEL flattened to 8.1", __FUNCTION__);
+        m_hints.dovi.dv_profile = 8;
+        m_hints.dovi.el_present_flag = false;
+      }
 
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
