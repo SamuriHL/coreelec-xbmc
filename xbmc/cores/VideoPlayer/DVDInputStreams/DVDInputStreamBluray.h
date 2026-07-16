@@ -152,6 +152,11 @@ public:
    * Cleared by any playlist-scope event (playlist/title/seek/angle). */
   bool IsSeamlessStreamChange() const { return m_seamlessHold && m_menu; }
 
+  /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
+   * HDMV-only discs until the BD-J interaction (avformat teardown crash under
+   * the JVM's signal handlers) is understood */
+  bool HasBDJTitles() const { return m_hasBdjTitles; }
+
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
@@ -190,6 +195,7 @@ protected:
   bool m_menu = false;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
+  bool m_hasBdjTitles = false;
   bool m_isInMainMenu = false;
   bool m_hasOverlay = false;
   bool m_navmode = false;
