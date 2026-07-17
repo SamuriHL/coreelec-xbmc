@@ -897,6 +897,13 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
     goto cleanup;
   }
   fmtCtx->pb = avioCtx;
+  // We own avioCtx: without this flag avformat_close_input() closes and frees
+  // the custom AVIOContext itself, and the manual avio_context_free() in
+  // cleanup then double-frees it -> SIGSEGV inside avformat_close_input's
+  // avio_close (hit when a detection is cancelled and torn down at a
+  // menu->title change). With the flag, ffmpeg never touches pb on close and
+  // we free it ourselves below.
+  fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
   fmtCtx->interrupt_callback.callback = detect_interrupt_cb;
   fmtCtx->interrupt_callback.opaque = nullptr;
 
@@ -1370,7 +1377,13 @@ cleanup:
   if (fmtCtx)
     avformat_close_input(&fmtCtx);
   if (avioCtx)
+  {
+    // AVFMT_FLAG_CUSTOM_IO means ffmpeg never freed pb, so we own it. Free the
+    // (possibly ffmpeg-reallocated) buffer first, then the context - neither is
+    // freed by avio_context_free() on its own.
+    av_freep(&avioCtx->buffer);
     avio_context_free(&avioCtx);
+  }
 }
 
 void aml_dv_detect_set_file(const std::string& path)
