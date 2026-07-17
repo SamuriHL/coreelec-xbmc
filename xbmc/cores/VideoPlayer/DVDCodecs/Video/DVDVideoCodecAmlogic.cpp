@@ -671,7 +671,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
-      if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL))
+      if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL, packet.isDualStream))
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
