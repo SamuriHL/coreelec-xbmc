@@ -892,17 +892,15 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
   }
   fmtCtx = avformat_alloc_context();
   if (!fmtCtx)
-  {
-    avio_context_free(&avioCtx);
     goto cleanup;
-  }
   fmtCtx->pb = avioCtx;
-  // We own avioCtx: without this flag avformat_close_input() closes and frees
-  // the custom AVIOContext itself, and the manual avio_context_free() in
-  // cleanup then double-frees it -> SIGSEGV inside avformat_close_input's
-  // avio_close (hit when a detection is cancelled and torn down at a
-  // menu->title change). With the flag, ffmpeg never touches pb on close and
-  // we free it ourselves below.
+  // avformat_open_input() sets this itself when pb is pre-supplied, but the
+  // cancel check below can reach avformat_close_input() on a never-opened
+  // context - without the flag that path frees our custom pb (and hands the
+  // stack CFile to ffurl_close); the manual avio_context_free() in cleanup
+  // then double-frees it -> SIGSEGV (hit when a detection is cancelled and
+  // torn down at a menu->title change). Set it explicitly so we own avioCtx
+  // on every exit path; cleanup frees it (and its buffer) as sole owner.
   fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
   fmtCtx->interrupt_callback.callback = detect_interrupt_cb;
   fmtCtx->interrupt_callback.opaque = nullptr;
