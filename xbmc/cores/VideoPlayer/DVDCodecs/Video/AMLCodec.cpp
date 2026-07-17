@@ -1963,7 +1963,7 @@ int CAMLCodec::GetAmlDuration() const
   return am_private ? (am_private->video_rate * PTS_FREQ) / UNIT_FREQ : 0;
 };
 
-bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualStream)
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
@@ -2208,7 +2208,15 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
 
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
     {
-      if (doviIsFEL) // use stream path if not MEL
+      // Stream path for FEL, and for dual-stream (disc) MEL titles: the
+      // frame-based vh265 input path mishandles the EOS NAL that closes every
+      // m2ts segment (over-decode error storm, ~1s of dropped frames per
+      // playitem boundary = judder, and a possible decoder wedge on a
+      // FEL->MEL reopen), while the stream-based path discards it and keeps
+      // decoding. Single-stream MEL (MKV remuxes carry no in-stream EOS) and
+      // menu clips (stills; validated seamless/keep-alive path) stay on the
+      // frame path.
+      if (doviIsFEL || (isDualStream && !hints.stills))
       {
         CSysfsPath amdolby_vision_debug{"/sys/class/amdolby_vision/debug"};
         if (amdolby_vision_debug.Exists())
