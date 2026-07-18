@@ -35,4 +35,15 @@ private:
   uint32_t m_crtcId{0};
   uint64_t m_sequence{0};
   uint64_t m_offset{0};
+
+  // Measured vblank rate from the DRM hardware timestamps. The kernel can
+  // silently fail to apply the fractional rate (hdmitx20 SoCs lack
+  // vout_set_vframe_rate_hint), leaving the panel at the integer rate while
+  // the mode claims 23.976 — a 1000ppm clock-rate error that drifts passthrough
+  // A/V sync ~1ms/s. When the measured rate deviates from the nominal one by
+  // more than the threshold, the clock is restarted with the measured rate.
+  double m_reportedFps{0.0};   // rate GetFps() last handed to the clock
+  double m_measuredFps{0.0};   // rolling measurement, 0 until first window done
+  uint64_t m_measureAnchorSeq{0};
+  uint64_t m_measureAnchorNs{0};
 };
