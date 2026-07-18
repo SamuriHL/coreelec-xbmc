@@ -20,6 +20,7 @@
 #include "filesystem/SpecialProtocol.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/Geometry.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
@@ -1602,9 +1603,53 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, 0xffffffff);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, 0xffffffff);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, 0xffffffff);
+
+  // Report REAL UHD capability registers instead of libbluray's 0xffffffff
+  // placeholder. Discs read these as structured bitmasks pairing a player bit
+  // (PSR25/UHD_CAP) with a display bit (PSR26/UHD_DISPLAY_CAP) per HDR format;
+  // all-ones marks every mutually-exclusive format present at once and HDMV
+  // capability cascades land on unintended branches (S&M UHD Benchmark's demo
+  // menu reads it as "display does not support Dolby Vision").
+  //
+  // Bit layout derived from the S&M disc's own MovieObject arithmetic
+  // (re/sm_uhd/FINDINGS.md): the disc pairs PSR25&0x02 with PSR26&0x04,
+  // PSR25&0x04 with PSR26&0x08, and PSR25&0x20 with PSR26&0x10. With HDR10 as
+  // the mandatory baseline at PSR25 bit0 / PSR26 bit1 this decodes as
+  //   PSR25 (player):  0x01 HDR10  0x02 DolbyVision  0x04 Philips  0x20 HDR10+
+  //   PSR26 (display): 0x02 HDR10  0x04 DolbyVision  0x08 Philips  0x10 HDR10+
+  // matching the Dolby authoring guide's semantics (PSR25 = player UHD/HDR
+  // capability, PSR26 = connected display capability, PSR27 = HDR output
+  // preference) and reproducing a UB820's observed behavior on a DV+HDR10
+  // (no HDR10+) display chain. Display truth comes from the connected EDID.
+  {
+    uint32_t uhdCap = 0x01;         // HDR10 decode is mandatory for UHD BD
+    uint32_t uhdDisplayCap = 0x00;
+    if (aml_display_support_hdr_pq())
+      uhdDisplayCap |= 0x02;
+    if (aml_support_dolby_vision() && aml_dolby_vision_enabled())
+      uhdCap |= 0x02;               // box decodes DV and the user has it on
+    if (aml_display_support_dv())
+      uhdDisplayCap |= 0x04;
+    uhdCap |= 0x20;                 // HDR10+ detect/passthrough is supported
+    if (aml_display_support_hdr10plus())
+      uhdDisplayCap |= 0x10;
+
+    // Prefer DV when the full DV chain is up, else HDR10+ if the display has
+    // it, else HDR10 - mirrors a reference player's default choice.
+    uint32_t hdrPreference = 0x01;
+    if ((uhdCap & 0x02) && (uhdDisplayCap & 0x04))
+      hdrPreference = 0x02;
+    else if (uhdDisplayCap & 0x10)
+      hdrPreference = 0x20;
+
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray: UHD capability PSRs from display EDID: "
+              "UHD_CAP 0x{:02x} UHD_DISPLAY_CAP 0x{:02x} HDR_PREFERENCE 0x{:02x}",
+              uhdCap, uhdDisplayCap, hdrPreference);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, uhdCap);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, uhdDisplayCap);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, hdrPreference);
+  }
 #else
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
 #endif
