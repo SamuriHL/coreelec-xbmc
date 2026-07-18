@@ -47,6 +47,7 @@ class CVideoReferenceClock : CThread
     int64_t m_SystemFrequency;   //frequency of the systemclock
 
     bool    m_UseVblank;         //set to true when vblank is used as clock source
+    int64_t m_TimeOffset = 0;    //keeps GetTime continuous across vblank clock teardown/setup
     double  m_RefreshRate;       //current refreshrate
     int     m_MissedVblanks;     //number of clock updates missed by the vblank clock
     int     m_TotalMissedVblanks;//total number of clock updates missed, used by codec information screen
