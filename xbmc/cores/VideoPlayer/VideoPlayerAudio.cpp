@@ -664,7 +664,13 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.hasDownmix = true;
   }
 
-  if (m_synctype == SYNC_DISCON)
+  // Hold clock corrections until the post-resync settle window (m_syncTimer,
+  // armed at SYNC_INSYNC) has passed: right after a stream (re)open the AE
+  // start-sync is still skipping/inserting frames and the sink delay estimate
+  // swings tens of ms per second, so an ErrorAdjust taken now acts on garbage
+  // and parks the shared A/V clock a whole video frame off for the rest of the
+  // stream (observed as a per-BD-playitem random 1-4 frame lipsync offset).
+  if (m_synctype == SYNC_DISCON && m_syncTimer.IsTimePast())
   {
     double syncerror = m_audioSink.GetSyncError();
 
