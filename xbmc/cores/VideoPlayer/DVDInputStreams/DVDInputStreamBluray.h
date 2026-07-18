@@ -145,12 +145,16 @@ public:
    * queued remainder of the menu loop should be dropped, not rendered out */
   bool ShouldDiscardStreamQueue() const { return m_menuAtHold && !m_menu; }
 
-  /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist
-   * while in a menu: the stream format is unchanged, so the whole pipeline
-   * (demuxer, stream players, decoders) can keep running across the boundary
-   * (no close/reopen -> no DV re-latch/toast/black between menu loop segments).
-   * Cleared by any playlist-scope event (playlist/title/seek/angle). */
-  bool IsSeamlessStreamChange() const { return m_seamlessHold && m_menu; }
+  /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist:
+   * the stream format is unchanged, so the whole pipeline (demuxer, stream
+   * players, decoders) can keep running across the boundary (no close/reopen ->
+   * no DV re-latch/toast/black, no per-segment blank). Applies to menu loop
+   * segments AND multi-playitem titles (seamless-branch playlists: concert
+   * per-song playitems, the S&M sync-test loop) - a reference player (UB820)
+   * plays these gaplessly, and the close/reopen path is what blanked every
+   * ~24s segment. Cleared by any playlist-scope event (playlist/title/seek/
+   * angle), so playlist changes and seeks still take the full reopen. */
+  bool IsSeamlessStreamChange() const { return m_seamlessHold; }
 
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
