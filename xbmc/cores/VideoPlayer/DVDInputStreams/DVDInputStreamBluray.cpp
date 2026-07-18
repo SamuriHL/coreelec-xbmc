@@ -17,6 +17,7 @@
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "filesystem/BlurayCallback.h"
+#include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -229,7 +230,11 @@ bool CDVDInputStreamBluray::Open()
   URIUtils::RemoveSlashAtEnd(root);
 
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
-  bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV);
+  // DBG_HDMV traces the HDMV VM instruction stream (MovieObject + decrypted IG
+  // button commands) - the register reads/branches disc capability cascades
+  // run. Debug-loglevel only via the handler, but essential for diagnosing
+  // capability-PSR behavior against real discs.
+  bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV | DBG_HDMV);
 
   m_bd = bd_init();
 
@@ -1517,6 +1522,29 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
       hdrPreference = 0x02;
     else if (uhdDisplayCap & 0x10)
       hdrPreference = 0x20;
+
+    // Empirical probe hook: the authoritative PSR25/26/27 bit layout is in the
+    // paywalled UHD BD spec, so allow overriding the computed values from a
+    // file (three whitespace-separated hex/dec values: psr25 psr26 psr27) for
+    // on-box bit probing against real discs without a rebuild.
+    const std::string overridePath =
+        CSpecialProtocol::TranslatePath("special://profile/psr_uhd_override.txt");
+    XFILE::CFile overrideFile;
+    std::vector<uint8_t> buf;
+    if (overrideFile.LoadFile(overridePath, buf) > 0)
+    {
+      const std::string content(buf.begin(), buf.end());
+      int v25, v26, v27;
+      if (sscanf(content.c_str(), "%i %i %i", &v25, &v26, &v27) == 3)
+      {
+        uhdCap = static_cast<uint32_t>(v25);
+        uhdDisplayCap = static_cast<uint32_t>(v26);
+        hdrPreference = static_cast<uint32_t>(v27);
+        CLog::Log(LOGWARNING,
+                  "CDVDInputStreamBluray: UHD capability PSRs OVERRIDDEN from {}",
+                  overridePath);
+      }
+    }
 
     CLog::Log(LOGINFO,
               "CDVDInputStreamBluray: UHD capability PSRs from display EDID: "
