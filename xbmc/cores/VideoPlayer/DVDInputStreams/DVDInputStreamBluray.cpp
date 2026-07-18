@@ -1645,47 +1645,44 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
 {
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   // Report REAL UHD capability registers instead of libbluray's 0xffffffff
-  // placeholder. Discs read these as structured bitmasks pairing a player bit
-  // (PSR25/UHD_CAP) with a display bit (PSR26/UHD_DISPLAY_CAP) per HDR format;
-  // all-ones marks every mutually-exclusive format present at once and HDMV
-  // capability cascades land on unintended branches (S&M UHD Benchmark's demo
-  // menu reads it as "display does not support Dolby Vision").
-  //
-  // Bit layout derived from the S&M disc's own MovieObject arithmetic
-  // (re/sm_uhd/FINDINGS.md): the disc pairs PSR25&0x02 with PSR26&0x04,
-  // PSR25&0x04 with PSR26&0x08, and PSR25&0x20 with PSR26&0x10. With HDR10 as
-  // the mandatory baseline at PSR25 bit0 / PSR26 bit1 this decodes as
-  //   PSR25 (player):  0x01 HDR10  0x02 DolbyVision  0x04 Philips  0x20 HDR10+
-  //   PSR26 (display): 0x02 HDR10  0x04 DolbyVision  0x08 Philips  0x10 HDR10+
-  // matching the Dolby authoring guide's semantics (PSR25 = player UHD/HDR
-  // capability, PSR26 = connected display capability, PSR27 = HDR output
-  // preference) and reproducing a UB820's observed behavior on a DV+HDR10
-  // (no HDR10+) display chain. Display truth comes from the connected EDID.
+  // placeholder. Decoded from the S&M UHD Benchmark's unencrypted
+  // MovieObject.bdmv (re/sm_uhd/, object 0) with libbluray's HDMV BC subset
+  // semantics (execute-next iff PSR & ~mask == 0):
+  //   BC PSR25,0x02 -> GPR35=1     BC PSR26,0x04 -> GPR37=1   sum==2 -> DV
+  //   BC PSR25,0x20 -> GPR36=1     BC PSR26,0x10 -> GPR38=1   sum==2 -> HDR10+
+  //   BC PSR25,0x04 -> GPR53=1     BC PSR26,0x08 -> GPR52=1   (third format)
+  //   neither pair complete -> HDR10 baseline path
+  // The subset test means these registers carry the player's CURRENTLY
+  // SELECTED output format EXCLUSIVELY - one format bit, no others, or every
+  // branch fails (which is exactly what libbluray's all-ones placeholder does,
+  // and why the demo menu claimed "display does not support Dolby Vision").
+  // A UB820 outputting DV reports the 0x02/0x04 pair and the disc offers DV.
   {
-    uint32_t uhdCap = 0x01;         // HDR10 decode is mandatory for UHD BD
-    uint32_t uhdDisplayCap = 0x00;
-    if (aml_display_support_hdr_pq())
-      uhdDisplayCap |= 0x02;
-    if (aml_support_dolby_vision() && aml_dolby_vision_enabled())
-      uhdCap |= 0x02;               // box decodes DV and the user has it on
-    if (aml_display_support_dv())
-      uhdDisplayCap |= 0x04;
-    uhdCap |= 0x20;                 // HDR10+ detect/passthrough is supported
-    if (aml_display_support_hdr10plus())
-      uhdDisplayCap |= 0x10;
-
-    // Prefer DV when the full DV chain is up, else HDR10+ if the display has
-    // it, else HDR10 - mirrors a reference player's default choice.
-    uint32_t hdrPreference = 0x01;
-    if ((uhdCap & 0x02) && (uhdDisplayCap & 0x04))
+    uint32_t uhdCap, uhdDisplayCap, hdrPreference;
+    const bool dvChain =
+        aml_support_dolby_vision() && aml_dolby_vision_enabled() && aml_display_support_dv();
+    if (dvChain)
+    {
+      uhdCap = 0x02;         // player outputs Dolby Vision
+      uhdDisplayCap = 0x04;  // display accepts Dolby Vision
       hdrPreference = 0x02;
-    else if (uhdDisplayCap & 0x10)
+    }
+    else if (aml_display_support_hdr10plus())
+    {
+      uhdCap = 0x20;         // player outputs HDR10+
+      uhdDisplayCap = 0x10;  // display accepts HDR10+
       hdrPreference = 0x20;
+    }
+    else
+    {
+      uhdCap = 0x01;         // HDR10 baseline
+      uhdDisplayCap = 0x02;
+      hdrPreference = 0x01;
+    }
 
-    // Empirical probe hook: the authoritative PSR25/26/27 bit layout is in the
-    // paywalled UHD BD spec, so allow overriding the computed values from a
-    // file (three whitespace-separated hex/dec values: psr25 psr26 psr27) for
-    // on-box bit probing against real discs without a rebuild.
+    // Empirical probe hook: override the computed values from a file (three
+    // whitespace-separated hex/dec values: psr25 psr26 psr27) for on-box
+    // probing against real discs without a rebuild.
     const std::string overridePath =
         CSpecialProtocol::TranslatePath("special://profile/psr_uhd_override.txt");
     XFILE::CFile overrideFile;
@@ -1706,7 +1703,7 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
     }
 
     CLog::Log(LOGINFO,
-              "CDVDInputStreamBluray: UHD capability PSRs from display EDID: "
+              "CDVDInputStreamBluray: UHD output-format PSRs: "
               "UHD_CAP 0x{:02x} UHD_DISPLAY_CAP 0x{:02x} HDR_PREFERENCE 0x{:02x}",
               uhdCap, uhdDisplayCap, hdrPreference);
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, uhdCap);
