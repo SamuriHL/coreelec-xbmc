@@ -384,6 +384,15 @@ bool aml_display_support_hdr_hlg()
   return support;
 }
 
+bool aml_display_support_hdr10plus()
+{
+  bool support = false;
+  CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
+  if (hdr_cap.Exists())
+    support = (hdr_cap.Get<std::string>().value().find("HDR10Plus Supported: 1") != std::string::npos);
+  return support;
+}
+
 // VS10 output mode resolved at stream-open and consumed in CAMLCodec::OpenDecoder.
 static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
