@@ -72,6 +72,7 @@ bool aml_dv_core_active();
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
 bool aml_display_support_hdr_pq();
 bool aml_display_support_hdr_hlg();
+bool aml_display_support_hdr10plus();
 // Dolby Vision VS10 engine.
 unsigned int aml_vs10_by_setting(const std::string& setting);
 unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth);
