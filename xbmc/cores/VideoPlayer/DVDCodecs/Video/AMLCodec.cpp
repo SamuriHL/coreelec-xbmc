@@ -1979,6 +1979,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_tp_last_frame = std::chrono::system_clock::now();
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
+  m_discPacedStream = false;
 
   if (!OpenAmlVideo(hints))
   {
@@ -2225,6 +2226,12 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
           amdolby_vision_debug.Set("enable_mel 1");
         }
         am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
+        // Disc titles are fed one short m2ts playitem at a time, so the stream
+        // buffer can reach EOS long before the 90%-full readiness gate in
+        // AddData is satisfiable — frames then decode but are never dequeued
+        // and playback wedges in a starve/reopen loop. Skip the fill gate for
+        // disc-paced dual-stream titles; file-paced FEL/MEL remuxes keep it.
+        m_discPacedStream = isDualStream;
       }
     }
   }
@@ -2605,18 +2612,31 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   if (!m_buffer_level_ready)
   {
-    m_buffer_level_ready = (streambuffer ? (new_buffer_level > 90.0f) : (new_buffer_level > 5.0f));
-    m_minimum_buffer_level = (streambuffer ? 10.0f : 5.0f);
-
-    if (streambuffer)
+    if (m_discPacedStream)
     {
+      // Disc playitems can EOS below any fill threshold — dequeue immediately.
+      m_buffer_level_ready = true;
+      m_minimum_buffer_level = 0.0f;
+
       CSysfsPath pre_decode_buf_level{"/sys/module/amvdec_h265/parameters/pre_decode_buf_level"};
       if (pre_decode_buf_level.Exists())
+        pre_decode_buf_level.Set(static_cast<uint32_t>(0x1000));
+    }
+    else
+    {
+      m_buffer_level_ready = (streambuffer ? (new_buffer_level > 90.0f) : (new_buffer_level > 5.0f));
+      m_minimum_buffer_level = (streambuffer ? 10.0f : 5.0f);
+
+      if (streambuffer)
       {
-        if (!m_buffer_level_ready)
-          pre_decode_buf_level.Set(static_cast<uint32_t>(size / m_minimum_buffer_level));
-        else
-          pre_decode_buf_level.Set(static_cast<uint32_t>(0x1000));
+        CSysfsPath pre_decode_buf_level{"/sys/module/amvdec_h265/parameters/pre_decode_buf_level"};
+        if (pre_decode_buf_level.Exists())
+        {
+          if (!m_buffer_level_ready)
+            pre_decode_buf_level.Set(static_cast<uint32_t>(size / m_minimum_buffer_level));
+          else
+            pre_decode_buf_level.Set(static_cast<uint32_t>(0x1000));
+        }
       }
     }
   }
