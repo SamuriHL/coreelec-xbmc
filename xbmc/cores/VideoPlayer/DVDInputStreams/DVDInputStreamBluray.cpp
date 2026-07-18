@@ -302,6 +302,13 @@ bool CDVDInputStreamBluray::Open()
     return false;
   }
 
+  // libbluray clobbers the app-set UHD capability PSRs on UHD disc detection:
+  // index version 0300+ triggers psr_init_UHD(regs, force=1), restoring its
+  // /* TODO */ 0xffffffff placeholders over whatever SetupPlayerSettings wrote
+  // (verified in the register trace: "PSR25 0x23 -> 0xffffffff" one second
+  // after our write). Re-apply the real values now that detection has run.
+  ApplyUHDCapabilities();
+
   if (disc_info->bluray_detected)
   {
 #if (BLURAY_VERSION > BLURAY_VERSION_CODE(1,0,0))
@@ -1608,7 +1615,35 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
+  ApplyUHDCapabilities();
+#else
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
+#endif
 
+  std::string langCode;
+  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDAudioLanguage(), langCode);
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, langCode.c_str());
+
+  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDSubtitleLanguage(), langCode);
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_PG_LANG, langCode.c_str());
+
+  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDMenuLanguage(), langCode);
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
+
+  g_LangCodeExpander.ConvertToISO6391(g_langInfo.GetRegionLocale(), langCode);
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_COUNTRY_CODE, langCode.c_str());
+
+#ifdef HAVE_LIBBLURAY_BDJ
+  std::string cacheDir = CSpecialProtocol::TranslatePath("special://userdata/cache/bluray/cache");
+  std::string persistentDir = CSpecialProtocol::TranslatePath("special://userdata/cache/bluray/persistent");
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_PERSISTENT_ROOT, persistentDir.c_str());
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_CACHE_ROOT, cacheDir.c_str());
+#endif
+}
+
+void CDVDInputStreamBluray::ApplyUHDCapabilities()
+{
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   // Report REAL UHD capability registers instead of libbluray's 0xffffffff
   // placeholder. Discs read these as structured bitmasks pairing a player bit
   // (PSR25/UHD_CAP) with a display bit (PSR26/UHD_DISPLAY_CAP) per HDR format;
@@ -1678,28 +1713,6 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, uhdDisplayCap);
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, hdrPreference);
   }
-#else
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
-#endif
-
-  std::string langCode;
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDAudioLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, langCode.c_str());
-
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDSubtitleLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_PG_LANG, langCode.c_str());
-
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDMenuLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
-
-  g_LangCodeExpander.ConvertToISO6391(g_langInfo.GetRegionLocale(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_COUNTRY_CODE, langCode.c_str());
-
-#ifdef HAVE_LIBBLURAY_BDJ
-  std::string cacheDir = CSpecialProtocol::TranslatePath("special://userdata/cache/bluray/cache");
-  std::string persistentDir = CSpecialProtocol::TranslatePath("special://userdata/cache/bluray/persistent");
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_PERSISTENT_ROOT, persistentDir.c_str());
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_CACHE_ROOT, cacheDir.c_str());
 #endif
 }
 
