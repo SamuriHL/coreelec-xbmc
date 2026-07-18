@@ -114,6 +114,11 @@ protected:
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
   XbmcThreads::EndTime<> m_syncTimer;
+  // Longer settle for the SYNC_DISCON correction gate: post-resync sink
+  // transients can still measure 40-80ms at the 3s stall-timer mark (BD wrap
+  // churn with per-playitem display resets); corrections taken on them walk
+  // the clock a whole video frame at a time.
+  XbmcThreads::EndTime<> m_disconSettleTimer;
 
   int m_synctype;
   int m_prevsynctype;
