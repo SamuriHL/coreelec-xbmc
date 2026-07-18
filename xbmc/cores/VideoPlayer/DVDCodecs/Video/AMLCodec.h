@@ -140,4 +140,5 @@ private:
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;
+  bool            m_discPacedStream = false;
 };
