@@ -17,6 +17,7 @@
 #include "windowing/VideoSync.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <mutex>
 
 CVideoReferenceClock::CVideoReferenceClock() : CThread("RefClock")
@@ -84,7 +85,13 @@ void CVideoReferenceClock::Process()
 
     std::unique_lock SingleLock(m_CritSection);
     Now = CurrentHostCounter();
-    m_CurrTime = Now;
+    // Re-anchor WITH the carried offset so the clock is continuous with what
+    // GetTime returned while the vblank clock was down. A bare `= Now` here
+    // jumps the master clock by whatever offset the vblank timeline had
+    // accumulated; the players see that jump as a sync error and "correct" it
+    // in whole-video-frame steps, physically walking video away from
+    // passthrough audio on every videosync restart (BD playitem/mode churn).
+    m_CurrTime = Now + m_TimeOffset;
     m_LastIntTime = m_CurrTime;
     m_CurrTimeFract = 0.0;
     m_ClockSpeed = 1.0;
@@ -112,6 +119,10 @@ void CVideoReferenceClock::Process()
     }
 
     SingleLock.lock();
+    // Carry the vblank timeline's offset into the systemclock fallback so
+    // GetTime stays continuous through the teardown (and through the next
+    // setup, which re-applies it).
+    m_TimeOffset = std::max(m_CurrTime, m_LastIntTime) - CurrentHostCounter();
     m_UseVblank = false;                       //we're back to using the systemclock
     SingleLock.unlock();
 
@@ -210,7 +221,12 @@ int64_t CVideoReferenceClock::GetTime(bool interpolated /* = true*/)
   }
   else
   {
-    return CurrentHostCounter();
+    // Systemclock fallback carries the last vblank timeline's offset so the
+    // returned time is continuous across vblank clock teardown/re-setup.
+    int64_t time = CurrentHostCounter() + m_TimeOffset;
+    if (time > m_LastIntTime)
+      m_LastIntTime = time;
+    return m_LastIntTime;
   }
 }
 
