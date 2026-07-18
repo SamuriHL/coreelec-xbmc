@@ -261,6 +261,7 @@ protected:
   private:
     bool OpenStream(CFileItem &item);
     void SetupPlayerSettings();
+    void ApplyUHDCapabilities();
     void FreeTitleInfo();
     void FreeClipInfo();
 
