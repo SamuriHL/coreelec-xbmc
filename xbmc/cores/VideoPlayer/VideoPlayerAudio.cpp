@@ -406,6 +406,7 @@ void CVideoPlayerAudio::Process()
         m_audioSink.Resume();
       m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_syncTimer.Set(3000ms);
+      m_disconSettleTimer.Set(6000ms);
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
@@ -664,13 +665,15 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.hasDownmix = true;
   }
 
-  // Hold clock corrections until the post-resync settle window (m_syncTimer,
-  // armed at SYNC_INSYNC) has passed: right after a stream (re)open the AE
-  // start-sync is still skipping/inserting frames and the sink delay estimate
-  // swings tens of ms per second, so an ErrorAdjust taken now acts on garbage
-  // and parks the shared A/V clock a whole video frame off for the rest of the
-  // stream (observed as a per-BD-playitem random 1-4 frame lipsync offset).
-  if (m_synctype == SYNC_DISCON && m_syncTimer.IsTimePast())
+  // Hold clock corrections until the post-resync settle window
+  // (m_disconSettleTimer, armed at SYNC_INSYNC) has passed: right after a
+  // stream (re)open the AE start-sync is still skipping/inserting frames and
+  // the sink delay estimate swings tens of ms per second, so an ErrorAdjust
+  // taken now acts on garbage and parks the shared A/V clock a whole video
+  // frame off for the rest of the stream (observed as a per-BD-playitem random
+  // 1-4 frame lipsync offset; with per-playitem display resets the transient
+  // still measured 40-80ms at the 3s mark, hence the longer window).
+  if (m_synctype == SYNC_DISCON && m_disconSettleTimer.IsTimePast())
   {
     double syncerror = m_audioSink.GetSyncError();
 
