@@ -1935,7 +1935,8 @@ void CVideoPlayer::Process()
 
         if (seamless)
         {
-          // Same-playlist playitem advance in a menu: keep EVERYTHING running -
+          // Same-playlist playitem advance (menu loop segment or a
+          // multi-playitem title's seamless branch): keep EVERYTHING running -
           // the demuxer, the stream players, and their decoders. Closing/
           // reopening the demuxer re-probes the dual-layer (BL+EL) DV program
           // and breaks BL/EL packet routing (BL delivery dies, decoder
@@ -1947,7 +1948,7 @@ void CVideoPlayer::Process()
           // backward jump, which its cross-stream confirmation resolves into
           // exactly one global offset correction - same path a CE21 player
           // takes for these boundaries, proven stable there.
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless menu playitem continuation");
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
 
           // Dolby Vision FEL content (real enhancement layer, e.g. Spears &
           // Munsil demos) carries HEVC decoder reference state across the clip
