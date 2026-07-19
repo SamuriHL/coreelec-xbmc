@@ -234,9 +234,15 @@ bool CDVDInputStreamBluray::Open()
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
   // DBG_HDMV traces the HDMV VM instruction stream (MovieObject + decrypted IG
   // button commands) - the register reads/branches disc capability cascades
-  // run. Debug-loglevel only via the handler, but essential for diagnosing
-  // capability-PSR behavior against real discs.
-  bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV | DBG_HDMV);
+  // run; essential for diagnosing capability-PSR behavior against real discs.
+  // Only enabled while debug logging is live: with the mask bit set libbluray
+  // formats every VM instruction (and the handler copies it) just for the
+  // log-level filter to drop it, which is pure waste during menu VM execution
+  // on production runs.
+  uint32_t debugMask = DBG_CRIT | DBG_BLURAY | DBG_NAV;
+  if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+    debugMask |= DBG_HDMV;
+  bd_set_debug_mask(debugMask);
 
   m_bd = bd_init();
 
@@ -496,7 +502,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
   int pid = -1, ret;
 
   // any playlist-scope change voids a pending seamless (playitem-only) hold:
-  // the format may differ, so the player must do a full stream reopen
+  // the format may differ, so the player must do a full stream reopen.
+  // Deliberately NOT the same list as the hold cases in Read(): PLAYITEM is
+  // what ARMS the hold there, and PLAYLIST_STOP here only voids.
   switch (m_event.event) {
   case BD_EVENT_SEEK:
   case BD_EVENT_TITLE:
@@ -787,8 +795,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // is dropped (user left the menu) or rendered out
             m_menuAtHold = m_menu;
             // a hold from a bare playitem advance (no intervening playlist/
-            // title/seek/angle event, which ProcessEvent clears) is a
-            // same-format continuation the player can serve without teardown
+            // title/seek/angle event - ProcessEvent's voiding switch clears
+            // those) is a same-format continuation the player can serve
+            // without teardown
             m_seamlessHold = (m_event.event == BD_EVENT_PLAYITEM);
             m_hold = HOLD_HELD;
             return result;
@@ -1681,9 +1690,9 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
   // A UB820 outputting DV reports the 0x02/0x04 pair and the disc offers DV.
   {
     uint32_t uhdCap, uhdDisplayCap, hdrPreference;
-    const bool dvChain =
-        aml_support_dolby_vision() && aml_dolby_vision_enabled() && aml_display_support_dv();
-    if (dvChain)
+    // aml_dolby_vision_enabled() = SoC support && display support && user
+    // toggle, so it is the whole chain.
+    if (aml_dolby_vision_enabled())
     {
       uhdCap = 0x02;         // player outputs Dolby Vision
       uhdDisplayCap = 0x04;  // display accepts Dolby Vision
