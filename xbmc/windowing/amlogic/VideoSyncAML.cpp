@@ -48,6 +48,13 @@ int g_discardStreak = 0;
 constexpr uint64_t MEASURE_WINDOW_NS = UINT64_C(5000000000);
 constexpr double RATE_MISMATCH_MIN = 0.0003;
 constexpr double RATE_MISMATCH_MAX = 0.005;
+// Two consecutive in-band windows must agree this closely before their rate
+// becomes the master clock rate. Settled-panel measurement noise is sub-ppm,
+// so 100ppm is generous for a real mismatch; a transient wobble (HDMI
+// retrain at disc open moving CRTC timing inside one window - observed
+// 23.9988 on a true 23.976 panel, which then armed a 50ms/min A/V drift)
+// cannot agree with the settled window that follows it.
+constexpr double RATE_CONFIRM_AGREE = 0.0001;
 } // namespace
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
@@ -65,6 +72,7 @@ bool CVideoSyncAML::Setup()
   m_abort = false;
   m_measureAnchorSeq = 0;
   m_measureAnchorNs = 0;
+  m_pendingMeasuredFps = 0.0;
 
   CServiceBroker::GetWinSystem()->Register(this);
   CLog::Log(LOGDEBUG, "CVideoSyncAML: setting up (DRM vblank)");
@@ -171,24 +179,42 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
                     streak == 3 ? " - persistent: panel rate far off the mode rate, "
                                   "clock stays on nominal"
                                 : " - vblank stall inside the measuring window");
+          m_pendingMeasuredFps = 0.0; // confirmation must be consecutive
         }
         else if (deviation > RATE_MISMATCH_MIN)
         {
-          CLog::Log(LOGWARNING,
-                    "CVideoSyncAML: measured vblank rate {:.4f} Hz != clock rate {:.4f} Hz "
-                    "(panel fractional-rate mismatch), restarting clock with measured rate",
-                    measuredFps, m_reportedFps);
+          if (m_pendingMeasuredFps > 0.0 &&
+              std::abs(measuredFps / m_pendingMeasuredFps - 1.0) < RATE_CONFIRM_AGREE)
           {
-            std::lock_guard<std::mutex> lock(g_measureLock);
-            g_measuredFps = measuredFps;
-            g_measuredNominal = m_fps;
-            g_discardStreak = 0;
+            CLog::Log(LOGWARNING,
+                      "CVideoSyncAML: measured vblank rate {:.4f} Hz != clock rate {:.4f} Hz "
+                      "(panel fractional-rate mismatch, confirmed by consecutive windows), "
+                      "restarting clock with measured rate",
+                      measuredFps, m_reportedFps);
+            {
+              std::lock_guard<std::mutex> lock(g_measureLock);
+              g_measuredFps = measuredFps;
+              g_measuredNominal = m_fps;
+              g_discardStreak = 0;
+            }
+            m_abort = true;
           }
-          m_abort = true;
+          else
+          {
+            // First in-band window (or disagreeing with the previous one):
+            // candidate only. A transient CRTC wobble lands here once and is
+            // dropped when the settled window that follows fails to agree.
+            CLog::Log(LOGDEBUG,
+                      "CVideoSyncAML: measured vblank rate {:.4f} Hz != clock rate {:.4f} Hz - "
+                      "awaiting confirmation window",
+                      measuredFps, m_reportedFps);
+            m_pendingMeasuredFps = measuredFps;
+          }
         }
         else
         {
           // in-band measurement: any discard before it was a one-off stall
+          m_pendingMeasuredFps = 0.0;
           std::lock_guard<std::mutex> lock(g_measureLock);
           g_discardStreak = 0;
         }
