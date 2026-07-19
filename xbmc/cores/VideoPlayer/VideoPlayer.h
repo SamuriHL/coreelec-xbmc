@@ -649,6 +649,7 @@ protected:
   bool m_updateStreamDetails{false};
 
   std::atomic<bool> m_displayLost;
+  std::atomic<bool> m_repostDiscOverlays{false};
 
   double m_messageQueueTimeSize{0.0};
 };
