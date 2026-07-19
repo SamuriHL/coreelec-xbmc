@@ -1832,6 +1832,42 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         st->colorRange = pStream->codecpar->color_range;
         st->hdr_type = DetermineHdrType(pStream);
 
+#ifdef HAVE_LIBBLURAY
+        // Disc-authoritative HDR metadata: the BD playlist STN tables state
+        // per-PID dynamic range (the DV extension stream table and the
+        // per-stream HDR10+ flag) that ffmpeg cannot always infer from the
+        // bitstream. Promote only - never demote what ffmpeg detected. DV
+        // promotion mirrors DetermineHdrType's 0x1015 heuristic gate on
+        // aml_dolby_vision_enabled(), but keyed on the disc's own table
+        // instead of a hardcoded PID.
+        if (m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+        {
+          bool discDV = false;
+          bool discHdrPlus = false;
+          if (std::static_pointer_cast<CDVDInputStreamBluray>(m_pInput)
+                  ->GetDiscStreamHdrMetadata(pStream->id, discDV, discHdrPlus))
+          {
+            if (discDV && st->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                aml_dolby_vision_enabled())
+            {
+              CLog::Log(LOGINFO,
+                        "CDVDDemuxFFmpeg::AddStream - pid {:#06x}: playlist STN lists Dolby "
+                        "Vision, promoting demuxer-detected hdr type {}",
+                        pStream->id, static_cast<int>(st->hdr_type));
+              st->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
+            }
+            else if (discHdrPlus && st->hdr_type == StreamHdrType::HDR_TYPE_HDR10)
+            {
+              CLog::Log(LOGINFO,
+                        "CDVDDemuxFFmpeg::AddStream - pid {:#06x}: playlist STN flags HDR10+, "
+                        "promoting HDR10",
+                        pStream->id);
+              st->hdr_type = StreamHdrType::HDR_TYPE_HDR10PLUS;
+            }
+          }
+        }
+#endif
+
         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
         const AVPacketSideData* sideData = nullptr;
 
