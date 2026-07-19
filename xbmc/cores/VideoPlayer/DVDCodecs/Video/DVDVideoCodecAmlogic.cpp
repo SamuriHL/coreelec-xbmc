@@ -923,6 +923,53 @@ void CDVDVideoCodecAmlogic::Reset(void)
         break;
     }
   }
+  // NOTE: m_timeoutFlushCount deliberately NOT cleared here - Reset() runs
+  // after every VC_FLUSHED, so clearing it would defeat the consecutive-
+  // timeout escalation in GetPicture(). It clears on VC_PICTURE and Reopen().
+}
+
+void CDVDVideoCodecAmlogic::Reopen(void)
+{
+  // A flush-only Reset() cannot recover a wedged decode session: a Dolby
+  // Vision dual-layer decoder that stopped delivering frames (e.g. after a
+  // mid-menu DV engage on a BD-J disc) keeps starving through any number of
+  // codec_reset cycles, because the DV/EL enable sequence only runs on a full
+  // decoder open. Close the decoder and clear m_opened so the next AddData()
+  // re-opens it from scratch with the usual FEL/dual-stream detection.
+  CLog::Log(LOGWARNING, "{}::{} - full decoder reopen to recover a stalled session",
+            __MODULE_NAME__, __FUNCTION__);
+
+  if (m_Codec)
+    m_Codec->CloseDecoder();
+  m_opened = false;
+
+  while (!m_packages.empty())
+  {
+    DLDemuxPacket dual_layer_packet = m_packages.front();
+    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
+    KODI::MEMORY::AlignedFree(pDataBackup);
+    m_packages.pop_front();
+  }
+
+  m_mpeg2_sequence_pts = 0;
+  m_has_keyframe = false;
+  if (m_bitstream)
+  {
+    switch(m_hints.codec)
+    {
+      case AV_CODEC_ID_VVC:
+        if (m_hints.extradata.GetSize() > 0)
+          break;
+        [[fallthrough]];
+      case AV_CODEC_ID_H264:
+        m_bitstream->ResetStartDecode();
+        break;
+      default:
+        break;
+    }
+  }
+
+  m_timeoutFlushCount = 0;
 }
 
 CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoPicture)
@@ -934,8 +981,21 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
 
   VCReturn retVal = m_Codec->GetPicture(&m_videobuffer);
 
+  // A starved decoder returns VC_FLUSHED once per decoder-timeout period and
+  // the resulting flush-only Reset() may never recover it (see Reopen()).
+  // Escalate the second consecutive timeout to a full reopen.
+  if (retVal == VC_FLUSHED && ++m_timeoutFlushCount >= 2)
+  {
+    CLog::Log(LOGWARNING,
+              "{}::{} - {} consecutive decoder timeout flushes, requesting full reopen",
+              __MODULE_NAME__, __FUNCTION__, m_timeoutFlushCount);
+    m_timeoutFlushCount = 0;
+    return VC_REOPEN;
+  }
+
   if (retVal == VC_PICTURE)
   {
+    m_timeoutFlushCount = 0;
     if (pVideoPicture->videoBuffer)
       pVideoPicture->videoBuffer->Release();
     pVideoPicture->videoBuffer = nullptr;
