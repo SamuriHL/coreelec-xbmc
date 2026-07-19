@@ -398,6 +398,8 @@ bool CDVDInputStreamBluray::Open()
       m_titleInfo = GetTitleLongest();
   }
 
+  LogTitleAppInfo();
+
   if (m_navmode)
   {
 
@@ -461,6 +463,23 @@ void CDVDInputStreamBluray::Close()
 #if defined(HAS_UDFREAD)
   // Released last, as the files opened from the volume are closed above
   m_udfMount.reset();
+#endif
+}
+
+void CDVDInputStreamBluray::LogTitleAppInfo()
+{
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+  if (!m_titleInfo)
+    return;
+  // PSR28 watch (reference-player persona plan): PSR_UHD_SDR_CONV_PREFER is
+  // deliberately left at libbluray's default until a disc is seen to care.
+  // A playlist that sets sdr_conversion_notification_flag is exactly that
+  // trigger - this line is how such a disc gets spotted in a debug log.
+  CLog::Log(LOGDEBUG,
+            "CDVDInputStreamBluray - playlist {}: sdr_conversion_notification_flag={} "
+            "dv_streams(clip0)={}",
+            m_titleInfo->playlist, m_titleInfo->sdr_conversion_notification_flag,
+            m_titleInfo->clip_count ? m_titleInfo->clips[0].dv_stream_count : 0);
 #endif
 }
 
@@ -1509,6 +1528,7 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
   FreeTitleInfo();
 
   m_titleInfo = bd_get_playlist_info(m_bd, playitem, m_angle);
+  LogTitleAppInfo();
 
   if (!m_bMVCDisabled)
   {
