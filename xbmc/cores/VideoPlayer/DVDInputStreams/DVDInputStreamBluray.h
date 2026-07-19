@@ -106,6 +106,10 @@ public:
   MenuType GetSupportedMenuType() override;
 
   bool IsInMenu() override;
+  // True while playing menu-incidental video (FirstPlay bumper, top menu,
+  // or any segment with a menu/overlay up) - used by the disc-session DV
+  // latch to VS10-map such segments into the DV output.
+  bool IsMenuDomainVideo();
   bool OnMouseMove(const CPoint &point) override  { return MouseMove(point); }
   bool OnMouseClick(const CPoint &point) override { return MouseClick(point); }
   void SkipStill() override;
@@ -169,6 +173,7 @@ public:
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
+  bool DiscHasDolbyVision();
 
   void ProcessEvent();
   CDVDDemux* GetExtentionDemux() override { return m_pMVCDemux; };
