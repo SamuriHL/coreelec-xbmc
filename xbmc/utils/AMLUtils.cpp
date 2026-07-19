@@ -393,6 +393,67 @@ bool aml_display_support_hdr10plus()
   return support;
 }
 
+AMLHdmiAudioCaps aml_get_hdmi_audio_caps()
+{
+  AMLHdmiAudioCaps caps;
+
+  CSysfsPath aud_cap{"/sys/class/amhdmitx/amhdmitx0/aud_cap"};
+  if (!aud_cap.Exists())
+    return caps;
+  const std::string cap = aud_cap.Get<std::string>().value();
+  caps.valid = true;
+
+  // aud_cap is one line per short-audio-descriptor: "<CodingType>, <N> ch,
+  // <freqs>, ...". Return the line that begins with `token` (after leading
+  // whitespace), or "" if absent. Tokens keep their trailing comma where a
+  // bare prefix would also match a different line: "DTS," vs "DTS-HD", and
+  // "MAT," vs the "MAT_PCM_48kHz_only:" line of the Dolby vendor-specific
+  // block the kernel appends for DV sinks.
+  auto findLine = [&cap](const char* token) -> std::string {
+    const std::size_t tlen = std::char_traits<char>::length(token);
+    std::size_t pos = 0;
+    while (pos < cap.size())
+    {
+      const std::size_t eol = cap.find('\n', pos);
+      std::string line = cap.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+      const std::size_t nb = line.find_first_not_of(" \t");
+      if (nb != std::string::npos && line.compare(nb, tlen, token) == 0)
+        return line;
+      if (eol == std::string::npos)
+        break;
+      pos = eol + 1;
+    }
+    return {};
+  };
+  // Max channels the sink advertises for a codec line. 0 = codec absent,
+  // -1 = present but no channel field. HDMI audio tops out at 8 channels
+  // (3-bit EDID field), so a single digit precedes " ch".
+  auto chanOf = [](const std::string& line) -> int {
+    if (line.empty())
+      return 0;
+    const std::size_t chp = line.find(" ch");
+    if (chp == std::string::npos || chp == 0)
+      return -1;
+    const char d = line[chp - 1];
+    return (d >= '0' && d <= '9') ? (d - '0') : -1;
+  };
+
+  const std::string pcmLine = findLine("PCM");
+  caps.pcm_ch = chanOf(pcmLine);
+  // 192 can only appear in the PCM line's sample-rate list (the line ends in
+  // bit depths, not bit rates).
+  caps.pcm_192k = caps.pcm_ch != 0 && pcmLine.find("192") != std::string::npos;
+  caps.truehd_ch = chanOf(findLine("MAT,"));
+  const std::string ddpLine = findLine("Dolby_Digital+");
+  caps.ddp_ch = chanOf(ddpLine);
+  // "/ATMOS" on the DD+ line = the sink takes the Atmos (JOC) substream.
+  caps.ddp_atmos = caps.ddp_ch != 0 && ddpLine.find("ATMOS") != std::string::npos;
+  caps.ac3_ch = chanOf(findLine("AC-3"));
+  caps.dtshd_ch = chanOf(findLine("DTS-HD"));
+  caps.dts_ch = chanOf(findLine("DTS,"));
+  return caps;
+}
+
 // VS10 output mode resolved at stream-open and consumed in CAMLCodec::OpenDecoder.
 static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
