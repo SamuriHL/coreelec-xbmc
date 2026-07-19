@@ -2426,7 +2426,14 @@ bool CDiscDirectoryHelper::GetAllEpisodePlaylists(
   std::vector<PlaylistInformation> playlists;
   InitialiseAllEpisodesPlaylistSearch(playlists, playlistMap);
   if (!FilterAllEpisodesPlaylists(playlists, job))
-    return false;
+  {
+    // No playlist reaches episode length (atypical/demo discs). Fall back to
+    // the full playlist list rather than failing the whole browse.
+    CLog::LogFC(LOGDEBUG, LOGBLURAY,
+                "No episode-length playlists found - falling back to all {} playlists",
+                playlistMap.size());
+    InitialiseAllEpisodesPlaylistSearch(playlists, playlistMap);
+  }
   EndEpisodePlaylistSearch();
   PopulateAllEpisodesFileItems(url, items, allTitles, playlists, playlistMap, m_getStreamDetails,
                                m_playlistNames);
@@ -3685,6 +3692,26 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
     PopulateMovieFileItems(url, items, mainPlaylist, allTitles, playlists, m_getStreamDetails,
                            m_playlistNames);
   ApplyPlaylistHintsToMovie(url, items, allTitles, mainPlaylist, job, clips, playlistMap);
+
+  if (items.IsEmpty())
+  {
+    // No playlist reaches MIN_MOVIE_DURATION and the disc names none
+    // (calibration/demo/concert compilation discs). Fall back to the full
+    // playlist list rather than failing the whole browse; SINGLE keeps its
+    // pick-the-longest semantics.
+    CLog::LogFC(LOGDEBUG, LOGBLURAY,
+                "No movie-length playlists found - falling back to all {} playlists",
+                playlistMap.size());
+    std::vector<PlaylistInformation> all;
+    std::ranges::transform(playlistMap, std::back_inserter(all),
+                           [](const PlaylistMapEntry& pair) { return pair.second; });
+    const GetTitle fallbackJob{job == GetTitle::MAIN ? GetTitle::ALL : job};
+    FilterMoviePlaylistsByResolution(all, fallbackJob, mainPlaylist);
+    GetMainMoviePlaylists(all, fallbackJob, mainPlaylist);
+    EndMoviePlaylistSearch(all);
+    PopulateMovieFileItems(url, items, mainPlaylist, allTitles, all, m_getStreamDetails,
+                           m_playlistNames);
+  }
 
   return !items.IsEmpty();
 }
