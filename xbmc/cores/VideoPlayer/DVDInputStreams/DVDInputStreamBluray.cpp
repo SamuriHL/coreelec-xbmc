@@ -1612,7 +1612,27 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   }
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
+  // Report the player's REAL 3D capability (PSR24) instead of libbluray's
+  // /* TODO */ 0xffffffff "every 3D mode" placeholder. 3D output is bounded by
+  // the connected display, which the box exposes via sysfs
+  // (aml_display_support_3d() -> amhdmitx0/support_3d). On a non-3D display the
+  // truthful value is 0 (no 3D capability), so a disc that branches on PSR24 is
+  // no longer told the player can do 3D it cannot. The exact non-zero 3D-cap
+  // bit layout is in the paywalled BD 3D spec and cannot be validated here (no
+  // 3D display available), so the 3D-capable branch is left at 0xffffffff.
+  // NOTE: libbluray's psr_init_3D() would rewrite PSR24 on 3D-disc detection,
+  // but it is invoked with force=0 (bluray.c) and register.c refuses the
+  // non-forced init once PSR_PROFILE_VERSION >= 0x0300 - and this player
+  // declares profile 6 v3.1 (0x0310) below - so the value written here
+  // survives 3D-disc detection too. Only psr_init_UHD is called forced.
+  // Corollary for the open 3D/MVC work: 3D discs never receive libbluray's
+  // coordinated 3D-profile PSR setup on this build.
+  const bool display3d = aml_display_support_3d();
+  const uint32_t threeDCap = display3d ? 0xffffffff : 0;
+  CLog::Log(LOGINFO,
+            "CDVDInputStreamBluray: 3D capability PSR24 0x{:08x} (display 3D: {})",
+            threeDCap, display3d);
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, threeDCap);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
   ApplyUHDCapabilities();
