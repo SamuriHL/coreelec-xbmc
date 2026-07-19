@@ -292,6 +292,7 @@ protected:
      * \return True if the clip carries the stream, false otherwise
      */
     bool GetClipStreamLanguage(int pid, std::string& language) const;
+    void LogTitleAppInfo();
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 
