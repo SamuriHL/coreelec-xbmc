@@ -22,7 +22,6 @@ public:
   virtual void Run(CEvent& stopEvent)override;
   virtual void Cleanup()override;
   virtual float GetFps()override;
-  virtual void RefreshChanged()override;
   virtual void OnResetDisplay()override;
 private:
   // CE22 drives the display via DRM/KMS (mesondrmfb), so the reference clock is
@@ -43,7 +42,6 @@ private:
   // A/V sync ~1ms/s. When the measured rate deviates from the nominal one by
   // more than the threshold, the clock is restarted with the measured rate.
   double m_reportedFps{0.0};   // rate GetFps() last handed to the clock
-  double m_measuredFps{0.0};   // rolling measurement, 0 until first window done
   uint64_t m_measureAnchorSeq{0};
   uint64_t m_measureAnchorNs{0};
 };
