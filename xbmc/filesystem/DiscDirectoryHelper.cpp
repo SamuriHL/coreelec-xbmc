@@ -1407,7 +1407,14 @@ bool CDiscDirectoryHelper::GetAllEpisodePlaylists(
   std::vector<PlaylistInformation> playlists;
   InitialiseAllEpisodesPlaylistSearch(playlists, playlistMap);
   if (!FilterAllEpisodesPlaylists(playlists, job))
-    return false;
+  {
+    // No playlist reaches episode length (atypical/demo discs). Fall back to
+    // the full playlist list rather than failing the whole browse.
+    CLog::LogFC(LOGDEBUG, LOGBLURAY,
+                "No episode-length playlists found - falling back to all {} playlists",
+                playlistMap.size());
+    InitialiseAllEpisodesPlaylistSearch(playlists, playlistMap);
+  }
   EndEpisodePlaylistSearch();
   PopulateAllEpisodesFileItems(url, items, allTitles, playlists, playlistMap);
 
@@ -1592,7 +1599,18 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
   std::vector<PlaylistInformation> playlists;
   InitialiseMoviePlaylistSearch(playlists, playlistMap);
   if (!FilterMoviePlaylists(playlists, job))
-    return false;
+  {
+    // No playlist reaches MIN_MOVIE_DURATION (calibration/demo/concert
+    // compilation discs). Fall back to the full playlist list rather than
+    // failing the whole browse; SINGLE keeps its pick-the-longest semantics.
+    CLog::LogFC(LOGDEBUG, LOGBLURAY,
+                "No movie-length playlists found - falling back to all {} playlists",
+                playlistMap.size());
+    std::ranges::transform(playlistMap, std::back_inserter(playlists),
+                           [](const PlaylistMapEntry& pair) { return pair.second; });
+    if (job == GetTitle::MAIN)
+      job = GetTitle::ALL;
+  }
   GetMainMoviePlaylists(playlists, job, mainPlaylist);
   PopulateMovieFileItems(url, items, mainPlaylist, allTitles, playlists);
   EndMoviePlaylistSearch();
