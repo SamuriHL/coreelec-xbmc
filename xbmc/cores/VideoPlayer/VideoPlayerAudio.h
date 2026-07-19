@@ -71,6 +71,7 @@ public:
 
   int  GetDataLevel() const { return m_messageQueue.GetLevel(true); }
   void SetMaxDataSize(int iMaxDataSize) { m_messageQueue.SetMaxDataSize(iMaxDataSize); }
+  void SetMaxTimeSize(double sec) { m_messageQueue.SetMaxTimeSize(sec); }
   int GetMaxDataSize() const { return m_messageQueue.GetMaxDataSize(); }
 
 protected:
