@@ -33,7 +33,9 @@ private:
   int m_fd{-1};
   uint32_t m_crtcId{0};
   uint64_t m_sequence{0};
-  uint64_t m_offset{0};
+  // Host-counter (MONOTONIC_RAW) minus DRM vblank ns (CLOCK_MONOTONIC).
+  // Signed: either clock can lead, and Run() slews it continuously.
+  int64_t m_offset{0};
 
   // Measured vblank rate from the DRM hardware timestamps. The kernel can
   // silently fail to apply the fractional rate (hdmitx20 SoCs lack
