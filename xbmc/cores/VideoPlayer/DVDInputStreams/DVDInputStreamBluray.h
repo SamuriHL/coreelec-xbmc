@@ -120,7 +120,7 @@ public:
 
   int GetChapter() override;
   int GetChapterCount() override;
-  void GetChapterName(std::string& name, int ch=-1) override {};
+  void GetChapterName(std::string& name, int ch = -1) override;
   std::chrono::milliseconds GetChapterPos(int ch) override;
   bool SeekChapter(int ch) override;
 
