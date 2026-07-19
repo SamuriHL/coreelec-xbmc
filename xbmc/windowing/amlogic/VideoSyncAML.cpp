@@ -35,6 +35,7 @@ std::mutex g_measureLock;
 double g_measuredFps = 0.0;
 float g_measuredNominal = 0.0f;
 double g_lastLoggedFps = 0.0;
+int g_discardStreak = 0;
 
 // The integer-vs-fractional rate gap is 1000ppm and measurement noise over the
 // 5s window is sub-ppm, so a real panel mismatch sits comfortably between the
@@ -154,10 +155,22 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
         const double deviation = std::abs(measuredFps / m_reportedFps - 1.0);
         if (deviation > RATE_MISMATCH_MAX)
         {
-          CLog::Log(LOGDEBUG,
+          // Usually a one-off (vblank stall in one window). A persistent
+          // streak means the panel truly runs far off the mode rate (silent
+          // mode-set failure) and the clock is staying on nominal - surface
+          // that once above LOGDEBUG.
+          int streak;
+          {
+            std::lock_guard<std::mutex> lock(g_measureLock);
+            streak = ++g_discardStreak;
+          }
+          CLog::Log(streak == 3 ? LOGWARNING : LOGDEBUG,
                     "CVideoSyncAML: discarding implausible measured vblank rate {:.4f} Hz "
-                    "(clock rate {:.4f} Hz) - vblank stall inside the measuring window",
-                    measuredFps, m_reportedFps);
+                    "(clock rate {:.4f} Hz){}",
+                    measuredFps, m_reportedFps,
+                    streak == 3 ? " - persistent: panel rate far off the mode rate, "
+                                  "clock stays on nominal"
+                                : " - vblank stall inside the measuring window");
         }
         else if (deviation > RATE_MISMATCH_MIN)
         {
@@ -169,8 +182,15 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
             std::lock_guard<std::mutex> lock(g_measureLock);
             g_measuredFps = measuredFps;
             g_measuredNominal = m_fps;
+            g_discardStreak = 0;
           }
           m_abort = true;
+        }
+        else
+        {
+          // in-band measurement: any discard before it was a one-off stall
+          std::lock_guard<std::mutex> lock(g_measureLock);
+          g_discardStreak = 0;
         }
       }
     }
@@ -234,6 +254,7 @@ void CVideoSyncAML::OnResetDisplay()
     std::lock_guard<std::mutex> lock(g_measureLock);
     g_measuredFps = 0.0;
     g_measuredNominal = 0.0f;
+    g_discardStreak = 0;
   }
   m_abort = true;
 }
