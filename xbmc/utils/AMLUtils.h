@@ -77,6 +77,24 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
 bool aml_display_support_hdr_pq();
 bool aml_display_support_hdr_hlg();
 bool aml_display_support_hdr10plus();
+// HDMI sink audio capabilities parsed from amhdmitx0/aud_cap (read live at
+// each call - the EDID can change with the sink). Channel counts: 0 = codec
+// absent, -1 = present but no channel field advertised. valid=false = node
+// absent (HDMI down / non-Amlogic build); callers must not treat that as
+// "no capability".
+struct AMLHdmiAudioCaps
+{
+  bool valid{false};
+  int pcm_ch{0};          // LPCM
+  bool pcm_192k{false};   // optional 192kHz rate on the LPCM line
+  int truehd_ch{0};       // Dolby TrueHD / Atmos-MAT
+  int ddp_ch{0};          // Dolby Digital Plus
+  bool ddp_atmos{false};  // DD+ Atmos (JOC) substream
+  int ac3_ch{0};          // Dolby Digital
+  int dtshd_ch{0};        // DTS-HD (MA / High-Res)
+  int dts_ch{0};          // plain DTS (core only)
+};
+AMLHdmiAudioCaps aml_get_hdmi_audio_caps();
 // Dolby Vision VS10 engine.
 unsigned int aml_vs10_by_setting(const std::string& setting);
 unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth);
