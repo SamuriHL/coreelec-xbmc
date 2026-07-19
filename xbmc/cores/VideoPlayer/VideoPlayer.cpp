@@ -773,8 +773,18 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   m_HasVideo = false;
   m_HasAudio = false;
 
-  const int tenthsSeconds = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+  int tenthsSeconds = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
       CSettings::SETTING_VIDEOPLAYER_QUEUETIMESIZE);
+  // The queue-size settings were dropped from settings.xml with the dynamic
+  // data sizer, so GetInt returns 0 here -> SetMaxTimeSize(0) -> 1/0 -> an
+  // INFINITE queue time cap. Data-bounded-only queues hold minutes of
+  // low-bitrate content (TNG HDMV menus: 120s audio / 90s video observed
+  // queued), running the disc VM minutes ahead of presentation and turning
+  // every title jump into a monster drain; it also feeds 0 into the caching
+  // math below. Floor to the largest offered option (16s) - high-bitrate
+  // streams stay data-bound well below it.
+  if (tenthsSeconds <= 0)
+    tenthsSeconds = 160;
 
   m_messageQueueTimeSize = static_cast<double>(tenthsSeconds) / 10.0;
 
