@@ -230,6 +230,7 @@ void CAdvancedSettings::Initialize()
 
   m_videoDefaultLatency = 0.0;
   m_videoDefaultHdrExtraLatency = 0.0;
+  m_videoMenuDomainQueueTimeSize = 1.0f;
 
   m_videoDecoderTimeout = 5;
 
@@ -878,6 +879,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     }
 
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
+    XMLUtils::GetFloat(pElement, "menudomainqueuetimesize", m_videoMenuDomainQueueTimeSize, 0.0f,
+                       16.0f);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");
