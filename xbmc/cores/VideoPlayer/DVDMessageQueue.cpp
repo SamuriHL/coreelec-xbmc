@@ -13,6 +13,7 @@
 #include "threads/SystemClock.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <limits>
 #include <math.h>
 #include <mutex>
@@ -299,7 +300,12 @@ void CDVDMessageQueue::WaitUntilEmpty()
     m_drain = true;
   }
 
-  CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty", m_owner);
+  const size_t entryMsgs = [this] {
+    std::unique_lock lock(m_section);
+    return m_messages.size() + m_prioMessages.size();
+  }();
+  CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty - {} msgs, {:.2f}s queued", m_owner,
+            entryMsgs, GetTimeSize());
   // Drain for as long as the consumer keeps making progress and bail out once
   // it stalls. A fixed timeout cannot serve both drain cases: the outgoing
   // stream of a BD menu->title jump stops being consumed entirely (a long
@@ -307,8 +313,15 @@ void CDVDMessageQueue::WaitUntilEmpty()
   // while a BD menu-loop playlist transition is a legitimate realtime playout
   // of the remaining queued content, which a short fixed cap cuts off
   // mid-loop. The ceiling bounds consumers that trickle without real
-  // progress (e.g. sync-waiting against a stopped clock during teardown).
-  XbmcThreads::EndTime<> totalTimer(8000ms);
+  // progress (e.g. sync-waiting against a stopped clock during teardown), so
+  // scale it to the content the queue actually holds: a realtime playout of
+  // N seconds of queued content legitimately takes N seconds (TNG-style HDMV
+  // title jumps arrive with 16s+ queued; a fixed 8s ceiling silenced the
+  // last 8s of every long intro while the video played on). Data-based
+  // queues report 0.0 and keep the old 8s floor.
+  const auto ceiling = std::chrono::milliseconds(
+      std::clamp(static_cast<int>(GetTimeSize() * 1000.0) + 3000, 8000, 30000));
+  XbmcThreads::EndTime<> totalTimer(ceiling);
   size_t lastRemaining = std::numeric_limits<size_t>::max();
   XbmcThreads::EndTime<> stallTimer(1500ms);
   while (!m_bAbortRequest && !totalTimer.IsTimePast())
@@ -322,20 +335,33 @@ void CDVDMessageQueue::WaitUntilEmpty()
     if (remaining == 0)
       break;
 
-    if (remaining != lastRemaining)
+    // Progress must look like a realtime playout, not a trickle: a consumer
+    // sync-waiting against a stopped clock still pulls the odd message, which
+    // reset the old any-progress check and let it ride the ceiling (TNG title
+    // jump: 30s of silent "drain" with the audio thread never rendering).
+    // Realtime consumption is ~30+ msgs per window (audio ~32ms frames,
+    // video 24fps+); demand a modest fraction of that. Nearly-empty queues
+    // exit via remaining==0 within a window anyway.
+    constexpr size_t MIN_WINDOW_PROGRESS = 10;
+    if (remaining + MIN_WINDOW_PROGRESS <= lastRemaining)
     {
       lastRemaining = remaining;
       stallTimer.Set(1500ms);
     }
     else if (stallTimer.IsTimePast())
     {
-      CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty - drain stalled, {} msgs left",
+      CLog::Log(LOGINFO,
+                "CDVDMessageQueue({})::WaitUntilEmpty - drain stalled/trickling, {} msgs left",
                 m_owner, remaining);
       break;
     }
 
     std::this_thread::sleep_for(25ms);
   }
+
+  if (totalTimer.IsTimePast())
+    CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty - ceiling hit after {}ms", m_owner,
+              ceiling.count());
 
   {
     std::unique_lock lock(m_section);
