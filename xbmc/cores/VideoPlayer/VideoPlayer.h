@@ -629,17 +629,21 @@ protected:
   bool m_HasVideo;
   bool m_HasAudio;
   // BD menu->title jump: the discard path keeps the stream players and their
-  // decoders alive (flush instead of close); this one-shot flag lets
+  // decoders alive (flush instead of close); these one-shot flags let
   // OpenAudio/VideoStream reattach the running decoder when the new stream's
   // format matches ignoring the demuxer/stream id - avoiding the DV tunnel
   // drop/re-latch (toast + display-change black) when jumping from a menu
-  // into a same-format title. Cleared once the new default streams are open.
-  bool m_bdStreamReuse = false;
+  // into a same-format title. Per-stream because the streams open in either
+  // order after the reopen (OpenDefaultStreams is video-first; the disc-
+  // dictated lazy path opens per-packet) - each open decision consumes only
+  // its own flag. Player thread only.
+  bool m_bdStreamReuseVideo = false;
+  bool m_bdStreamReuseAudio = false;
   // BD menu loop wrap: video's own measured timestamp gap, recorded when video
   // first flags the backward jump (0.0 = unset). With a single global offset
   // only one stream can be made exactly continuous across the wrap; preferring
   // the video gap makes the wrap visually gapless and leaves audio a small
-  // residual its sync skew absorbs.
+  // residual its sync skew absorbs. Player thread only.
   double m_menuWrapVideoGap = 0.0;
 
   bool m_updateStreamDetails{false};

@@ -1545,6 +1545,9 @@ void CVideoPlayer::Prepare()
   m_CurrentAudioID3.hint.Clear();
   m_SpeedState.Reset(DVD_NOPTS_VALUE);
   m_offset_pts = 0;
+  m_bdStreamReuseVideo = false;
+  m_bdStreamReuseAudio = false;
+  m_menuWrapVideoGap = 0.0;
   m_CurrentAudio.lastdts = DVD_NOPTS_VALUE;
   m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
 
@@ -1761,8 +1764,10 @@ void CVideoPlayer::Process()
         OpenDefaultStreams();
 
 #if defined(HAVE_LIBBLURAY)
-      // reopening the streams cleared the overlay container; repost the disc
-      // menu composition (libbluray only resends graphics when they change)
+      // stream reopens keep non-flushable menu overlays alive, but repost the
+      // disc menu composition anyway in case it was lost (libbluray only
+      // resends graphics when they change; the replace-on-add logic dedups a
+      // composition that did survive)
       if (std::shared_ptr<CDVDInputStreamBluray> bluray =
               std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
         bluray->RedrawMenuOverlays();
@@ -1933,32 +1938,27 @@ void CVideoPlayer::Process()
           // the menu loop instead of rendering it out. Keep the stream players
           // and their decoders ALIVE (flush, don't close) - the title often has
           // the same video format as the menu (e.g. both 4K DV), and
-          // reattaching the running decoder (m_bdStreamReuse, consulted in
+          // reattaching the running decoder (m_bdStreamReuse*, consulted in
           // OpenAudio/VideoStream) avoids the DV tunnel drop/re-latch at the
           // menu->title jump. A format change simply fails the reuse compare
           // and takes the normal reopen path.
           CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
-          m_bdStreamReuse = true;
+          m_bdStreamReuseVideo = true;
+          m_bdStreamReuseAudio = true;
           FlushBuffers(DVD_NOPTS_VALUE, false, true);
-        }
-        else if (discard)
-        {
-          // BD-J disc: stock discard - drop the queues and close the streams
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder (full close)");
-          m_bdStreamReuse = false;
-          CloseStream(m_CurrentAudio, false);
-          CloseStream(m_CurrentVideo, false);
-
-          m_CurrentAudio.Clear();
-          m_CurrentVideo.Clear();
-          m_CurrentSubtitle.Clear();
         }
         else
         {
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
-          m_bdStreamReuse = false;
-          CloseStream(m_CurrentAudio, true);
-          CloseStream(m_CurrentVideo, true);
+          // discard set = BD-J disc: stock discard - drop the queues and close
+          // without draining; otherwise let the old streams render out first.
+          const bool drain = !discard;
+          CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
+                    discard ? "discarding menu stream remainder (full close)"
+                            : "wait for old streams to be finished");
+          m_bdStreamReuseVideo = false;
+          m_bdStreamReuseAudio = false;
+          CloseStream(m_CurrentAudio, drain);
+          CloseStream(m_CurrentVideo, drain);
 
           m_CurrentAudio.Clear();
           m_CurrentVideo.Clear();
@@ -3127,9 +3127,15 @@ void CVideoPlayer::OnExit()
   CloseStream(m_CurrentAudioID3, !m_bAbortRequest);
   // the generalization principle was abused for subtitle player. actually it is not a stream player like
   // video and audio. subtitle player does not run on its own thread, hence waitForBuffers makes
-  // no sense here. waitForBuffers is abused to clear overlay container (false clears container)
+  // no sense here. waitForBuffers is abused to flush the overlay container (false flushes)
   // subtitles are added from video player. after video player has finished, overlays have to be cleared.
-  CloseStream(m_CurrentSubtitle, false);  // clear overlay container
+  CloseStream(m_CurrentSubtitle, false); // flush overlay container
+  // the flush above spares non-flushable overlays (persistent BD menu
+  // compositions, kept so they survive in-playback stream reopens) - but this
+  // player instance is reused for the next file, so end of playback must wipe
+  // the container completely or a menu composition left on screen at stop
+  // would leak into the next playback session.
+  m_overlayContainer.Clear();
 
   CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 
@@ -4455,8 +4461,16 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
     return false;
 
   // see the matching note in OpenVideoStream (BD menu->title decoder reuse)
-  bool reuse = m_bdStreamReuse && m_CurrentAudio.id >= 0 &&
-               m_CurrentAudio.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+  bool reuse = false;
+  if (m_bdStreamReuseAudio && m_CurrentAudio.id >= 0)
+  {
+    reuse = m_CurrentAudio.hint.Equal(hint,
+                                      CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenAudioStream - BD stream reuse {}",
+              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen");
+  }
+  // one-shot (see OpenVideoStream)
+  m_bdStreamReuseAudio = false;
 
   if(!reuse && (m_CurrentAudio.id < 0 ||
      m_CurrentAudio.hint != hint))
@@ -4547,21 +4561,30 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
   // BD menu->title jump with the stream players kept alive: reattach the
   // running decoder when the format matches ignoring the demuxer/stream id
-  // (a new demuxer only changes the ids) and the menu stills flag (inert in
-  // the decoder; differs by definition when leaving a menu).
+  // (a new demuxer only changes the ids) and - where it is inert in the
+  // decoder - the menu stills flag (differs by definition when leaving a
+  // menu). For dual-layer DV (profile 7/4) MEL the stills flag is NOT inert:
+  // it selects the decoder's frame-vs-stream dec_mode (AMLCodec::OpenDecoder),
+  // so reattaching across a stills change would keep the wrong dec_mode and
+  // bring back the m2ts-boundary judder; only FEL (stream mode either way,
+  // per the running decoder's RPU parse) may ignore it.
   bool reuse = false;
-  if (m_bdStreamReuse && m_CurrentVideo.id >= 0)
+  if (m_bdStreamReuseVideo && m_CurrentVideo.id >= 0)
   {
+    const bool stillsSelectsDecMode =
+        (hint.dovi.dv_profile == 7 || hint.dovi.dv_profile == 4) &&
+        !(m_processInfo && m_processInfo->GetDoviIsFEL());
     CDVDStreamInfo cmp(hint);
-    cmp.stills = m_CurrentVideo.hint.stills;
+    if (!stillsSelectsDecMode)
+      cmp.stills = m_CurrentVideo.hint.stills;
     reuse = m_CurrentVideo.hint.Equal(cmp, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
     CLog::Log(LOGINFO, "CVideoPlayer::OpenVideoStream - BD stream reuse {}",
               reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen");
   }
-  // one-shot: the video open decision consumes the flag (video may be opened
-  // lazily per-packet when the disc dictates audio/sub streams, so it cannot
-  // be cleared on a fixed point in the reopen path)
-  m_bdStreamReuse = false;
+  // one-shot: each open decision consumes its own flag (streams may be opened
+  // lazily per-packet in either order when the disc dictates them, so the
+  // flags cannot be cleared on a fixed point in the reopen path)
+  m_bdStreamReuseVideo = false;
 
   if(!reuse && (m_CurrentVideo.id < 0 ||
      m_CurrentVideo.hint != hint))
