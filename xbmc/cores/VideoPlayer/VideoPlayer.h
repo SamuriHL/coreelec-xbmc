@@ -496,6 +496,7 @@ protected:
 
   bool ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream);
   void HandleDynamicBufferLevel();
+  void UpdateMenuDomainQueueDepth(bool segmentOpen);
   bool IsValidStream(const CCurrentStream& stream);
   bool IsBetterStream(const CCurrentStream& current, CDemuxStream* stream);
   void CheckBetterStream(CCurrentStream& current, CDemuxStream* stream);
@@ -685,4 +686,10 @@ protected:
   std::atomic<bool> m_repostDiscOverlays{false};
 
   double m_messageQueueTimeSize{0.0};
+
+  // Menu-domain low-latency mode: true while the A/V message queues are
+  // clamped to the short menu-domain read-ahead. Shrunk only when a video
+  // segment opens, restored (grow-only) from the process loop. Player thread
+  // only.
+  bool m_menuDomainLowLatency{false};
 };
