@@ -75,6 +75,7 @@ public:
   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options) override;
   virtual bool AddData(const DemuxPacket &packet) override;
   virtual void Reset() override;
+  virtual void Reopen() override;
   virtual VCReturn GetPicture(VideoPicture* pVideoPicture) override;
   virtual void SetSpeed(int iSpeed) override;
   virtual void SetCodecControl(int flags) override;
@@ -95,6 +96,7 @@ protected:
   VideoPicture m_videobuffer;
   bool            m_opened;
   int             m_codecControlFlags;
+  int             m_timeoutFlushCount{0};
   CDVDStreamInfo  m_hints;
   double          m_framerate;
   int             m_video_rate;
