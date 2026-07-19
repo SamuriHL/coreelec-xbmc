@@ -4550,7 +4550,26 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       // (before it is faked to DV below) and stash it for CAMLCodec. Then fake
       // Dolby Vision when either the legacy SDR2DV/HDR2DV toggle or a non-bypass
       // VS10 selection wants the DV engine engaged.
-      const unsigned int vs10Mode = aml_vs10_by_hdrtype(hint.hdrType, hint.bitdepth);
+      unsigned int vs10Mode = aml_vs10_by_hdrtype(hint.hdrType, hint.bitdepth);
+#if defined(HAVE_LIBBLURAY)
+      // Disc-session DV latch: menu-domain segments of a DV disc that carry no
+      // DV stream of their own (FirstPlay bumper, menu loops) are VS10-mapped
+      // into the latched DV output instead of dropping the HDMI DV signalling
+      // (a ~2s TV resync per drop). Selected titles keep their native format.
+      if (vs10Mode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+          hint.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
+          aml_dv_disc_session())
+      {
+        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+            bluray && bluray->IsMenuDomainVideo())
+        {
+          vs10Mode = DOLBY_VISION_OUTPUT_MODE_IPT;
+          CLog::Log(LOGDEBUG, "CVideoPlayer::OpenStream - DV disc session: "
+                    "menu-domain segment VS10-mapped to DV output");
+        }
+      }
+#endif
       aml_dv_set_vs10_pending(vs10Mode);
       if (aml_convert_to_dv_by_vs_engine(hint.hdrType) ||
           vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
