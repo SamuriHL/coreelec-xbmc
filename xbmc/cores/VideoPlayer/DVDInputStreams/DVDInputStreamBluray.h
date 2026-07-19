@@ -253,6 +253,7 @@ protected:
     void ApplyUHDCapabilities();
     void ApplyAudioCapability();
     void FreeTitleInfo();
+    void LogTitleAppInfo();
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 
