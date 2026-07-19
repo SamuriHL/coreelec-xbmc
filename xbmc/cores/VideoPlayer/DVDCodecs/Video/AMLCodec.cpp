@@ -2913,6 +2913,21 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     return CDVDVideoCodec::VC_EOF;
   else if (buffer_level > (streambuffer ? 100.0f : 10.0f))
     return CDVDVideoCodec::VC_NONE;
+  else if (ret == EAGAIN && !m_drain &&
+           (m_speed == DVD_PLAYSPEED_PAUSE || data_len < 16384))
+  {
+    // Input underrun (or pause), not a decoder stall: during BD-J stills the
+    // demuxer stops delivering (the segment ends on a held frame) and the
+    // stream buffer holds less than one decoder fetch quantum (the h265
+    // decoder's own need_size is 16K). A decoder cannot produce frames from
+    // an empty buffer, yet the timeout below flushed exactly this state ~5s
+    // into every BD-J still - discarding the held frame and, for a Dolby
+    // Vision dual-layer session, wedging the pipeline until a full reopen.
+    // Park the stall clock; a real decoder wedge (data queued and
+    // unconsumed, e.g. the VC-1/MVC starves) still times out.
+    m_tp_last_frame = std::chrono::system_clock::now();
+    return CDVDVideoCodec::VC_BUFFER;
+  }
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
