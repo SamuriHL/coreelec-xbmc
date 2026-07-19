@@ -2926,18 +2926,24 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     return CDVDVideoCodec::VC_EOF;
   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
     return CDVDVideoCodec::VC_NONE;
-  else if (ret == EAGAIN && !m_drain &&
-           (m_speed == DVD_PLAYSPEED_PAUSE || data_len < 16384))
+  else if (ret == EAGAIN &&
+           (m_speed == DVD_PLAYSPEED_PAUSE || data_len < (m_drain ? 65536 : 16384)))
   {
-    // Input underrun (or pause), not a decoder stall: during BD-J stills the
-    // demuxer stops delivering (the segment ends on a held frame) and the
-    // stream buffer holds less than one decoder fetch quantum (the h265
-    // decoder's own need_size is 16K). A decoder cannot produce frames from
-    // an empty buffer, yet the timeout below flushed exactly this state ~5s
-    // into every BD-J still - discarding the held frame and, for a Dolby
-    // Vision dual-layer session, wedging the pipeline until a full reopen.
-    // Park the stall clock; a real decoder wedge (data queued and
-    // unconsumed, e.g. the VC-1/MVC starves) still times out.
+    // Idle input, not a decoder stall - park the stall clock instead of
+    // letting the timeout below flush a healthy session (the flush discards
+    // the held frame and wedges Dolby Vision dual-layer decode outright).
+    // Two shapes, both hit ~5s into every BD-J still (Avatar: Fire and Ash):
+    // - no drain: the demuxer stopped delivering (still / stream gap) and
+    //   the buffer holds less than one parser fetch quantum (vh265
+    //   need_size is 16K) - nothing to decode from.
+    // - drain: the still-entry VIDEO_DRAIN latches DVD_CODEC_CTRL_DRAIN
+    //   (only a next packet clears it, and stills have none) while the
+    //   segment tail (~30K observed) sits below the parser's fetch
+    //   threshold and can never decode. The still exits via
+    //   BD_EVENT_STILL -> codec change, not via this drain completing; a
+    //   genuinely finished drain still returns VC_EOF above.
+    // A real decoder wedge - a full buffer of queued, unconsumed data
+    // (VC-1/MVC starve class) - still times out and escalates to reopen.
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_BUFFER;
   }
