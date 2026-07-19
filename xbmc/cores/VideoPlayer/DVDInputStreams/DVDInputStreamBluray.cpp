@@ -1527,6 +1527,18 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
 
   ApplyAudioCapability();
 
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+  // Pin the UO (User Operation) restriction enforcement level explicitly.
+  // RELAXED is libbluray's default; stating it here makes the persona baseline
+  // deliberate rather than inherited. Do NOT raise to SAFE/COMPLIANT while
+  // BD_EVENT_UO_MASK_CHANGED is still ignored in HandleEvent(): libbluray
+  // would refuse a disc-masked seek/angle change (bd_seek_time returns -1 /
+  // BDJ_EVENT_UO_MASKED) with no UI feedback, so the user would see a silent
+  // no-op instead of a reference-player "operation prohibited" response.
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL,
+                        BLURAY_PLAYER_SETTING_UO_RESTRICTION_RELAXED);
+#endif
+
   std::string langCode;
   g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDAudioLanguage(), langCode);
   bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, langCode.c_str());
