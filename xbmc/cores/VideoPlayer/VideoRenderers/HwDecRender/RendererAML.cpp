@@ -12,6 +12,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+#include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/MediaSettings.h"
@@ -35,6 +36,8 @@ CRendererAML::~CRendererAML()
 {
   Reset();
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
+  // GUI returns to sRGB - restore the matching core2 graphics declaration
+  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
 }
 
 CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
@@ -77,7 +80,20 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   CLog::Log(LOGDEBUG, "CRendererAML::Configure {}DV support, {}, DV system is {}, HDR is {}", device_support_dv ? "" : "no ",
     user_dv_disable ? "disabled" : "enabled", dv_is_used ? "enabled" : "disabled", hdr_is_used ? "used" : "not used");
 
-  CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(dv_is_used | hdr_is_used);
+  const bool gui_is_pq(dv_is_used | hdr_is_used);
+  CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(gui_is_pq);
+
+  // The DV core2 graphics-input declaration must match the GUI encoding set
+  // above. When the GUI plane is PQ-encoded and the DV core composites it
+  // (DV output, or VS10 conversions), core2 has to read it as FORMAT_HDR8
+  // (PQ 8-bit) - its FORMAT_SDR default assumes sRGB and applies a second
+  // SDR->DV mapping on top of the PQ encode, rendering menus/subtitles/OSD
+  // dim (~29% white) and desaturated. When the GUI stays sRGB (SDR output,
+  // e.g. VS10 to an SDR display) core2 must keep the sRGB assumption. With
+  // the DV core inactive the value is unread, so pairing it unconditionally
+  // with the transfer flag is always safe.
+  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
+             gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
 
   m_bConfigured = true;
 
