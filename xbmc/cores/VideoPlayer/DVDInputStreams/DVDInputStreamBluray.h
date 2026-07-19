@@ -263,6 +263,7 @@ protected:
     bool OpenStream(CFileItem &item);
     void SetupPlayerSettings();
     void ApplyUHDCapabilities();
+    void ApplyAudioCapability();
     void FreeTitleInfo();
     void FreeClipInfo();
 
