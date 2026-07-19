@@ -1640,6 +1640,8 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
 #endif
 
+  ApplyAudioCapability();
+
   std::string langCode;
   g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDAudioLanguage(), langCode);
   bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, langCode.c_str());
@@ -1731,6 +1733,114 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, hdrPreference);
   }
 #endif
+}
+
+void CDVDInputStreamBluray::ApplyAudioCapability()
+{
+  // Report the player's REAL audio capability (PSR15) derived from the connected
+  // HDMI sink, instead of libbluray's static 0xAAAA "every surround format"
+  // default. A disc's HDMV/BD-J startup logic reads PSR15 to decide which audio
+  // experience to offer; feeding the true chain lets a reduced sink (a TV with
+  // no HD-audio AVR, or a stereo-only output) branch the way a reference player
+  // would, rather than the player always claiming every format.
+  //
+  // PSR15 is a genuine capability OR-mask, NOT the single-format subset-select
+  // idiom of the UHD PSRs. Bits are per libbluray player_settings.h; each
+  // codec's max-channel count (parsed from aud_cap by AMLUtils) selects its
+  // surround (>2 ch) vs stereo-only bit.
+  //
+  // Clobber note: psr_init_UHD()/psr_init_3D() do NOT touch PSR15 (verified in
+  // libbluray register.c), so this single write in SetupPlayerSettings survives
+  // disc-type detection - no re-apply after bd_get_disc_info() is required.
+  const AMLHdmiAudioCaps caps = aml_get_hdmi_audio_caps();
+
+  // No readable sink descriptor -> keep libbluray's full default rather than
+  // under-report (matches "if hardware truth is unavailable, don't regress").
+  if (!caps.valid)
+  {
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray: audio capability PSR15 - no aud_cap node, "
+              "leaving libbluray default");
+    return;
+  }
+
+  // Surround bit when >2 ch (or channel count unknown), stereo-only bit for
+  // 1-2 ch, nothing when the codec is absent. Each ACAP format is a 2-bit
+  // field - exactly one state bit is set, never both.
+  auto pick = [](int ch, uint32_t surroundBit, uint32_t stereoBit) -> uint32_t {
+    if (ch == 0)
+      return 0;
+    return (ch > 2 || ch < 0) ? surroundBit : stereoBit;
+  };
+  // A capability advertised on two aud_cap lines must still collapse to ONE
+  // state of its 2-bit field: unknown (-1, assume surround) dominates, else
+  // the larger channel count.
+  auto combine = [](int a, int b) -> int {
+    if (a == 0)
+      return b;
+    if (b == 0)
+      return a;
+    if (a < 0 || b < 0)
+      return -1;
+    return a > b ? a : b;
+  };
+
+  uint32_t acap = 0;
+
+  // LPCM 48/96kHz is spec-mandatory, so it is always reported; its surround vs
+  // stereo-only state follows the PCM line's channel count (defaulting to
+  // surround if the mandatory PCM line is somehow unreadable). 192kHz LPCM is
+  // optional and listed among the PCM line's sample rates.
+  acap |= pick(caps.pcm_ch != 0 ? caps.pcm_ch : -1, BLURAY_ACAP_LPCM_48_96_SURROUND,
+               BLURAY_ACAP_LPCM_48_96_STEREO_ONLY);
+  if (caps.pcm_192k)
+    acap |= pick(caps.pcm_ch, BLURAY_ACAP_LPCM_192_SURROUND, BLURAY_ACAP_LPCM_192_STEREO_ONLY);
+
+  // Dolby TrueHD / Atmos-MAT (MLP lossless).
+  acap |= pick(caps.truehd_ch, BLURAY_ACAP_MLP_SURROUND, BLURAY_ACAP_MLP_STEREO_ONLY);
+
+  // Dolby Digital Plus; Atmos = dependent (JOC) substream.
+  acap |= pick(caps.ddp_ch, BLURAY_ACAP_DDPLUS_SURROUND, BLURAY_ACAP_DDPLUS_STEREO_ONLY);
+  if (caps.ddp_atmos)
+    acap |= pick(caps.ddp_ch, BLURAY_ACAP_DDPLUS_DEP_SURROUND,
+                 BLURAY_ACAP_DDPLUS_DEP_STEREO_ONLY);
+
+  // Dolby Digital (AC-3).
+  acap |= pick(caps.ac3_ch, BLURAY_ACAP_DD_SURROUND, BLURAY_ACAP_DD_STEREO_ONLY);
+
+  // DTS-HD (Master Audio / High-Res) = DTS core + extension substream; a plain
+  // DTS line advertises the core too, so the core state combines both lines.
+  acap |= pick(combine(caps.dtshd_ch, caps.dts_ch), BLURAY_ACAP_DTSHD_CORE_SURROUND,
+               BLURAY_ACAP_DTSHD_CORE_STEREO_ONLY);
+  acap |= pick(caps.dtshd_ch, BLURAY_ACAP_DTSHD_EXT_SURROUND,
+               BLURAY_ACAP_DTSHD_EXT_STEREO_ONLY);
+
+  // Empirical probe hook: override the computed mask from a file (single hex/dec
+  // PSR15 value) for on-box A/B against real discs / the reference player with
+  // no rebuild - mirrors psr_uhd_override.txt.
+  const std::string overridePath =
+      CSpecialProtocol::TranslatePath("special://profile/psr15_override.txt");
+  XFILE::CFile overrideFile;
+  std::vector<uint8_t> buf;
+  if (overrideFile.LoadFile(overridePath, buf) > 0)
+  {
+    const std::string content(buf.begin(), buf.end());
+    int v15;
+    if (sscanf(content.c_str(), "%i", &v15) == 1)
+    {
+      acap = static_cast<uint32_t>(v15);
+      CLog::Log(LOGWARNING,
+                "CDVDInputStreamBluray: audio capability PSR15 OVERRIDDEN from {}",
+                overridePath);
+    }
+  }
+
+  CLog::Log(LOGINFO,
+            "CDVDInputStreamBluray: audio capability PSR15 0x{:04x} from sink "
+            "(ch: PCM {} MAT {} DD+ {} AC-3 {} DTS-HD {} DTS {})",
+            acap, caps.pcm_ch, caps.truehd_ch, caps.ddp_ch, caps.ac3_ch, caps.dtshd_ch,
+            caps.dts_ch);
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_AUDIO_CAP, acap);
 }
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
