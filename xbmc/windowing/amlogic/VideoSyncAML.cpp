@@ -16,6 +16,7 @@
 #include "windowing/WinSystem.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
+#include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <unistd.h>
@@ -111,7 +112,7 @@ bool CVideoSyncAML::Setup()
   // Linux — nearly the same domain, but NTP slew (tens of ppm) accumulates
   // between them. The offset is re-based at every Setup, which bounds the
   // divergence to one clock-run's worth.
-  m_offset = CurrentHostCounter() - ns;
+  m_offset = CurrentHostCounter() - static_cast<int64_t>(ns);
 
   CLog::Log(LOGINFO, "CVideoSyncAML: using DRM vblank (fd:{} crtc:{} seq:{})",
             m_fd, m_crtcId, m_sequence);
@@ -137,6 +138,23 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
 
     if (sequence == m_sequence)
       continue;
+
+    // The Setup-time offset between ns (CLOCK_MONOTONIC) and
+    // CurrentHostCounter() (MONOTONIC_RAW) goes stale: NTP frequency
+    // training right after boot slews MONOTONIC by up to 500ppm, walking a
+    // fixed offset past TimeOfNextVblank's 1.3-period lateness threshold
+    // within minutes. GetTime then misreads every hardware timestamp as
+    // "vblank late", extrapolates the clock forward each frame, and the
+    // missed-vblank bookkeeping discards the negative remainder - a
+    // feedback loop that locks the master clock ~2x fast (observed: audio
+    // 1s+ behind and skipping ~2min after boot). Track the true offset
+    // continuously instead, sliding at most 1ms per vblank so poll-latency
+    // spikes cannot yank it while any real slew (20us/frame) is followed
+    // with huge margin.
+    {
+      const int64_t drift = (CurrentHostCounter() - static_cast<int64_t>(ns)) - m_offset;
+      m_offset += std::clamp(drift, static_cast<int64_t>(-1000000), static_cast<int64_t>(1000000));
+    }
 
     m_refClock->UpdateClock(static_cast<int>(sequence - m_sequence), m_offset + ns);
     m_sequence = sequence;
