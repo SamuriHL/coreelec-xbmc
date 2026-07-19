@@ -17,19 +17,37 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <cmath>
+#include <mutex>
 #include <unistd.h>
+
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 
 namespace
 {
 // The reference clock destroys and recreates the videosync object every time
 // the clock restarts, so the measured panel rate must survive outside the
 // instance. Keyed to the nominal rate it was measured for; cleared on real
-// display/mode changes.
+// display/mode changes. Touched from three threads (vblank Run(), the
+// reference-clock thread's GetFps(), the render thread's OnResetDisplay()) —
+// every access goes through g_measureLock.
+std::mutex g_measureLock;
 double g_measuredFps = 0.0;
 float g_measuredNominal = 0.0f;
+double g_lastLoggedFps = 0.0;
+
+// The integer-vs-fractional rate gap is 1000ppm and measurement noise over the
+// 5s window is sub-ppm, so a real panel mismatch sits comfortably between the
+// two bounds. A deviation above MAX cannot be a fractional-rate gap — it means
+// vblanks stalled inside the measuring window (mode set, HDMI renegotiation,
+// blanking) — so such a measurement is discarded instead of becoming the
+// master clock rate. MIN and MAX gate both the restart decision in Run() and
+// the apply decision in GetFps(); keeping them shared is what prevents a
+// restart loop if the thresholds ever drifted apart.
+constexpr uint64_t MEASURE_WINDOW_NS = UINT64_C(5000000000);
+constexpr double RATE_MISMATCH_MIN = 0.0003;
+constexpr double RATE_MISMATCH_MAX = 0.005;
 } // namespace
-#include <xf86drm.h>
-#include <xf86drmMode.h>
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
 : CVideoSync(clock)
@@ -80,8 +98,10 @@ bool CVideoSyncAML::Setup()
     m_fd = -1;
     return false;
   }
-  // ns is CLOCK_MONOTONIC; CurrentHostCounter() is the same domain on Linux, so
-  // this offset re-bases the vblank timestamps into the reference clock's units.
+  // ns is CLOCK_MONOTONIC; CurrentHostCounter() is CLOCK_MONOTONIC_RAW on
+  // Linux — nearly the same domain, but NTP slew (tens of ppm) accumulates
+  // between them. The offset is re-based at every Setup, which bounds the
+  // divergence to one clock-run's worth.
   m_offset = CurrentHostCounter() - ns;
 
   CLog::Log(LOGINFO, "CVideoSyncAML: using DRM vblank (fd:{} crtc:{} seq:{})",
@@ -114,31 +134,44 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
 
     // Rate-honesty check: the vblank timestamps are hardware time, so
     // (sequence delta / time delta) is the panel's true refresh rate. If it
-    // disagrees with the rate the clock is running on by >300ppm (the
-    // integer-vs-fractional gap is 1000ppm; measurement noise over 5s is
-    // sub-ppm), restart the clock so GetFps() can hand it the measured rate.
+    // disagrees with the rate the clock is running on by more than the
+    // mismatch band's lower bound, restart the clock so GetFps() can hand it
+    // the measured rate.
     if (m_measureAnchorNs == 0)
     {
       m_measureAnchorSeq = sequence;
       m_measureAnchorNs = ns;
     }
-    else if (ns - m_measureAnchorNs >= UINT64_C(5000000000))
+    else if (ns - m_measureAnchorNs >= MEASURE_WINDOW_NS)
     {
-      m_measuredFps = static_cast<double>(sequence - m_measureAnchorSeq) * 1e9 /
-                      static_cast<double>(ns - m_measureAnchorNs);
+      const double measuredFps = static_cast<double>(sequence - m_measureAnchorSeq) * 1e9 /
+                                 static_cast<double>(ns - m_measureAnchorNs);
       m_measureAnchorSeq = sequence;
       m_measureAnchorNs = ns;
 
-      if (m_reportedFps > 0.0 &&
-          std::abs(m_measuredFps / m_reportedFps - 1.0) > 0.0003)
+      if (m_reportedFps > 0.0)
       {
-        CLog::Log(LOGWARNING,
-                  "CVideoSyncAML: measured vblank rate {:.4f} Hz != clock rate {:.4f} Hz "
-                  "(panel fractional-rate mismatch), restarting clock with measured rate",
-                  m_measuredFps, m_reportedFps);
-        g_measuredFps = m_measuredFps;
-        g_measuredNominal = m_fps;
-        m_abort = true;
+        const double deviation = std::abs(measuredFps / m_reportedFps - 1.0);
+        if (deviation > RATE_MISMATCH_MAX)
+        {
+          CLog::Log(LOGDEBUG,
+                    "CVideoSyncAML: discarding implausible measured vblank rate {:.4f} Hz "
+                    "(clock rate {:.4f} Hz) - vblank stall inside the measuring window",
+                    measuredFps, m_reportedFps);
+        }
+        else if (deviation > RATE_MISMATCH_MIN)
+        {
+          CLog::Log(LOGWARNING,
+                    "CVideoSyncAML: measured vblank rate {:.4f} Hz != clock rate {:.4f} Hz "
+                    "(panel fractional-rate mismatch), restarting clock with measured rate",
+                    measuredFps, m_reportedFps);
+          {
+            std::lock_guard<std::mutex> lock(g_measureLock);
+            g_measuredFps = measuredFps;
+            g_measuredNominal = m_fps;
+          }
+          m_abort = true;
+        }
       }
     }
   }
@@ -162,35 +195,45 @@ float CVideoSyncAML::GetFps()
   // kernel). The clock then advances at true wall-time rate and passthrough
   // audio no longer drifts against it; the renderer sees the panel's real
   // cadence either way.
-  if (g_measuredFps > 0.0 && g_measuredNominal == m_fps &&
-      std::abs(g_measuredFps / static_cast<double>(m_fps) - 1.0) > 0.0003)
+  double measured = 0.0;
+  bool logApply = false;
   {
-    CLog::Log(LOGWARNING,
+    std::lock_guard<std::mutex> lock(g_measureLock);
+    if (g_measuredFps > 0.0 && g_measuredNominal == m_fps)
+    {
+      const double deviation = std::abs(g_measuredFps / static_cast<double>(m_fps) - 1.0);
+      if (deviation > RATE_MISMATCH_MIN && deviation <= RATE_MISMATCH_MAX)
+      {
+        measured = g_measuredFps;
+        // The videosync is recreated on every clock restart (constantly while
+        // BD menus cycle playitems) — warn once per measured value, not per
+        // recreation.
+        logApply = g_lastLoggedFps != g_measuredFps;
+        g_lastLoggedFps = g_measuredFps;
+      }
+    }
+  }
+  if (measured > 0.0)
+  {
+    CLog::Log(logApply ? LOGWARNING : LOGDEBUG,
               "CVideoSyncAML: using measured vblank rate {:.4f} Hz instead of nominal {:.3f} Hz",
-              g_measuredFps, m_fps);
-    m_reportedFps = g_measuredFps;
+              measured, m_fps);
+    m_reportedFps = measured;
   }
 
   CLog::Log(LOGDEBUG, "CVideoSyncAML: fps: {:.3f}", m_reportedFps);
   return static_cast<float>(m_reportedFps);
 }
 
-void CVideoSyncAML::RefreshChanged()
-{
-  // A refresh-rate change moves the CRTC timing; abort so the reference clock
-  // re-runs Setup and re-anchors the vblank sequence to the new rate. The
-  // measured rate belongs to the old mode — discard it.
-  if (m_fps != CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS())
-  {
-    g_measuredFps = 0.0;
-    g_measuredNominal = 0.0f;
-    m_abort = true;
-  }
-}
-
 void CVideoSyncAML::OnResetDisplay()
 {
-  g_measuredFps = 0.0;
-  g_measuredNominal = 0.0f;
+  // A display/mode change moves the CRTC timing; abort so the reference clock
+  // re-runs Setup and re-anchors the vblank sequence. The measured rate
+  // belongs to the old mode — discard it.
+  {
+    std::lock_guard<std::mutex> lock(g_measureLock);
+    g_measuredFps = 0.0;
+    g_measuredNominal = 0.0f;
+  }
   m_abort = true;
 }
