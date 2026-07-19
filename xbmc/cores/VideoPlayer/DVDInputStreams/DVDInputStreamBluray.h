@@ -246,6 +246,7 @@ protected:
     bool OpenStream(CFileItem &item);
     void SetupPlayerSettings();
     void ApplyUHDCapabilities();
+    void ApplyAudioCapability();
     void FreeTitleInfo();
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
