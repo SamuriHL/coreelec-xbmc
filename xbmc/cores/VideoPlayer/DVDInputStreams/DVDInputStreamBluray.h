@@ -137,6 +137,11 @@ public:
 
   void GetStreamInfo(int pid, std::string &language);
 
+  // Disc-authoritative (playlist STN) HDR metadata for a mpeg-ts PID.
+  // Returns true if the pid is listed in the current clip's stream tables;
+  // flags report the DV extension table / per-stream HDR10+ attribute.
+  bool GetDiscStreamHdrMetadata(int pid, bool& isDolbyVision, bool& isHdrPlus);
+
   int Get3dSubtitlePlane(uint16_t pid);
 
   /*!
