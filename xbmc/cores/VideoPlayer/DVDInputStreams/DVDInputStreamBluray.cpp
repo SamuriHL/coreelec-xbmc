@@ -1311,6 +1311,47 @@ bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
   return false;
 }
 
+bool CDVDInputStreamBluray::GetDiscStreamHdrMetadata(int pid, bool& isDolbyVision, bool& isHdrPlus)
+{
+  isDolbyVision = false;
+  isHdrPlus = false;
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+  if (!m_titleInfo || m_titleInfo->clip_count == 0)
+    return false;
+
+  // STN tables are per-clip but the PID layout is constant across a playlist's
+  // clips; fall back to the first clip when no PLAYITEM event has fired yet.
+  const BLURAY_CLIP_INFO* clip = m_clip ? m_clip : &m_titleInfo->clips[0];
+
+  bool known = false;
+  // A pid listed in the playlist's DV extension stream table IS a Dolby Vision
+  // (RPU/enhancement-carrying) stream, even when the DOVI side data ffmpeg
+  // looks for is absent from the bitstream it has parsed so far.
+  for (uint8_t i = 0; i < clip->dv_stream_count; i++)
+  {
+    if (clip->dv_streams[i].pid == pid)
+    {
+      isDolbyVision = true;
+      known = true;
+    }
+  }
+  for (uint8_t i = 0; i < clip->video_stream_count; i++)
+  {
+    if (clip->video_streams[i].pid == pid)
+    {
+      known = true;
+      if (clip->video_streams[i].dynamic_range_type == BLURAY_DYNAMIC_RANGE_DOLBY_VISION)
+        isDolbyVision = true;
+      if (clip->video_streams[i].hdr_plus_flag)
+        isHdrPlus = true;
+    }
+  }
+  return known;
+#else
+  return false;
+#endif
+}
+
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 {
   if(!m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
