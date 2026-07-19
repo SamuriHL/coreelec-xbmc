@@ -108,6 +108,7 @@ public:
   virtual bool SupportsExtention() const = 0;
   virtual int  GetDataLevel() const = 0;
   virtual void SetMaxDataSize(int iMaxDataSize) {}
+  virtual void SetMaxTimeSize(double sec) {}
   virtual int GetMaxDataSize() const = 0;
 };
 
@@ -139,5 +140,6 @@ public:
 
   virtual int  GetDataLevel() const = 0;
   virtual void SetMaxDataSize(int iMaxDataSize) {}
+  virtual void SetMaxTimeSize(double sec) {}
   virtual int GetMaxDataSize() const = 0;
 };
