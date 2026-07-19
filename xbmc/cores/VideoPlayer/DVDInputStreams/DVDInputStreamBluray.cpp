@@ -126,6 +126,33 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest()
   return s;
 }
 
+bool CDVDInputStreamBluray::DiscHasDolbyVision()
+{
+#if (BLURAY_VERSION < BLURAY_VERSION_CODE(1, 5, 0))
+  return false;
+#else
+  // A DV BD declares its dv_streams in the STN table of the feature
+  // playlist(s); menu/bumper playlists declare none, so scan every relevant
+  // title until one clip carries a DV stream.
+  for (int i = 0; i < m_nTitles; i++)
+  {
+    BLURAY_TITLE_INFO* t = bd_get_title_info(m_bd, i, 0);
+    if (!t)
+      continue;
+    bool hasDV = false;
+    for (uint32_t c = 0; c < t->clip_count && !hasDV; c++)
+      hasDV = t->clips[c].dv_stream_count > 0;
+    bd_free_title_info(t);
+    if (hasDV)
+    {
+      CLog::Log(LOGINFO, "CDVDInputStreamBluray::DiscHasDolbyVision - DV stream found in title {}", i);
+      return true;
+    }
+  }
+  return false;
+#endif
+}
+
 BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filename)
 {
   unsigned int playlist;
@@ -402,6 +429,20 @@ bool CDVDInputStreamBluray::Open()
 
   if (m_navmode)
   {
+    // Disc-session DV latch: if this disc carries Dolby Vision and the display
+    // can take it, engage the DV output now - during the load phase - and keep
+    // it for the whole disc session. Menu-domain segments without a DV stream
+    // (FirstPlay bumpers, menu loops) are VS10-mapped into DV by VideoPlayer,
+    // so the HDMI DV signalling never bounces at segment boundaries (each
+    // bounce is a ~2s TV resync that segment audio plays straight through).
+    if (aml_support_dolby_vision() && aml_display_support_dv() &&
+        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+            CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
+        DiscHasDolbyVision())
+    {
+      aml_dv_set_disc_session(true);
+      aml_dv_pre_engage_disc_session();
+    }
 
     bd_register_overlay_proc (m_bd, this, bluray_overlay_cb);
 #ifdef HAVE_LIBBLURAY_BDJ
@@ -447,6 +488,7 @@ bool CDVDInputStreamBluray::Open()
 // close file and reset everything
 void CDVDInputStreamBluray::Close()
 {
+  aml_dv_set_disc_session(false);
   CloseMVCDemux();
   FreeTitleInfo();
 
@@ -1491,6 +1533,24 @@ bool CDVDInputStreamBluray::IsInMenu()
   if(m_menu || m_hasOverlay)
     return true;
   return false;
+}
+
+bool CDVDInputStreamBluray::IsMenuDomainVideo()
+{
+  // "Menu-domain" = video that is incidental to navigation rather than
+  // explicitly selected content: the FirstPlay title (studio logo bumpers),
+  // the top menu, or any segment playing while a menu/overlay is up. Feature
+  // titles selected from the menu are NOT menu-domain, so format-demo discs
+  // (S&M) keep their native HDR10/HDR10+ output.
+  if (m_bd == nullptr || !m_navmode)
+    return false;
+
+  const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
+  if (disc_info && m_title &&
+      (m_title == disc_info->first_play || m_title == disc_info->top_menu))
+    return true;
+
+  return IsInMenu();
 }
 
 void CDVDInputStreamBluray::SkipStill()

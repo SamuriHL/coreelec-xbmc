@@ -413,6 +413,34 @@ static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
 unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 
+// Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
+// open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
+static bool s_dv_disc_session = false;
+void aml_dv_set_disc_session(bool active) { s_dv_disc_session = active; }
+bool aml_dv_disc_session() { return s_dv_disc_session; }
+
+void aml_dv_pre_engage_disc_session()
+{
+  // Mirrors the DV-enable writes CAMLCodec::OpenDecoder performs per stream
+  // (same values; the codec's later writes are idempotent). Doing them at disc
+  // open raises the Dolby VSIF while libbluray/BD-J are still loading, so the
+  // TV's multi-second sync into DV is over before the first segment renders.
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'Y');
+  aml_dv_apply_vsvdb();
+  const bool playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->
+    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+  CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
+  if (ll_policy.Exists())
+    ll_policy.Set(playerLed ? 1u /* DOLBY_VISION_LL_YUV422 */
+                            : 0u /* DOLBY_VISION_LL_DISABLE */);
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy",
+             2u /* AMDV_FORCE_OUTPUT_MODE */);
+  const unsigned int mode = aml_dv_resolve_tunnel_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
+  CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
+  CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: DV output engaged at disc open "
+            "({} led)", playerLed ? "player" : "TV");
+}
+
 unsigned int aml_vs10_by_setting(const std::string& setting)
 {
   return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(setting);
