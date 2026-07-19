@@ -529,10 +529,23 @@ void CDVDInputStreamBluray::ProcessEvent() {
   switch (m_event.event) {
   case BD_EVENT_SEEK:
   case BD_EVENT_TITLE:
-  case BD_EVENT_ANGLE:
-  case BD_EVENT_PLAYLIST:
   case BD_EVENT_PLAYLIST_STOP:
     m_seamlessHold = false;
+    break;
+  case BD_EVENT_ANGLE:
+    // menu-loop wraps re-announce the current angle alongside the PLAYLIST
+    // re-selection; only a REAL angle change voids the seamless hold.
+    if (m_event.param != m_angle)
+      m_seamlessHold = false;
+    break;
+  case BD_EVENT_PLAYLIST:
+    // a PLAYLIST event naming the playlist that is already playing is a menu
+    // loop wrapping to its start - the same-format continuation Read() armed
+    // the hold for. NextStream() runs ProcessEvent on that very event before
+    // the player consults IsSeamlessStreamChange(), so voiding here would
+    // defeat the wrap hold every time. Only a CHANGE of playlist voids.
+    if (m_event.param != m_playlist)
+      m_seamlessHold = false;
     break;
   default:
     break;
@@ -815,8 +828,16 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // a hold from a bare playitem advance (no intervening playlist/
             // title/seek/angle event - ProcessEvent's voiding switch clears
             // those) is a same-format continuation the player can serve
-            // without teardown
-            m_seamlessHold = (m_event.event == BD_EVENT_PLAYITEM);
+            // without teardown. A PLAYLIST event naming the playlist that is
+            // ALREADY playing is the same thing: a looping menu playlist
+            // wrapping back to its start (TNG language screen re-fires
+            // playlist 94 every ~9s) - same clips, same streams, only a
+            // backward timeline jump, which CheckContinuity resolves. Without
+            // this the loop wrap tears down and reopens the video stream
+            // every iteration (visible glitch + a window that eats input).
+            m_seamlessHold =
+                (m_event.event == BD_EVENT_PLAYITEM) ||
+                (m_event.event == BD_EVENT_PLAYLIST && m_event.param == m_playlist);
             m_hold = HOLD_HELD;
             return result;
           }
