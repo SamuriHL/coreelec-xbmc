@@ -44,4 +44,6 @@ private:
   double m_reportedFps{0.0};   // rate GetFps() last handed to the clock
   uint64_t m_measureAnchorSeq{0};
   uint64_t m_measureAnchorNs{0};
+  // In-band candidate awaiting confirmation by the next window (see Run()).
+  double m_pendingMeasuredFps{0.0};
 };
