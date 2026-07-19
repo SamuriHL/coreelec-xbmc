@@ -1764,6 +1764,19 @@ void CVideoPlayer::Process()
       continue;
     }
 
+#if defined(HAVE_LIBBLURAY)
+    // display came back from a mode switch (OnResetDisplay): a still disc menu
+    // presents no new video frames, so its retained overlay composition is
+    // never re-composed after the reinit - repost it (no-op without overlays;
+    // replace-on-add dedups one that survived)
+    if (m_repostDiscOverlays.exchange(false))
+    {
+      if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+              std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        bluray->RedrawMenuOverlays();
+    }
+#endif
+
     // check if in an edit (cut or commercial break) that should be automatically skipped
     CheckAutoSceneSkip();
 
@@ -6396,6 +6409,10 @@ void CVideoPlayer::OnResetDisplay()
   m_displayLost = false;
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
+  // a mode switch (e.g. Dolby Vision engaging mid-menu) leaves a still disc
+  // menu black: no new video frame is presented, so the retained overlay is
+  // never re-composed - repost it from the player thread (Process loop)
+  m_repostDiscOverlays = true;
 }
 
 void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update)
