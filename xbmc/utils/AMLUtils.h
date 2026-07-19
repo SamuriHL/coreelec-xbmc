@@ -103,6 +103,20 @@ unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth);
 // applies it. BYPASS means "no VS10 conversion for this stream".
 void aml_dv_set_vs10_pending(unsigned int mode);
 unsigned int aml_dv_get_vs10_pending();
+// Disc-session DV latch: active while a Blu-ray whose content includes Dolby
+// Vision plays in navigation (menu) mode on a DV-capable display. Menu-domain
+// segments without their own DV stream (FirstPlay bumpers, menu video loops)
+// are VS10-mapped into the DV output instead of dropping the HDMI DV
+// signalling at every DV/non-DV segment boundary - each drop is a multi-second
+// TV resync (black screen) that the segment's audio plays straight through.
+// Explicitly selected titles keep their native format (S&M-style format-demo
+// discs must output HDR10/HDR10+ demos untouched).
+void aml_dv_set_disc_session(bool active);
+bool aml_dv_disc_session();
+// Engage the DV output once at disc open (before any stream exists) so the
+// TV's resync into DV overlaps the disc load phase instead of the first
+// audible seconds of playback.
+void aml_dv_pre_engage_disc_session();
 unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
