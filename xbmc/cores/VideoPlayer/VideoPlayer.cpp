@@ -1461,6 +1461,47 @@ void CVideoPlayer::HandleDynamicBufferLevel()
   }
 }
 
+// Menu-domain low-latency mode: while a Blu-ray is in menu domain, clamp the
+// A/V queue read-ahead to ~1s so the disc VM (which executes at demux
+// position) runs at roughly presentation time - menu input, overlay timing,
+// title jumps and wrap decisions then act when the viewer sees them instead
+// of up to the full queue depth early. Shrinking is only done when a video
+// segment opens (segmentOpen), so a popup menu over a running feature never
+// steals the feature's buffer depth; growing back to full read-ahead is safe
+// at any time and happens from the process loop as soon as menu domain ends.
+void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
+{
+  const double clamp = static_cast<double>(CServiceBroker::GetSettingsComponent()
+                                               ->GetAdvancedSettings()
+                                               ->m_videoMenuDomainQueueTimeSize);
+  if (clamp <= 0.0 || clamp >= m_messageQueueTimeSize)
+    return;
+
+  bool menuDomain = false;
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+  {
+    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+      menuDomain = bluray->IsMenuDomainVideo();
+  }
+#endif
+
+  if (menuDomain == m_menuDomainLowLatency)
+    return;
+  if (menuDomain && !segmentOpen)
+    return;
+
+  m_menuDomainLowLatency = menuDomain;
+  const double target = menuDomain ? clamp : m_messageQueueTimeSize;
+  m_VideoPlayerAudio->SetMaxTimeSize(target);
+  m_VideoPlayerVideo->SetMaxTimeSize(target);
+  CLog::Log(LOGINFO,
+            "CVideoPlayer::UpdateMenuDomainQueueDepth - {} menu-domain low-latency mode, "
+            "queue read-ahead {:.1f}s",
+            menuDomain ? "entering" : "leaving", target);
+}
+
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
 {
   if(stream.id<0)
@@ -1600,6 +1641,12 @@ void CVideoPlayer::Prepare()
   m_bdStreamReuseVideo = false;
   m_bdStreamReuseAudio = false;
   m_menuWrapVideoGap = 0.0;
+  if (m_menuDomainLowLatency)
+  {
+    m_menuDomainLowLatency = false;
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+  }
   m_CurrentAudio.lastdts = DVD_NOPTS_VALUE;
   m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
 
@@ -1848,6 +1895,9 @@ void CVideoPlayer::Process()
     UpdatePlayState(200);
 
     HandleDynamicBufferLevel();
+
+    // restore full queue read-ahead as soon as menu domain ends (grow-only)
+    UpdateMenuDomainQueueDepth(false);
 
     // make sure we run subtitle process here
     m_VideoPlayerSubtitle->Process(m_clock.GetClock() + m_State.time_offset - m_VideoPlayerVideo->GetSubtitleDelay(), m_State.time_offset);
@@ -4586,6 +4636,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
           vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
         hint.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
       res = OpenVideoStream(hint, reset);
+      // A new video segment is the only point where the menu-domain
+      // low-latency clamp may shrink the queues.
+      if (res)
+        UpdateMenuDomainQueueDepth(true);
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
       // renderer's Configure() sees a valid viewport via GetViewWindow().
       // The WINDOW_FULLSCREEN_VIDEO skin activation is deferred to
