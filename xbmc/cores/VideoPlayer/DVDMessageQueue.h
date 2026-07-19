@@ -96,7 +96,13 @@ public:
   int GetLevel(bool dataLevel = false) const;
 
   void SetMaxDataSize(int iMaxDataSize) { m_iMaxDataSize = iMaxDataSize; }
-  void SetMaxTimeSize(double sec) { m_TimeSize = 1.0 / sec; }
+  // Locked: re-targeted at runtime (menu-domain low-latency mode) while the
+  // consumer thread reads m_TimeSize in GetLevel().
+  void SetMaxTimeSize(double sec)
+  {
+    std::unique_lock lock(m_section);
+    m_TimeSize = 1.0 / sec;
+  }
   int GetMaxDataSize() const { return m_iMaxDataSize; }
   double GetMaxTimeSize() const { return m_TimeSize; }
   bool IsInited() const { return m_bInitialized; }
