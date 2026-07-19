@@ -194,6 +194,10 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     std::vector<RefreshVideoLatency> m_videoRefreshLatency;
     float m_videoDefaultLatency;
     float m_videoDefaultHdrExtraLatency;
+    // Queue read-ahead (seconds) while a Blu-ray is in menu domain. Keeps the
+    // disc VM at ~presentation time so menu decisions fire when the viewer
+    // sees them. 0 disables the menu-domain clamp (full read-ahead everywhere).
+    float m_videoMenuDomainQueueTimeSize;
     int  m_videoCaptureUseOcclusionQuery;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
