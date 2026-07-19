@@ -140,5 +140,9 @@ private:
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;
-  bool            m_discPacedStream = false;
+  // Dual-stream (BL+EL) DV opened in stream dec_mode: skip the stream-buffer
+  // fill gate in AddData. Covers disc playitems AND file-played BL+EL m2ts
+  // rips - both are fed in short segments that can EOS below any fill
+  // threshold, wedging the gate in a starve/reopen loop.
+  bool            m_skipBufferFillGate = false;
 };
