@@ -80,7 +80,12 @@ public:
   void WaitUntilEmpty();
 
   // non messagequeue related functions
-  bool IsFull() const { return GetLevel(true) == 100; }
+  // Full when EITHER dimension is exhausted. The data (MB) cap alone lets
+  // low-bitrate content queue for minutes (TNG HDMV: 120s audio / 90s video
+  // observed), running the disc VM minutes ahead of presentation; the time
+  // cap alone would under-use the buffer on high-bitrate streams. GetLevel's
+  // time path falls back to data levels for queues without usable pts.
+  bool IsFull() const { return GetLevel(true) == 100 || GetLevel(false) == 100; }
 
   /*!
    * \brief Get the current queue level.
