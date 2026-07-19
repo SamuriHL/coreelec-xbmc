@@ -896,7 +896,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
                                detect_avio_seek);
   if (!avioCtx)
   {
-    av_free(avioBuf);
+    av_freep(&avioBuf);
     goto cleanup;
   }
   fmtCtx = avformat_alloc_context();

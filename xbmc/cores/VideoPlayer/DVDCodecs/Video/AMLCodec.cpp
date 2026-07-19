@@ -1980,7 +1980,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_tp_last_frame = std::chrono::system_clock::now();
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
-  m_discPacedStream = false;
+  m_skipBufferFillGate = false;
 
   if (!OpenAmlVideo(hints))
   {
@@ -2230,12 +2230,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
           amdolby_vision_debug.Set("enable_mel 1");
         }
         am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
-        // Disc titles are fed one short m2ts playitem at a time, so the stream
-        // buffer can reach EOS long before the 90%-full readiness gate in
-        // AddData is satisfiable — frames then decode but are never dequeued
-        // and playback wedges in a starve/reopen loop. Skip the fill gate for
-        // disc-paced dual-stream titles; file-paced FEL/MEL remuxes keep it.
-        m_discPacedStream = isDualStream;
+        // Dual-stream DV is fed one short m2ts segment at a time (disc
+        // playitems, or a file-played BL+EL rip), so the stream buffer can
+        // reach EOS long before the 90%-full readiness gate in AddData is
+        // satisfiable — frames then decode but are never dequeued and playback
+        // wedges in a starve/reopen loop. Skip the fill gate for ALL
+        // dual-stream DV; single-track FEL/MEL remuxes keep it.
+        m_skipBufferFillGate = isDualStream;
       }
     }
   }
@@ -2625,9 +2626,10 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   if (!m_buffer_level_ready)
   {
-    if (m_discPacedStream)
+    if (m_skipBufferFillGate)
     {
-      // Disc playitems can EOS below any fill threshold — dequeue immediately.
+      // Segment-fed dual-stream DV can EOS below any fill threshold — dequeue
+      // immediately.
       m_buffer_level_ready = true;
       m_minimum_buffer_level = 0.0f;
 
