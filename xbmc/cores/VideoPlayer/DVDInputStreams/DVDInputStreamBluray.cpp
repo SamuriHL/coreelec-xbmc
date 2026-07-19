@@ -1105,6 +1105,21 @@ int CDVDInputStreamBluray::GetChapter()
     return 0;
 }
 
+void CDVDInputStreamBluray::GetChapterName(std::string& name, int ch)
+{
+  name.clear();
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+  // Chapter names come from the disc's metadata (bdmt_xxx.xml), exposed in
+  // title info since libbluray 1.5.0; discs without metadata leave them NULL.
+  if (ch == -1 || ch > GetChapterCount())
+    ch = GetChapter();
+
+  if (m_titleInfo && ch > 0 && static_cast<uint32_t>(ch) <= m_titleInfo->chapter_count &&
+      m_titleInfo->chapters[ch - 1].chapter_name)
+    name = m_titleInfo->chapters[ch - 1].chapter_name;
+#endif
+}
+
 bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
