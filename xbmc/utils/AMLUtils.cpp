@@ -416,7 +416,19 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static bool s_dv_disc_session = false;
-void aml_dv_set_disc_session(bool active) { s_dv_disc_session = active; }
+void aml_dv_set_disc_session(bool active)
+{
+  s_dv_disc_session = active;
+  // Kernel-side VSIF hold (amdv patch 0002): while the session is active,
+  // every segment outputs DV (menus VS10-mapped, features native), so the
+  // DOVI->SDR HDMI teardown at each decoder swap's no-source gap is a false
+  // transition - the sink re-locks for seconds and swallows the start of
+  // every title. Holding keeps the Dolby VSIF latched across the gaps; the
+  // clear at disc close releases the normal SDR transition.
+  CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
+  if (hold.Exists())
+    hold.Set(active ? 'Y' : 'N');
+}
 bool aml_dv_disc_session() { return s_dv_disc_session; }
 
 void aml_dv_pre_engage_disc_session()
