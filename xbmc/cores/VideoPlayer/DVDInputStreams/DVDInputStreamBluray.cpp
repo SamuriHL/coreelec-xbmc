@@ -694,6 +694,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     /* stream selection */
 
   case BD_EVENT_AUDIO_STREAM:
+    m_audioStreamNum = m_event.param;
     pid = -1;
     if (m_titleInfo && m_clip && static_cast<uint32_t>(m_clip->audio_stream_count) > (m_event.param - 1))
       pid = m_clip->audio_streams[m_event.param - 1].pid;
@@ -708,6 +709,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_PG_TEXTST_STREAM:
+    m_pgStreamNum = m_event.param;
     pid = -1;
     if (m_titleInfo && m_clip && static_cast<uint32_t>(m_clip->pg_stream_count) > (m_event.param - 1))
       pid = m_clip->pg_streams[m_event.param - 1].pid;
