@@ -106,6 +106,7 @@ struct SPlayerState
 };
 
 class CDVDInputStream;
+struct BlurayTitleUiSnapshot;
 
 class CDVDDemux;
 class CDemuxStreamVideo;
@@ -715,12 +716,15 @@ protected:
   // Timeline-stamped disc events (docs/bd_timeline_events_design.md):
   // presentation-affecting disc state captured at demux time, stamped with
   // the demux position (last delivered video dts), applied from the process
-  // loop when the render clock reaches the stamp. Phase 1 carries only the
-  // presented menu state (BD_EVENT_MENU). Player thread only.
+  // loop when the render clock reaches the stamp. Phase 1: the presented
+  // menu state (BD_EVENT_MENU). Phase 2: the presented title-UI snapshot
+  // (BD_EVENT_PLAYLIST - chapters/total time; titleUi non-null selects it).
+  // Player thread only.
   struct SDiscTimelineEvent
   {
     double stampPts;
     uint32_t menuState;
+    std::shared_ptr<const BlurayTitleUiSnapshot> titleUi;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   void ApplyDiscTimelineEvents(bool flushAll);
