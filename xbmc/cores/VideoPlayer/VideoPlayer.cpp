@@ -4768,8 +4768,26 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   }
 
   std::shared_ptr<CDVDInputStream::IMenus> pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
-  if(pMenus && pMenus->IsInMenu())
+  if (pMenus && pMenus->IsInMenu())
+  {
+#if defined(HAVE_LIBBLURAY)
+    // BD: key the stills stamp on menu-domain video, not the raw overlay
+    // state. BD-J discs can keep their overlay up across a menu->title
+    // start (IsInMenu() stays true), and stills is not inert downstream:
+    // AMLCodec::OpenDecoder excludes stills from the dual-layer MEL
+    // stream-mode routing, so a feature stamped as a still opens frame-mode
+    // with the wrong NAL skip policy (first GOP discarded, m2ts-boundary
+    // EOS judder returns). IsMenuDomainVideo() applies the playlist-duration
+    // leave-predicate that already keys the queue-depth clamp here.
+    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+      hint.stills = bluray->IsMenuDomainVideo();
+    else
+      hint.stills = true;
+#else
     hint.stills = true;
+#endif
+  }
 
   if (hint.stereo_mode.empty())
   {
