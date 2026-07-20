@@ -1441,10 +1441,17 @@ bool CDVDInputStreamBluray::IsInMenu()
   if(m_bd == nullptr || !m_navmode)
     return false;
 
+  // PRESENTED menu state: m_menuPresented is the demux-side menu flip
+  // (m_menu) stamped with its demux position and applied when the render
+  // clock reaches it (docs/bd_timeline_events_design.md). User-facing
+  // consumers (input routing, seek gating, GUI state) see the menu when
+  // the VIEWER does, not when the VM - up to a full queue depth earlier -
+  // decided it.
+  //
   // since there is no way to tell in a BD-J blu-ray when a popup menu actually is visible,
   // we have to assume that the blu-ray is in menu/navigation mode when there is an overlay
   // on screen, even if it might be invisible (which is impossible to detect)
-  if(m_menu || m_hasOverlay)
+  if(m_menuPresented || m_hasOverlay)
     return true;
   return false;
 }
@@ -1477,7 +1484,11 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
   if (m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION)
     return false;
 
-  return IsInMenu();
+  // DEMUX-side truth, deliberately not IsInMenu(): segment classification
+  // happens at stream open, for the segment whose bytes are about to
+  // arrive - the presented (clock-deferred) menu state would be a full
+  // queue depth behind the segment being classified.
+  return m_menu || m_hasOverlay;
 }
 
 void CDVDInputStreamBluray::SkipStill()
