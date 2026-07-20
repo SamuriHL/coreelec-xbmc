@@ -1578,10 +1578,44 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
        (stream->uniqueId == current.id && stream->demuxerId == current.demuxerId))
       return false;
 
-    if (current.type == StreamType::AUDIO && stream->dvdNavId == m_dvd.iSelectedAudioStream)
-      return true;
-    if (current.type == StreamType::SUBTITLE && stream->dvdNavId == m_dvd.iSelectedSPUStream)
-      return true;
+#if defined(HAVE_LIBBLURAY)
+    // BD: dictated streams are resolved LIVE against the current playitem's
+    // stream table instead of the event-cached pid in m_dvd. The BD
+    // selection events are edge-triggered (fire only when the stream NUMBER
+    // changes) and resolve against whatever clip was loaded at event time -
+    // a menu->title jump where the number stays 1 but the PID changes
+    // leaves the cache pointing at the old clip's PID and the title's audio
+    // never reopens (packets drop MSGQ_NOT_INITIALIZED = silent title;
+    // S&M benchmark demos, user report). CheckBetterStream runs per demux
+    // packet, so with live resolution the reopen is guaranteed no later
+    // than the new segment's first audio packet.
+    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    {
+      if (current.type == StreamType::AUDIO)
+      {
+        const int dictated = bluray->GetDictatedAudioPid();
+        if (stream->dvdNavId == dictated)
+          return true;
+        // resolution unavailable mid-transition and no audio is open:
+        // prefer the announced stream over staying silent (BD default is
+        // stream 1 = the first announced anyway)
+        if (dictated < 0 && current.id < 0)
+          return true;
+        return false;
+      }
+      if (current.type == StreamType::SUBTITLE)
+        return stream->dvdNavId == bluray->GetDictatedPgPid() ||
+               stream->dvdNavId == m_dvd.iSelectedSPUStream;
+    }
+    else
+#endif
+    {
+      if (current.type == StreamType::AUDIO && stream->dvdNavId == m_dvd.iSelectedAudioStream)
+        return true;
+      if (current.type == StreamType::SUBTITLE && stream->dvdNavId == m_dvd.iSelectedSPUStream)
+        return true;
+    }
     // a current video stream from a DIFFERENT demuxer is orphaned - the
     // demuxer was closed and reopened (BD menu->title discard keeps the
     // stream players alive for decoder reuse) and its packets can never
@@ -2026,6 +2060,20 @@ void CVideoPlayer::Process()
           // exactly one global offset correction - same path a CE21 player
           // takes for these boundaries, proven stable there.
           CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
+
+          // Clean the byte seam. Non-seamless-authored playitem chains
+          // (connection_condition 1 - TNG stubs, menu loops) may truncate
+          // the outgoing clip's last PES mid-body; feeding that tail into
+          // the TS parser's reassembly emits "[mpegts] Packet corrupt" and
+          // decoder reference errors at every glued boundary (defect C).
+          // Flushing here is synchronous with the read position (this
+          // thread is the demux consumer and libbluray held delivery at
+          // the boundary), so it drops exactly the partial tail: per-PID
+          // PES reassembly resets and parsing resyncs at the new clip's
+          // first payload-unit-start. Streams, decoders and queued
+          // packets are untouched - this is the light counterpart of the
+          // DEMUXER_RESET the non-seamless path performs.
+          m_pDemuxer->Flush();
 
           // Dolby Vision FEL content (real enhancement layer, e.g. Spears &
           // Munsil demos) carries HEVC decoder reference state across the clip

@@ -1053,6 +1053,25 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         m_timeout.Set(20s);
         m_pkt.result = av_read_frame(m_pFormatContext, &m_pkt.pkt);
         m_timeout.SetInfinite();
+
+        // BD glued playitem seams: a packet that still carries the corrupt
+        // flag is the outgoing clip's truncated PES tail (cc=1 authoring
+        // permits mid-body truncation; ffmpeg's eof-flush emits the
+        // fragment when the boundary hold ends the read). The seam flush in
+        // the player normally drops these unemitted - anything that slips
+        // through is garbage the decoders would error-conceal, so surface
+        // it and drop it here rather than deliver it (defect C backstop).
+        if (m_pkt.result >= 0 && (m_pkt.pkt.flags & AV_PKT_FLAG_CORRUPT) &&
+            m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+        {
+          CLog::Log(LOGWARNING,
+                    "CDVDDemuxFFmpeg::Read - dropping corrupt-flagged packet at "
+                    "BD splice: stream:{} dts:{} size:{}",
+                    m_pkt.pkt.stream_index, m_pkt.pkt.dts, m_pkt.pkt.size);
+          m_pkt.result = -1;
+          av_packet_unref(&m_pkt.pkt);
+          bReturnEmpty = true;
+        }
       }
 
       if (m_pkt.result == AVERROR(EINTR) || m_pkt.result == AVERROR(EAGAIN))
