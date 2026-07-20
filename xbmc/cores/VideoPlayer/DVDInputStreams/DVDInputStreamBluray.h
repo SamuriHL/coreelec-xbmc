@@ -182,6 +182,28 @@ public:
    * the JVM's signal handlers) is understood */
   bool HasBDJTitles() const { return m_hasBdjTitles; }
 
+  /* TS PID of the disc-dictated audio/PG stream, resolved LIVE against the
+   * CURRENT playitem's stream table. The BD stream-selection events are
+   * edge-triggered (they fire only when the stream NUMBER changes) and any
+   * PID cached at event time goes stale the moment a playitem with a
+   * different stream layout starts; resolving number->PID on demand keeps
+   * the dictation valid across every segment transition. -1 when the
+   * current clip carries no such stream (e.g. silent still patterns). */
+  int GetDictatedAudioPid() const
+  {
+    if (!m_titleInfo || !m_clip || m_audioStreamNum < 1 ||
+        m_clip->audio_stream_count < m_audioStreamNum)
+      return -1;
+    return m_clip->audio_streams[m_audioStreamNum - 1].pid;
+  }
+  int GetDictatedPgPid() const
+  {
+    if (!m_titleInfo || !m_clip || m_pgStreamNum < 1 ||
+        m_clip->pg_stream_count < m_pgStreamNum)
+      return -1;
+    return m_clip->pg_streams[m_pgStreamNum - 1].pid;
+  }
+
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
@@ -225,6 +247,11 @@ protected:
   bool m_menu = false;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
+  /* current disc-dictated stream NUMBERS (1-based, PSR semantics; BD default
+   * is stream 1). Updated by the stream-selection events; resolved to PIDs
+   * on demand via GetDictatedAudioPid/GetDictatedPgPid. */
+  uint32_t m_audioStreamNum = 1;
+  uint32_t m_pgStreamNum = 1;
   bool m_hasBdjTitles = false;
   bool m_isInMainMenu = false;
   bool m_hasOverlay = false;
