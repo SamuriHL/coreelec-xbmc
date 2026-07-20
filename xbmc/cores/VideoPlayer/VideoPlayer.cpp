@@ -1497,13 +1497,24 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
       if (ev.stampPts - clock < DVD_SEC_TO_TIME(20.0))
         break;
     }
-    CLog::Log(LOGDEBUG, "CVideoPlayer: presented menu state -> {} (stamp {} clock {:.3f}{})",
-              ev.menuState,
-              ev.stampPts == DVD_NOPTS_VALUE
-                  ? std::string("NOPTS")
-                  : StringUtils::Format("{:.3f}", ev.stampPts / DVD_TIME_BASE),
-              clock / DVD_TIME_BASE, flushAll ? ", flush" : "");
-    bluray->SetPresentedMenuState(ev.menuState != 0);
+    const std::string stamp =
+        ev.stampPts == DVD_NOPTS_VALUE ? std::string("NOPTS")
+                                       : StringUtils::Format("{:.3f}", ev.stampPts / DVD_TIME_BASE);
+    if (ev.titleUi)
+    {
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer: presented title UI -> playlist {} ({} chapters, {:.1f}s) "
+                "(stamp {} clock {:.3f}{})",
+                ev.titleUi->playlist, ev.titleUi->chapters.size(), ev.titleUi->totalTimeMs / 1000.0,
+                stamp, clock / DVD_TIME_BASE, flushAll ? ", flush" : "");
+      bluray->SetPresentedTitleUi(ev.titleUi);
+    }
+    else
+    {
+      CLog::Log(LOGDEBUG, "CVideoPlayer: presented menu state -> {} (stamp {} clock {:.3f}{})",
+                ev.menuState, stamp, clock / DVD_TIME_BASE, flushAll ? ", flush" : "");
+      bluray->SetPresentedMenuState(ev.menuState != 0);
+    }
     m_discTimelineEvents.pop_front();
   }
 #endif
@@ -5297,7 +5308,17 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // dts (this callback runs synchronously inside the demux read on the
       // player thread, so that IS the decision position). No packet yet ->
       // no queue between VM and viewer -> apply immediately via NOPTS.
-      m_discTimelineEvents.push_back({m_CurrentVideo.dts, menuState});
+      m_discTimelineEvents.push_back({m_CurrentVideo.dts, menuState, nullptr});
+      break;
+    }
+    case BD_EVENT_PLAYLIST:
+    {
+      // OSD-visible playlist identity (chapter list / total time): timeline-
+      // stamped like the presented menu state, so the OSD flips when the
+      // render clock reaches the playlist boundary instead of queue-depth
+      // early. Demux machinery reads m_titleInfo directly and is unaffected.
+      const auto& ui = *static_cast<std::shared_ptr<const BlurayTitleUiSnapshot>*>(pData);
+      m_discTimelineEvents.push_back({m_CurrentVideo.dts, 0, ui});
       break;
     }
     case BD_EVENT_PLAYLIST_STOP:
