@@ -640,11 +640,22 @@ static void aml_hdmitx_reload_edid()
              std::string("load 0000000000000000"));
 }
 
+static size_t aml_get_display_vsvdb(int bytes[], size_t max);
+
 void aml_dv_clear_vsvdb()
 {
+  // force_vsvdb is CONSUMED by the EDID parse (it reads back 0 while an
+  // injection is live), so a live injection is detected by comparing the
+  // parsed VSVDB (dv_cap) against the panel's cached genuine block; equal
+  // means nothing is injected and the EDID round-trip is skipped.
+  int cur[16], panel[16];
+  const size_t curN = aml_read_display_vsvdb(cur, 16);
+  const size_t panelN = aml_get_display_vsvdb(panel, 16);
+  if (curN > 0 && curN == panelN && std::equal(cur, cur + curN, panel))
+    return;
   CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
-  if (!force_vsvdb.Exists() || force_vsvdb.Get<unsigned int>().value() == 0)
-    return; // nothing forced - keep the TV's own caps, no EDID round-trip
+  if (!force_vsvdb.Exists())
+    return;
   force_vsvdb.Set(0);
   aml_hdmitx_reload_edid();
 }
@@ -750,14 +761,23 @@ void aml_dv_apply_vsvdb()
     if (i) data += ",";
     data += std::to_string(b[i] & 0xff);
   }
-  // Skip the write + EDID round-trip when the override is already in force with
-  // this exact block (this runs at every decoder open, not just setting changes).
+  // Skip the write + EDID round-trip when the override is already LIVE (this
+  // runs at every decoder open, not just setting changes). Liveness must be
+  // checked against dv_cap - the last-parsed EDID - because the kernel
+  // CONSUMES force_vsvdb during the parse: it reads back 0 with the injection
+  // in force, so the old force/data readback guard never matched and every
+  // disc segment re-latched the EDID, blanking the TV for seconds while
+  // content played on (Superman menu->movie: studio logos behind black).
+  // dv_cap also self-heals: a real HPD/EDID re-parse reverts it to the
+  // panel's block, the compare fails, and the override is re-applied.
+  {
+    int cur[16];
+    const size_t curN = aml_read_display_vsvdb(cur, 16);
+    if (curN == n && std::equal(cur, cur + n, b))
+      return;
+  }
   CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
   CSysfsPath vsvdb_data{"/sys/module/aml_media/parameters/vsvdb_data"};
-  if (force_vsvdb.Exists() && vsvdb_data.Exists() &&
-      force_vsvdb.Get<unsigned int>().value() == FORCE_VSVDB_USE_DATA &&
-      vsvdb_data.Get<std::string>().value() == data)
-    return;
 
   vsvdb_data.Set(data);
   force_vsvdb.Set(FORCE_VSVDB_USE_DATA);
