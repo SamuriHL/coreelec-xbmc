@@ -1460,6 +1460,55 @@ void CVideoPlayer::HandleDynamicBufferLevel()
   }
 }
 
+// Timeline-stamped disc events (docs/bd_timeline_events_design.md): apply
+// presentation-affecting disc state when the render clock reaches the demux
+// position where the VM decided it. Phase 1 carries the presented menu
+// state - IsInMenu() consumers (input routing, seek gating, GUI) then see
+// the menu when the viewer does, not when the VM (queue-depth early) did.
+// flushAll: a seek/jump/flush invalidates the stamps' timeline - snap the
+// presented state to the latest demux truth instead of waiting on a clock
+// position that may never arrive.
+void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
+{
+  if (m_discTimelineEvents.empty())
+    return;
+
+#if defined(HAVE_LIBBLURAY)
+  std::shared_ptr<CDVDInputStreamBluray> bluray =
+      std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+  if (!bluray)
+#endif
+  {
+    m_discTimelineEvents.clear();
+    return;
+  }
+
+#if defined(HAVE_LIBBLURAY)
+  const double clock = m_clock.GetClock();
+  while (!m_discTimelineEvents.empty())
+  {
+    const SDiscTimelineEvent& ev = m_discTimelineEvents.front();
+    if (!flushAll && ev.stampPts != DVD_NOPTS_VALUE && clock < ev.stampPts)
+    {
+      // A stamp further ahead than the maximum queue depth cannot be a
+      // real future position - the clock was corrected backwards across a
+      // wrap/discontinuity after the stamp was taken. Apply rather than
+      // stall the queue on a timeline that no longer exists.
+      if (ev.stampPts - clock < DVD_SEC_TO_TIME(20.0))
+        break;
+    }
+    CLog::Log(LOGDEBUG, "CVideoPlayer: presented menu state -> {} (stamp {} clock {:.3f}{})",
+              ev.menuState,
+              ev.stampPts == DVD_NOPTS_VALUE
+                  ? std::string("NOPTS")
+                  : StringUtils::Format("{:.3f}", ev.stampPts / DVD_TIME_BASE),
+              clock / DVD_TIME_BASE, flushAll ? ", flush" : "");
+    bluray->SetPresentedMenuState(ev.menuState != 0);
+    m_discTimelineEvents.pop_front();
+  }
+#endif
+}
+
 // Menu-domain low-latency mode: while a Blu-ray is in menu domain, clamp the
 // A/V queue read-ahead to ~1s so the disc VM (which executes at demux
 // position) runs at roughly presentation time - menu input, overlay timing,
@@ -1682,6 +1731,7 @@ void CVideoPlayer::Prepare()
   }
   m_CurrentAudio.lastdts = DVD_NOPTS_VALUE;
   m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
+  m_discTimelineEvents.clear();
 
   IPlayerCallback *cb = &m_callback;
   CFileItem fileItem = m_item;
@@ -1931,6 +1981,7 @@ void CVideoPlayer::Process()
 
     // restore full queue read-ahead as soon as menu domain ends (grow-only)
     UpdateMenuDomainQueueDepth(false);
+    ApplyDiscTimelineEvents(false);
 
     // make sure we run subtitle process here
     m_VideoPlayerSubtitle->Process(m_clock.GetClock() + m_State.time_offset - m_VideoPlayerVideo->GetSubtitleDelay(), m_State.time_offset);
@@ -4816,26 +4867,23 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   }
 
   std::shared_ptr<CDVDInputStream::IMenus> pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
-  if (pMenus && pMenus->IsInMenu())
-  {
 #if defined(HAVE_LIBBLURAY)
-    // BD: key the stills stamp on menu-domain video, not the raw overlay
-    // state. BD-J discs can keep their overlay up across a menu->title
-    // start (IsInMenu() stays true), and stills is not inert downstream:
-    // AMLCodec::OpenDecoder excludes stills from the dual-layer MEL
-    // stream-mode routing, so a feature stamped as a still opens frame-mode
-    // with the wrong NAL skip policy (first GOP discarded, m2ts-boundary
-    // EOS judder returns). IsMenuDomainVideo() applies the playlist-duration
-    // leave-predicate that already keys the queue-depth clamp here.
-    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
-            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
-      hint.stills = bluray->IsMenuDomainVideo();
-    else
-      hint.stills = true;
-#else
-    hint.stills = true;
+  // BD: the stills stamp is segment classification and keys on DEMUX-side
+  // menu-domain truth, unconditionally - not on IsInMenu(), which (a) BD-J
+  // discs hold true across a menu->title start (overlay stays up; stills is
+  // not inert downstream: AMLCodec::OpenDecoder excludes stills from the
+  // dual-layer MEL stream-mode routing, so a feature stamped as a still
+  // opened frame-mode, lost its first GOP and re-grew the m2ts EOS judder)
+  // and (b) is now the clock-deferred PRESENTED state, which lags the
+  // segment being opened by up to the queue depth. IsMenuDomainVideo()
+  // applies the playlist-duration leave-predicate on demux truth.
+  if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+          std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    hint.stills = bluray->IsMenuDomainVideo();
+  else
 #endif
-  }
+  if (pMenus && pMenus->IsInMenu())
+    hint.stills = true;
 
   if (hint.stereo_mode.empty())
   {
@@ -5121,6 +5169,10 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_menuWrapVideoGap = 0.0;
   }
 
+  // stamps taken before the flush reference a dead timeline: snap the
+  // presented disc state to the latest demux truth
+  ApplyDiscTimelineEvents(true);
+
   m_CurrentAudio.dts         = DVD_NOPTS_VALUE;
   m_CurrentAudio.startpts    = startpts;
   m_CurrentAudio.packets = 0;
@@ -5201,14 +5253,25 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
           *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
       break;
     case BD_EVENT_MENU:
-      // Interactive menu visible?
-      if (*static_cast<uint32_t*>(pData) == false)
+    {
+      const uint32_t menuState = *static_cast<uint32_t*>(pData);
+      // Demux-side machinery reacts immediately: a leave-menu must break a
+      // still hold NOW - the VM has moved on and the pipeline follows it.
+      if (menuState == 0)
       {
         m_dvd.state = DVDSTATE_NORMAL;
         m_dvd.iDVDStillTime = 0ms;
         CLog::Log(LOGDEBUG, "BD_EVENT_MENU - libbluray leave menu (DVDSTATE_NORMAL)");
       }
+      // The PRESENTED menu flip is timeline-stamped: it applies when the
+      // render clock reaches the demux position where the VM flipped it
+      // (docs/bd_timeline_events_design.md). Stamp = last delivered video
+      // dts (this callback runs synchronously inside the demux read on the
+      // player thread, so that IS the decision position). No packet yet ->
+      // no queue between VM and viewer -> apply immediately via NOPTS.
+      m_discTimelineEvents.push_back({m_CurrentVideo.dts, menuState});
       break;
+    }
     case BD_EVENT_PLAYLIST_STOP:
       m_dvd.state = DVDSTATE_NORMAL;
       m_dvd.iDVDStillTime = 0ms;

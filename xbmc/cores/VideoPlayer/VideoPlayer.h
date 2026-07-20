@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -692,4 +693,17 @@ protected:
   // segment opens, restored (grow-only) from the process loop. Player thread
   // only.
   bool m_menuDomainLowLatency{false};
+
+  // Timeline-stamped disc events (docs/bd_timeline_events_design.md):
+  // presentation-affecting disc state captured at demux time, stamped with
+  // the demux position (last delivered video dts), applied from the process
+  // loop when the render clock reaches the stamp. Phase 1 carries only the
+  // presented menu state (BD_EVENT_MENU). Player thread only.
+  struct SDiscTimelineEvent
+  {
+    double stampPts;
+    uint32_t menuState;
+  };
+  std::deque<SDiscTimelineEvent> m_discTimelineEvents;
+  void ApplyDiscTimelineEvents(bool flushAll);
 };
