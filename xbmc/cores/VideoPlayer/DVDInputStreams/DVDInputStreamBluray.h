@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <queue>
+#include <vector>
 
 extern "C"
 {
@@ -48,6 +49,26 @@ extern "C"
 class CDVDOverlayImage;
 class IVideoPlayer;
 class CDVDDemux;
+
+/* Presentation-side playlist identity for the OSD
+ * (docs/bd_timeline_events_design.md Phase 2): chapter list + total
+ * duration as the VIEWER should see them. The demux-side m_titleInfo swaps
+ * the moment the VM changes playlist; with deep buffers the outgoing
+ * playlist keeps presenting for seconds, so the IChapter/IDisplayTime UI
+ * accessors read a snapshot of this shape which the player applies on the
+ * render clock (same timeline queue as the presented menu state). At
+ * namespace scope so VideoPlayer.h can forward-declare it. */
+struct BlurayTitleUiSnapshot
+{
+  uint32_t playlist = MAX_PLAYLIST_ID + 1;
+  int totalTimeMs = 0;
+  struct SChapter
+  {
+    int64_t startMs = 0;
+    std::string name;
+  };
+  std::vector<SChapter> chapters;
+};
 
 class CDVDInputStreamBluray
   : public CDVDInputStream
@@ -177,6 +198,17 @@ public:
    * IsMenuDomainVideo) keeps reading m_menu directly. */
   void SetPresentedMenuState(bool menu) { m_menuPresented = menu; }
 
+  /* presentation-side playlist identity (see BlurayTitleUiSnapshot): applied
+   * by the player's timeline queue when the render clock reaches the demux
+   * position of the playlist change. Read by the IChapter/IDisplayTime UI
+   * accessors; demux machinery (stream tables, dictation, MVC, state
+   * save/restore) keeps reading m_titleInfo directly. */
+  void SetPresentedTitleUi(const std::shared_ptr<const BlurayTitleUiSnapshot>& ui)
+  {
+    if (ui)
+      m_titleUiPresented = ui;
+  }
+
   /* TS PID of the disc-dictated audio/PG stream, resolved LIVE against the
    * CURRENT playitem's stream table. The BD stream-selection events are
    * edge-triggered (they fire only when the stream NUMBER changes) and any
@@ -237,6 +269,14 @@ protected:
   uint32_t m_angle = 0;
   bool m_menu = false;
   bool m_menuPresented = false;
+  /* never null - starts as an empty snapshot (playlist unset), bootstrapped
+   * at open / first ProcessItem, then swapped by SetPresentedTitleUi */
+  std::shared_ptr<const BlurayTitleUiSnapshot> m_titleUiPresented =
+      std::make_shared<BlurayTitleUiSnapshot>();
+  std::shared_ptr<const BlurayTitleUiSnapshot> BuildTitleUiSnapshot() const;
+  /* demux-side chapter position (m_titleInfo) - for seek mechanics that must
+   * act on the playlist the demuxer is actually in (MVC sub-demux seek) */
+  std::chrono::milliseconds ChapterPosDemux(int ch) const;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
   /* current disc-dictated stream NUMBERS (1-based, PSR semantics; BD default
