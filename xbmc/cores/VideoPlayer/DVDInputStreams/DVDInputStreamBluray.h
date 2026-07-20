@@ -170,6 +170,13 @@ public:
    * the JVM's signal handlers) is understood */
   bool HasBDJTitles() const { return m_hasBdjTitles; }
 
+  /* presentation-side menu state: the player applies the demux-side menu
+   * flip (m_menu) when the render clock reaches the demux position where
+   * the VM flipped it (docs/bd_timeline_events_design.md). Consumed by
+   * IsInMenu(); demux-side machinery (ShouldDiscardStreamQueue,
+   * IsMenuDomainVideo) keeps reading m_menu directly. */
+  void SetPresentedMenuState(bool menu) { m_menuPresented = menu; }
+
   /* TS PID of the disc-dictated audio/PG stream, resolved LIVE against the
    * CURRENT playitem's stream table. The BD stream-selection events are
    * edge-triggered (they fire only when the stream NUMBER changes) and any
@@ -229,6 +236,7 @@ protected:
   BLURAY_CLIP_INFO* m_clip = nullptr;
   uint32_t m_angle = 0;
   bool m_menu = false;
+  bool m_menuPresented = false;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
   /* current disc-dictated stream NUMBERS (1-based, PSR semantics; BD default
