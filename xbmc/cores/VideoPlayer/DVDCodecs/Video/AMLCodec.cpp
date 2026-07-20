@@ -2882,7 +2882,19 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
-  if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || (m_drain && data_len > 0)) && (ret = DequeueBuffer()) == 0)
+  // While draining, always attempt the dequeue - drain means no further
+  // input is coming, so the fill gates are moot and anything the hardware
+  // has decoded must be presented. A short HDMV still segment (S&M
+  // benchmark test pattern: one ~33K GOP) never crosses the 5% AddData
+  // fill threshold, so m_buffer_level_ready stays false forever (it is
+  // only evaluated in AddData and stills deliver no further packets) and
+  // the data-based buffer_level never clears the minimum - the decoded
+  // pattern would be stranded in the v4l queue (black plane under the IG
+  // overlay). The fd is O_NONBLOCK: with nothing decoded the DQBUF fails
+  // with EAGAIN and the EOF/stall handling below - including the parked
+  // stall clock for the can't-decode still tail - proceeds exactly as
+  // before.
+  if (((m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain) && (ret = DequeueBuffer()) == 0)
   {
     pVideoPicture->iFlags = 0;
 
