@@ -17,7 +17,6 @@
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "filesystem/BlurayCallback.h"
-#include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -1829,28 +1828,6 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
       hdrPreference = 0x01;
     }
 
-    // Empirical probe hook: override the computed values from a file (three
-    // whitespace-separated hex/dec values: psr25 psr26 psr27) for on-box
-    // probing against real discs without a rebuild.
-    const std::string overridePath =
-        CSpecialProtocol::TranslatePath("special://profile/psr_uhd_override.txt");
-    XFILE::CFile overrideFile;
-    std::vector<uint8_t> buf;
-    if (overrideFile.LoadFile(overridePath, buf) > 0)
-    {
-      const std::string content(buf.begin(), buf.end());
-      int v25, v26, v27;
-      if (sscanf(content.c_str(), "%i %i %i", &v25, &v26, &v27) == 3)
-      {
-        uhdCap = static_cast<uint32_t>(v25);
-        uhdDisplayCap = static_cast<uint32_t>(v26);
-        hdrPreference = static_cast<uint32_t>(v27);
-        CLog::Log(LOGWARNING,
-                  "CDVDInputStreamBluray: UHD capability PSRs OVERRIDDEN from {}",
-                  overridePath);
-      }
-    }
-
     CLog::Log(LOGINFO,
               "CDVDInputStreamBluray: UHD output-format PSRs: "
               "UHD_CAP 0x{:02x} UHD_DISPLAY_CAP 0x{:02x} HDR_PREFERENCE 0x{:02x}",
@@ -1941,26 +1918,6 @@ void CDVDInputStreamBluray::ApplyAudioCapability()
                BLURAY_ACAP_DTSHD_CORE_STEREO_ONLY);
   acap |= pick(caps.dtshd_ch, BLURAY_ACAP_DTSHD_EXT_SURROUND,
                BLURAY_ACAP_DTSHD_EXT_STEREO_ONLY);
-
-  // Empirical probe hook: override the computed mask from a file (single hex/dec
-  // PSR15 value) for on-box A/B against real discs / the reference player with
-  // no rebuild - mirrors psr_uhd_override.txt.
-  const std::string overridePath =
-      CSpecialProtocol::TranslatePath("special://profile/psr15_override.txt");
-  XFILE::CFile overrideFile;
-  std::vector<uint8_t> buf;
-  if (overrideFile.LoadFile(overridePath, buf) > 0)
-  {
-    const std::string content(buf.begin(), buf.end());
-    int v15;
-    if (sscanf(content.c_str(), "%i", &v15) == 1)
-    {
-      acap = static_cast<uint32_t>(v15);
-      CLog::Log(LOGWARNING,
-                "CDVDInputStreamBluray: audio capability PSR15 OVERRIDDEN from {}",
-                overridePath);
-    }
-  }
 
   CLog::Log(LOGINFO,
             "CDVDInputStreamBluray: audio capability PSR15 0x{:04x} from sink "
