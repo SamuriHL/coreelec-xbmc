@@ -1550,6 +1550,138 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
             menuDomain ? "entering" : "leaving", target);
 }
 
+/* BD segment transition (docs/bd_menu_architecture.md §5).
+ *
+ * Every NEXTSTREAM_OPEN boundary - a bluray playitem/playlist change, or any
+ * other chaining input stream - runs through ClassifyBdTransition() +
+ * BdSegmentTransition(): one read-only classification, one executor. The
+ * executor honours an explicit survival contract per class:
+ *
+ *                     demuxer   players/decoders  queued packets  decoder reuse
+ *  SEAMLESS           survives  survive           render out      (never closed)
+ *  DISCARD_KEEPALIVE  rebuilt   survive           dropped         reattach
+ *  DISCARD_CLOSE      rebuilt   closed            dropped         none
+ *  DRAIN              rebuilt   closed            rendered out    none
+ *
+ * Stream-reopen obligation: whatever the class, the NEW segment's streams are
+ * guaranteed to (re)open with a per-packet deadline - CheckBetterStream()
+ * resolves the disc-dictated stream NUMBER against the new playitem's stream
+ * table on every delivered packet (GetDictatedAudioPid/GetDictatedPgPid), so
+ * the first packet of a dictated-but-unopened stream forces the open. No
+ * event ordering or event loss can strand a stream closed ("the disc will
+ * dictate later" is not part of any contract). */
+
+CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
+{
+#if defined(HAVE_LIBBLURAY)
+  if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+          std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+  {
+    if (bluray->ShouldDiscardStreamQueue())
+    {
+      // user left the disc menu for a title: the queued remainder of the menu
+      // loop must be dropped, not rendered out. HDMV discs keep the stream
+      // players and their decoders alive across the jump - the title often
+      // has the same video format as the menu (e.g. both 4K DV) and
+      // reattaching the running decoder (m_bdStreamReuse*, consulted in
+      // OpenAudio/VideoStream) avoids the DV tunnel drop/re-latch; a format
+      // change simply fails the reuse compare and takes the normal reopen.
+      // BD-J discs take the full close: the keep-alive jump crashes in
+      // avformat teardown under the JVM's signal handlers (SIGSEGV in
+      // avio_close -> JVM abort) and keeps stock behavior until understood.
+      return bluray->HasBDJTitles() ? EBdTransition::DISCARD_CLOSE
+                                    : EBdTransition::DISCARD_KEEPALIVE;
+    }
+
+    // Only take the seamless path from a stable pipeline. Menu entry bursts
+    // through playitems rapidly; continuing across a boundary before the
+    // streams are in sync feeds from a torn position.
+    if (bluray->IsSeamlessStreamChange() && m_CurrentVideo.id >= 0 &&
+        m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      return EBdTransition::SEAMLESS;
+  }
+#endif
+  return EBdTransition::DRAIN;
+}
+
+void CVideoPlayer::BdSegmentTransition()
+{
+  const EBdTransition transition = ClassifyBdTransition();
+
+  SetCaching(CACHESTATE_DONE);
+
+  if (transition == EBdTransition::SEAMLESS)
+  {
+    // Same-playlist playitem advance (menu loop segment or a multi-playitem
+    // title's seamless branch): keep EVERYTHING running - the demuxer, the
+    // stream players, and their decoders. Closing/reopening the demuxer
+    // re-probes the dual-layer (BL+EL) DV program and breaks BL/EL packet
+    // routing (BL delivery dies, decoder starves); closing the streams drops
+    // the DV tunnel (re-latch toast / display-change black every segment).
+    // libbluray feeds a continuous transport stream across the boundary and
+    // the DEMUXER_RESET posted for BD_EVENT_DISCONTINUITY absorbs the TS
+    // discontinuity in place. The segment's timeline restart reaches
+    // CheckContinuity as a plain backward jump, which its cross-stream
+    // confirmation resolves into exactly one global offset correction - same
+    // path a CE21 player takes for these boundaries, proven stable there.
+    CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
+
+    // Clean the byte seam. Non-seamless-authored playitem chains
+    // (connection_condition 1 - TNG stubs, menu loops) may truncate the
+    // outgoing clip's last PES mid-body; feeding that tail into the TS
+    // parser's reassembly emits "[mpegts] Packet corrupt" and decoder
+    // reference errors at every glued boundary (defect C). Flushing here is
+    // synchronous with the read position (this thread is the demux consumer
+    // and libbluray held delivery at the boundary), so it drops exactly the
+    // partial tail: per-PID PES reassembly resets and parsing resyncs at the
+    // new clip's first payload-unit-start. Streams, decoders and queued
+    // packets are untouched - this is the light counterpart of the
+    // DEMUXER_RESET the non-seamless classes perform via CloseDemuxer.
+    m_pDemuxer->Flush();
+
+    // Dolby Vision FEL content (real enhancement layer, e.g. Spears & Munsil
+    // demos) carries HEVC decoder reference state across the clip boundary
+    // and glitches for ~2s until the next keyframe resyncs it. Soft-reset
+    // the video decoder at the boundary: GENERAL_RESET runs
+    // CAMLCodec::Reset() (a codec_reset that clears references + the BL/EL
+    // merge queue) WITHOUT CloseDecoder, so the DV tunnel stays latched - no
+    // re-latch toast/black. Gated to FEL so MEL menu loops (HALO), which
+    // cross boundaries cleanly, keep their untouched seamless smoothness.
+    if (m_processInfo && m_processInfo->GetDoviIsFEL())
+    {
+      CLog::Log(LOGINFO, "VideoPlayer: seamless boundary - FEL soft decoder reset");
+      m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET));
+    }
+    return;
+  }
+
+  CloseDemuxer();
+
+  const bool reuse = transition == EBdTransition::DISCARD_KEEPALIVE;
+  m_bdStreamReuseVideo = reuse;
+  m_bdStreamReuseAudio = reuse;
+
+  if (transition == EBdTransition::DISCARD_KEEPALIVE)
+  {
+    // drop the queued menu remainder; flush (don't close) the stream players
+    // so the running decoders survive for reattach
+    CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
+    FlushBuffers(DVD_NOPTS_VALUE, false, true);
+    return;
+  }
+
+  const bool drain = transition == EBdTransition::DRAIN;
+  CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
+            drain ? "wait for old streams to be finished"
+                  : "discarding menu stream remainder (full close)");
+  CloseStream(m_CurrentAudio, drain);
+  CloseStream(m_CurrentVideo, drain);
+
+  m_CurrentAudio.Clear();
+  m_CurrentVideo.Clear();
+  m_CurrentSubtitle.Clear();
+}
+
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
 {
   if(stream.id<0)
@@ -2072,111 +2204,7 @@ void CVideoPlayer::Process()
       CDVDInputStream::ENextStream next = m_pInputStream->NextStream();
       if(next == CDVDInputStream::NEXTSTREAM_OPEN)
       {
-        bool discard = false;
-        bool seamless = false;
-        bool keepAlive = false;
-#if defined(HAVE_LIBBLURAY)
-        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
-                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
-        {
-          discard = bluray->ShouldDiscardStreamQueue();
-          // menu->title decoder keep-alive: HDMV-only discs for now - on BD-J
-          // discs the jump crashes in avformat teardown under the JVM's
-          // signal handlers (SIGSEGV in avio_close -> JVM abort); BD-J keeps
-          // the stock close/reopen behavior until that is understood
-          keepAlive = discard && !bluray->HasBDJTitles();
-          // Only take the seamless path from a stable pipeline. Menu entry
-          // bursts through playitems rapidly; continuing across a boundary
-          // before the streams are in sync feeds from a torn position.
-          seamless = !discard && bluray->IsSeamlessStreamChange() &&
-                     m_CurrentVideo.id >= 0 &&
-                     m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
-        }
-#endif
-        SetCaching(CACHESTATE_DONE);
-
-        if (seamless)
-        {
-          // Same-playlist playitem advance (menu loop segment or a
-          // multi-playitem title's seamless branch): keep EVERYTHING running -
-          // the demuxer, the stream players, and their decoders. Closing/
-          // reopening the demuxer re-probes the dual-layer (BL+EL) DV program
-          // and breaks BL/EL packet routing (BL delivery dies, decoder
-          // starves); closing the streams drops the DV tunnel (re-latch toast /
-          // display-change black every segment). libbluray feeds a continuous
-          // transport stream across the boundary and the DEMUXER_RESET posted
-          // for BD_EVENT_DISCONTINUITY absorbs the TS discontinuity in place.
-          // The segment's timeline restart reaches CheckContinuity as a plain
-          // backward jump, which its cross-stream confirmation resolves into
-          // exactly one global offset correction - same path a CE21 player
-          // takes for these boundaries, proven stable there.
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
-
-          // Clean the byte seam. Non-seamless-authored playitem chains
-          // (connection_condition 1 - TNG stubs, menu loops) may truncate
-          // the outgoing clip's last PES mid-body; feeding that tail into
-          // the TS parser's reassembly emits "[mpegts] Packet corrupt" and
-          // decoder reference errors at every glued boundary (defect C).
-          // Flushing here is synchronous with the read position (this
-          // thread is the demux consumer and libbluray held delivery at
-          // the boundary), so it drops exactly the partial tail: per-PID
-          // PES reassembly resets and parsing resyncs at the new clip's
-          // first payload-unit-start. Streams, decoders and queued
-          // packets are untouched - this is the light counterpart of the
-          // DEMUXER_RESET the non-seamless path performs.
-          m_pDemuxer->Flush();
-
-          // Dolby Vision FEL content (real enhancement layer, e.g. Spears &
-          // Munsil demos) carries HEVC decoder reference state across the clip
-          // boundary and glitches for ~2s until the next keyframe resyncs it.
-          // Soft-reset the video decoder at the boundary: GENERAL_RESET runs
-          // CAMLCodec::Reset() (a codec_reset that clears references + the
-          // BL/EL merge queue) WITHOUT CloseDecoder, so the DV tunnel stays
-          // latched - no re-latch toast/black. Gated to FEL so MEL menu loops
-          // (HALO), which cross boundaries cleanly, keep their untouched
-          // seamless smoothness.
-          if (m_processInfo && m_processInfo->GetDoviIsFEL())
-          {
-            CLog::Log(LOGINFO, "VideoPlayer: seamless boundary - FEL soft decoder reset");
-            m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET));
-          }
-          continue;
-        }
-
-        CloseDemuxer();
-
-        if (discard && keepAlive)
-        {
-          // user left the disc menu for a title: drop the queued remainder of
-          // the menu loop instead of rendering it out. Keep the stream players
-          // and their decoders ALIVE (flush, don't close) - the title often has
-          // the same video format as the menu (e.g. both 4K DV), and
-          // reattaching the running decoder (m_bdStreamReuse*, consulted in
-          // OpenAudio/VideoStream) avoids the DV tunnel drop/re-latch at the
-          // menu->title jump. A format change simply fails the reuse compare
-          // and takes the normal reopen path.
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
-          m_bdStreamReuseVideo = true;
-          m_bdStreamReuseAudio = true;
-          FlushBuffers(DVD_NOPTS_VALUE, false, true);
-        }
-        else
-        {
-          // discard set = BD-J disc: stock discard - drop the queues and close
-          // without draining; otherwise let the old streams render out first.
-          const bool drain = !discard;
-          CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
-                    discard ? "discarding menu stream remainder (full close)"
-                            : "wait for old streams to be finished");
-          m_bdStreamReuseVideo = false;
-          m_bdStreamReuseAudio = false;
-          CloseStream(m_CurrentAudio, drain);
-          CloseStream(m_CurrentVideo, drain);
-
-          m_CurrentAudio.Clear();
-          m_CurrentVideo.Clear();
-          m_CurrentSubtitle.Clear();
-        }
+        BdSegmentTransition();
         continue;
       }
 

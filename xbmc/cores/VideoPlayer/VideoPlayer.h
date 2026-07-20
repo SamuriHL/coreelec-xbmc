@@ -498,6 +498,23 @@ protected:
   bool ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream);
   void HandleDynamicBufferLevel();
   void UpdateMenuDomainQueueDepth(bool segmentOpen);
+
+  /* BD segment transition: every NEXTSTREAM_OPEN boundary is executed by one
+   * routine against an explicit survival contract - which pipeline components
+   * (demuxer, stream players/decoders, queued packets) live across the
+   * boundary and which are rebuilt. Classification is read-only; execution is
+   * the only place allowed to tear pipeline components down at a boundary.
+   * See BdSegmentTransition() and docs/bd_menu_architecture.md §5. */
+  enum class EBdTransition
+  {
+    SEAMLESS, // same-playlist playitem advance from a stable pipeline
+    DISCARD_KEEPALIVE, // menu->title jump (HDMV): drop queues, keep decoders
+    DISCARD_CLOSE, // menu->title jump (BD-J): drop queues, full close
+    DRAIN, // default: render out the old streams, then close
+  };
+  EBdTransition ClassifyBdTransition() const;
+  void BdSegmentTransition();
+
   bool IsValidStream(const CCurrentStream& stream);
   bool IsBetterStream(const CCurrentStream& current, CDemuxStream* stream);
   void CheckBetterStream(CCurrentStream& current, CDemuxStream* stream);
