@@ -427,6 +427,11 @@ bool CDVDInputStreamBluray::Open()
 
   LogTitleAppInfo();
 
+  // open-time title selection (.mpls / resume / longest): no pipeline exists
+  // yet, so the presented UI snapshot IS the demux truth - set it directly
+  if (m_titleInfo)
+    m_titleUiPresented = BuildTitleUiSnapshot();
+
   if (m_navmode)
   {
     // Disc-session DV latch: if this disc carries Dolby Vision and the display
@@ -558,6 +563,39 @@ void CDVDInputStreamBluray::UpdateClipInfo(unsigned int playItem)
               playItem);
 }
 
+std::shared_ptr<const BlurayTitleUiSnapshot> CDVDInputStreamBluray::BuildTitleUiSnapshot() const
+{
+  auto ui = std::make_shared<BlurayTitleUiSnapshot>();
+  if (m_titleInfo)
+  {
+    ui->playlist = m_titleInfo->playlist;
+    ui->totalTimeMs = static_cast<int>(m_titleInfo->duration / 90);
+    ui->chapters.reserve(m_titleInfo->chapter_count);
+    for (uint32_t i = 0; i < m_titleInfo->chapter_count; ++i)
+    {
+      BlurayTitleUiSnapshot::SChapter ch;
+      ch.startMs = static_cast<int64_t>(m_titleInfo->chapters[i].start / 90);
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+      // Chapter names come from the disc's metadata (bdmt_xxx.xml), exposed
+      // in title info since libbluray 1.5.0; discs without metadata leave
+      // them NULL.
+      if (m_titleInfo->chapters[i].chapter_name)
+        ch.name = m_titleInfo->chapters[i].chapter_name;
+#endif
+      ui->chapters.emplace_back(std::move(ch));
+    }
+  }
+  return ui;
+}
+
+std::chrono::milliseconds CDVDInputStreamBluray::ChapterPosDemux(int ch) const
+{
+  if (m_titleInfo && m_titleInfo->chapters && ch > 0 &&
+      static_cast<uint32_t>(ch) <= m_titleInfo->chapter_count)
+    return std::chrono::milliseconds{static_cast<int64_t>(m_titleInfo->chapters[ch - 1].start / 90)};
+  return std::chrono::milliseconds{0};
+}
+
 void CDVDInputStreamBluray::ProcessEvent() {
 
   int pid = -1, ret;
@@ -679,6 +717,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
     {
       FreeTitleInfo();
       m_titleInfo = bd_get_playlist_info(m_bd, m_playlist, m_angle);
+      // same playlist, different angle: chapters/duration are unchanged in
+      // practice - refresh the presented snapshot in place, no deferral
+      m_titleUiPresented = BuildTitleUiSnapshot();
     }
     break;
 
@@ -715,6 +756,13 @@ void CDVDInputStreamBluray::ProcessEvent() {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
     m_playlist = m_event.param;
     ProcessItem(m_playlist);
+    {
+      // OSD-visible playlist identity (chapters/total time): timeline-stamped
+      // via the player queue so the OSD flips when the render clock reaches
+      // this boundary, not queue-depth early at demux time.
+      std::shared_ptr<const BlurayTitleUiSnapshot> ui = BuildTitleUiSnapshot();
+      m_player->OnDiscNavResult(static_cast<void*>(&ui), BD_EVENT_PLAYLIST);
+    }
     break;
 
   case BD_EVENT_PLAYITEM:
@@ -1169,10 +1217,9 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
 
 int CDVDInputStreamBluray::GetTotalTime()
 {
-  if(m_titleInfo)
-    return static_cast<int>(m_titleInfo->duration / 90);
-  else
-    return 0;
+  // presented snapshot: the OSD shows the playlist the viewer is watching,
+  // which during transitions lags the demux-side m_titleInfo by design
+  return m_titleUiPresented->totalTimeMs;
 }
 
 int CDVDInputStreamBluray::GetTime()
@@ -1199,10 +1246,7 @@ bool CDVDInputStreamBluray::PosTime(int ms)
 
 int CDVDInputStreamBluray::GetChapterCount()
 {
-  if(m_titleInfo)
-    return static_cast<int>(m_titleInfo->chapter_count);
-  else
-    return 0;
+  return static_cast<int>(m_titleUiPresented->chapters.size());
 }
 
 int CDVDInputStreamBluray::GetChapter()
@@ -1216,16 +1260,13 @@ int CDVDInputStreamBluray::GetChapter()
 void CDVDInputStreamBluray::GetChapterName(std::string& name, int ch)
 {
   name.clear();
-
-#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
   if (ch == -1 || ch > GetChapterCount())
     ch = GetChapter();
   if (ch < 1 || ch > GetChapterCount())
     return;
 
-  if (m_titleInfo && m_titleInfo->chapters && m_titleInfo->chapters[ch - 1].chapter_name)
-    name = m_titleInfo->chapters[ch - 1].chapter_name;
-#endif
+  if (ch > 0 && static_cast<size_t>(ch) <= m_titleUiPresented->chapters.size())
+    name = m_titleUiPresented->chapters[ch - 1].name;
 }
 
 bool CDVDInputStreamBluray::SeekChapter(int ch)
@@ -1240,7 +1281,9 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
   if (m_bMVCPlayback)
   {
     OpenNextStream();
-    SeekMVCDemux((GetChapterPos(ch) - std::chrono::milliseconds(m_clipStartTime)).count());
+    // demux-side position: the MVC sub-demux must land where the main
+    // demuxer actually is, not where the (possibly lagging) OSD snapshot is
+    SeekMVCDemux((ChapterPosDemux(ch) - std::chrono::milliseconds(m_clipStartTime)).count());
   }
   return true;
 }
@@ -1250,10 +1293,9 @@ std::chrono::milliseconds CDVDInputStreamBluray::GetChapterPos(int ch)
   if (ch == -1 || ch > GetChapterCount())
     ch = GetChapter();
 
-  if (m_titleInfo && m_titleInfo->chapters)
-    return std::chrono::milliseconds{m_titleInfo->chapters[ch - 1].start / 90};
-  else
-    return std::chrono::milliseconds{0};
+  if (ch > 0 && static_cast<size_t>(ch) <= m_titleUiPresented->chapters.size())
+    return std::chrono::milliseconds{m_titleUiPresented->chapters[ch - 1].startMs};
+  return std::chrono::milliseconds{0};
 }
 
 int64_t CDVDInputStreamBluray::Seek(int64_t offset, int whence)
@@ -1636,6 +1678,13 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
 
   m_titleInfo = bd_get_playlist_info(m_bd, playitem, m_angle);
   LogTitleAppInfo();
+
+  // bootstrap only: the very first playlist has no pipeline in front of it,
+  // so present it synchronously (the player queue would apply it on the next
+  // loop tick anyway - this just removes the empty-snapshot window during
+  // open). Runtime changes defer via the BD_EVENT_PLAYLIST timeline event.
+  if (m_titleUiPresented->playlist > MAX_PLAYLIST_ID)
+    m_titleUiPresented = BuildTitleUiSnapshot();
 
   if (!m_bMVCDisabled)
   {
@@ -2083,6 +2132,9 @@ bool CDVDInputStreamBluray::SetState(const std::string& xmlstate)
     CLog::LogF(LOGERROR, "Open - failed to get title info");
     return false;
   }
+  // state restore = seek-like: pipeline is (about to be) flushed, demux
+  // truth is presentation truth - refresh the presented UI snapshot directly
+  m_titleUiPresented = BuildTitleUiSnapshot();
 
   if (!bd_select_playlist(m_bd, m_titleInfo->playlist))
   {
