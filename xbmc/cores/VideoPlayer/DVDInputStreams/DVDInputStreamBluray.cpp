@@ -1571,6 +1571,19 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
       (m_title == disc_info->first_play || m_title == disc_info->top_menu))
     return true;
 
+  // IsInMenu() alone over-classifies: BD-J apps keep their overlay plane
+  // alive through feature playback (Superman: the whole movie reports
+  // "in menu"), and HDMV raises the menu flag for popups over a running
+  // feature. Classify by the authored playlist length instead: menu
+  // loops, stills and bumpers are short playlists, features are long -
+  // a long playlist showing a menu overlay is a feature carrying a
+  // popup and must keep feature treatment (deep buffering, native
+  // format). Ten minutes clears every menu loop seen while staying far
+  // under episode/feature durations.
+  constexpr uint64_t MENU_DOMAIN_MAX_PLAYLIST_DURATION = 600ULL * 90000ULL;
+  if (m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION)
+    return false;
+
   return IsInMenu();
 }
 
