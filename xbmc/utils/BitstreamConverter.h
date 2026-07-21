@@ -24,6 +24,10 @@ extern "C"
 #endif
 }
 
+// HDR10+ -> Dolby Vision profile 8.1 conversion: SEI extractors + RPU synthesis.
+#include "HevcSei.h"
+#include "HDR10PlusConvert.h"
+
 typedef struct
 {
   const uint8_t* data;
@@ -136,6 +140,13 @@ public:
   void SetConvertDovi(bool value) { m_convert_dovi = value; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
+  // HDR10+ -> Dolby Vision profile 8.1: synthesize a DV RPU from HDR10+ dynamic
+  // metadata and inject it into the stream (see ProcessSeiPrefix / the h265 loop).
+  void SetConvertHdr10Plus(bool value) { m_convert_Hdr10Plus = value; }
+  void SetConvertHdr10PlusPeakBrightnessSource(enum PeakBrightnessSource value)
+  {
+    m_convert_Hdr10Plus_peak_brightness_source = value;
+  }
   // Compat shim for the other platforms (WebOS/Android) that still drive the
   // stock boolean: on -> Zero, off -> Source.
   void SetDoviZeroLevel5(bool value) { m_doviL5Mode = value ? DOVI_L5_ZERO : DOVI_L5_SOURCE; }
@@ -204,6 +215,11 @@ protected:
   const DoviData* processDoviRpu(uint8_t* buf, uint32_t nalSize);
 #endif
 
+  // HDR10+ -> DV 8.1: accumulate the source's static HDR metadata (mastering
+  // display + content light level) from SEI, used to build the synthesized RPU.
+  void ApplyMasteringDisplayColourVolume(const MasteringDisplayColourVolume& metadata);
+  void ApplyContentLightLevel(const ContentLightLevel& metadata);
+
   typedef struct omx_bitstream_ctx {
       uint8_t  length_size;
       uint8_t  first_idr;
@@ -249,4 +265,7 @@ protected:
   bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
   bool m_Hdr10PlusTested{false};
+  bool m_convert_Hdr10Plus{false};
+  enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source{PeakBrightnessSource::MaxScl};
+  HDRStaticMetadataInfo m_hdrStaticMetadataInfo;
 };
