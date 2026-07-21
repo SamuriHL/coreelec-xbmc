@@ -106,6 +106,7 @@ struct SPlayerState
 
 class CDVDInputStream;
 struct BlurayTitleUiSnapshot;
+class CDVDInputStreamBluray;
 
 class CDVDDemux;
 class CDemuxStreamVideo;
@@ -705,6 +706,16 @@ protected:
   std::atomic<bool> m_repostDiscOverlays{false};
 
   double m_messageQueueTimeSize{0.0};
+
+  // Cached downcast of m_pInputStream for the per-tick consumers
+  // (UpdateMenuDomainQueueDepth / ApplyDiscTimelineEvents run every process
+  // loop iteration; a dynamic_pointer_cast per tick was measured waste).
+  // Set with m_pInputStream in OpenInputStream, cleared wherever
+  // m_pInputStream is reset. Player thread only.
+  std::shared_ptr<CDVDInputStreamBluray> m_pInputBluray;
+  // menu-domain queue clamp (advancedsettings menudomainqueuetimesize),
+  // read once per item in Prepare
+  double m_menuDomainClampSeconds{0.0};
 
   // Menu-domain low-latency mode: true while the A/V message queues are
   // clamped to the short menu-domain read-ahead. Shrunk only when a video
