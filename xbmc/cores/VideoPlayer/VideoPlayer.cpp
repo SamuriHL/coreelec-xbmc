@@ -2803,6 +2803,35 @@ void CVideoPlayer::HandlePlaySpeed()
     }
     else if (video && audio)
     {
+      // A flush during a disc transition clears both streams' start pts while
+      // the demuxer may still be seeking to the next segment; if the sync gate
+      // opens inside that gap (e.g. the audio stream closed with it), every
+      // clock branch below fails and the fallthrough would sync the clock to 0
+      // against packets stamped minutes ahead - wedging playback on discs
+      // whose timeline does not start at 0. Defer until a stream reports a
+      // usable start pts, bounded so a stream that never delivers one still
+      // starts with the old behaviour.
+      const bool videoHasStart =
+          m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
+      const bool audioHasStart =
+          m_CurrentAudio.starttime != DVD_NOPTS_VALUE && m_CurrentAudio.packets > 0;
+      bool commit = true;
+      if (!videoHasStart && !audioHasStart)
+      {
+        if (!m_syncStartDeferred)
+        {
+          m_syncStartDeferred = true;
+          m_syncStartDeferTimer.Set(2500ms);
+          CLog::Log(LOGDEBUG, "VideoPlayer::Sync - no stream has a start pts yet, deferring sync");
+        }
+        commit = m_syncStartDeferTimer.IsTimePast();
+        if (commit)
+          CLog::Log(LOGWARNING,
+                    "VideoPlayer::Sync - no start pts within defer window, syncing clock to 0");
+      }
+      if (commit)
+      {
+      m_syncStartDeferred = false;
       double clock = 0;
       if (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Audio - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
@@ -2877,6 +2906,7 @@ void CVideoPlayer::HandlePlaySpeed()
           cb->OnAVStarted(fileItem);
         });
         m_State.streamsReady = true;
+      }
       }
     }
     else
@@ -5327,6 +5357,9 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     startpts = DVD_NOPTS_VALUE;
 
   m_SpeedState.Reset(pts);
+
+  // a defer window from before the flush belongs to a dead sync attempt
+  m_syncStartDeferred = false;
 
   if (sync)
   {
