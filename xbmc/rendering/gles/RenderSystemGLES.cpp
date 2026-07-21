@@ -461,6 +461,15 @@ void CRenderSystemGLES::InitialiseShaders()
   if (m_transferPQ)
   {
     defines += "#define KODI_TRANSFER_PQ 1\n";
+
+    // Platforms that composite the GUI directly onto an HDR/DV plane (Amlogic)
+    // convert SDR (BT.709 sRGB) graphics into the BT.2020 PQ domain in the GUI
+    // shaders themselves via pq_encode_gui(); platforms handing the GUI to an OS
+    // compositor keep the legacy scalar SDR-peak encode. Only the define is
+    // injected here (a bare preprocessor directive is safe to prepend ahead of
+    // any #extension line); the helper body lives inline in each GUI shader.
+    if (CServiceBroker::GetWinSystem()->SupportsHDRGuiFullTransform())
+      defines += "#define KODI_HDR_GUI_FULL 1\n";
   }
 
   m_pShader[ShaderMethodGLES::SM_DEFAULT] =
