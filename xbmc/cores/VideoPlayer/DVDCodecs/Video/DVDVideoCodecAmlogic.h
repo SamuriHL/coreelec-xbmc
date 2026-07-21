@@ -123,6 +123,9 @@ protected:
   h264_sequence  *m_h264_sequence;
   double          m_h264_sequence_pts;
   bool            m_has_keyframe;
+  // HDR10+ -> DV 8.1 convert armed at Open; the DV engage decision is deferred to
+  // AddData once the bitstream confirms HDR10+ (covers file sources too).
+  bool            m_hdr10plusToDvCandidate = false;
 
   CBitstreamParser *m_bitparser;
   CBitstreamConverter *m_bitstream;
