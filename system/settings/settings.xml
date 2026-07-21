@@ -70,8 +70,11 @@
           <default>true</default>
           <control type="toggle" />
         </setting>
+        <!-- inert on this fork: the AML hardware-vsync reference clock is
+             governed by coreelec.amlogic.usedisplayasclock instead; hidden
+             (level 4) rather than removed so stored values keep parsing -->
         <setting id="videoplayer.usedisplayasclock" type="boolean" label="13510" help="36166">
-          <level>1</level>
+          <level>4</level>
           <default>false</default>
           <control type="toggle" />
         </setting>
