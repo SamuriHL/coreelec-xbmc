@@ -1010,6 +1010,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
   // on some cases where the received packet is invalid we will need to return an empty packet (0 length) otherwise the main loop (in CVideoPlayer)
   // would consider this the end of stream and stop.
   bool bReturnEmpty = false;
+  bool corruptDropped = false;
   {
     std::unique_lock lock(m_critSection); // open lock scope
     if (m_pFormatContext)
@@ -1037,6 +1038,9 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         // the player normally drops these unemitted - anything that slips
         // through is garbage the decoders would error-conceal, so surface
         // it and drop it here rather than deliver it (defect C backstop).
+        // The drop must cost exactly this one packet: falling into the
+        // generic result<0 Flush() below discarded adjacent good PES of ALL
+        // streams per corrupt packet (review finding A3).
         if (m_pkt.result >= 0 && (m_pkt.pkt.flags & AV_PKT_FLAG_CORRUPT) &&
             m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
         {
@@ -1047,6 +1051,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
           m_pkt.result = -1;
           av_packet_unref(&m_pkt.pkt);
           bReturnEmpty = true;
+          corruptDropped = true;
         }
       }
 
@@ -1060,7 +1065,8 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
       }
       else if (m_pkt.result < 0)
       {
-        Flush();
+        if (!corruptDropped)
+          Flush();
       }
       // check size and stream index for being in a valid range
       else if (m_pkt.pkt.size < 0 || m_pkt.pkt.stream_index < 0 ||
