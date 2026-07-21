@@ -117,6 +117,15 @@ bool aml_dv_disc_session();
 // TV's resync into DV overlaps the disc load phase instead of the first
 // audible seconds of playback.
 void aml_dv_pre_engage_disc_session();
+// MIXED discs (DV present on the disc, but the selected title is native
+// HDR10/SDR with conform off): actively release the pre-engaged DV output -
+// drop the session VSIF hold and return amdv to follow-source - so the title's
+// native EOTF can signal. The hold otherwise blocks the DV signal drop this
+// case needs, leaving the sink in DV against a non-DV decode (black screen).
+// A later DV-output segment re-engages via aml_dv_pre_engage_disc_session().
+void aml_dv_release_disc_engage();
+// Whether the disc-session DV output engage is currently applied.
+bool aml_dv_disc_engaged();
 unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
