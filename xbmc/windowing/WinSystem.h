@@ -248,6 +248,19 @@ public:
   virtual bool HasSystemSdrPeakLuminance() { return false; }
 
   /*!
+   * \brief Whether the GUI/OSD needs a full sRGB->BT.2020->PQ transform when the
+   *        display is driven in HDR PQ mode.
+   *
+   * Platforms that composite the GUI directly onto an HDR/DV plane (Amlogic)
+   * must convert SDR (BT.709 sRGB) graphics into the BT.2020 PQ signal domain
+   * themselves, otherwise menu colours are un-gamut-mapped (over-saturated) and
+   * the brightness follows an approximate curve. Platforms that hand the GUI to
+   * an OS compositor (Android, webOS) return false and keep the legacy scalar
+   * SDR-peak encode.
+   */
+  virtual bool SupportsHDRGuiFullTransform() const { return false; }
+
+  /*!
    * \brief System supports Video Super Resolution HW upscaler i.e.:
    * "NVIDIA RTX Video Super Resolution" or "Intel Video Super Resolution"
    *
