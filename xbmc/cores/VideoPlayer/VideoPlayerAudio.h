@@ -151,5 +151,9 @@ protected:
   CFloatingAverage<double, PCM_JITTER_WINDOW_SIZE> m_pcmJitterTracker;
   double m_pcmOutputClock{0.0}; // running output timestamp (LAV's m_rtStart)
   bool m_pcmResyncTimestamp{true}; // resync on next valid PTS (LAV's m_bResyncTimestamp)
+  // sustained same-sign over-threshold run = a genuine mid-size pts step
+  // (100-900ms discontinuity) -> resync instead of window-chasing it
+  int m_pcmStepRun{0};
+  bool m_pcmStepPositive{false};
 };
 
