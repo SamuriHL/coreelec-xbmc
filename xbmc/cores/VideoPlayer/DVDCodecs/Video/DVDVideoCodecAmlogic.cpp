@@ -659,41 +659,68 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
           packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
 
-        if (!m_packages.empty())
+        // Pair BL and EL strictly by dts: both layers of a frame carry the
+        // same dts. A packet whose partner never arrives (windowed playitem
+        // entries and seeks legitimately deliver an EL access unit ahead of
+        // the first BL, and can orphan packets of either layer) must be
+        // dropped, not paired with a neighbour - one blind mispair shifts
+        // the merge phase for the rest of the session.
+        constexpr double dtsTolerance = 10000.0; // DVD_TIME units; frame is ~41708
+        while (!dual_layer_converted && !m_packages.empty())
         {
           // convert bl and el package to single package
           DLDemuxPacket dual_layer_packet = m_packages.front();
           uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
           uint32_t iSizeBackup = std::get<1>(dual_layer_packet);
           bool isELPackageBackup = std::get<2>(dual_layer_packet);
+          double dtsBackup = std::get<3>(dual_layer_packet);
 
-          if (isELPackageBackup != packet.isELPackage)
+          if (isELPackageBackup == packet.isELPackage)
+            break; // same layer: queue behind it, keep arrival order
+
+          const bool dtsKnown = dtsBackup != DVD_NOPTS_VALUE && packet.dts != DVD_NOPTS_VALUE;
+          if (dtsKnown && dtsBackup < packet.dts - dtsTolerance)
           {
-            if (!packet.isELPackage)
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with dts: {:.3f} (incoming {} dts: {:.3f})", __FUNCTION__,
+              isELPackageBackup ? "EL" : "BL", dtsBackup/DVD_TIME_BASE,
+              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE);
+            KODI::MEMORY::AlignedFree(pDataBackup);
+            m_packages.pop_front();
+            continue;
+          }
+          if (dtsKnown && dtsBackup > packet.dts + dtsTolerance)
+          {
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with dts: {:.3f} (queued {} dts: {:.3f})", __FUNCTION__,
+              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE,
+              isELPackageBackup ? "EL" : "BL", dtsBackup/DVD_TIME_BASE);
+            return true;
+          }
+
+          if (!packet.isELPackage)
+          {
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found EL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+              packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
+            dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup);
+            if (dual_layer_converted)
             {
-              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found EL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
-                packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
-              dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup);
-              if (dual_layer_converted)
-              {
-                m_pendingMeta = m_streamMeta;
-                AMLLatchHevcDoviRpu(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
-                AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
-              }
-            }
-            else
-            {
-              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found BL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
-                packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
-              dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize);
-              if (dual_layer_converted)
-              {
-                m_pendingMeta = m_streamMeta;
-                AMLLatchHevcDoviRpu(packet.pData, packet.iSize, m_nalLengthSize, m_pendingMeta);
-                AMLLatchHevcSei(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
-              }
+              m_pendingMeta = m_streamMeta;
+              AMLLatchHevcDoviRpu(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
+              AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
             }
           }
+          else
+          {
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found BL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+              packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
+            dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize);
+            if (dual_layer_converted)
+            {
+              m_pendingMeta = m_streamMeta;
+              AMLLatchHevcDoviRpu(packet.pData, packet.iSize, m_nalLengthSize, m_pendingMeta);
+              AMLLatchHevcSei(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
+            }
+          }
+          break;
         }
 
         if (!dual_layer_converted)
@@ -701,7 +728,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage));
+          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts));
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
