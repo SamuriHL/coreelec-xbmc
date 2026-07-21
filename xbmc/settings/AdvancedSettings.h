@@ -198,6 +198,20 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     // disc VM at ~presentation time so menu decisions fire when the viewer
     // sees them. 0 disables the menu-domain clamp (full read-ahead everywhere).
     float m_videoMenuDomainQueueTimeSize;
+    // Hold the display mode (refresh/frac-rate) across menu-domain segments
+    // of a disc session: a 59.94 menu on a 23.976 feature disc otherwise
+    // forces a full HDMI re-clock at EVERY menu<->title jump - strict sinks
+    // (Sony) drop signal and re-train each time. Menus present on the
+    // incumbent mode; the feature still takes its one correct switch.
+    // <video><discsessionmodehold>false</...> restores per-segment switching.
+    bool m_videoDiscSessionModeHold;
+    // Conform non-DV, non-menu titles (extras, featurettes) on a DV disc to
+    // the session's DV output via VS10 instead of tearing the DV signal down
+    // mid-session. Default OFF: format-demo discs (S&M) rely on selected
+    // titles keeping their native HDR10/HLG output. Sony-class sinks that
+    // re-lock slowly may prefer ON.
+    // <video><discsessionconformnondv>true</...>
+    bool m_videoDiscSessionConformNonDV;
     int  m_videoCaptureUseOcclusionQuery;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
