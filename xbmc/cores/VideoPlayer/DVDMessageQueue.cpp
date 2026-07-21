@@ -319,8 +319,10 @@ void CDVDMessageQueue::WaitUntilEmpty()
   // title jumps arrive with 16s+ queued; a fixed 8s ceiling silenced the
   // last 8s of every long intro while the video played on). Data-based
   // queues report 0.0 and keep the old 8s floor.
+  // clamp in floating point BEFORE the int cast (a corrupt multi-week time
+  // span overflowed the int cast into UB - review finding)
   const auto ceiling = std::chrono::milliseconds(
-      std::clamp(static_cast<int>(GetTimeSize() * 1000.0) + 3000, 8000, 30000));
+      static_cast<int>(std::clamp(GetTimeSize() * 1000.0 + 3000.0, 8000.0, 30000.0)));
   XbmcThreads::EndTime<> totalTimer(ceiling);
   size_t lastRemaining = std::numeric_limits<size_t>::max();
   XbmcThreads::EndTime<> stallTimer(1500ms);
@@ -343,7 +345,12 @@ void CDVDMessageQueue::WaitUntilEmpty()
     // video 24fps+); demand a modest fraction of that. Nearly-empty queues
     // exit via remaining==0 within a window anyway.
     constexpr size_t MIN_WINDOW_PROGRESS = 10;
-    if (remaining + MIN_WINDOW_PROGRESS <= lastRemaining)
+    // a genuinely slow tail of the LAST few messages must not be cut as
+    // "trickling" (review finding): once fewer than a window's worth
+    // remain, any progress at all counts - the ceiling still bounds it
+    const size_t required =
+        remaining <= MIN_WINDOW_PROGRESS ? 1 : MIN_WINDOW_PROGRESS;
+    if (remaining + required <= lastRemaining)
     {
       lastRemaining = remaining;
       stallTimer.Set(1500ms);
