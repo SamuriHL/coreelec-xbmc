@@ -233,6 +233,8 @@ void CAdvancedSettings::Initialize()
   m_videoDefaultLatency = 0.0;
   m_videoDefaultHdrExtraLatency = 0.0;
   m_videoMenuDomainQueueTimeSize = 1.0f;
+  m_videoDiscSessionModeHold = true;
+  m_videoDiscSessionConformNonDV = false;
 
   m_videoDecoderTimeout = 5;
 
@@ -885,6 +887,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
     XMLUtils::GetFloat(pElement, "menudomainqueuetimesize", m_videoMenuDomainQueueTimeSize, 0.0f,
                        16.0f);
+    XMLUtils::GetBoolean(pElement, "discsessionmodehold", m_videoDiscSessionModeHold);
+    XMLUtils::GetBoolean(pElement, "discsessionconformnondv", m_videoDiscSessionConformNonDV);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");
