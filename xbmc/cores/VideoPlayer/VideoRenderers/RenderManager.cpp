@@ -25,7 +25,15 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
+#if defined(HAS_LIBAMCODEC)
 #include "utils/AMLUtils.h"
+#else
+// non-AML builds: the AML display hooks used below compile to no-ops so this
+// cross-platform file stays buildable/upstreamable (review finding F11)
+static inline void aml_dv_set_subtitles_visible(bool) {}
+static inline bool aml_video_started() { return true; }
+static inline bool aml_disc_mode_hold() { return false; }
+#endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
@@ -612,8 +620,19 @@ RESOLUTION CRenderManager::GetResolution()
     return res;
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
-    res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                                 !m_picture.stereoMode.empty());
+  {
+    // Disc-session mode hold: a menu-domain segment presents on the
+    // INCUMBENT mode instead of re-clocking HDMI for the menu's refresh
+    // rate (strict sinks drop signal and re-train on every re-clock; menus
+    // tolerate cadence repeats, a re-lock they don't). The feature still
+    // takes its one correct switch when the hold is off for its segment.
+    if (aml_disc_mode_hold())
+      CLog::Log(LOGDEBUG,
+                "CRenderManager::GetResolution - disc session mode hold: keeping current mode");
+    else
+      res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
+                                                   !m_picture.stereoMode.empty());
+  }
 
   return res;
 }
@@ -845,8 +864,15 @@ void CRenderManager::UpdateResolution()
         if (m_bTriggerUpdateResolution &&
           CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
         {
-          RESOLUTION res = CResolutionUtils::ChooseBestResolution(
-              m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+          // disc-session mode hold: see GetResolution()
+          RESOLUTION res =
+              aml_disc_mode_hold()
+                  ? CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()
+                  : CResolutionUtils::ChooseBestResolution(
+                        m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+          if (aml_disc_mode_hold())
+            CLog::Log(LOGDEBUG, "CRenderManager::UpdateResolution - disc session mode hold: "
+                                "keeping current mode");
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
