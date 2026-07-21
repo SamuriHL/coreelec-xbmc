@@ -314,6 +314,7 @@ void VS10DvFiller(const SettingConstPtr& setting, std::vector<IntegerSettingOpti
 {
   list.clear();
   list.emplace_back(vs10_label(60064), DOLBY_VISION_OUTPUT_MODE_SDR10); // SDR
+  if (aml_display_support_hdr_pq()) list.emplace_back(vs10_label(60065), DOLBY_VISION_OUTPUT_MODE_HDR10); // HDR10
   if (aml_display_support_dv()) list.emplace_back(vs10_label(60063), DOLBY_VISION_OUTPUT_MODE_IPT); // Off = native DV
 }
 } // namespace
@@ -427,7 +428,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                              CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK})
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT,
+                             CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE})
     {
       auto setting = settings->GetSetting(dvId);
       if (setting)
