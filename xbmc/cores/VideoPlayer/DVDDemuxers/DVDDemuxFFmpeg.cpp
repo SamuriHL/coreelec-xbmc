@@ -220,7 +220,6 @@ CDVDDemuxFFmpeg::CDVDDemuxFFmpeg() : CDVDDemux()
   m_checkTransportStream = false;
   m_dtsAtDisplayTime = DVD_NOPTS_VALUE;
   m_dv_dual_stream = false;
-  m_dv_dual_stream_started = false;
 }
 
 CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
@@ -1241,16 +1240,10 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         pPacket->recoveryPoint = m_seekToKeyFrame;
       m_seekToKeyFrame = false;
 
-      if (m_pFormatContext->streams[pPacket->iStreamId]->id == 0x1015 &&
-          m_dv_dual_stream && !m_dv_dual_stream_started)
-      {
-        CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::{}: EL packet arrived before BL packet on Dolby Vision dual stream, drop it!", __FUNCTION__);
-        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
-        pPacket = CDVDDemuxUtils::AllocateDemuxPacket(0);
-        return pPacket;
-      }
-      else
-        m_dv_dual_stream_started = true;
+      // NOTE: a leading EL packet (before the first BL) is legitimate on
+      // dual-stream discs - windowed playitem entries and seeks deliver the
+      // EL access unit of the target frame ahead of the BL IDR. The codec's
+      // dts-matched BL/EL pairing discards true orphans; do not drop here.
 
       if (m_pFormatContext->streams[pPacket->iStreamId]->codecpar &&
           m_pFormatContext->streams[pPacket->iStreamId]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
