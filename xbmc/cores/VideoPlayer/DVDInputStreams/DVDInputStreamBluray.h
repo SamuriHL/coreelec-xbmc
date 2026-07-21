@@ -10,8 +10,10 @@
 
 #include "BlurayStateSerializer.h"
 #include "DVDInputStream.h"
+#include "cores/AudioEngine/Interfaces/AE.h"
 #include "threads/CriticalSection.h"
 
+#include <atomic>
 #include <chrono>
 #include <list>
 #include <memory>
@@ -127,6 +129,11 @@ public:
   MenuType GetSupportedMenuType() override;
 
   bool IsInMenu() override;
+  // DEMUX-side menu truth (m_menu/overlay as the VM decided it, NOT the
+  // clock-deferred presented state): for demux-side machinery operating on
+  // packets at demux time (CheckContinuity menu-wrap correction) - the
+  // presented state lags by the deferral window and would miss wraps there
+  bool IsInMenuDemux() const { return m_menu || m_hasOverlay; }
   // True while playing menu-incidental video (FirstPlay bumper, top menu,
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
@@ -171,9 +178,25 @@ public:
 #endif
   void RedrawMenuOverlays();
 
-  /* the pending NEXTSTREAM_OPEN left the menu (user started a title): the
-   * queued remainder of the menu loop should be dropped, not rendered out */
-  bool ShouldDiscardStreamQueue() const { return m_menuAtHold && !m_menu; }
+  /* the pending NEXTSTREAM_OPEN crossed the menu boundary:
+   * - menu->title (user started a title): always drop the queued menu-loop
+   *   remainder.
+   * - title->menu: drop the queued feature remainder ONLY when the user
+   *   recently called the menu (they abandoned it - draining up to ~19s of
+   *   movie before the menu appears was review finding A12). A NATURAL
+   *   end-of-title return to menu must NOT discard: the queued tail is the
+   *   movie's ending, still unpresented (dropping it would cut the last
+   *   queue-depth seconds of every film).
+   * Same-state transitions keep their existing classes. */
+  bool ShouldDiscardStreamQueue() const
+  {
+    if (m_menuAtHold && !m_menu)
+      return true;
+    if (!m_menuAtHold && m_menu)
+      return std::chrono::steady_clock::now() - m_lastUserMenuCall <
+             std::chrono::seconds(20);
+    return false;
+  }
 
   /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist:
    * the stream format is unchanged, so the whole pipeline (demuxer, stream
@@ -231,6 +254,33 @@ public:
     return m_clip->pg_streams[m_pgStreamNum - 1].pid;
   }
 
+  /* the disc explicitly deselected primary audio (BD_EVENT_AUDIO_STREAM
+   * 0xff): dictated silence - the player must NOT fall back to opening the
+   * first arriving audio pid (that turns authored silence into sound) */
+  bool IsAudioDictatedNone() const { return m_audioStreamNum == BD_STREAM_NONE; }
+
+  /* User stream selection routed through the HDMV VM (bd_select_stream):
+   * updates PSR1/PSR2 so the VM, the dictation getters above and the player
+   * all agree - without this the per-packet dictation reverts any manual
+   * track choice within one packet. Respects the disc's UO masks; returns
+   * false when the disc prohibits the change (caller keeps the dictated
+   * stream). pid is the mpeg-ts pid of the wanted stream in the CURRENT
+   * clip. */
+  bool SelectAudioStream(int pid);
+  bool SelectSubtitleStream(int pid, bool enable);
+
+  /* current BLURAY_UO_* mask (BD_EVENT_UO_MASK_CHANGED); 0 = everything
+   * permitted. Consulted by seek/skip gating - the UO restriction level
+   * stays RELAXED in libbluray, enforcement is app-side so the user gets
+   * feedback instead of a silent no-op. */
+  uint32_t GetUserOperationMask() const { return m_uoMask.load(); }
+
+  /* BD-J key interest table (BLURAY_KIT_*): which transport UOs the running
+   * Xlet asked to handle itself. libbluray's bd_user_input has no transport
+   * key codes, so full delegation is not possible - exposed for logging and
+   * future routing decisions. */
+  uint32_t GetBdjKeyInterest() const { return m_bdjKeyInterest.load(); }
+
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
@@ -267,8 +317,12 @@ protected:
   uint32_t m_playlist = MAX_PLAYLIST_ID + 1;
   BLURAY_CLIP_INFO* m_clip = nullptr;
   uint32_t m_angle = 0;
-  bool m_menu = false;
-  bool m_menuPresented = false;
+  /* atomics: m_menu is written on the player thread but read by GUI/app
+   * threads (IsInMenu chain); m_menuPresented likewise; m_hasOverlay is
+   * additionally WRITTEN from the BD-J JVM graphics thread (ARGB overlay
+   * callback) - see m_overlayLock for the container itself */
+  std::atomic<bool> m_menu{false};
+  std::atomic<bool> m_menuPresented{false};
   /* never null - starts as an empty snapshot (playlist unset), bootstrapped
    * at open / first ProcessItem, then swapped by SetPresentedTitleUi */
   std::shared_ptr<const BlurayTitleUiSnapshot> m_titleUiPresented =
@@ -279,14 +333,33 @@ protected:
   std::chrono::milliseconds ChapterPosDemux(int ch) const;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
-  /* current disc-dictated stream NUMBERS (1-based, PSR semantics; BD default
-   * is stream 1). Updated by the stream-selection events; resolved to PIDs
-   * on demand via GetDictatedAudioPid/GetDictatedPgPid. */
+  /* last explicit user menu call (OnMenu) - discriminates "user abandoned
+   * the feature for the menu" (discard queued tail) from "the feature
+   * ended and the disc returned to menu" (drain it). Player thread only,
+   * min() = never. */
+  std::chrono::steady_clock::time_point m_lastUserMenuCall{
+      std::chrono::steady_clock::time_point::min()};
+  /* "no stream selected" sentinel (PSR semantics: PSR1=0xff / PSR2=0x0fff
+   * both exceed any clip stream count, so the dictation getters resolve
+   * them to -1) */
+  static constexpr uint32_t BD_STREAM_NONE = 0xff;
+  /* current disc-dictated stream NUMBERS (1-based, PSR semantics). Audio
+   * defaults to stream 1 (PSR1 init 0xff = "player decides"; stream 1 is
+   * the sane player decision). PG defaults to NONE: PSR2 init is 0x0fff
+   * "no stream selected" (libbluray register.c) - defaulting PG to 1 made
+   * a subtitle track the disc never selected auto-open. Updated by the
+   * stream-selection events; resolved to PIDs on demand via
+   * GetDictatedAudioPid/GetDictatedPgPid. */
   uint32_t m_audioStreamNum = 1;
-  uint32_t m_pgStreamNum = 1;
+  uint32_t m_pgStreamNum = BD_STREAM_NONE;
   bool m_hasBdjTitles = false;
   bool m_isInMainMenu = false;
-  bool m_hasOverlay = false;
+  std::atomic<bool> m_hasOverlay{false};
+  /* popup-menu availability announced by the disc (BD_EVENT_POPUP) - lets
+   * OnMenu() try the right key first instead of firing BD_VK_POPUP blind */
+  std::atomic<bool> m_popupAvailable{false};
+  std::atomic<uint32_t> m_uoMask{0};
+  std::atomic<uint32_t> m_bdjKeyInterest{0};
   bool m_navmode = false;
   int m_dispTimeBeforeRead = 0;
   int                 m_nTitles = -1;
@@ -313,7 +386,18 @@ protected:
     int h = 0;
   };
 
-  SPlane m_planes[2];
+  /* index = bd_overlay_plane_e: 0 PG, 1 IG (above PG), 2 BG (behind video,
+   * libbluray 1.5.0). Composited bottom-up as BG, PG, IG in OverlayFlush.
+   *
+   * m_overlayLock: the planes are mutated by libbluray overlay callbacks -
+   * HDMV inside bd_read_ext on the player thread, but BD-J ARGB callbacks
+   * arrive on the JVM graphics thread - while RedrawMenuOverlays iterates
+   * them on the player thread (repost after demuxer reopen / display
+   * reset). Every reader/writer of m_planes takes this lock (it is a
+   * recursive CCriticalSection: OverlayFlush runs both standalone and
+   * inside a locked callback). */
+  mutable CCriticalSection m_overlayLock;
+  SPlane m_planes[3];
   enum EHoldState {
     HOLD_NONE = 0,
     HOLD_HELD,
@@ -334,6 +418,22 @@ protected:
     void ApplyAudioCapability();
     void FreeTitleInfo();
     void LogTitleAppInfo();
+    /* re-evaluate the libbluray debug mask (DBG_HDMV rides the Kodi debug
+     * loglevel; called at segment boundaries so a mid-session ToggleDebug
+     * takes effect without a disc reopen) */
+    void UpdateLibblurayDebugMask();
+    /* stream-attribute compare across a glued playitem seam: cc=1 permits
+     * attribute/STN changes, and a format change must never be glued into
+     * live decoders (falls back to the full-reopen path instead) */
+    static bool ClipFormatsMatch(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);
+    /* IG button sound effects (sound.bdmv): decoded LPCM from libbluray,
+     * cached as AE sounds at open, fired by BD_EVENT_SOUND_EFFECT */
+    void LoadMenuSounds();
+    void FreeMenuSounds();
+    void PlayMenuSound(uint32_t id);
+    std::vector<IAE::SoundPtr> m_menuSounds;
+    /* menu-domain classification change log guard (-1 = not yet logged) */
+    int m_menuDomainLogged = -1;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 
