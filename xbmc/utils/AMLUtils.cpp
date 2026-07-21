@@ -233,19 +233,48 @@ bool aml_support_dolby_vision()
 {
   static int support_dv = -1;
 
-  if (support_dv == -1)
+  // Only memoize a *positive* determination. A negative or not-ready reading is
+  // left uncached so a boot-time race -- dovi.ko still coming up when the window
+  // system first probes -- cannot latch the box as non-DV and hide every Dolby
+  // Vision setting (VS10 / VSVDB / Smart CMv4.0 / L5) for the whole session.
+  if (support_dv != 1)
   {
-    CSysfsPath support_info{"/sys/class/amdolby_vision/support_info"};
+    // The first probe drives the one-time DV settings-visibility decision in
+    // CWinSystemAmlogic::InitWindowSystem, so give a SoC node that exists but is
+    // not yet reporting full support a brief, bounded chance to settle. A box
+    // with no amdolby_vision node at all is genuinely non-DV -- don't stall boot.
+    static bool first_probe = true;
+    const int max_wait_ms = first_probe ? 1000 : 0;
+    int waited = 0;
+
     support_dv = 0;
-    if (support_info.Exists())
+    for (;;)
     {
-      support_dv = (int)((support_info.Get<int>().value() & 7) == 7);
-      if (support_dv == 1) {
+      CSysfsPath support_info{"/sys/class/amdolby_vision/support_info"};
+      if (!support_info.Exists())
+        break;
+
+      const auto val = support_info.Get<int>();
+      if (val.has_value() && (val.value() & 7) == 7)
+      {
+        support_dv = 1;
         CSysfsPath ko_info{"/sys/class/amdolby_vision/ko_info"};
         if (ko_info.Exists())
           CLog::Log(LOGINFO, "Amlogic Dolby Vision info: {}", ko_info.Get<std::string>().value().c_str());
+        break;
       }
+
+      if (waited >= max_wait_ms)
+      {
+        CLog::Log(LOGINFO, "aml_support_dolby_vision: SoC support_info not ready "
+                           "after {}ms (value {}) - treating as non-DV for now",
+                  waited, val.has_value() ? val.value() : -1);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      waited += 100;
     }
+    first_probe = false;
   }
 
   return (support_dv == 1);
