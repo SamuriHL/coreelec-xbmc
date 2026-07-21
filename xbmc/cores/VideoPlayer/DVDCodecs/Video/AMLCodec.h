@@ -85,7 +85,13 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
-  int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+  int           ReleaseFrame(const uint32_t index, bool bDrop = false,
+                             uint32_t sessionGen = UINT32_MAX);
+  // decode-session generation, bumped at every OpenDecoder: buffers carry
+  // the generation they were decoded in, and ReleaseFrame refuses to QBUF a
+  // previous session's index into the new v4l session (VC_REOPEN made
+  // mid-stream close/open a recurring runtime path - review finding F7)
+  uint32_t      GetSessionGeneration() const { return m_sessionGen.load(); }
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -133,6 +139,7 @@ private:
 
   PosixFilePtr     m_amlVideoFile;
   std::mutex       m_amlVideoFileMutex;
+  std::atomic<uint32_t> m_sessionGen{0};
   std::string      m_defaultVfmMap;
 
   static std::atomic_flag  m_pollSync;
@@ -144,6 +151,10 @@ private:
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;
+  // stream-buffer data_len at the previous GetPicture call: the parked
+  // stall clock only engages while this is UNCHANGED (idle input); a
+  // changing value with no frames out is a consume-without-output wedge
+  int             m_park_last_data_len{-1};
   // Dual-stream (BL+EL) DV opened in stream dec_mode: skip the stream-buffer
   // fill gate in AddData. Covers disc playitems AND file-played BL+EL m2ts
   // rips - both are fed in short segments that can EOS below any fill
