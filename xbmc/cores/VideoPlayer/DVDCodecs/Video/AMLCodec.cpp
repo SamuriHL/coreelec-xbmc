@@ -1981,6 +1981,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
+  m_park_last_data_len = -1;
+  m_sessionGen++;
 
   if (!OpenAmlVideo(hints))
   {
@@ -2397,7 +2399,10 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
     return false;
   }
 
-  m_amlVideoFile = amlVideoFile;
+  {
+    std::lock_guard<std::mutex> lock(m_videoFileMutex);
+    m_amlVideoFile = amlVideoFile;
+  }
   m_defaultVfmMap = GetVfmMap("default");
 
   return true;
@@ -2535,8 +2540,17 @@ void CAMLCodec::CloseDecoder()
     else
       CSysfsPath("/sys/class/amvecm/enable_hdr10plus", 1);
 
-    // stop injecting a custom VSVDB so the desktop/other apps see the real EDID
-    aml_dv_clear_vsvdb();
+    // stop injecting a custom VSVDB so the desktop/other apps see the real
+    // EDID - but NOT while a disc session is live: the clear writes
+    // force_vsvdb=0 + a full EDID reload, and the next OpenDecoder re-injects
+    // with a second reload - two multi-second sink re-latches per menu<->title
+    // transition with the max-lum override enabled (review finding A7). The
+    // disc-session release path (aml_dv_set_disc_session(false) at disc
+    // close) runs the clear then.
+    if (!aml_dv_disc_session())
+      aml_dv_clear_vsvdb();
+    else
+      CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder - disc session live: VSVDB injection held");
 
     dolby_vision_enable.Set('N');
   }
@@ -2556,12 +2570,13 @@ void CAMLCodec::CloseDecoder()
 
 void CAMLCodec::CloseAmlVideo()
 {
-  m_amlVideoFile.reset();
+  {
+    std::lock_guard<std::mutex> lock(m_videoFileMutex);
+    m_amlVideoFile.reset();
+  }
 
   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
     SetVfmMap("default", m_defaultVfmMap);
-
-  m_amlVideoFile = NULL;
 }
 
 void CAMLCodec::Reset()
@@ -2571,6 +2586,7 @@ void CAMLCodec::Reset()
   if (!m_opened)
     return;
 
+  m_park_last_data_len = -1;
   SetPollDevice(-1);
 
   // set the system blackout_policy to leave the last frame showing
@@ -2815,15 +2831,27 @@ void CAMLCodec::SetPollDevice(int dev)
   m_pollDevice = dev;
 }
 
-int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen)
 {
   int ret;
   v4l2_buffer vbuf = v4l2_buffer();
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   vbuf.index = index;
 
+  // runs on the render thread; the lock serializes against CloseAmlVideo's
+  // reset on the video thread, and the generation check refuses to QBUF a
+  // buffer decoded in a PREVIOUS session into the new v4l session (a stale
+  // on-screen frame released after a VC_REOPEN - review finding F7)
+  std::lock_guard<std::mutex> lock(m_videoFileMutex);
   if (!m_amlVideoFile)
     return 0;
+  if (sessionGen != UINT32_MAX && sessionGen != m_sessionGen.load())
+  {
+    CLog::Log(LOGDEBUG, LOGVIDEO,
+              "CAMLCodec::ReleaseFrame idx:{:d} - stale buffer from session {} "
+              "(current {}), dropping", index, sessionGen, m_sessionGen.load());
+    return 0;
+  }
 
   if (drop)
     vbuf.flags |= V4L2_BUF_FLAG_DONE;
@@ -2891,6 +2919,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
     - m_tp_last_frame).count());
   bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
+  // progress term for the parked stall clock below: a CHANGING data_len with
+  // no frames out means the decoder is consuming input without producing
+  // output (the eaten-GOP wedge class) - that must keep the stall timeout
+  // running; only a STABLE small buffer is idle input (review finding A4)
+  const int prev_data_len = m_park_last_data_len;
+  m_park_last_data_len = data_len;
 
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
@@ -2934,12 +2968,17 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
     return CDVDVideoCodec::VC_PICTURE;
   }
-  else if (m_drain && m_buffer_level_ready && data_len == 0)
+  // no m_buffer_level_ready term: the drain-dequeue above already ignores
+  // the fill gates, so a short segment that never crossed the AddData fill
+  // threshold must still complete its drain via the VC_EOF contract
+  // (PLAYER_STARTED for SYNC_STARTING waits on it - review finding F6)
+  else if (m_drain && data_len == 0)
     return CDVDVideoCodec::VC_EOF;
   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
     return CDVDVideoCodec::VC_NONE;
   else if (ret == EAGAIN &&
-           (m_speed == DVD_PLAYSPEED_PAUSE || data_len < (m_drain ? 65536 : 16384)))
+           (m_speed == DVD_PLAYSPEED_PAUSE ||
+            (data_len < (m_drain ? 65536 : 16384) && data_len == prev_data_len)))
   {
     // Idle input, not a decoder stall - park the stall clock instead of
     // letting the timeout below flush a healthy session (the flush discards
@@ -2954,8 +2993,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     //   threshold and can never decode. The still exits via
     //   BD_EVENT_STILL -> codec change, not via this drain completing; a
     //   genuinely finished drain still returns VC_EOF above.
-    // A real decoder wedge - a full buffer of queued, unconsumed data
-    // (VC-1/MVC starve class) - still times out and escalates to reopen.
+    // Both wedge shapes stay detected: a full buffer of queued unconsumed
+    // data (VC-1/MVC starve class) exceeds the size threshold, and a
+    // consume-without-output wedge (eaten-GOP class) keeps data_len
+    // CHANGING call-to-call, failing the prev_data_len equality - either
+    // way the stall clock keeps running and times out.
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_BUFFER;
   }
