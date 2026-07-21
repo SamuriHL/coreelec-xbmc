@@ -131,6 +131,14 @@ void aml_dv_set_hdr10_osd_brightness(int nits);
 // the settings and enables/disables accordingly; clear() disables injection.
 void aml_dv_apply_vsvdb();
 void aml_dv_clear_vsvdb();
+// display-mode hold for menu-domain segments of a disc session (Sony-class
+// sinks re-train on every re-clock; see AMLUtils.cpp)
+void aml_set_disc_mode_hold(bool hold);
+bool aml_disc_mode_hold();
+// Display's GENUINE VSVDB v2 max luminance in nits (0 = unavailable/not v2).
+// Injection-aware: reads the cached panel block, not dv_cap (which reports
+// the injected block while an override is live).
+int aml_display_vsvdb_max_nits();
 // Dolby Vision L5 active-area detection: a background thread software-decodes the
 // playing file and finds the letterbox/pillarbox bars from luma; the offsets are
 // injected into the DV RPU by CBitstreamConverter (no kernel params).
