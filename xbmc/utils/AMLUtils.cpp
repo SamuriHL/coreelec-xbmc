@@ -487,10 +487,16 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static bool s_dv_disc_session = false;
+static bool s_dv_disc_engaged = false;
 void aml_dv_set_disc_session(bool active)
 {
   const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
+  // Session over with the DV output engage still applied (e.g. stopped on a
+  // DV segment): restore follow-source so the desktop/next playback signals
+  // its own format instead of inheriting a forced DV output.
+  if (wasActive && !active && s_dv_disc_engaged)
+    aml_dv_release_disc_engage();
   // Kernel-side VSIF hold (amdv patch 0002): while the session is active,
   // every segment outputs DV (menus VS10-mapped, features native), so the
   // DOVI->SDR HDMI teardown at each decoder swap's no-source gap is a false
@@ -552,9 +558,41 @@ void aml_dv_pre_engage_disc_session()
              2u /* AMDV_FORCE_OUTPUT_MODE */);
   const unsigned int mode = aml_dv_resolve_tunnel_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
-  CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: DV output engaged at disc open "
+  s_dv_disc_engaged = true;
+  // Mixed disc coming back from a released (non-DV) title: re-arm the session
+  // VSIF hold that the release dropped. Idempotent at disc open, where
+  // aml_dv_set_disc_session(true) has just armed it.
+  if (s_dv_disc_session)
+  {
+    CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
+    if (hold.Exists())
+      hold.Set('Y');
+  }
+  CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: DV output engaged "
             "({} led)", playerLed ? "player" : "TV");
 }
+
+void aml_dv_release_disc_engage()
+{
+  if (!s_dv_disc_engaged)
+    return;
+  s_dv_disc_engaged = false;
+  // The passive "DV signal will drop" this case used to rely on is exactly
+  // what the session VSIF hold prevents: without releasing, the sink stays in
+  // DV mode against a native HDR10/SDR decode and shows black (observed with
+  // the S&M UHD HDR Benchmark's HDR10 titles on an otherwise-DV disc).
+  CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
+  if (hold.Exists())
+    hold.Set('N');
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy",
+             AMDV_FOLLOW_SOURCE);
+  CSysfsPath("/sys/class/amdolby_vision/dv_mode",
+             (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
+  CLog::Log(LOGINFO, "aml_dv_release_disc_engage: DV output released to native "
+            "signalling (non-DV title / session end; re-engages on next DV segment)");
+}
+
+bool aml_dv_disc_engaged() { return s_dv_disc_engaged; }
 
 unsigned int aml_vs10_by_setting(const std::string& setting)
 {
