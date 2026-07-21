@@ -705,6 +705,10 @@ protected:
   double m_stateClock{0.0}; // GetCaughtUpClock() when m_State.time was set
   mutable CCriticalSection m_StateSection;
   XbmcThreads::EndTime<> m_syncTimer;
+  // bounded deferral of the stream start-sync while no stream has a start pts
+  // (post-flush demux gap on disc transitions) - see HandlePlaySpeed
+  bool m_syncStartDeferred = false;
+  XbmcThreads::EndTime<> m_syncStartDeferTimer;
 
   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
 
