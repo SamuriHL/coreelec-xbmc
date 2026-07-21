@@ -577,6 +577,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         m_pcmOutputClock = inputPts;
         m_pcmResyncTimestamp = false;
         m_pcmJitterTracker.Reset();
+        m_pcmStepRun = 0;
       }
       else if (IsValidPts(m_pcmOutputClock) && inputPtsValid)
       {
@@ -586,14 +587,39 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         double absMinJitter = m_pcmJitterTracker.AbsMinimum();
         double thresholdDvdTime = PCM_JITTER_THRESHOLD * DVD_TIME_BASE / 1000000.0;
 
+        // genuine mid-size pts step (a 100-900ms discontinuity: concatenated
+        // TS, HLS boundary, edit list): every recent sample far beyond the
+        // jitter threshold with ONE sign is a step, not jitter - resync now
+        // instead of chasing it through the 64-frame window and landing it
+        // on the sink as one large late jump (review finding)
+        const bool stepCandidate = std::abs(jitter) > 8.0 * thresholdDvdTime &&
+                                   std::abs(jitter) <= DVD_TIME_BASE;
+        if (stepCandidate && (m_pcmStepRun == 0 || (jitter > 0) == m_pcmStepPositive))
+        {
+          m_pcmStepPositive = jitter > 0;
+          ++m_pcmStepRun;
+        }
+        else
+          m_pcmStepRun = 0;
+
         if (std::abs(jitter) > DVD_TIME_BASE)
         {
           // large jump - resync instead of correcting
           m_pcmOutputClock = inputPts;
           m_pcmJitterTracker.Reset();
+          m_pcmStepRun = 0;
           CLog::Log(LOGDEBUG,
                     "CVideoPlayerAudio::ProcessDecoderOutput: LAV PCM resync, large jump ({:.2f}s)",
                     jitter / DVD_TIME_BASE);
+        }
+        else if (m_pcmStepRun >= 8)
+        {
+          m_pcmOutputClock = inputPts;
+          m_pcmJitterTracker.Reset();
+          m_pcmStepRun = 0;
+          CLog::Log(LOGDEBUG,
+                    "CVideoPlayerAudio::ProcessDecoderOutput: LAV PCM resync, sustained pts "
+                    "step ({:.1f}ms)", jitter / DVD_TIME_BASE * 1000.0);
         }
         else if (std::abs(absMinJitter) > thresholdDvdTime)
         {
@@ -651,6 +677,14 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
         m_audioSink.Resume();
+
+      // a sink rebuild reproduces the start-sync transient (skip/insert +
+      // swinging delay estimate) the settle window exists for - re-arm it,
+      // or a mid-stream format change takes an ErrorAdjust on garbage
+      // immediately (review finding)
+      m_disconSettleTimer.Set(6000ms);
+      CLog::Log(LOGDEBUG, LOGAUDIO,
+                "CVideoPlayerAudio::ProcessDecoderOutput - sink rebuilt, DISCON settle re-armed");
     }
 
     m_audioSink.SetDynamicRangeCompression(
@@ -685,15 +719,26 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     // m_disconAdjustTimeMs (~50ms) before any correction and only a seek/flush
     // re-anchors it.
     unsigned int adjustTimeMs = m_disconAdjustTimeMs;
+    bool vsyncQuantized = false;
     if (m_pClock->GetVsyncAdjust() != 0)
     {
       int missedvblanks;
       double clockspeed, refreshrate;
       if (m_pClock->GetClockInfo(missedvblanks, clockspeed, refreshrate))
+      {
         adjustTimeMs = std::min(adjustTimeMs, DISCON_VSYNC_ADJUST_TIME_MS);
+        vsyncQuantized = true;
+      }
     }
 
-    if (std::abs(syncerror) > DVD_MSEC_TO_TIME(adjustTimeMs))
+    // ErrorAdjust's vsync-quantized window is ASYMMETRIC (+20/-27ms,
+    // DVDClock::ErrorAdjust): a symmetric outer gate called it per-frame for
+    // errors in the (-27,-20]ms band where it always returns 0 (review
+    // finding) - mirror the asymmetry here
+    const double gateAhead = DVD_MSEC_TO_TIME(adjustTimeMs);
+    const double gateBehind =
+        vsyncQuantized ? std::max(gateAhead, DVD_MSEC_TO_TIME(27.0)) : gateAhead;
+    if (syncerror > gateAhead || syncerror < -gateBehind)
     {
       double correction = m_pClock->ErrorAdjust(syncerror, "CVideoPlayerAudio::OutputPacket");
       if (correction != 0)
