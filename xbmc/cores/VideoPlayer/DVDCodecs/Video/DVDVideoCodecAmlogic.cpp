@@ -42,49 +42,14 @@ extern "C"
 
 namespace
 {
-// Decode the display's Dolby Vision VSVDB (from sysfs) target max luminance, in
-// nits, for the Smart CMv4.0 bypass default. Supports VSVDB version 2 (the
-// common HDMI DV case); returns 0 if unavailable/unsupported so the caller
+// Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
+// bypass default. Delegates to AMLUtils' injection-aware parser (the local
+// duplicate read dv_cap directly, which reports the INJECTED block while a
+// max-lum override is live - review finding F15). 0 = unavailable, caller
 // keeps the manual override behaviour.
 int GetDisplayVsvdbMaxNits()
 {
-  // VSVDB v2 5-bit "Maximum Luminance (PQ)" index -> nits (Dolby table).
-  static const int lut_v2[32] = {
-      96,   113,  132,  155,  181,  211,  245,  285,  332,  385,  447,
-      518,  601,  696,  807,  934,  1082, 1252, 1450, 1678, 1943, 2250,
-      2607, 3020, 3501, 4060, 4710, 5467, 6351, 7382, 8588, 10000};
-
-  std::ifstream f("/sys/class/amhdmitx/amhdmitx0/dv_cap");
-  if (!f.is_open())
-    return 0;
-  const std::string cap((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  const std::string tag = "VSVDB: ";
-  const size_t p = cap.find(tag);
-  if (p == std::string::npos)
-    return 0;
-  const size_t start = p + tag.size();
-  const size_t end = cap.find_first_of(" \t\r\n", start);
-  const std::string hex = cap.substr(start, (end == std::string::npos ? cap.size() : end) - start);
-  std::vector<uint8_t> b;
-  for (size_t i = 0; i + 1 < hex.size(); i += 2)
-  {
-    try
-    {
-      b.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
-    }
-    catch (...)
-    {
-      return 0;
-    }
-  }
-  // DV payload starts at b[5] (after 0xEB, ext-tag 0x01, 3-byte IEEE OUI).
-  if (b.size() < 8)
-    return 0;
-  const int version = (b[5] >> 5) & 0x07;
-  if (version != 2)
-    return 0;
-  const int idx = (b[7] >> 3) & 0x1F; // Maximum Luminance (PQ) index
-  return lut_v2[idx];
+  return aml_display_vsvdb_max_nits();
 }
 } // namespace
 
@@ -117,7 +82,8 @@ void CAMLVideoBufferPool::Return(int id)
   std::unique_lock<CCriticalSection> lock(m_criticalSection);
   if (m_videoBuffers[id]->m_amlCodec)
   {
-    m_videoBuffers[id]->m_amlCodec->ReleaseFrame(m_videoBuffers[id]->m_bufferIndex, true);
+    m_videoBuffers[id]->m_amlCodec->ReleaseFrame(m_videoBuffers[id]->m_bufferIndex, true,
+                                                 m_videoBuffers[id]->m_sessionGen);
     m_videoBuffers[id]->m_amlCodec = nullptr;
   }
   m_freeBuffers.push_back(id);
@@ -166,6 +132,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   // close open decoder if necessary
   if (m_opened)
     Close();
+
+  // fresh stream: forget the previous stream's timeout/reopen history
+  m_timeoutFlushCount = 0;
+  m_reopenCount = 0;
+  m_lastTimeoutFlush = {};
 
   m_hints = hints;
   m_hints.pClock = hints.pClock;
@@ -988,19 +959,51 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
 
   // A starved decoder returns VC_FLUSHED once per decoder-timeout period and
   // the resulting flush-only Reset() may never recover it (see Reopen()).
-  // Escalate the second consecutive timeout to a full reopen.
-  if (retVal == VC_FLUSHED && ++m_timeoutFlushCount >= 2)
+  // Escalate the second consecutive timeout to a full reopen - but bounded:
+  // undecodable content (VC-1/MVC starve class) previously cycled full
+  // CloseDecoder/OpenDecoder forever, each cycle rewriting the vfm map,
+  // toggling DV enable and blocking the video thread on dv_video_on
+  // (review finding A6). After the cap the failure is surfaced as VC_ERROR.
+  if (retVal == VC_FLUSHED)
   {
-    CLog::Log(LOGWARNING,
-              "{}::{} - {} consecutive decoder timeout flushes, requesting full reopen",
-              __MODULE_NAME__, __FUNCTION__, m_timeoutFlushCount);
-    m_timeoutFlushCount = 0;
-    return VC_REOPEN;
+    const auto now = std::chrono::steady_clock::now();
+    // "consecutive" means within ~3 timeout periods: a stale count parked
+    // from before a seek/segment change must not make the first NEW timeout
+    // escalate straight to reopen (review finding F10). Derived from the
+    // configured decoder timeout - a fixed 15s window silently killed the
+    // escalation for decodertimeout >= ~8s (judge finding).
+    const auto staleWindow = std::chrono::seconds(
+        3 * std::max(1, CServiceBroker::GetSettingsComponent()
+                            ->GetAdvancedSettings()
+                            ->m_videoDecoderTimeout));
+    if (m_lastTimeoutFlush.time_since_epoch().count() != 0 &&
+        now - m_lastTimeoutFlush > staleWindow)
+      m_timeoutFlushCount = 0;
+    m_lastTimeoutFlush = now;
+
+    if (++m_timeoutFlushCount >= 2)
+    {
+      m_timeoutFlushCount = 0;
+      if (++m_reopenCount > 3)
+      {
+        if (m_reopenCount == 4)
+          CLog::Log(LOGERROR,
+                    "{}::{} - decoder still starved after {} full reopens - "
+                    "giving up on this stream (undecodable content?)",
+                    __MODULE_NAME__, __FUNCTION__, m_reopenCount - 1);
+        return VC_ERROR;
+      }
+      CLog::Log(LOGWARNING,
+                "{}::{} - consecutive decoder timeout flushes, requesting full reopen ({}/3)",
+                __MODULE_NAME__, __FUNCTION__, m_reopenCount);
+      return VC_REOPEN;
+    }
   }
 
   if (retVal == VC_PICTURE)
   {
     m_timeoutFlushCount = 0;
+    m_reopenCount = 0;
     if (pVideoPicture->videoBuffer)
       pVideoPicture->videoBuffer->Release();
     pVideoPicture->videoBuffer = nullptr;
@@ -1008,7 +1011,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
 
     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
-     m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex());;
+     m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex(),
+     m_Codec->GetSessionGeneration());
   }
 
   // check for mpeg2 aspect ratio changes
