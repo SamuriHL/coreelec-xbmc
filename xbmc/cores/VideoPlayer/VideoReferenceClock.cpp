@@ -72,6 +72,7 @@ void CVideoReferenceClock::Process()
 {
   bool SetupSuccess = false;
   int64_t Now;
+  int setupFailures = 0;
 
   while(!m_bStop)
   {
@@ -133,8 +134,33 @@ void CVideoReferenceClock::Process()
       m_pVideoSync.reset();
     }
 
+    // A failed Setup used to permanently exit this thread - unreachable when
+    // Setup could never fail, but the DRM vblank Setup CAN fail transiently
+    // (a measured-rate restart or display reset landing mid-HDMI-mode-set),
+    // and one transient failure then silently cost the vblank clock for the
+    // whole session (review finding A8). Retry with backoff; give up only
+    // after persistent failure.
     if (!SetupSuccess)
-      break;
+    {
+      if (++setupFailures > 10)
+      {
+        CLog::Log(LOGERROR,
+                  "CVideoReferenceClock: vblank clock setup failed {} times - "
+                  "staying on the system clock for this session",
+                  setupFailures);
+        break;
+      }
+      CLog::Log(LOGWARNING,
+                "CVideoReferenceClock: vblank clock setup failed ({}/10), retrying in 1s",
+                setupFailures);
+      if (m_vsyncStopEvent.Wait(std::chrono::milliseconds(1000)))
+      {
+        m_vsyncStopEvent.Reset();
+        break;
+      }
+    }
+    else
+      setupFailures = 0;
   }
 }
 
