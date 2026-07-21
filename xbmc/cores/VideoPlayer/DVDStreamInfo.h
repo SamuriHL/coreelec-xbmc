@@ -17,11 +17,29 @@ extern "C"
 }
 #include "DVDClock.h"
 
+#include <cstdint>
+#include <string>
+
 #define CODEC_FORCE_SOFTWARE 0x01
 #define CODEC_ALLOW_FALLBACK 0x02
 
 class CDemuxStream;
 struct DemuxCryptoSession;
+
+// Static HDR mastering-display / content-light-level metadata, accumulated from
+// HEVC SEI. Feeds the HDR10+ -> Dolby Vision profile 8.1 RPU synthesis
+// (see utils/HDR10PlusConvert.cpp).
+struct HDRStaticMetadataInfo
+{
+  bool has_mdcv_metadata = false;
+  uint32_t max_lum = 0;
+  uint32_t min_lum = 0;
+  std::string colour_primaries = "";
+
+  bool has_cll_metadata = false;
+  uint16_t max_cll = 0;
+  uint16_t max_fall = 0;
+};
 
 class CDVDStreamInfo
 {
