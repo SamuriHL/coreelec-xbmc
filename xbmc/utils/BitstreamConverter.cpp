@@ -2286,7 +2286,10 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
       const int threshold = m_smart_display_nits * (100 + m_smart_threshold_pct) / 100;
       const bool bypass = !level2IsEmpty && hasData && (contentNits > threshold);
       effectiveMode = bypass ? CMV40_NONE : CMV40_ALWAYS;
-      CLog::Log(LOGDEBUG,
+      // component-gated: this fires per FRAME (24-60 lines/s with plain debug
+      // logging - enough to distort on-box diagnosis); the state-change INFO
+      // lines below carry the decision history
+      CLog::Log(LOGDEBUG, LOGVIDEO,
                 "CBitstreamConverter::processDoviRpu - Smart CMv4.0 frame: content {}nits "
                 "display {}nits threshold {}nits ({}%) -> {}",
                 contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
