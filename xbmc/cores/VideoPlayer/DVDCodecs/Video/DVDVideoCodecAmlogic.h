@@ -17,6 +17,7 @@
 
 #include <set>
 #include <atomic>
+#include <chrono>
 
 class CAMLCodec;
 struct mpeg2_sequence;
@@ -32,13 +33,19 @@ class CAMLVideoBuffer : public CVideoBuffer
 {
 public:
   CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
-  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, uint64_t omxPts, int amlDuration, uint32_t bufferIndex)
+  void Set(CDVDVideoCodecAmlogic* codec,
+           std::shared_ptr<CAMLCodec> amlcodec,
+           uint64_t omxPts,
+           int amlDuration,
+           uint32_t bufferIndex,
+           uint32_t sessionGen)
   {
     m_codec = codec;
     m_amlCodec = amlcodec;
     m_omxPts = omxPts;
     m_amlDuration = amlDuration;
     m_bufferIndex = bufferIndex;
+    m_sessionGen = sessionGen;
   }
 
   CDVDVideoCodecAmlogic* m_codec;
@@ -46,6 +53,9 @@ public:
   uint64_t m_omxPts;
   int m_amlDuration;
   uint32_t m_bufferIndex;
+  // decode session the buffer belongs to (CAMLCodec::GetSessionGeneration);
+  // ReleaseFrame drops indices from closed sessions
+  uint32_t m_sessionGen{UINT32_MAX};
 };
 
 class CAMLVideoBufferPool : public IVideoBufferPool
@@ -82,6 +92,12 @@ public:
   virtual const char* GetName(void) override { return (const char*)m_pFormatName; }
   virtual bool SupportsExtention() { return true; }
   virtual int GetDataLevel() const override;
+  // Non-zero so VideoPlayerVideo buffers recent packets and REPLAYS them
+  // after VC_FLUSHED/VC_REOPEN. Without this (base returns 0) a reopened
+  // decoder stayed closed until the NEXT demuxer packet - on a still or a
+  // drain there is none, so recovery never happened (review finding A5).
+  // ~one GOP of packets; the player also time-caps the buffer at 10s.
+  unsigned GetConvergeCount() override { return m_opened ? 30 : 0; }
 
 protected:
   void            Close(void);
@@ -97,6 +113,9 @@ protected:
   bool            m_opened;
   int             m_codecControlFlags;
   int             m_timeoutFlushCount{0};
+  // reopen-escalation bound + staleness decay (review findings A6/F10)
+  int             m_reopenCount{0};
+  std::chrono::steady_clock::time_point m_lastTimeoutFlush{};
   CDVDStreamInfo  m_hints;
   double          m_framerate;
   int             m_video_rate;
