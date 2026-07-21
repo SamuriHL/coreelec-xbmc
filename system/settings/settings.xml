@@ -4159,6 +4159,35 @@
           </constraints>
           <control type="spinner" format="string" />
         </setting>
+        <!-- Convert HDR10+ dynamic metadata to a synthesized Dolby Vision profile 8.1 RPU in real time -->
+        <setting id="coreelec.amlogic.dolbyvision.hdr10plus.convert" type="boolean" label="60101" help="60102">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.amlogic.dolbyvision.hdr10plus.peak.brightness.source" type="integer" label="60103" help="60104" parent="coreelec.amlogic.dolbyvision.hdr10plus.convert">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>2</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.hdr10plus.convert" operator="is">true</dependency>
+          </dependencies>
+          <constraints>
+            <options>
+              <option label="60105">0</option>
+              <option label="60106">1</option>
+              <option label="60107">2</option>
+              <option label="60108">3</option>
+              <option label="60109">4</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.cmv40.append" type="integer" label="60320" help="60321">
           <requirement>HAVE_AMCODEC</requirement>
           <level>2</level>
