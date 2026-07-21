@@ -4917,10 +4917,23 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
                     menuDomain ? "menu-domain" : "non-DV title (conform)");
         }
         else
+        {
           CLog::Log(LOGDEBUG, "CVideoPlayer::OpenStream - DV disc session: "
-                    "non-DV selected title keeps native output (DV signal "
-                    "will drop; discsessionconformnondv=true holds it)");
+                    "non-DV selected title keeps native output "
+                    "(discsessionconformnondv=true maps it to DV instead)");
+          // Mixed disc: the session VSIF hold blocks the passive DV signal
+          // drop this branch used to rely on - actively release the engage
+          // so the title's native EOTF signals (else: black screen).
+          aml_dv_release_disc_engage();
+        }
       }
+      // Mixed disc coming back onto a DV-output segment (native DV title, or
+      // a segment VS10-mapped into the DV output) after a release: re-engage
+      // before the decoder opens so the sink locks DV ahead of first frame.
+      if (aml_dv_disc_session() && !aml_dv_disc_engaged() &&
+          (hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION ||
+           vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS))
+        aml_dv_pre_engage_disc_session();
       // Session mode-hold: while the segment about to open is menu-domain,
       // the resolution chooser keeps the incumbent display mode - no HDMI
       // re-clock for a menu's refresh rate (strict sinks re-train on every
