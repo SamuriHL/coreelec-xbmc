@@ -99,14 +99,44 @@ bool CVideoSyncAML::Setup()
     return false;
   }
 
+  // The CRTC can be mid-mode-set when a restart lands here (display reset /
+  // measured-rate restart racing an HDMI renegotiation) - retry briefly
+  // before declaring failure, because a failed Setup costs the vblank
+  // reference clock (review finding A8).
   uint64_t ns = 0;
-  int s = drmCrtcGetSequence(m_fd, m_crtcId, &m_sequence, &ns);
+  int s = -1;
+  for (int attempt = 0; attempt < 10 && !m_abort; attempt++)
+  {
+    s = drmCrtcGetSequence(m_fd, m_crtcId, &m_sequence, &ns);
+    if (s == 0)
+      break;
+    usleep(10000);
+  }
   if (s != 0)
   {
     CLog::Log(LOGWARNING,
-              "CVideoSyncAML: drmCrtcGetSequence failed ({}), falling back to system clock", s);
+              "CVideoSyncAML: drmCrtcGetSequence failed ({}) after retries, "
+              "falling back to system clock", s);
     m_fd = -1;
     return false;
+  }
+  // Two-sample anchor: the pair above describes the LAST vblank - 0..1 frame
+  // stale (up to ~42ms at 23.976). Anchoring the offset on it parks GetTime
+  // up to a frame in the future, and the 1ms/vblank slew then takes ~1-2s to
+  // walk it back - exactly inside the post-transition window the DISCON
+  // settle gates protect. Wait for the NEXT vblank and anchor fresh; bounded,
+  // keeps the stale anchor if the display stalls (review finding).
+  const uint64_t firstSeq = m_sequence;
+  for (int attempt = 0; attempt < 60 && !m_abort; attempt++)
+  {
+    uint64_t seq2 = 0, ns2 = 0;
+    if (drmCrtcGetSequence(m_fd, m_crtcId, &seq2, &ns2) == 0 && seq2 != firstSeq)
+    {
+      m_sequence = seq2;
+      ns = ns2;
+      break;
+    }
+    usleep(1000);
   }
   // ns is CLOCK_MONOTONIC; CurrentHostCounter() is CLOCK_MONOTONIC_RAW on
   // Linux — nearly the same domain, but NTP slew (tens of ppm) accumulates
