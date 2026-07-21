@@ -384,6 +384,8 @@ CBitstreamConverter::CBitstreamConverter()
   m_convert_dovi = false;
   m_removeDovi = false;
   m_removeHdr10Plus = false;
+  m_convert_Hdr10Plus = false;
+  m_hdrStaticMetadataInfo = {};
   m_combine = false;
 }
 
@@ -1312,6 +1314,32 @@ bool CBitstreamConverter::IsSlice(uint8_t unit_type)
   }
 }
 
+void CBitstreamConverter::ApplyMasteringDisplayColourVolume(const MasteringDisplayColourVolume& metadata)
+{
+  if (!m_hdrStaticMetadataInfo.has_mdcv_metadata ||
+      m_hdrStaticMetadataInfo.max_lum != metadata.maxLuminance ||
+      m_hdrStaticMetadataInfo.min_lum != metadata.minLuminance)
+  {
+    m_hdrStaticMetadataInfo.has_mdcv_metadata = true;
+    m_hdrStaticMetadataInfo.max_lum = metadata.maxLuminance;
+    m_hdrStaticMetadataInfo.min_lum = metadata.minLuminance;
+    CLog::Log(LOGINFO, "CBitstreamConverter::ApplyMasteringDisplayColourVolume max [{}] min [{}]",
+              m_hdrStaticMetadataInfo.max_lum, m_hdrStaticMetadataInfo.min_lum);
+  }
+}
+
+void CBitstreamConverter::ApplyContentLightLevel(const ContentLightLevel& metadata)
+{
+  if (!m_hdrStaticMetadataInfo.has_cll_metadata ||
+      m_hdrStaticMetadataInfo.max_cll != metadata.maxContentLightLevel ||
+      m_hdrStaticMetadataInfo.max_fall != metadata.maxFrameAverageLightLevel)
+  {
+    m_hdrStaticMetadataInfo.has_cll_metadata = true;
+    m_hdrStaticMetadataInfo.max_cll = metadata.maxContentLightLevel;
+    m_hdrStaticMetadataInfo.max_fall = metadata.maxFrameAverageLightLevel;
+  }
+}
+
 bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
                                            int iSize,
                                            uint8_t** poutbuf,
@@ -1334,6 +1362,11 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
 #endif
 
   std::vector<uint8_t> finalPrefixSeiNalu;
+
+  // HDR10+ -> Dolby Vision profile 8.1: dynamic metadata captured from this
+  // access unit's SEI, converted into a synthesized DV RPU emitted after the loop.
+  Hdr10PlusMetadata hdr10plus_meta = {};
+  bool have_hdr10plus_meta = false;
 
   switch (m_codec)
   {
@@ -1408,7 +1441,39 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
         if (!m_Hdr10PlusTested && !m_removeHdr10Plus && !m_IsHdr10Plus)
           m_IsHdr10Plus = CHevcSei::ContainsHdr10Plus(buf, nal_size);
 
-        if (m_removeHdr10Plus)
+        if (m_convert_Hdr10Plus && !m_removeHdr10Plus)
+        {
+          // HDR10+ -> DV 8.1: accumulate the source's static HDR metadata
+          // (mastering-display + content-light-level) that feeds the RPU, and
+          // capture the HDR10+ dynamic metadata. Strip the HDR10+ SEI so it can't
+          // coexist with the synthesized DV RPU emitted after the loop.
+          std::vector<uint8_t> clearBuf;
+          auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(buf, nal_size, clearBuf);
+
+          if (auto mdcv = CHevcSei::ExtractMasteringDisplayColourVolume(messages, clearBuf))
+            ApplyMasteringDisplayColourVolume(mdcv.value());
+          if (auto cll = CHevcSei::ExtractContentLightLevel(messages, clearBuf))
+            ApplyContentLightLevel(cll.value());
+
+          if (auto hdr10plus = CHevcSei::ExtractHdr10Plus(messages, clearBuf))
+          {
+            hdr10plus_meta = hdr10plus.value();
+            have_hdr10plus_meta = true;
+            m_IsHdr10Plus = true;
+
+            finalPrefixSeiNalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
+            if (!finalPrefixSeiNalu.empty())
+            {
+              buf_to_write = finalPrefixSeiNalu.data();
+              final_nal_size = finalPrefixSeiNalu.size();
+            }
+            else
+            {
+              write_buf = false;
+            }
+          }
+        }
+        else if (m_removeHdr10Plus)
         {
           finalPrefixSeiNalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
 
@@ -1464,6 +1529,20 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
     buf += nal_size;
     cumul_size += nal_size + m_sps_pps_context.length_size;
   } while (cumul_size < buf_size);
+
+  // HDR10+ -> Dolby Vision profile 8.1: once this access unit's SEI has been
+  // scanned and the HDR10+ SEI stripped above, emit the synthesized DV RPU NALU
+  // built from the captured HDR10+ dynamic metadata + accumulated static HDR
+  // metadata. The RPU is appended last so it trails the slice data in the AU.
+  if (m_convert_Hdr10Plus && have_hdr10plus_meta)
+  {
+    auto rpu = create_rpu_nalu_for_hdr10plus(hdr10plus_meta,
+                                             m_convert_Hdr10Plus_peak_brightness_source,
+                                             m_hdrStaticMetadataInfo);
+    if (!rpu.empty())
+      BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, rpu.data(), rpu.size(),
+                            HEVC_NAL_UNSPEC62);
+  }
 
   m_Hdr10PlusTested = true;
 
