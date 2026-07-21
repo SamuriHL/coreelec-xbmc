@@ -492,38 +492,70 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   if (m_bitstream)
   {
     const CHDRCapabilities caps = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
-    if (!caps.SupportsHDR10Plus())
+    const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+    // HDR10+ -> Dolby Vision profile 8.1 conversion. When enabled on a DV display,
+    // CBitstreamConverter synthesizes a DV 8.1 RPU from the stream's HDR10+ dynamic
+    // metadata. HDR10+ can't be confirmed until the bitstream is parsed, so ARM the
+    // converter here for any HDR10-family source (files present as plain hdr10 at
+    // open; discs may already be STN-promoted to hdr10plus) and DEFER the DV-8.1
+    // hint synthesis / core engage to AddData, once GetIsHdrPlus() is known -- if no
+    // HDR10+ is actually found the stream just opens as HDR10 (no false DV).
+    m_hdr10plusToDvCandidate = false;
+    if (aml_support_dolby_vision() && aml_display_support_dv() &&
+        m_hints.dovi.dv_profile == 0 &&
+        (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+         m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
+        dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT))
     {
-      m_bitstream->SetRemoveHdr10Plus(true);
-      // the flag waits until the converter proves the stream carries HDR10+
-      m_stripHdr10Plus = true;
-    }
-    // Strip the DoVi RPU only when the DV core will NOT process this stream.
-    // When VS10 engages the core on a non-DV display (aml_dv_core_active()), the
-    // RPU must survive so the core can reconstruct FEL and tone-map to HDR10/SDR.
-    if (caps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
-        m_hints.dovi.dv_profile != 5 && !aml_dv_core_active())
-    {
-      m_bitstream->SetRemoveDovi(true);
-      if (m_hints.dovi.dv_profile > 0)
-        m_streamMeta.flags.push_back("rpu-removed");
+      m_hdr10plusToDvCandidate = true;
+      m_bitstream->SetConvertHdr10Plus(true);
+      m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(
+          static_cast<PeakBrightnessSource>(
+              dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE)));
+      m_bitstream->SetRemoveHdr10Plus(false);
+      m_bitstream->SetRemoveDovi(false);
+      CLog::Log(LOGINFO, "{}: HDR10+ -> Dolby Vision profile 8.1 conversion armed "
+                         "(peak brightness source {}) - confirming HDR10+ from bitstream",
+                __MODULE_NAME__,
+                dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE));
     }
 
-    // Non-DV source routed through the VS10 engine (dv_profile == 0): strip
-    // HDR10+ dynamic metadata (VS10 consumes only static HDR10) and any stray
-    // DoVi RPU so they can't conflict with the forced VS10 conversion. Native DV
-    // streams (dv_profile != 0) are untouched.
-    if (m_hints.dovi.dv_profile == 0 &&
-        aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    if (!m_hdr10plusToDvCandidate)
     {
-      // Note: this discards HDR10+ dynamic metadata. It only fires when a VS10
-      // per-source mode is set to non-bypass; the shipped defaults are bypass so
-      // HDR10+ passes through untouched unless the user opts in.
-      CLog::Log(LOGINFO, "{}: VS10 engaged (pending mode {}) on non-DV source - "
-                         "stripping HDR10+/DoVi dynamic metadata", __MODULE_NAME__,
-                aml_dv_get_vs10_pending());
-      m_bitstream->SetRemoveHdr10Plus(true);
-      m_bitstream->SetRemoveDovi(true);
+      if (!caps.SupportsHDR10Plus())
+      {
+        m_bitstream->SetRemoveHdr10Plus(true);
+        // the flag waits until the converter proves the stream carries HDR10+
+        m_stripHdr10Plus = true;
+      }
+      // Strip the DoVi RPU only when the DV core will NOT process this stream.
+      // When VS10 engages the core on a non-DV display (aml_dv_core_active()), the
+      // RPU must survive so the core can reconstruct FEL and tone-map to HDR10/SDR.
+      if (caps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
+          m_hints.dovi.dv_profile != 5 && !aml_dv_core_active())
+      {
+        m_bitstream->SetRemoveDovi(true);
+        if (m_hints.dovi.dv_profile > 0)
+          m_streamMeta.flags.push_back("rpu-removed");
+      }
+
+      // Non-DV source routed through the VS10 engine (dv_profile == 0): strip
+      // HDR10+ dynamic metadata (VS10 consumes only static HDR10) and any stray
+      // DoVi RPU so they can't conflict with the forced VS10 conversion. Native DV
+      // streams (dv_profile != 0) are untouched.
+      if (m_hints.dovi.dv_profile == 0 &&
+          aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      {
+        // Note: this discards HDR10+ dynamic metadata. It only fires when a VS10
+        // per-source mode is set to non-bypass; the shipped defaults are bypass so
+        // HDR10+ passes through untouched unless the user opts in.
+        CLog::Log(LOGINFO, "{}: VS10 engaged (pending mode {}) on non-DV source - "
+                           "stripping HDR10+/DoVi dynamic metadata", __MODULE_NAME__,
+                  aml_dv_get_vs10_pending());
+        m_bitstream->SetRemoveHdr10Plus(true);
+        m_bitstream->SetRemoveDovi(true);
+      }
     }
   }
 
@@ -777,6 +809,35 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
+
+      // HDR10+ -> DV 8.1: the bitstream has now been parsed, so HDR10+ presence is
+      // known. If confirmed, present the stream to the DV core as profile 8.1
+      // (BL-compatible) so it consumes the RPU the converter injects; if not (plain
+      // HDR10), disable the converter and open as HDR10 - a safe fallback with no
+      // false DV declaration.
+      if (m_hdr10plusToDvCandidate)
+      {
+        if (IsHdr10Plus)
+        {
+          m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+          m_videobuffer.hdrType = m_hints.hdrType;
+          m_hints.dovi.dv_version_major = 1;
+          m_hints.dovi.dv_version_minor = 0;
+          m_hints.dovi.dv_profile = 8;
+          m_hints.dovi.dv_level = 6;
+          m_hints.dovi.rpu_present_flag = 1;
+          m_hints.dovi.el_present_flag = 0;
+          m_hints.dovi.bl_present_flag = 1;
+          m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+          CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ -> Dolby Vision profile 8.1 conversion engaged", __FUNCTION__);
+        }
+        else
+        {
+          m_bitstream->SetConvertHdr10Plus(false);
+          CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata found - opening as HDR10", __FUNCTION__);
+        }
+        m_hdr10plusToDvCandidate = false;
+      }
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
       if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL, packet.isDualStream))
