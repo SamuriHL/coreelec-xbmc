@@ -2375,43 +2375,53 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
 {
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   // Report REAL UHD capability registers instead of libbluray's 0xffffffff
-  // placeholder. Decoded from the S&M UHD Benchmark's unencrypted
-  // MovieObject.bdmv (re/sm_uhd/, object 0) with libbluray's HDMV BC subset
-  // semantics (execute-next iff PSR & ~mask == 0):
-  //   BC PSR25,0x02 -> GPR35=1     BC PSR26,0x04 -> GPR37=1   sum==2 -> DV
-  //   BC PSR25,0x20 -> GPR36=1     BC PSR26,0x10 -> GPR38=1   sum==2 -> HDR10+
-  //   BC PSR25,0x04 -> GPR53=1     BC PSR26,0x08 -> GPR52=1   (third format)
-  //   neither pair complete -> HDR10 baseline path
-  // The subset test means these registers carry the player's CURRENTLY
-  // SELECTED output format EXCLUSIVELY - one format bit, no others, or every
-  // branch fails (which is exactly what libbluray's all-ones placeholder does,
-  // and why the demo menu claimed "display does not support Dolby Vision").
-  // A UB820 outputting DV reports the 0x02/0x04 pair and the disc offers DV.
+  // placeholder. PSR25/26 are genuine CAPABILITY SETS - every format the
+  // player/display pair can do, OR'd together - like PSR15. Bit layout,
+  // decoded from the S&M UHD Benchmark's unencrypted MovieObject.bdmv
+  // (re/sm_uhd/, object 0), which enumerates the bits one at a time and
+  // sums per-format player+display flags:
+  //   BC PSR25,0x01 (HDR10)   BC PSR26,0x02 (HDR10)
+  //   BC PSR25,0x02 (DV)      BC PSR26,0x04 (DV)
+  //   BC PSR25,0x04 (HLG)     BC PSR26,0x08 (HLG)
+  //   BC PSR25,0x20 (HDR10+)  BC PSR26,0x10 (HDR10+)
+  // That per-bit enumeration is only meaningful under the spec's plain-AND
+  // BC ("is this bit set") - Hendrik's reading, confirmed: libbluray's BC
+  // was an inverted subset test (execute-next iff PSR & ~mask == 0), fixed
+  // by CoreELEC libbluray patch all-003. An earlier revision of this code
+  // carried the SELECTED format exclusively to satisfy the broken subset
+  // test; that under-reported capabilities to BD-J discs (RegisterAccess
+  // does real Java '&' tests) and is retired with the VM fix.
+  // PSR27 stays a single value: it is the HDR *preference*, not a set.
   {
-    uint32_t uhdCap, uhdDisplayCap, hdrPreference;
-    // aml_dolby_vision_enabled() = SoC support && display support && user
-    // toggle, so it is the whole chain.
+    // player output capability: what this box can put on the wire with the
+    // connected display (HDR10 is the UHD baseline and always offered; the
+    // passthrough formats depend on the sink accepting them)
+    uint32_t uhdCap = 0x01;
+    uint32_t uhdDisplayCap = 0x02;  // reaching an HDR10-capable path is baseline
     if (aml_dolby_vision_enabled())
-    {
-      uhdCap = 0x02;         // player outputs Dolby Vision
-      uhdDisplayCap = 0x04;  // display accepts Dolby Vision
+      uhdCap |= 0x02;
+    if (aml_display_support_hdr_hlg())
+      uhdCap |= 0x04;
+    if (aml_display_support_hdr10plus())
+      uhdCap |= 0x20;
+    // display capability, straight from the EDID caps
+    if (aml_display_support_dv())
+      uhdDisplayCap |= 0x04;
+    if (aml_display_support_hdr_hlg())
+      uhdDisplayCap |= 0x08;
+    if (aml_display_support_hdr10plus())
+      uhdDisplayCap |= 0x10;
+    // preference: the format the session would actually pick
+    uint32_t hdrPreference;
+    if (aml_dolby_vision_enabled())
       hdrPreference = 0x02;
-    }
     else if (aml_display_support_hdr10plus())
-    {
-      uhdCap = 0x20;         // player outputs HDR10+
-      uhdDisplayCap = 0x10;  // display accepts HDR10+
       hdrPreference = 0x20;
-    }
     else
-    {
-      uhdCap = 0x01;         // HDR10 baseline
-      uhdDisplayCap = 0x02;
       hdrPreference = 0x01;
-    }
 
     CLog::Log(LOGINFO,
-              "CDVDInputStreamBluray: UHD output-format PSRs: "
+              "CDVDInputStreamBluray: UHD capability PSRs (sets): "
               "UHD_CAP 0x{:02x} UHD_DISPLAY_CAP 0x{:02x} HDR_PREFERENCE 0x{:02x}",
               uhdCap, uhdDisplayCap, hdrPreference);
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, uhdCap);
