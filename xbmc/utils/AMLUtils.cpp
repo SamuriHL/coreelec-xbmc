@@ -345,6 +345,16 @@ AMLHdmiAudioCaps aml_get_hdmi_audio_caps()
   if (!capRead.has_value())
     return caps;
   const std::string& cap = *capRead;
+  // an EXISTING but empty/whitespace node is the same renegotiation race as
+  // a failed read: treating it as valid collapsed PSR15 to LPCM-only for the
+  // whole disc session (review finding F8) - fail open instead
+  if (cap.find_first_not_of(" \t\r\n") == std::string::npos)
+  {
+    CLog::Log(LOGWARNING,
+              "aml_get_hdmi_audio_caps: aud_cap present but empty (HDMI renegotiation?) - "
+              "treating as unavailable");
+    return caps;
+  }
   caps.valid = true;
 
   // Max channels the sink advertises on one SAD line. 0 = no line,
@@ -418,6 +428,7 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 static bool s_dv_disc_session = false;
 void aml_dv_set_disc_session(bool active)
 {
+  const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
   // Kernel-side VSIF hold (amdv patch 0002): while the session is active,
   // every segment outputs DV (menus VS10-mapped, features native), so the
@@ -428,8 +439,39 @@ void aml_dv_set_disc_session(bool active)
   CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
   if (hold.Exists())
     hold.Set(active ? 'Y' : 'N');
+  else if (active)
+    // fork build on a stock/unpatched kernel: without the hold the DV output
+    // silently reverts to per-segment VSIF drops (a multi-second sink
+    // re-lock per menu<->title transition) - say so ONCE so field logs
+    // explain the behavior instead of looking like a regression
+    CLog::Log(LOGWARNING,
+              "aml_dv_set_disc_session: kernel lacks dolby_vision_vsif_hold - "
+              "per-segment DV signal drops will occur (kernel patch 0002 missing)");
+  // A live VSVDB max-lum injection is held across in-session decoder closes
+  // (CAMLCodec::CloseDecoder skips the clear while the session is active);
+  // releasing the session performs the deferred clear so the desktop/other
+  // apps see the panel's real EDID again.
+  if (wasActive && !active)
+    aml_dv_clear_vsvdb();
 }
 bool aml_dv_disc_session() { return s_dv_disc_session; }
+
+// Session mode-hold (review §B / Sony report): while the CURRENT segment is
+// menu-domain video inside a disc session, the resolution chooser keeps the
+// incumbent display mode instead of re-clocking HDMI for the menu's refresh
+// rate (a 59.94 menu on a 23.976 feature disc otherwise re-trains the sink
+// at every menu<->title jump; menus tolerate cadence, a re-lock is worse).
+// Set per-segment by CVideoPlayer::OpenStream, consumed by
+// CRenderManager's resolution selection. atomic: written on the player
+// thread, read wherever resolution is chosen.
+static std::atomic<bool> s_disc_mode_hold{false};
+void aml_set_disc_mode_hold(bool hold)
+{
+  if (s_disc_mode_hold.exchange(hold) != hold)
+    CLog::Log(LOGDEBUG, "aml_set_disc_mode_hold: display mode hold {}",
+              hold ? "ENGAGED (menu-domain segment)" : "released");
+}
+bool aml_disc_mode_hold() { return s_disc_mode_hold.load(); }
 
 void aml_dv_pre_engage_disc_session()
 {
@@ -796,6 +838,19 @@ void aml_dv_apply_vsvdb()
   aml_hdmitx_reload_edid();
   CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
             __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
+}
+
+int aml_display_vsvdb_max_nits()
+{
+  // single source of truth for the VSVDB parse + v2 luminance LUT (the codec
+  // layer used to duplicate both AND read dv_cap directly, which reports the
+  // INJECTED block while a max-lum override is live - review finding F15)
+  int b[16];
+  const size_t n = aml_get_display_vsvdb(b, 16);
+  if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
+    return 0;
+  const int idx = (b[7] >> 3) & 0x1F;
+  return vsvdb_v2_max_lum_lut[idx];
 }
 
 // --- Dolby Vision L5 active-area detection ----------------------------------
