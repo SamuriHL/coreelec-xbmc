@@ -3208,7 +3208,7 @@
           </dependency>
         </dependencies>
         <level>2</level>
-        <default>40</default>
+        <default>37</default>
         <control type="slider" format="percentage" range="0,100" />
       </setting>
       </group>
