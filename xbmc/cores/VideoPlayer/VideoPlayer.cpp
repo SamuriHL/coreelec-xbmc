@@ -921,6 +921,7 @@ void CVideoPlayer::OnStartup()
 
 bool CVideoPlayer::OpenInputStream()
 {
+  m_pInputBluray.reset();
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
@@ -940,6 +941,25 @@ bool CVideoPlayer::OpenInputStream()
     CLog::Log(LOGERROR, "CVideoPlayer::OpenInputStream - error opening [{}]",
               CURL::GetRedacted(m_item.GetPath()));
     return false;
+  }
+
+#if defined(HAVE_LIBBLURAY)
+  m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+#endif
+
+  // The dual-dimension queue bound (16s time floor) exists for the disc
+  // VM-runahead class; applying it to non-disc playback capped low-bitrate
+  // network streams that upstream let buffer minutes deep (review §C).
+  // Non-disc restores the upstream data-bound-only behavior; disc keeps
+  // the time bound.
+  {
+    const bool discInput = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
+                           m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD);
+    const double timeCap = discInput ? m_messageQueueTimeSize : 3600.0;
+    m_VideoPlayerAudio->SetMaxTimeSize(timeCap);
+    m_VideoPlayerVideo->SetMaxTimeSize(timeCap);
+    CLog::Log(LOGDEBUG, "CVideoPlayer::OpenInputStream - queue time cap {:.0f}s ({} input)",
+              timeCap, discInput ? "disc" : "non-disc");
   }
 
   // find any available external subtitles for non dvd files
@@ -1433,8 +1453,7 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
     return;
 
 #if defined(HAVE_LIBBLURAY)
-  std::shared_ptr<CDVDInputStreamBluray> bluray =
-      std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+  const std::shared_ptr<CDVDInputStreamBluray>& bluray = m_pInputBluray;
   if (!bluray)
 #endif
   {
@@ -1449,11 +1468,14 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
     const SDiscTimelineEvent& ev = m_discTimelineEvents.front();
     if (!flushAll && ev.stampPts != DVD_NOPTS_VALUE && clock < ev.stampPts)
     {
-      // A stamp further ahead than the maximum queue depth cannot be a
-      // real future position - the clock was corrected backwards across a
-      // wrap/discontinuity after the stamp was taken. Apply rather than
-      // stall the queue on a timeline that no longer exists.
-      if (ev.stampPts - clock < DVD_SEC_TO_TIME(20.0))
+      // A stamp further ahead than the maximum queue depth (plus margin)
+      // cannot be a real future position - the clock was corrected
+      // backwards across a wrap/discontinuity after the stamp was taken.
+      // Apply rather than stall the queue on a timeline that no longer
+      // exists. Derived from the configured queue depth, not a constant:
+      // raising queuetimesize via advancedsettings must not silently turn
+      // legitimate deferred events into "stale" early-applies (review).
+      if (ev.stampPts - clock < DVD_SEC_TO_TIME(m_messageQueueTimeSize + 4.0))
         break;
     }
     const std::string stamp =
@@ -1489,20 +1511,14 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
 // at any time and happens from the process loop as soon as menu domain ends.
 void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
 {
-  const double clamp = static_cast<double>(CServiceBroker::GetSettingsComponent()
-                                               ->GetAdvancedSettings()
-                                               ->m_videoMenuDomainQueueTimeSize);
+  const double clamp = m_menuDomainClampSeconds;
   if (clamp <= 0.0 || clamp >= m_messageQueueTimeSize)
     return;
 
   bool menuDomain = false;
 #if defined(HAVE_LIBBLURAY)
-  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
-  {
-    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
-            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
-      menuDomain = bluray->IsMenuDomainVideo();
-  }
+  if (m_pInputBluray)
+    menuDomain = m_pInputBluray->IsMenuDomainVideo();
 #endif
 
   if (menuDomain == m_menuDomainLowLatency)
@@ -1549,8 +1565,9 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
   {
     if (bluray->ShouldDiscardStreamQueue())
     {
-      // user left the disc menu for a title: the queued remainder of the menu
-      // loop must be dropped, not rendered out. HDMV discs keep the stream
+      // the transition crosses the menu boundary (menu->title OR
+      // title->menu): the queued remainder of the abandoned segment must be
+      // dropped, not rendered out. HDMV discs keep the stream
       // players and their decoders alive across the jump - the title often
       // has the same video format as the menu (e.g. both 4K DV) and
       // reattaching the running decoder (m_bdStreamReuse*, consulted in
@@ -1633,9 +1650,10 @@ void CVideoPlayer::BdSegmentTransition()
 
   if (transition == EBdTransition::DISCARD_KEEPALIVE)
   {
-    // drop the queued menu remainder; flush (don't close) the stream players
-    // so the running decoders survive for reattach
-    CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding menu stream remainder");
+    // drop the queued abandoned remainder (menu loop on menu->title, movie
+    // tail on title->menu); flush (don't close) the stream players so the
+    // running decoders survive for reattach
+    CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding abandoned stream remainder");
     FlushBuffers(DVD_NOPTS_VALUE, false, true);
     return;
   }
@@ -1748,16 +1766,43 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
         const int dictated = bluray->GetDictatedAudioPid();
         if (stream->dvdNavId == dictated)
           return true;
-        // resolution unavailable mid-transition and no audio is open:
-        // prefer the announced stream over staying silent (BD default is
-        // stream 1 = the first announced anyway)
+        // the disc explicitly deselected primary audio (0xff): authored
+        // silence - a fallback open would turn it into sound
+        if (bluray->IsAudioDictatedNone())
+          return false;
         if (dictated < 0 && current.id < 0)
+        {
+          // resolution unavailable mid-transition and no audio is open:
+          // prefer the demuxer's FIRST announced audio stream (PSR default
+          // is stream 1), not whichever pid's packet wins the arrival race
+          // (a commentary pid arriving first would play until the
+          // corrective reopen)
+          for (CDemuxStream* st : m_pDemuxer->GetStreams())
+          {
+            if (st->type == StreamType::AUDIO)
+              return st->uniqueId == stream->uniqueId &&
+                     st->demuxerId == stream->demuxerId;
+          }
+          return true;
+        }
+        // orphan rescue, symmetric with video below: dictation transiently
+        // unresolvable while the current audio belongs to a closed demuxer
+        // (DISCARD_KEEPALIVE) - its packets can never arrive again; accept
+        // the new demuxer's stream instead of waiting out the stall-close
+        if (dictated < 0 && current.id >= 0 &&
+            stream->demuxerId != current.demuxerId)
           return true;
         return false;
       }
       if (current.type == StreamType::SUBTITLE)
-        return stream->dvdNavId == bluray->GetDictatedPgPid() ||
-               stream->dvdNavId == m_dvd.iSelectedSPUStream;
+        // live dictation ONLY: the stale event-cached pid
+        // (m_dvd.iSelectedSPUStream) was the audio-reopen bug's twin
+        // (review A2) - after a menu->title jump it points at the OLD
+        // clip's pid, which in the new clip can be a different language
+        // track, causing wrong-language subs / open ping-pong. User
+        // selection goes through SelectSubtitleStream (bd_select_stream),
+        // which updates the dictation itself.
+        return stream->dvdNavId == bluray->GetDictatedPgPid();
     }
     else
 #endif
@@ -1834,6 +1879,9 @@ void CVideoPlayer::Prepare()
   m_CurrentAudio.lastdts = DVD_NOPTS_VALUE;
   m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
   m_discTimelineEvents.clear();
+  m_menuDomainClampSeconds = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoMenuDomainQueueTimeSize);
+  aml_set_disc_mode_hold(false);
 
   IPlayerCallback *cb = &m_callback;
   CFileItem fileItem = m_item;
@@ -3030,9 +3078,15 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     double that_dts =
         current.type == StreamType::AUDIO ? m_CurrentVideo.lastdts : m_CurrentAudio.lastdts;
 
-    const bool bdMenu = m_pInputStream &&
-                        m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
-                        IsInMenuInternal();
+    // DEMUX truth, not the presented IsInMenu(): this correction operates on
+    // packets at demux time - a wrap occurring inside the presented-state
+    // deferral window (BD-J popup path) would silently miss the video-gap
+    // preference with the presented gate (review finding A13)
+    bool bdMenu = false;
+#if defined(HAVE_LIBBLURAY)
+    if (m_pInputBluray)
+      bdMenu = m_pInputBluray->IsInMenuDemux();
+#endif
 
     if (m_CurrentAudio.id == -1 || m_CurrentVideo.id == -1 ||
        current.lastdts == DVD_NOPTS_VALUE ||
@@ -3376,6 +3430,8 @@ void CVideoPlayer::OnExit()
   m_pSubtitleDemuxer.reset();
   m_subtitleDemuxerMap.clear();
   m_pCCDemuxer.reset();
+  m_pInputBluray.reset();
+  aml_set_disc_mode_hold(false);
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
@@ -3448,6 +3504,7 @@ void CVideoPlayer::HandleMessages()
       m_pSubtitleDemuxer.reset();
       m_subtitleDemuxerMap.clear();
       m_pCCDemuxer.reset();
+      m_pInputBluray.reset();
       if (m_pInputStream.use_count() > 1)
         throw std::runtime_error("m_pInputStream reference count is greater than 1");
       m_pInputStream.reset();
@@ -3645,17 +3702,37 @@ void CVideoPlayer::HandleMessages()
         }
         else
         {
-          CloseStream(m_CurrentAudio, false);
-          OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
-          AdaptForcedSubtitles();
+          bool open = true;
+#if defined(HAVE_LIBBLURAY)
+          // BD navmode: route the choice through the HDMV VM (PSR1 via
+          // bd_select_stream) so the per-packet live dictation agrees with
+          // the user instead of reverting the choice on the next packet
+          // (review finding A11). A UO-masked change keeps the dictated
+          // stream (the input stream already toasted the refusal).
+          if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                  std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+              bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
+              STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+          {
+            CDemuxStream* ds =
+                m_pDemuxer ? m_pDemuxer->GetStream(st.demuxerId, st.id) : nullptr;
+            open = ds && bluray->SelectAudioStream(ds->dvdNavId);
+          }
+#endif
+          if (open)
+          {
+            CloseStream(m_CurrentAudio, false);
+            OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
+            AdaptForcedSubtitles();
 
-          CDVDMsgPlayerSeek::CMode mode;
-          mode.time = (int)GetUpdatedTime();
-          mode.backward = true;
-          mode.accurate = true;
-          mode.trickplay = true;
-          mode.sync = true;
-          m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            CDVDMsgPlayerSeek::CMode mode;
+            mode.time = (int)GetUpdatedTime();
+            mode.backward = true;
+            mode.accurate = true;
+            mode.trickplay = true;
+            mode.sync = true;
+            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+          }
         }
       }
     }
@@ -3714,22 +3791,41 @@ void CVideoPlayer::HandleMessages()
         }
         else
         {
-          CloseStream(m_CurrentSubtitle, false);
-          OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
-
-          // For embedded subtitles the demuxer is ahead of playback (AV buffers
-          // are full), so the subtitle packets for the current playback time have
-          // already been read and discarded. Seek back to the current time so they
-          // get re-read, mirroring what audio stream switching does.
-          if (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+          bool open = true;
+#if defined(HAVE_LIBBLURAY)
+          // BD navmode: route through the VM (PSR2) - see the audio handler.
+          // DEMUX-source streams only: external subtitles (.srt over a disc)
+          // are not in the VM's stream table and must open normally (judge
+          // finding - the unconditional gate locked external subs out).
+          if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                  std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+              bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
+              STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
           {
-            CDVDMsgPlayerSeek::CMode mode;
-            mode.time = static_cast<double>(GetUpdatedTime());
-            mode.backward = true;
-            mode.accurate = true;
-            mode.trickplay = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            CDemuxStream* ds =
+                m_pDemuxer ? m_pDemuxer->GetStream(st.demuxerId, st.id) : nullptr;
+            open = ds && bluray->SelectSubtitleStream(ds->dvdNavId, true);
+          }
+#endif
+          if (open)
+          {
+            CloseStream(m_CurrentSubtitle, false);
+            OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
+
+            // For embedded subtitles the demuxer is ahead of playback (AV buffers
+            // are full), so the subtitle packets for the current playback time have
+            // already been read and discarded. Seek back to the current time so they
+            // get re-read, mirroring what audio stream switching does.
+            if (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+            {
+              CDVDMsgPlayerSeek::CMode mode;
+              mode.time = static_cast<double>(GetUpdatedTime());
+              mode.backward = true;
+              mode.accurate = true;
+              mode.trickplay = true;
+              mode.sync = true;
+              m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            }
           }
         }
       }
@@ -3751,6 +3847,22 @@ void CVideoPlayer::HandleMessages()
       // SetEnableStream only if not visible, when visible OpenStream already implied that stream is enabled
       if (!isVisible)
         SetEnableStream(m_CurrentSubtitle, false);
+
+#if defined(HAVE_LIBBLURAY)
+      // BD navmode: mirror the visibility into PSR2's enable bit so the VM
+      // and the dictation agree with what the user sees (demux-source
+      // streams only - external subs are not in the VM's stream table)
+      if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+              std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+          bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
+          m_CurrentSubtitle.id >= 0 && m_pDemuxer &&
+          STREAM_SOURCE_MASK(m_CurrentSubtitle.source) == STREAM_SOURCE_DEMUX)
+      {
+        if (CDemuxStream* ds =
+                m_pDemuxer->GetStream(m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id))
+          bluray->SelectSubtitleStream(ds->dvdNavId, isVisible);
+      }
+#endif
 
       SetSubtitleVisibleInternal(isVisible);
 
@@ -4591,19 +4703,42 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       // Disc-session DV latch: menu-domain segments of a DV disc that carry no
       // DV stream of their own (FirstPlay bumper, menu loops) are VS10-mapped
       // into the latched DV output instead of dropping the HDMI DV signalling
-      // (a ~2s TV resync per drop). Selected titles keep their native format.
+      // (a ~2s TV resync per drop). Selected titles keep their native format
+      // by default; <video><discsessionconformnondv> extends the mapping to
+      // NON-menu non-DV titles (extras/featurettes) too - without it such a
+      // title trips the DV<->non-DV forced mode switch mid-session, the
+      // review's Sony-hostile corner. Default OFF: format-demo discs (S&M)
+      // rely on selected titles keeping native HDR10/HLG output.
       if (vs10Mode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
           hint.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-          aml_dv_disc_session())
+          aml_dv_disc_session() && m_pInputBluray)
       {
-        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
-                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
-            bluray && bluray->IsMenuDomainVideo())
+        const bool menuDomain = m_pInputBluray->IsMenuDomainVideo();
+        const bool conformAll = CServiceBroker::GetSettingsComponent()
+                                    ->GetAdvancedSettings()
+                                    ->m_videoDiscSessionConformNonDV;
+        if (menuDomain || conformAll)
         {
           vs10Mode = DOLBY_VISION_OUTPUT_MODE_IPT;
           CLog::Log(LOGDEBUG, "CVideoPlayer::OpenStream - DV disc session: "
-                    "menu-domain segment VS10-mapped to DV output");
+                    "{} segment VS10-mapped to DV output",
+                    menuDomain ? "menu-domain" : "non-DV title (conform)");
         }
+        else
+          CLog::Log(LOGDEBUG, "CVideoPlayer::OpenStream - DV disc session: "
+                    "non-DV selected title keeps native output (DV signal "
+                    "will drop; discsessionconformnondv=true holds it)");
+      }
+      // Session mode-hold: while the segment about to open is menu-domain,
+      // the resolution chooser keeps the incumbent display mode - no HDMI
+      // re-clock for a menu's refresh rate (strict sinks re-train on every
+      // re-clock; the feature still takes its one correct switch).
+      {
+        bool hold = false;
+        if (m_pInputBluray &&
+            CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDiscSessionModeHold)
+          hold = m_pInputBluray->IsMenuDomainVideo();
+        aml_set_disc_mode_hold(hold);
       }
 #endif
       aml_dv_set_vs10_pending(vs10Mode);
@@ -6143,7 +6278,15 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       }
       else if (IsInMenuInternal())
       {
-        state.time = pDisplayTime->GetTime();
+        // BD: state.time already carries the dispTime-offset-corrected
+        // (presentation-proximate) value from the branch above; overwriting
+        // it with the demux-side bd_tell position made the menu OSD clock
+        // run up to a queue depth ahead of the picture (review A13). Keep
+        // the raw input-stream time only as fallback (DVD path, or no
+        // usable dts/duration).
+        if (!(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) && pDisplayTime &&
+              pDisplayTime->GetTotalTime() > 0 && state.dts != DVD_NOPTS_VALUE))
+          state.time = pDisplayTime->GetTime();
         state.isInMenu = true;
         if (!pMenu->CanSeek())
           state.time_offset = 0;
