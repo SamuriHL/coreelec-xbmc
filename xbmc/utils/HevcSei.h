@@ -9,9 +9,27 @@
 #pragma once
 
 #include "BitstreamReader.h"
+#include "HDR10Plus.h"
 
 #include <optional>
 #include <vector>
+
+struct DisplayPrimary {
+  uint16_t x;
+  uint16_t y;
+};
+
+struct MasteringDisplayColourVolume {
+  DisplayPrimary displayPrimaries[3];  // R, G, B
+  DisplayPrimary whitePoint;
+  uint32_t maxLuminance;
+  uint32_t minLuminance;
+};
+
+struct ContentLightLevel {
+  uint16_t maxContentLightLevel;
+  uint16_t maxFrameAverageLightLevel;
+};
 
 /*!
  * \brief Parses HEVC SEI messages for supplemental video information.
@@ -58,6 +76,21 @@ public:
   //      Otherwise: the NALU contained only one HDR10+ SEI and can be discarded.
   static std::vector<uint8_t> RemoveHdr10PlusFromSeiNalu(
       const uint8_t* inData, const size_t inDataLen);
+
+  // Parses and returns the HDR10+ dynamic metadata from a SEI message list, if present.
+  static const std::optional<const Hdr10PlusMetadata> ExtractHdr10Plus(
+    const std::vector<CHevcSei>& messages,
+    const std::vector<uint8_t>& buf);
+
+  // Returns the mastering-display colour-volume static metadata (SEI type 137), if present.
+  static const std::optional<MasteringDisplayColourVolume> ExtractMasteringDisplayColourVolume(
+    const std::vector<CHevcSei>& messages,
+    const std::vector<uint8_t>& buf);
+
+  // Returns the content-light-level static metadata (SEI type 144), if present.
+  static const std::optional<ContentLightLevel> ExtractContentLightLevel(
+    const std::vector<CHevcSei>& messages,
+    const std::vector<uint8_t>& buf);
 
 private:
   // Parses single SEI message from the reader and pushes it to the list
