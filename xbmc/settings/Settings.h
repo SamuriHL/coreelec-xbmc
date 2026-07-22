@@ -493,7 +493,6 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_MODE = "coreelec.amlogic.dolbyvision.l5.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK = "coreelec.amlogic.dolbyvision.l5.osd.unmask";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT = "coreelec.amlogic.dolbyvision.hdr10plus.convert";
-  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE = "coreelec.amlogic.dolbyvision.hdr10plus.peak.brightness.source";
   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
   static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
   static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";
