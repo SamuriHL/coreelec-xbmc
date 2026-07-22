@@ -1819,7 +1819,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
                   ->GetDiscStreamHdrMetadata(pStream->id, discDV, discHdrPlus))
           {
             if (discDV && st->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-                aml_dolby_vision_enabled())
+                aml_dv_source_engages_core())
             {
               CLog::Log(LOGINFO,
                         "CDVDDemuxFFmpeg::AddStream - pid {:#06x}: playlist STN lists Dolby "
@@ -2277,7 +2277,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
     {
       // UHD BD have a secondary video stream called by Dolby as enhancement layer.
       // This is not used by streaming services and devices (ATV, Nvidia Shield, XONE).
-      if (pStream->id == 0x1015 && !aml_dolby_vision_enabled())
+      // Keep it whenever the DV core will run (incl. VS10 on a non-DV display) so
+      // profile-7 FEL discs are reconstructed, not played base-layer-only.
+      if (pStream->id == 0x1015 && !aml_dv_source_engages_core())
       {
         CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream");
         pStream->discard = AVDISCARD_ALL;
@@ -2920,7 +2922,7 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
 StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
 {
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
-  bool convert_dual_stream((pStream->id == 0x1015) && aml_dolby_vision_enabled());
+  bool convert_dual_stream((pStream->id == 0x1015) && aml_dv_source_engages_core());
 
   if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
                               pStream->codecpar->nb_coded_side_data,
