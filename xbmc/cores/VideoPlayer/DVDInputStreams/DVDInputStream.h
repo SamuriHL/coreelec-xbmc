@@ -110,10 +110,19 @@ public:
     virtual void OnLeft() = 0;
     virtual void OnRight() = 0;
 
+    /*! \brief Which disc menu OnMenu() should open. */
+    enum class MenuCall
+    {
+      Auto, //!< popup if available, else the top/root menu (default, back-compat)
+      Popup, //!< the in-movie popup menu only
+      Top //!< the disc's top/root menu only
+    };
+
     /*! \brief Open the Menu
+    * \param type which disc menu to open (popup, top, or auto)
     * \return true if the menu is successfully opened, false otherwise
     */
-    virtual bool OnMenu() = 0;
+    virtual bool OnMenu(MenuCall type = MenuCall::Auto) = 0;
     virtual void OnBack() = 0;
     virtual void OnNext() = 0;
     virtual void OnPrevious() = 0;
