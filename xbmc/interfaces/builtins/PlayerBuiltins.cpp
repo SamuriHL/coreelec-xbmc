@@ -268,10 +268,24 @@ static int PlayerControl(const std::vector<std::string>& params)
         g_application.SeekPercentage(offsetpercent);
     }
   }
-  else if (paramlow == "showvideomenu")
+  else if (StringUtils::StartsWith(paramlow, "showvideomenu"))
   {
     if (appPlayer->IsPlaying())
-      appPlayer->OnAction(CAction(ACTION_SHOW_VIDEOMENU));
+    {
+      // Optional argument selects which disc menu: ShowVideoMenu(popup) or
+      // ShowVideoMenu(top). Bare ShowVideoMenu keeps the legacy auto
+      // (popup-first-then-top) behaviour. The type rides on the action name.
+      std::string menuArg;
+      const size_t open = paramlow.find('(');
+      if (open != std::string::npos)
+      {
+        const size_t close = paramlow.find(')', open);
+        menuArg = paramlow.substr(
+            open + 1, close == std::string::npos ? std::string::npos : close - open - 1);
+        StringUtils::Trim(menuArg);
+      }
+      appPlayer->OnAction(CAction(ACTION_SHOW_VIDEOMENU, menuArg));
+    }
   }
   else if (StringUtils::StartsWithNoCase(params[0], "partymode"))
   {
