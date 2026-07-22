@@ -1842,8 +1842,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 
           if (!m_dv_dual_stream && sideData && sideData->size)
             st->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
-          // force dovi configuration for DV dual stream
-          else if (aml_dolby_vision_enabled())
+          // Force DV configuration onto the base-layer stream for a profile-7 FEL
+          // dual stream. Gate on aml_dv_source_engages_core() (not
+          // aml_dolby_vision_enabled()): a non-DV display still reconstructs BL+EL
+          // and VS10-tone-maps to HDR10/SDR, so requiring a DV *display* here left
+          // the BL tagged HDR10 -> VS10 read the HDR10 setting (bypass) -> the DV
+          // core never engaged -> base-layer-only, no FEL.
+          else if (aml_dv_source_engages_core())
           {
             // force dovi side data to bl stream
             CDemuxStream* bl_stream = GetStream(0);
