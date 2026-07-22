@@ -306,6 +306,24 @@ bool aml_dv_core_active()
          aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS;
 }
 
+bool aml_dv_source_engages_core()
+{
+  // Whether a Dolby Vision *source* will be processed by the DV core: natively on
+  // a DV-capable display, or VS10-converted (HDR10/SDR) on a non-DV display.
+  // Unlike aml_dolby_vision_enabled() this does NOT require a DV display, so a
+  // profile-7 FEL title still gets BL+EL reconstruction + VS10 tone-mapping
+  // instead of playing base-layer-only. Reads the DV-source VS10 SETTING, not the
+  // per-stream pending (aml_dv_core_active), because the demuxer classifies
+  // streams before VideoPlayer resolves the pending mode.
+  const bool dv_user_enabled(!CServiceBroker::GetSettingsComponent()->GetSettings()->
+    GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  if (!aml_support_dolby_vision() || !dv_user_enabled)
+    return false;
+  return aml_display_support_dv() ||
+         aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV) !=
+           DOLBY_VISION_OUTPUT_MODE_BYPASS;
+}
+
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
