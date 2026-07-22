@@ -1850,7 +1850,7 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
   return false;
 }
 
-bool CDVDInputStreamBluray::OnMenu()
+bool CDVDInputStreamBluray::OnMenu(MenuCall type)
 {
   if(m_bd == nullptr || !m_navmode)
   {
@@ -1872,35 +1872,45 @@ bool CDVDInputStreamBluray::OnMenu()
   // "user abandoned the feature" from a natural end-of-title menu return
   m_lastUserMenuCall = std::chrono::steady_clock::now();
 
-  // Always popup-first: BD_EVENT_POPUP is emitted only by the HDMV graphics
-  // controller - BD-J titles NEVER fire it, and BD_VK_ROOT_MENU
-  // short-circuits into bd_menu_call() which succeeds on any disc with a
-  // top menu. A root-first order would therefore hijack every BD-J in-movie
-  // popup into a full top-menu jump (judge finding). m_popupAvailable is a
-  // log hint only; we also never TRACK popup visibility (BD-J toggles
-  // popups without events).
-  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - popup announced: {} ({})",
+  // the top/root menu: key-first, then bd_menu_call() which succeeds on any
+  // disc with a top menu.
+  auto tryTop = [this]() -> bool {
+    if (bd_user_input(m_bd, -1, BD_VK_ROOT_MENU) >= 0)
+      return true;
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - root key failed, trying bd_menu_call");
+    return bd_menu_call(m_bd, -1) > 0;
+  };
+
+  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - type {}, popup announced: {} ({})",
+            type == MenuCall::Popup ? "popup" : type == MenuCall::Top ? "top" : "auto",
             m_popupAvailable.load(), m_title && m_title->bdj ? "BD-J" : "HDMV");
 
-  if (bd_user_input(m_bd, -1, BD_VK_POPUP) >= 0)
+  switch (type)
   {
-    return true;
-  }
+    case MenuCall::Popup:
+      // popup only (standalone-player POPUP button). BD_VK_POPUP is a no-op on
+      // discs without a popup; we deliberately do NOT fall back to the top
+      // menu here - that is the Top button's job.
+      return bd_user_input(m_bd, -1, BD_VK_POPUP) >= 0;
 
-  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - popup failed, trying root");
+    case MenuCall::Top:
+      // top/root menu only (standalone-player TOP MENU button).
+      return tryTop();
 
-  if (bd_user_input(m_bd, -1, BD_VK_ROOT_MENU) >= 0)
-  {
-    return true;
+    case MenuCall::Auto:
+    default:
+      // Legacy combined behaviour (bare ShowVideoMenu / OnBack): popup-first.
+      // BD_EVENT_POPUP is emitted only by the HDMV graphics controller - BD-J
+      // titles NEVER fire it, and BD_VK_ROOT_MENU short-circuits into
+      // bd_menu_call() which succeeds on any disc with a top menu. A
+      // root-first order would hijack every BD-J in-movie popup into a full
+      // top-menu jump (judge finding). m_popupAvailable is a log hint only; we
+      // also never TRACK popup visibility (BD-J toggles popups without events).
+      if (bd_user_input(m_bd, -1, BD_VK_POPUP) >= 0)
+        return true;
+      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - popup failed, trying root");
+      return tryTop();
   }
-
-  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - root failed, trying explicit");
-  if (bd_menu_call(m_bd, -1) <= 0)
-  {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - root failed");
-    return false;
-  }
-  return true;
 }
 
 bool CDVDInputStreamBluray::IsInMenu()
