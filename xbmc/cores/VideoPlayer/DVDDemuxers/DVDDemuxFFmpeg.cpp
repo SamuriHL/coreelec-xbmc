@@ -1858,7 +1858,12 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
                 av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                         pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
 
-            if (aml_dolby_vision_enabled())
+            // Gate on aml_dv_source_engages_core() (not aml_dolby_vision_enabled()):
+            // a non-DV display still reconstructs BL+EL and VS10-tone-maps to
+            // HDR10/SDR, so requiring a DV *display* here left the BL tagged HDR10
+            // -> VS10 read the HDR10 setting (bypass) -> the DV core never engaged
+            // -> base-layer-only, no FEL. Both arrival orders need the same gate.
+            if (aml_dv_source_engages_core())
             {
               // force dovi side data to base layer stream
               for (auto* s : streams) {
@@ -1921,7 +1926,12 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
               el_video_stream = nullptr;
             }
 
-            if (aml_dolby_vision_enabled() && el_video_stream)
+            // Gate on aml_dv_source_engages_core() (not aml_dolby_vision_enabled()):
+            // a non-DV display still reconstructs BL+EL and VS10-tone-maps to
+            // HDR10/SDR, so requiring a DV *display* here left the BL tagged HDR10
+            // -> VS10 read the HDR10 setting (bypass) -> the DV core never engaged
+            // -> base-layer-only, no FEL. Both arrival orders need the same gate.
+            if (aml_dv_source_engages_core() && el_video_stream)
             {
               // force dovi side data to enhancement layer stream
               st->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
