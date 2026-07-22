@@ -266,6 +266,6 @@ protected:
   bool m_IsHdr10Plus{false};
   bool m_Hdr10PlusTested{false};
   bool m_convert_Hdr10Plus{false};
-  enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source{PeakBrightnessSource::MaxScl};
+  enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source{PeakBrightnessSource::HistogramPlus};
   HDRStaticMetadataInfo m_hdrStaticMetadataInfo;
 };
