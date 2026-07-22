@@ -848,8 +848,11 @@ bool CDVDInputStreamNavigator::OnMouseClick(const CPoint &point)
   return false;
 }
 
-bool CDVDInputStreamNavigator::OnMenu()
+bool CDVDInputStreamNavigator::OnMenu(MenuCall type)
 {
+  // DVD-Video has no separate popup menu; the popup/top/auto distinction is a
+  // Blu-ray concept. All types resolve to the disc's menu here.
+  (void)type;
   if (!m_dvdnav)
   {
     return false;
