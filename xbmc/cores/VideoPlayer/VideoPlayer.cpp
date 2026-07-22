@@ -5830,8 +5830,17 @@ bool CVideoPlayer::OnAction(const CAction &action)
     case ACTION_SHOW_VIDEOMENU:   // start button
       {
         THREAD_ACTION(action);
-        CLog::LogF(LOGDEBUG, "Trying to go to the menu");
-        if (pMenus->OnMenu())
+        // Optional menu type carried in the action name ("popup" | "top")
+        // from PlayerControl(ShowVideoMenu(popup|top)); empty = auto (legacy).
+        CDVDInputStream::IMenus::MenuCall mtype = CDVDInputStream::IMenus::MenuCall::Auto;
+        const std::string& menuArg = action.GetName();
+        if (menuArg == "popup")
+          mtype = CDVDInputStream::IMenus::MenuCall::Popup;
+        else if (menuArg == "top")
+          mtype = CDVDInputStream::IMenus::MenuCall::Top;
+        CLog::LogF(LOGDEBUG, "Trying to go to the menu ({})",
+                   menuArg.empty() ? "auto" : menuArg.c_str());
+        if (pMenus->OnMenu(mtype))
         {
           if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
           {
