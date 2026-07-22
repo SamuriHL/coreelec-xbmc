@@ -2397,7 +2397,7 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
     // passthrough formats depend on the sink accepting them)
     uint32_t uhdCap = 0x01;
     uint32_t uhdDisplayCap = 0x02;  // reaching an HDR10-capable path is baseline
-    if (aml_dolby_vision_enabled())
+    if (aml_dv_source_engages_core())
       uhdCap |= 0x02;
     if (aml_display_support_hdr_hlg())
       uhdCap |= 0x04;
@@ -2412,7 +2412,7 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
       uhdDisplayCap |= 0x10;
     // preference: the format the session would actually pick
     uint32_t hdrPreference;
-    if (aml_dolby_vision_enabled())
+    if (aml_dv_source_engages_core())
       hdrPreference = 0x02;
     else if (aml_display_support_hdr10plus())
       hdrPreference = 0x20;
