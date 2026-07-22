@@ -25448,7 +25448,7 @@ msgstr ""
 #. Description of setting with label #60061
 #: system/settings/settings.xml
 msgctxt "#60062"
-msgid "Select output format when playing Dolby Vision content. Off = native DV tunnel. SDR = convert to SDR."
+msgid "Output format for Dolby Vision sources. HDR10: convert to HDR10, reconstructing the full image (including the profile 7 FEL enhancement layer) and tone-mapping it - use this to play Dolby Vision on an HDR10 display that does not support Dolby Vision. SDR: convert to SDR. Off: output native Dolby Vision (shown only on a Dolby Vision display)."
 msgstr ""
 
 #. Dolby Vision VS10 output option: Off / passthrough
