@@ -25833,48 +25833,6 @@ msgctxt "#60102"
 msgid "Converts HDR10+ dynamic metadata to DV profile 8.1 in real time, allowing the DV engine to apply scene-by-scene tonemapping for HDR10+ content."
 msgstr ""
 
-#. Label of Dolby Vision "HDR10+ peak brightness source" setting
-#: system/settings/settings.xml
-msgctxt "#60103"
-msgid "Peak Brightness Source"
-msgstr ""
-
-#. Description of setting with label #60103
-#: system/settings/settings.xml
-msgctxt "#60104"
-msgid "Method used to determine scene peak brightness during HDR10+ to DV conversion. Histogram uses the brightness distribution, max-scl uses the brightest pixel per channel, histogram-plus combines both approaches."
-msgstr ""
-
-#. Peak brightness source option: histogram
-#: system/settings/settings.xml
-msgctxt "#60105"
-msgid "histogram"
-msgstr ""
-
-#. Peak brightness source option: histogram99
-#: system/settings/settings.xml
-msgctxt "#60106"
-msgid "histogram99"
-msgstr ""
-
-#. Peak brightness source option: max-scl
-#: system/settings/settings.xml
-msgctxt "#60107"
-msgid "max-scl"
-msgstr ""
-
-#. Peak brightness source option: max-scl-luminance
-#: system/settings/settings.xml
-msgctxt "#60108"
-msgid "max-scl-luminance"
-msgstr ""
-
-#. Peak brightness source option: histogram-plus
-#: system/settings/settings.xml
-msgctxt "#60109"
-msgid "histogram-plus"
-msgstr ""
-
 #. Label of Dolby Vision "force peak onto display (VSVDB inject)" setting
 #: system/settings/settings.xml
 msgctxt "#60340"
