@@ -515,15 +515,15 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     {
       m_hdr10plusToDvCandidate = true;
       m_bitstream->SetConvertHdr10Plus(true);
-      m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(
-          static_cast<PeakBrightnessSource>(
-              dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE)));
+      // Peak-brightness source is hardcoded to HistogramPlus: the percentile-
+      // weighted metric is the only one that drives the rich per-scene avg_pq and
+      // is the clear best choice, matching pannal/avdvplus. No user selection.
+      m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(PeakBrightnessSource::HistogramPlus);
       m_bitstream->SetRemoveHdr10Plus(false);
       m_bitstream->SetRemoveDovi(false);
       CLog::Log(LOGINFO, "{}: HDR10+ -> Dolby Vision profile 8.1 conversion armed "
-                         "(peak brightness source {}) - confirming HDR10+ from bitstream",
-                __MODULE_NAME__,
-                dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE));
+                         "(peak brightness source histogram-plus) - confirming HDR10+ from bitstream",
+                __MODULE_NAME__);
     }
 
     if (!m_hdr10plusToDvCandidate)
