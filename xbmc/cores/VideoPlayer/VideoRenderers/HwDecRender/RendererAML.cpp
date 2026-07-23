@@ -69,18 +69,27 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   SetViewMode(m_videoSettings.m_ViewMode);
   ManageRenderArea();
 
-  // Configure GUI/OSD for HDR PQ when display is in HDR PQ mode
-  bool device_support_dv(aml_support_dolby_vision());
-  bool user_dv_disable(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
-  bool dv_is_used(device_support_dv && !user_dv_disable &&
-    picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
-    static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
-  bool hdr_is_used((picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
+  // Configure the GUI/OSD encoding to match the ACTUAL video-plane output the
+  // sink receives this stream, not the source hdrType. CAMLCodec::OpenDecoder
+  // resolved and published the output mode (after VS10 tunnel resolution and
+  // non-DV-display coercion): PQ for a DV tunnel (IPT/IPT_TUNNEL) or a
+  // VS10/DV-converted HDR10 output, SDR for SDR10/SDR8, BYPASS for native
+  // passthrough. Keying on the resolved output fixes the two mismatches VS10
+  // could otherwise produce - HDR10 output on a non-DV display whose source
+  // wasn't tagged PQ (OSD left sRGB, dim/desaturated), and a DV source forced to
+  // SDR on an HDR display (OSD PQ-encoded then tone-mapped a second time).
+  const unsigned int dv_output_mode(aml_dv_get_output_mode());
+  const bool core_is_pq(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                        dv_output_mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL ||
+                        dv_output_mode == DOLBY_VISION_OUTPUT_MODE_HDR10);
+  // BYPASS = no DV-core forcing: native path, PQ only when the stream itself is
+  // HDR PQ/HLG on an HDR display.
+  const bool native_is_pq(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+    (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
     CServiceBroker::GetWinSystem()->IsHDRDisplay());
-  CLog::Log(LOGDEBUG, "CRendererAML::Configure {}DV support, {}, DV system is {}, HDR is {}", device_support_dv ? "" : "no ",
-    user_dv_disable ? "disabled" : "enabled", dv_is_used ? "enabled" : "disabled", hdr_is_used ? "used" : "not used");
-
-  const bool gui_is_pq(dv_is_used | hdr_is_used);
+  const bool gui_is_pq(core_is_pq || native_is_pq);
+  CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI encoded as {}",
+    dv_output_mode, gui_is_pq ? "PQ (FORMAT_HDR8)" : "sRGB (FORMAT_SDR)");
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(gui_is_pq);
 
   // The DV core2 graphics-input declaration must match the GUI encoding set
