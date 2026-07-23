@@ -35,8 +35,10 @@ CRendererAML::CRendererAML()
 CRendererAML::~CRendererAML()
 {
   Reset();
+  // GUI returns to sRGB - tear down the HDR FBO composite (if any), clear the
+  // per-primitive PQ flag, and restore the matching core2 graphics declaration.
+  CServiceBroker::GetWinSystem()->SetGuiCompositing(0);
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
-  // GUI returns to sRGB - restore the matching core2 graphics declaration
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
 }
 
@@ -88,9 +90,30 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
     (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
     CServiceBroker::GetWinSystem()->IsHDRDisplay());
   const bool gui_is_pq(core_is_pq || native_is_pq);
-  CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI encoded as {}",
-    dv_output_mode, gui_is_pq ? "PQ (FORMAT_HDR8)" : "sRGB (FORMAT_SDR)");
-  CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(gui_is_pq);
+
+  // Encode the GUI/OSD to match the PQ video-plane output. Prefer the FBO
+  // composite path: the GUI is rendered into an sRGB FBO and transformed to
+  // BT.2020 PQ once, post-blend (CWinSystemAmlogicGLESContext::CompositeGui),
+  // so anti-aliased and translucent GUI edges blend in sRGB space. The legacy
+  // alternative PQ-encodes each primitive in the GUI shaders, blending edges in
+  // PQ space -> aliased menu text. If the composite shader/LUTs fail to build,
+  // fall back to that per-primitive encode so the GUI stays visible, not black.
+  CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
+  const bool composite(gui_is_pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084));
+  if (!gui_is_pq)
+    winSystem->SetGuiCompositing(0);
+
+  // Per-primitive PQ is used ONLY as the fallback (composite active would encode
+  // twice - once per primitive into the FBO, once in the composite pass).
+  const bool per_primitive_pq(gui_is_pq && !composite);
+  if (per_primitive_pq)
+    CLog::Log(LOGWARNING, "CRendererAML::Configure - GUI composite unavailable, "
+                          "falling back to per-primitive PQ encode");
+  winSystem->GetGfxContext().SetTransferPQ(per_primitive_pq);
+
+  CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI encoded as {} ({})",
+    dv_output_mode, gui_is_pq ? "PQ (FORMAT_HDR8)" : "sRGB (FORMAT_SDR)",
+    !gui_is_pq ? "sRGB" : composite ? "FBO composite" : "per-primitive fallback");
 
   // The DV core2 graphics-input declaration must match the GUI encoding set
   // above. When the GUI plane is PQ-encoded and the DV core composites it
@@ -100,7 +123,8 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // dim (~29% white) and desaturated. When the GUI stays sRGB (SDR output,
   // e.g. VS10 to an SDR display) core2 must keep the sRGB assumption. With
   // the DV core inactive the value is unread, so pairing it unconditionally
-  // with the transfer flag is always safe.
+  // with the transfer flag is always safe. Both composite and fallback emit PQ
+  // graphics to the OSD plane, so this stays keyed on gui_is_pq.
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
              gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
 
