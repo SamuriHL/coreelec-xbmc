@@ -44,7 +44,6 @@ public:
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
   float GetGuiSdrPeakLuminance() const override;
-  bool SupportsHDRGuiFullTransform() const override { return true; }
   HDR_STATUS GetOSHDRStatus() override;
 
   bool Hide() override;
