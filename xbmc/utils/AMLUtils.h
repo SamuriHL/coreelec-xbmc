@@ -104,6 +104,12 @@ unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth);
 // applies it. BYPASS means "no VS10 conversion for this stream".
 void aml_dv_set_vs10_pending(unsigned int mode);
 unsigned int aml_dv_get_vs10_pending();
+// The resolved video-plane output mode for the current stream, recorded by
+// CAMLCodec::OpenDecoder and read by CRendererAML::Configure so the GUI/OSD PQ
+// encoding follows the actual output (IPT/IPT_TUNNEL/HDR10 = PQ, SDR10/SDR8 =
+// SDR) rather than the source hdrType. BYPASS = DV core not forcing an output.
+void aml_dv_set_output_mode(unsigned int mode);
+unsigned int aml_dv_get_output_mode();
 // Disc-session DV latch: active while a Blu-ray whose content includes Dolby
 // Vision plays in navigation (menu) mode on a DV-capable display. Menu-domain
 // segments without their own DV stream (FirstPlay bumpers, menu video loops)
