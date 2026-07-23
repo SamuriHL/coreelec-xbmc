@@ -719,17 +719,20 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
   drmModeModeInfoPtr drmDevicemode = NULL;
   drmModeModeInfo syntheticMode = {};
 
-  // Re-modeset only when the mode STRING or the frac-rate policy actually changes.
-  // A full DRM modeset (drmModeAtomicCommit with DRM_MODE_ATOMIC_ALLOW_MODESET)
-  // re-trains the HDMI/DV link; forcing it on an already-live mode+rate - e.g. an
-  // SDR<->DV switch at an unchanged resolution, which the amdv/VSIF layer performs
-  // without a DRM re-clock - makes strict sinks drop to black (the Superman BD-J
-  // menu-entry regression). The frac-rate check keeps same-mode-string rate changes
-  // (e.g. 24.000 -> 23.976 under "2160p24hz") applying a genuine re-clock.
-  const int current_fractional_rate =
-    get_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
-  if (current_fractional_rate != fractional_rate ||
-      !StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode))
+  // Re-modeset only when the mode STRING actually changes. A full DRM modeset
+  // (drmModeAtomicCommit with DRM_MODE_ATOMIC_ALLOW_MODESET) re-trains the HDMI/DV
+  // link; forcing it on an already-live mode - e.g. an SDR<->DV switch at an
+  // unchanged resolution, which the amdv/VSIF layer performs without a DRM re-clock -
+  // makes strict sinks drop to black (the Superman BD-J menu-entry regression).
+  // The correct FRAC_RATE_POLICY is still applied here whenever the mode string does
+  // change (it is bundled into the modeset commit below), so switching into a
+  // resolution always lands on the right 23.976/24.000 clock. We deliberately do NOT
+  // re-clock on a frac-only difference at an unchanged mode string: repeated
+  // set_display_resolution calls during a disc's pre-menu video arrive at the same
+  // "...24hz" string with slightly different reported rates (video 23.976 vs GUI
+  // 24.000) and a frac-only re-clock there fires spurious modesets = visible judder
+  // on the opening sequence. Mode-string-only matches the pre-rebase fork (smooth).
+  if (!StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode))
   {
     for (int i = 0; i < m_connector->count_modes; i++)
     {
