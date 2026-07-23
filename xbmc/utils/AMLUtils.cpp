@@ -470,6 +470,16 @@ static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
 unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 
+// The video-plane output mode CAMLCodec::OpenDecoder actually resolved for the
+// current stream (after VS10 tunnel resolution and non-DV-display coercion), or
+// BYPASS when the DV core is not forcing an output (native SDR/HDR10/HLG). The
+// GUI/OSD PQ-encoding gate in CRendererAML::Configure reads this so it follows
+// the real output the sink receives (PQ for IPT/IPT_TUNNEL/HDR10, SDR for
+// SDR10/SDR8) instead of guessing from the source hdrType + display capability.
+static unsigned int s_dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
+unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
+
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static bool s_dv_disc_session = false;
