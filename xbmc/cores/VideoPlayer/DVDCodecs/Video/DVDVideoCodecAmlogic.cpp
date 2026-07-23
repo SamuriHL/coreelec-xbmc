@@ -839,7 +839,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         else
         {
           m_bitstream->SetConvertHdr10Plus(false);
-          CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata found - opening as HDR10", __FUNCTION__);
+          // Plain HDR10 (not HDR10+): VideoPlayer deferred the VS10/HDR2DV decision
+          // to us (pending cleared, hint left native) so the HDR10+ converter got
+          // first refusal. It isn't HDR10+, so honour the user's VS10 HDR10->DV (or
+          // legacy HDR2DV) mapping now - re-fake to DV + restore the pending so
+          // CAMLCodec::OpenDecoder runs the VS10 conversion, exactly as it would
+          // have without the HDR10+ deferral.
+          unsigned int vs10Mode = aml_vs10_by_hdrtype(m_hints.hdrType, m_hints.bitdepth);
+          if (aml_convert_to_dv_by_vs_engine(m_hints.hdrType) ||
+              vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+          {
+            aml_dv_set_vs10_pending(vs10Mode);
+            m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+            m_videobuffer.hdrType = m_hints.hdrType;
+            CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: no HDR10+ metadata found - opening as HDR10 via VS10 HDR10->DV", __FUNCTION__);
+          }
+          else
+            CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata found - opening as HDR10", __FUNCTION__);
         }
         m_hdr10plusToDvCandidate = false;
       }
