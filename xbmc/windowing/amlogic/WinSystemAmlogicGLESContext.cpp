@@ -10,6 +10,7 @@
 #include "WinSystemAmlogicGLESContext.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
+#include "rendering/gles/GuiCompositeShaderGLES.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
@@ -315,6 +316,206 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
       (*i)->OnResetDisplay();
   }
+}
+
+// GUI HDR/DV compositing. The GUI/OSD is rendered into an sRGB FBO, then a
+// single full-screen pass transforms it sRGB -> BT.709->BT.2020 -> ST2084 PQ
+// (CGuiCompositeShaderGLES) into the OSD plane back buffer. This does the
+// transfer/gamut/PQ conversion ONCE, post-blend, so anti-aliased and
+// translucent GUI edges blend correctly in sRGB rather than in PQ space (the
+// per-primitive shader encode did the latter -> aliased menu text). Ported
+// from CWinSystemGbmGLESContext; Amlogic has no Kodi-managed DRM planes but is
+// structurally dual-plane - the OSD/GBM plane is alpha-composited over the
+// separate amvideo hardware plane by the VPP - so the GBM D2P branches are
+// taken unconditionally here.
+bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
+{
+  m_guiCompositing = (colorTransfer != 0);
+
+  if (m_guiCompositing)
+  {
+    if (!m_compositeShader)
+    {
+      std::string defines;
+      if (UseLimitedColor())
+        defines += "#define KODI_LIMITED_RANGE 1\n";
+      m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
+      if (!m_compositeShader->CompileAndLink())
+      {
+        CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to compile GUI composite shader");
+        m_compositeShader.reset();
+        m_guiCompositing = false;
+        return false;
+      }
+    }
+
+    if (!m_compositeShader->CreateLUTs(colorTransfer))
+    {
+      CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create LUTs");
+      m_compositeShader.reset();
+      m_guiCompositing = false;
+      return false;
+    }
+  }
+  else
+  {
+    m_guiFbo.Cleanup();
+    m_guiFboWidth = 0;
+    m_guiFboHeight = 0;
+    m_compositeShader.reset();
+  }
+
+  return m_guiCompositing;
+}
+
+bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
+{
+  if (!m_guiCompositing)
+    return false;
+
+  m_guiWillRender = guiWillRender;
+
+  int width = m_nWidth;
+  int height = m_nHeight;
+
+  // create or recreate FBO if size changed
+  if (!m_guiFbo.IsValid() || m_guiFboWidth != width || m_guiFboHeight != height)
+  {
+    m_guiFbo.Cleanup();
+
+    if (!m_guiFbo.Initialize())
+    {
+      CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to initialize GUI FBO");
+      return false;
+    }
+
+    if (!m_guiFbo.CreateAndBindToTexture(GL_TEXTURE_2D, width, height, GL_RGBA))
+    {
+      CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create GUI FBO texture {}x{}",
+                width, height);
+      m_guiFbo.Cleanup();
+      return false;
+    }
+
+    if (GetEnabledFrontToBackRendering() && !m_guiFbo.AttachDepthBuffer(width, height))
+    {
+      CLog::Log(LOGERROR,
+                "CWinSystemAmlogicGLESContext: failed to attach depth buffer to GUI FBO {}x{}",
+                width, height);
+      m_guiFbo.Cleanup();
+      return false;
+    }
+
+    m_guiFboWidth = width;
+    m_guiFboHeight = height;
+    m_guiFboClean = false; // fresh FBO is undefined, force a clear
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext: created GUI FBO {}x{}", width, height);
+  }
+
+  // GUI render skipped this frame: leave the FBO bind/clear out. The prior
+  // sRGB GUI content is implicitly preserved and the cached composited OSD
+  // front buffer keeps being scanned out (PresentRender skips the swap).
+  if (!guiWillRender)
+    return true;
+
+  if (!m_guiFbo.BeginRender())
+    return false;
+
+  // Clear only when the FBO holds stale content; idle frames are already clean.
+  if (!m_guiFboClean)
+  {
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    m_guiFboClean = true;
+  }
+
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::EndGuiComposite()
+{
+  if (m_guiWillRender)
+    m_guiFbo.EndRender();
+
+  // When the GUI didn't render this frame the cached OSD front buffer is
+  // reused and PresentRender skips the swap, so clearing the back buffer is
+  // wasted (dual-plane: nothing else draws into it).
+  if (!m_guiWillRender)
+    return;
+
+  // Clear the back buffer before video renders. In the FBO compositing path,
+  // video renders with clear=false, so DrawBlackBars is never called; without
+  // this, letterbox areas retain stale swap-chain content.
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+}
+
+// CompositeGui is the last GL operation in the frame (called just before the
+// swap). GL state is not restored afterward; the next frame sets its own.
+void CWinSystemAmlogicGLESContext::CompositeGui()
+{
+  if (!m_guiFbo.IsValid() || !m_guiFbo.IsBound() || !m_compositeShader)
+    return;
+
+  // m_guiFboClean tracks whether the FBO is empty AND the cached OSD front
+  // buffer is valid; only update it when the GUI actually rendered this frame.
+  if (m_guiWillRender)
+  {
+    const bool guiEmpty = (GetGUIElementCount() == 0);
+    m_guiFboClean = guiEmpty;
+    if (guiEmpty)
+      return;
+  }
+  else if (m_guiFboClean)
+  {
+    return;
+  }
+
+  // GUI didn't re-render: the cached composited PQ frame is still in the OSD
+  // plane front buffer. Skip the shader pass entirely; PresentRender skips the
+  // swap (hasRendered==false) and the display HW keeps scanning it out while
+  // the amvideo plane updates independently.
+  if (!m_guiWillRender)
+    return;
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
+
+  glEnable(GL_BLEND);
+
+  // The OSD plane is alpha-composited over the amvideo plane by the VPP. The
+  // default blend also multiplies the stored alpha (leaving src.a^2); the
+  // hardware composite then reads that squared alpha and translucent GUI
+  // pixels render at the wrong opacity. Replace the stored alpha with src.a.
+  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+
+  // orthographic projection (screen coords, Y-down)
+  float w = static_cast<float>(m_guiFboWidth);
+  float h = static_cast<float>(m_guiFboHeight);
+
+  GLfloat proj[16] = {2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f, 0, 1};
+
+  m_compositeShader->SetProjection(proj);
+  m_compositeShader->Enable();
+
+  GLint posLoc = m_compositeShader->GetPosLoc();
+  GLint texLoc = m_compositeShader->GetTexLoc();
+
+  GLfloat vert[4][2] = {{0, 0}, {w, 0}, {w, h}, {0, h}};
+  GLfloat tex[4][2] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+  GLubyte idx[4] = {0, 1, 3, 2};
+
+  glVertexAttribPointer(posLoc, 2, GL_FLOAT, GL_FALSE, 0, vert);
+  glVertexAttribPointer(texLoc, 2, GL_FLOAT, GL_FALSE, 0, tex);
+  glEnableVertexAttribArray(posLoc);
+  glEnableVertexAttribArray(texLoc);
+
+  glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, idx);
+
+  glDisableVertexAttribArray(posLoc);
+  glDisableVertexAttribArray(texLoc);
+
+  m_compositeShader->Disable();
 }
 
 EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const
