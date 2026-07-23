@@ -2143,6 +2143,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder Amlogic device {} support DV, DV is {} by user, display {} support DV, DV system is {}",
     device_support_dv ? "does" : "does not", user_dv_disable ? "disabled" : "enabled",
     aml_display_support_dv() ? "does" : "does not", dv_enable ? "enabled" : "disabled");
+  // The video-plane output mode this stream resolves to (recorded below and read
+  // by CRendererAML::Configure to gate the GUI/OSD PQ encoding). BYPASS = the DV
+  // core is not forcing an output, i.e. native SDR/HDR10/HLG passthrough.
+  unsigned int dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
   if (dv_enable)
   {
     // enable Dolby Vision
@@ -2175,11 +2179,18 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
           aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
             GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+        dv_output_mode = vs10_mode;
       }
       else if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
+      {
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_IPT + 1) % 6);
+        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT;
+      }
       else
+      {
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_IPT_TUNNEL + 1) % 6);
+        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+      }
     }
     else
     {
@@ -2206,7 +2217,11 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
           aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
             GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+        dv_output_mode = vs10_mode;
       }
+      else
+        // Native DV output (tunnel left intact): the sink receives a PQ signal.
+        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
     }
 
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
@@ -2238,6 +2253,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       }
     }
   }
+
+  // Publish the resolved output mode so CRendererAML::Configure encodes the
+  // GUI/OSD to match the actual signal the sink receives this stream.
+  aml_dv_set_output_mode(dv_output_mode);
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);
@@ -2495,6 +2514,7 @@ void CAMLCodec::CloseDecoder()
   if (dv_enabled && dolby_vision_policy.Get<int>().value() == AMDV_FORCE_OUTPUT_MODE)
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (AMDV_OUTPUT_MODE_BYPASS + 1) % 6);
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
   // (survives the stream) and a nonzero value overrides the kernel's per-format
   // graphics table for every mode, so a leak here dims/brightens the OSD of all
