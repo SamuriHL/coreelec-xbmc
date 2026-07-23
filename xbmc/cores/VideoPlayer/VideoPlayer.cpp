@@ -4784,9 +4784,26 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
         aml_set_disc_mode_hold(hold);
       }
 #endif
+      // HDR10+ -> DV 8.1 dynamic conversion takes precedence over a static VS10
+      // (or legacy HDR2DV) HDR10->DV mapping. An HDR10+ source presents as plain
+      // HDR10 here (files) or STN-promoted HDR10PLUS (discs), so faking it to DV
+      // now would strip its dynamic metadata into the static VS10 engine before
+      // the codec can detect HDR10+. Defer: clear the pending and leave the hint
+      // native so CDVDVideoCodecAmlogic's 2-stage engage owns it - it converts
+      // real HDR10+ (dynamic RPU) and, on a plain-HDR10 miss, re-applies the VS10
+      // mapping itself (AddData fallback).
+      const bool hdr10plusConvertCandidate =
+          (hint.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+           hint.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
+          aml_support_dolby_vision() && aml_display_support_dv() &&
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
+      if (hdr10plusConvertCandidate)
+        vs10Mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
       aml_dv_set_vs10_pending(vs10Mode);
-      if (aml_convert_to_dv_by_vs_engine(hint.hdrType) ||
-          vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      if (!hdr10plusConvertCandidate &&
+          (aml_convert_to_dv_by_vs_engine(hint.hdrType) ||
+           vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS))
         hint.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
       res = OpenVideoStream(hint, reset);
       // A new video segment is the only point where the menu-domain
