@@ -2504,6 +2504,26 @@ void CVideoPlayer::ProcessSubData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
   CheckStreamChanges(m_CurrentSubtitle, pStream);
 
+  // Blu-ray PGS packets can reach us with no usable timestamp (libbluray drops
+  // the PTS on some discs). With neither pts nor dts, GetAbsoluteTimes leaves the
+  // overlay start at the decoder's ~0 relative value; that start then caps the
+  // PREVIOUS caption's stop time to ~0 in the overlay container, where stop == 0
+  // is the "no end, persist until the next one" sentinel (see
+  // CDVDOverlayContainer::CleanUp) - so the caption stays on screen until the
+  // next one appears. Anchor a timestamp-less BD subtitle packet to the current
+  // subtitle clock LOCALLY so the container caps the previous caption to a real,
+  // non-zero stop. This is the subtitle-local correction that intentionally
+  // avoids touching the global m_offset_pts (whose cross-stream subtitle
+  // correction whipsawed A/V sync and was reverted). When the PGS decoder has
+  // its own pts, CDVDOverlayCodecFFmpeg's pts_offset logic self-corrects this
+  // anchor back to the exact decoder pts, so nothing is lost when it isn't
+  // needed; menu (interactive-graphics) overlays never take this path.
+  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+      pPacket->pts == DVD_NOPTS_VALUE && pPacket->dts == DVD_NOPTS_VALUE)
+  {
+    pPacket->pts = m_clock.GetClock() + m_State.time_offset;
+  }
+
   UpdateTimestamps(m_CurrentSubtitle, pPacket);
 
   bool drop = false;
