@@ -607,14 +607,7 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   const int guiSdrPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
 
-  // Amlogic composites the GUI/OSD straight onto the HDR/DV plane through the
-  // full sRGB->BT.2020->PQ transform (SupportsHDRGuiFullTransform), so this
-  // returns the target GUI-white luminance as a PQ-normalised value (nits /
-  // 10000) rather than the legacy scalar multiplier. The setting is calibrated
-  // so that the BT.2408 HDR reference white (203 nits) lands at 37: peak_nits =
-  // guiSdrPeak * (203 / 37). Range 0..100 therefore spans 0..~549 nits.
-  const float peakNits = static_cast<float>(guiSdrPeak) * (203.0f / 37.0f);
-  return peakNits / 10000.0f;
+  return ((0.7f * guiSdrPeak + 30.0f) / 100.0f);
 }
 
 HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
