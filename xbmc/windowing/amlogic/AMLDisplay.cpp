@@ -544,7 +544,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   }
 
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
-  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, force_mode_switch, true);
+  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true);
 
   if (!ret && force_mode_switch)
     set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
@@ -713,13 +713,23 @@ std::string CAMLDRMUtils::aml_get_drmDevice_preferred_mode()
 }
 
 bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rate,
-  const RenderStereoMode stereo_mode, bool force_mode_switch, bool active)
+  const RenderStereoMode stereo_mode, bool active)
 {
   bool ret = false;
   drmModeModeInfoPtr drmDevicemode = NULL;
   drmModeModeInfo syntheticMode = {};
 
-  if (force_mode_switch || !StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode))
+  // Re-modeset only when the mode STRING or the frac-rate policy actually changes.
+  // A full DRM modeset (drmModeAtomicCommit with DRM_MODE_ATOMIC_ALLOW_MODESET)
+  // re-trains the HDMI/DV link; forcing it on an already-live mode+rate - e.g. an
+  // SDR<->DV switch at an unchanged resolution, which the amdv/VSIF layer performs
+  // without a DRM re-clock - makes strict sinks drop to black (the Superman BD-J
+  // menu-entry regression). The frac-rate check keeps same-mode-string rate changes
+  // (e.g. 24.000 -> 23.976 under "2160p24hz") applying a genuine re-clock.
+  const int current_fractional_rate =
+    get_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
+  if (current_fractional_rate != fractional_rate ||
+      !StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode))
   {
     for (int i = 0; i < m_connector->count_modes; i++)
     {
