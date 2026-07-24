@@ -456,6 +456,12 @@ void CRenderManager::UnInit()
   std::unique_lock lock(m_statelock);
 
   m_overlays.UnInit();
+  // UnInit empties the overlay render buffers but, unlike Flush(), does not
+  // repaint - so a subtitle/menu on screen at stop lingers on the cached Amlogic
+  // OSD front buffer until an unrelated redraw. Force one repaint (process thread
+  // only, like Flush()) so the emptied overlay plane is re-composited at stop.
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    OVERLAY::MarkDirty();
   m_debugRenderer.Dispose();
 
   m_captureBlit.reset();
@@ -491,6 +497,15 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     {
       m_overlays.Flush();
       m_debugRenderer.Flush();
+      // Flushing the overlay buffers removes the composited subtitle/menu
+      // bitmaps, but the Amlogic GUI keeps scanning out the cached OSD front
+      // buffer until something dirties it - so a subtitle or menu overlay that
+      // was on screen at a stop/flush lingers over the (now black or changed)
+      // video until an unrelated redraw. Force one repaint so the emptied
+      // overlay plane is re-composited and swapped. Safe: this branch runs on
+      // the render/process thread (IsProcessThread guard above), the only
+      // thread allowed to touch the dirty-region tracker.
+      OVERLAY::MarkDirty();
 
       if (!m_pRenderer->Flush(saveBuffers))
       {
