@@ -38,6 +38,15 @@ public:
   VecOverlays* GetOverlays(); // get the first overlay in this fifo
   bool ContainsOverlayType(DVDOverlayType type);
 
+  /*!
+   * \brief True if the container holds any overlay the video renderer would draw
+   * on the image plane: an IMAGE/SPU overlay, or a GROUP containing one. Lets the
+   * render side tell "menu closed / subtitles ended" (empty) from "menu/subtitle
+   * present" without inspecting per-overlay identity. NOT const: locking the
+   * container (a CCriticalSection) requires a non-const this.
+   */
+  bool HasDrawableOverlay();
+
   void Clear(); // clear the fifo and delete all overlays
 
   /*

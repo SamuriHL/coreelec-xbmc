@@ -1024,6 +1024,25 @@ void CDVDInputStreamBluray::ProcessEvent() {
     }
     m_playlist = m_event.param;
     ProcessItem(m_playlist);
+    // Genuine menu -> feature transition: the just-opened playlist is
+    // feature-length (IsMenuDomainVideo() false via its duration heuristic,
+    // which is independent of the stuck m_menu/m_hasOverlay these BD-J discs
+    // leave set), a menu overlay is still up, and we are past the main menu.
+    // Such discs never close the menu (no BD_EVENT_MENU 0 / ARGB CLOSE) and
+    // RedrawMenuOverlays keeps re-injecting it over the movie start, so close it
+    // now. In-menu navigation stays on SHORT playlists (MENU domain) and never
+    // reaches here, so the non-flushable menu persistence (decoder-latch guard)
+    // is untouched during real menu use. Realistic in-feature overlays (PiP /
+    // commentary indicators) are drawn AFTER playback starts, i.e. after this
+    // clear, so they are unaffected.
+    if (m_hasOverlay && !m_isInMainMenu && !IsMenuDomainVideo())
+    {
+      CLog::Log(LOGDEBUG,
+                "CDVDInputStreamBluray - menu->feature transition (playlist {}, {}s): "
+                "clearing lingering menu overlay",
+                m_playlist, m_titleInfo ? m_titleInfo->duration / 90000 : 0);
+      OverlayClose();
+    }
     {
       // OSD-visible playlist identity (chapters/total time): timeline-stamped
       // via the player queue so the OSD flips when the render clock reaches
