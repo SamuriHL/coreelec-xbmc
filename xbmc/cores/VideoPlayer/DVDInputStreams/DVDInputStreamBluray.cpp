@@ -28,6 +28,7 @@
 #include "utils/Geometry.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -1405,6 +1406,11 @@ void CDVDInputStreamBluray::OverlayClose()
   group->SetOverlayContainerFlushable(false);
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   m_hasOverlay = false;
+  // overlay session over: the next composition starts a fresh cadence streak,
+  // and nothing may inherit the closed session's keep-alive stamp
+  m_argbFlushStreak = 0;
+  m_argbFlushLastTick = 0;
+  m_argbLastKeepAliveTick = 0;
 #endif
 }
 
@@ -1470,7 +1476,7 @@ void CDVDInputStreamBluray::OverlayClear(SPlane& plane, int x, int y, int w, int
 #endif
 }
 
-void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
+void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   std::unique_lock lock(m_overlayLock);
@@ -1481,6 +1487,50 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
   group->SetOverlayContainerFlushable(false);
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
+
+  // BD-J ARGB abandoned-composition expiry: some Xlets keep an overlay (e.g. a
+  // subtitle they render themselves) visible by re-posting the composition
+  // continuously (observed ~2ms cadence), then simply stop - no clear event
+  // exists in the ARGB interface short of a full plane INIT/CLOSE. Stock Kodi
+  // wiped such leftovers incidentally with the whole-container Clear() on every
+  // stream reopen; this fork removed those wipes on purpose (menu persistence +
+  // decoder latch), so an abandoned composition would freeze on screen until
+  // the next one. Detect the re-post cadence here (only the ARGB path is
+  // eligible - HDMV menus and RedrawMenuOverlays reposts never expire) and
+  // stamp a wall-clock keep-alive on compositions that exhibit it; the video
+  // output stops rendering the group once the stamp goes stale, i.e. shortly
+  // after the re-posts stop. m_hasOverlay / menu-domain state is deliberately
+  // untouched - only the pixels expire, the decoder stays latched.
+  if (keepAliveEligible)
+  {
+    const int64_t now = CurrentHostCounter();
+    const int64_t interval = now - m_argbFlushLastTick;
+    // sustained cadence = consecutive flushes under 10ms apart. The window is
+    // deliberately NARROW: the abandoned-subtitle repaint loop runs at ~2-4ms,
+    // while menu animations run at ~11ms and highlight loops at ~50ms - so
+    // only the subtitle-style loop can ever build the streak, and menu
+    // compositions can never earn keep-alive (= can never blank) by
+    // construction.
+    if (m_argbFlushLastTick != 0 && interval < CurrentHostFrequency() / 100)
+      m_argbFlushStreak++;
+    else
+      m_argbFlushStreak = 1;
+    m_argbFlushLastTick = now;
+
+    constexpr int KEEPALIVE_STREAK_THRESHOLD = 20;
+    group->m_keepAliveTick = (m_argbFlushStreak >= KEEPALIVE_STREAK_THRESHOLD) ? now : 0;
+    m_argbLastKeepAliveTick = group->m_keepAliveTick;
+  }
+  else
+  {
+    // repost of retained plane content (RedrawMenuOverlays after a stream
+    // reopen / display reset): inherit the last live composition's keep-alive
+    // stamp UN-renewed - an abandoned composition must stay expired, not be
+    // resurrected as persist-forever. Live compositions renew via their own
+    // ongoing re-posts; draw-once content inherits 0 and persists as always.
+    // (On pure-HDMV discs the ARGB tracker is never touched, so this is 0.)
+    group->m_keepAliveTick = m_argbLastKeepAliveTick;
+  }
 
   // composite bottom-up: BG (plane 2, behind video - libbluray 1.5.0),
   // then PG (0), then IG (1) on top
@@ -1683,7 +1733,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
   }
 
   if(ov->cmd == BD_ARGB_OVERLAY_FLUSH)
-    OverlayFlush(ov->pts);
+    OverlayFlush(ov->pts, /*keepAliveEligible=*/true);
 }
 #endif
 

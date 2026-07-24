@@ -19,6 +19,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
@@ -952,6 +953,23 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
       std::shared_ptr<CDVDOverlay>& pOverlay = *it++;
       if(!pOverlay->bForced && !m_bRenderSubs)
         continue;
+
+      // Keep-alive expiry (BD-J ARGB compositions maintained by continuous
+      // re-posts, see CDVDOverlay::m_keepAliveTick): once the re-posts stop the
+      // composition was abandoned - the disc sends no clear event - so stop
+      // rendering it shortly after the stamp goes stale. Wall-clock by design
+      // (render pts free-runs during stills; the player clock is title-offset).
+      // Suspended while paused: the Xlet's repaint loop may pause with playback
+      // and a visible subtitle must not vanish under a paused frame. The group
+      // stays in the container untouched - the next re-post replaces it, and
+      // menu-domain/decoder state is unaffected.
+      if (pOverlay->m_keepAliveTick != 0 && m_speed != DVD_PLAYSPEED_PAUSE && !m_paused)
+      {
+        constexpr int64_t KEEPALIVE_TTL_MS = 1000;
+        if (CurrentHostCounter() - pOverlay->m_keepAliveTick >
+            CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000)
+          continue;
+      }
 
       double pts2 = pOverlay->bForced ? pts : pts - m_iSubtitleDelay;
 
