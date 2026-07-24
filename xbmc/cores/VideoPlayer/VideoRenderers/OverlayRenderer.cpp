@@ -17,6 +17,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
+#include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "settings/DisplaySettings.h"
@@ -424,12 +425,39 @@ void CRenderer::CreateSubtitlesStyle()
 
 void CRenderer::PrepareOverlays(int idx)
 {
+  // Query the container BEFORE taking m_section. This ordering is LOAD-BEARING:
+  // ProcessOverlays holds the container lock then takes m_section (via AddOverlay),
+  // so taking them in the reverse order here would deadlock (ABBA). We take the
+  // container lock (inside HasDrawableOverlay), release it, and only then take
+  // m_section - the two are never co-held on this thread. Do NOT move this query
+  // below the m_section lock.
+  const bool containerEmpty = m_pOverlayContainer && !m_pOverlayContainer->HasDrawableOverlay();
+
   std::unique_lock lock(m_section);
   if (idx < 0 || idx >= NUM_BUFFERS)
     return;
 
+  // The container holds no drawable overlay (menu closed / all subtitles ended),
+  // but this buffer was never refreshed because no new picture arrived (a stall:
+  // menu->playback black gap, or stop). Drop the now-stale image/SPU entries so
+  // the count-change check below repaints the emptied plane. Only fires on a
+  // genuinely empty container - navigation always leaves a non-empty composition,
+  // so it can never clear a live menu. Only image/SPU are removed, so a libass
+  // (TEXT/SSA) overlay is left untouched.
+  if (containerEmpty)
+  {
+    std::vector<SElement>& buf = m_buffers[idx];
+    buf.erase(std::remove_if(buf.begin(), buf.end(),
+                             [](const SElement& e) {
+                               return e.overlay_dvd &&
+                                      (e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) ||
+                                       e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_SPU));
+                             }),
+              buf.end());
+  }
+
   bool doMarkDirty = false;
-  bool hasImageSpu = false;
+  int nImageSpu = 0;
   for (auto& e : m_buffers[idx])
   {
     // Clear last frame's cached output; libass may have invalidated the
@@ -446,10 +474,10 @@ void CRenderer::PrepareOverlays(int idx)
     // so finding one means it is on screen now. m_textureid == 0 is the
     // "new arrival" signal (also true every frame for animated PGS where
     // each frame is a fresh CDVDOverlay). Disappearance is caught after
-    // the loop by the hasImageSpu vs m_prevHadImageSpu check.
+    // the loop by the image/SPU count-change check.
     if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) || o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
     {
-      hasImageSpu = true;
+      nImageSpu++;
       if (o.m_textureid == 0)
         doMarkDirty = true;
       continue;
@@ -582,12 +610,17 @@ void CRenderer::PrepareOverlays(int idx)
     }
   }
 
-  // PGS/DVB/SPU disappearance: arrival is caught by m_textureid==0 in
-  // the loop above. Without this, a PGS subtitle ending leaves its
-  // cached bitmap on the GUI plane until something else dirties.
-  if (hasImageSpu != m_prevHadImageSpu)
+  // PGS/DVB/SPU disappearance: arrival is caught by m_textureid==0 in the loop
+  // above. Track the COUNT of image/SPU overlays, not merely "any present": in
+  // full-menu mode a persistent non-flushable BD menu composition is rendered
+  // every frame, so a boolean "has image" was pinned true and a PGS subtitle
+  // ending never registered as a disappearance - its bitmap lingered on the GUI
+  // plane until the next subtitle arrived ("stuck until the next caption"). Any
+  // change in the count means an overlay came or went, so repaint - a subtitle
+  // leaving is caught even while the menu overlay stays up.
+  if (nImageSpu != m_prevImageSpuCount)
     doMarkDirty = true;
-  m_prevHadImageSpu = hasImageSpu;
+  m_prevImageSpuCount = nImageSpu;
 
   if (doMarkDirty)
     MarkDirty();
