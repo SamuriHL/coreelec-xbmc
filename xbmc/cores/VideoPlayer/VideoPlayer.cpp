@@ -786,6 +786,11 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   m_dvd.Clear();
   m_State.Clear();
 
+  // Let the overlay renderer see the container so it can clear a stale overlay
+  // plane when the container empties during a stall (menu->playback / stop).
+  // Both are members of this player, so the pointer is valid for its lifetime.
+  m_renderManager.SetOverlayContainer(&m_overlayContainer);
+
   m_bAbortRequest = false;
   m_offset_pts = 0.0;
   m_playSpeed = DVD_PLAYSPEED_NORMAL;
