@@ -24,6 +24,7 @@
 typedef struct ass_image ASS_Image;
 
 class CDVDOverlay;
+class CDVDOverlayContainer;
 class CDVDOverlayLibass;
 class CDVDOverlayImage;
 class CDVDOverlaySpu;
@@ -173,6 +174,15 @@ namespace OVERLAY {
      */
     void SetSubtitleVerticalPosition(const int value, bool save);
 
+    /*!
+     * \brief Give the renderer the overlay container so PrepareOverlays can tell
+     * "menu closed / subtitles ended" (container empty of drawables) from "still
+     * present", and clear a stale buffer when no new picture arrives to refresh
+     * it (menu->playback / stop stalls). Set once by the player; the container
+     * outlives the render manager.
+     */
+    void SetOverlayContainer(CDVDOverlayContainer* container) { m_pOverlayContainer = container; }
+
   protected:
     /*!
      * \brief Reset the subtitle position to default value
@@ -265,9 +275,12 @@ namespace OVERLAY {
     // Whether last frame had any image/SPU overlay. Used by PrepareOverlays
     // to detect arrival/disappearance transitions (image/SPU have no
     // per-frame change signal of their own, unlike libass detect_change).
-    bool m_prevHadImageSpu{false};
+    int m_prevImageSpuCount{0};
     // Whether last frame had libass output. detect_change cannot report an
     // overlay that is no longer added at all, e.g. once subtitles are hidden.
     bool m_prevHadLibassImages{false};
+    // Overlay container (owned by the player), queried by PrepareOverlays to
+    // detect an emptied container during a stall. Not owned; may be null.
+    CDVDOverlayContainer* m_pOverlayContainer{nullptr};
   };
 }
