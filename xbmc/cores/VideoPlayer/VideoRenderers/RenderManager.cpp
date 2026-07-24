@@ -45,6 +45,33 @@ static inline bool aml_disc_mode_hold() { return false; }
 
 using namespace std::chrono_literals;
 
+namespace
+{
+// Disc-session mode hold: keep the incumbent display RESOLUTION (no HDMI
+// re-clock for a menu's resolution - strict sinks re-train on every re-clock),
+// but adopt the CONTENT'S refresh rate. Holding the GUI's 60Hz over a disc's
+// 23.976 menu-domain bumpers plays 24p at 60Hz = judder; choosing the content
+// refresh at the incumbent resolution (e.g. 1080p24hz) gives native cadence
+// with only the session's single, small refresh switch - no per-segment and no
+// per-resolution re-clock. Falls back to the incumbent mode UNCHANGED when the
+// content fps is unknown, or when no same-resolution mode matches the content
+// rate (refresh whitelist) - so the hold can never itself cause a resolution
+// re-clock, the strict-sink protection it exists for.
+RESOLUTION ChooseHeldResolution(float fps, RESOLUTION incumbent, bool is3D)
+{
+  if (fps <= 0.0f)
+    return incumbent;
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const RESOLUTION_INFO cur = gfx.GetResInfo(incumbent);
+  const RESOLUTION best =
+      CResolutionUtils::ChooseBestResolution(fps, cur.iScreenWidth, cur.iScreenHeight, is3D);
+  const RESOLUTION_INFO bestInfo = gfx.GetResInfo(best);
+  if (bestInfo.iScreenWidth == cur.iScreenWidth && bestInfo.iScreenHeight == cur.iScreenHeight)
+    return best;
+  return incumbent;
+}
+} // namespace
+
 void CRenderManager::CClockSync::Reset()
 {
   m_error = 0;
@@ -621,14 +648,19 @@ RESOLUTION CRenderManager::GetResolution()
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
   {
-    // Disc-session mode hold: a menu-domain segment presents on the
-    // INCUMBENT mode instead of re-clocking HDMI for the menu's refresh
-    // rate (strict sinks drop signal and re-train on every re-clock; menus
-    // tolerate cadence repeats, a re-lock they don't). The feature still
-    // takes its one correct switch when the hold is off for its segment.
+    // Disc-session mode hold: a menu-domain segment holds the INCUMBENT
+    // RESOLUTION instead of re-clocking HDMI for the menu's resolution (strict
+    // sinks drop signal and re-train on every re-clock; menus tolerate a
+    // one-time refresh switch, a resolution re-lock per segment they don't).
+    // The held mode still adopts the content's REFRESH so 23.976 bumpers play
+    // at native cadence, not juddering against a 60Hz GUI mode. The feature
+    // takes its one correct resolution switch when the hold is off for it.
     if (aml_disc_mode_hold())
-      CLog::Log(LOGDEBUG,
-                "CRenderManager::GetResolution - disc session mode hold: keeping current mode");
+    {
+      res = ChooseHeldResolution(m_fps, res, !m_picture.stereoMode.empty());
+      CLog::Log(LOGDEBUG, "CRenderManager::GetResolution - disc session mode hold: "
+                          "incumbent resolution at content refresh");
+    }
     else
       res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
                                                    !m_picture.stereoMode.empty());
@@ -867,12 +899,14 @@ void CRenderManager::UpdateResolution()
           // disc-session mode hold: see GetResolution()
           RESOLUTION res =
               aml_disc_mode_hold()
-                  ? CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()
+                  ? ChooseHeldResolution(
+                        m_fps, CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(),
+                        !m_picture.stereoMode.empty())
                   : CResolutionUtils::ChooseBestResolution(
                         m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
           if (aml_disc_mode_hold())
             CLog::Log(LOGDEBUG, "CRenderManager::UpdateResolution - disc session mode hold: "
-                                "keeping current mode");
+                                "incumbent resolution at content refresh");
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
