@@ -34,7 +34,10 @@
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -654,6 +657,7 @@ bool CDVDInputStreamBluray::Open()
             CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
         DiscHasDolbyVision())
     {
+      m_dvDiscSession = true;
       aml_dv_set_disc_session(true);
       aml_dv_pre_engage_disc_session();
     }
@@ -701,6 +705,7 @@ bool CDVDInputStreamBluray::Open()
         DiscHasDolbyVision())
     {
       CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - DV disc session latched (non-navmode)");
+      m_dvDiscSession = true;
       aml_dv_set_disc_session(true);
       aml_dv_pre_engage_disc_session();
     }
@@ -1273,6 +1278,120 @@ static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e)
        | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
 }
 
+// --- BD-J HDR menu graphics: recover authored color for the PQ GUI composite ---
+// On an Ultra HD Blu-ray whose playlist is HDR/Dolby Vision, BD-ROM 3.x has BD-J
+// (and IG/PG) graphics authored ALREADY in BT.2020 ST.2084 (PQ) 8-bit - a
+// conforming player composites them directly onto the PQ video plane. Kodi's
+// Amlogic GUI composite (CGuiCompositeShaderGLES, keyed on gui_is_pq in
+// CRendererAML::Configure) instead treats every GUI pixel as sRGB and runs
+// sRGB->BT.709->BT.2020->PQ. Applied to graphics that are ALREADY PQ/2020 that is
+// a second encode: the rich authored blue of the Superman menu (disc PQ
+// 64,78,104) collapses to a washed grey-blue (renders like sRGB 64,78,104,
+// saturation ~0.37) instead of the reference player's (0,104,184) (saturation
+// 1.0).
+//
+// The BD-J ARGB callback is the only source of already-PQ pixels in the GUI plane
+// (Kodi's own OSD is genuinely sRGB), so pre-invert just those pixels here: PQ
+// decode -> BT.2020->BT.709 -> sRGB encode. The composite's forward
+// sRGB->2020->PQ then reproduces the authored color (round-trip verified: disc
+// (64,78,104) -> sRGB (0,105,184), reference (0,104,184); output saturation 0.98
+// vs 0.37 unfixed). The decode reference white is the disc's authored graphics
+// white (~80 nits, the measured fit); the composite re-references graphics to
+// Kodi's 203-nit BT.2408 white, so menu graphics render at OSD luminance.
+//
+// Gated by the caller on the STABLE per-disc DV-session latch (m_dvDiscSession),
+// NOT the live aml_dv_get_output_mode(): the output mode flips across the
+// repeated OpenDecoder calls of a movie-load transition, so a per-draw output
+// gate baked the resume menu inconsistently (panel drawn washed under a
+// transient non-PQ read, buttons/highlights inverted under the settled PQ read -
+// a half-correct menu). The session latch is engaged for the whole DV disc (the
+// VSIF hold keeps the output in DV/PQ across those gaps), so every BD-J overlay
+// is treated consistently. Known limitation: an SDR-authored BD-J menu on a DV
+// disc (sRGB graphics VS10-mapped to DV output) would be over-inverted; not seen
+// on tested discs (Superman menus are all PQ-authored), documented as a risk.
+namespace
+{
+// ST.2084 (PQ) EOTF constants, matching CGuiCompositeShaderGLES so the decode is
+// the exact inverse of the composite's encode.
+constexpr double ST2084_m1 = 0.1593017578125;
+constexpr double ST2084_m2 = 78.84375;
+constexpr double ST2084_c1 = 0.8359375;
+constexpr double ST2084_c2 = 18.8515625;
+constexpr double ST2084_c3 = 18.6875;
+// Authored graphics reference white for BD-J assets, PQ-normalized (nits/10000).
+// 80 nits = IEC 61966-2-1 sRGB reference display, the exact fit for the measured
+// Superman menu. Tuning this only trims graphics luminance - hue is
+// peak-independent, saturation nearly so.
+constexpr double BDJ_GRAPHICS_WHITE = 80.0 / 10000.0;
+// BT.2020 -> BT.709 (numeric inverse of the composite's printed bt709_to_bt2020).
+constexpr double bt2020_to_bt709[3][3] = {
+  { 1.660511, -0.587711, -0.072801},
+  {-0.124561,  1.132961, -0.008399},
+  {-0.018168, -0.100561,  1.118728},
+};
+
+// PQ code [0..255] -> linear light normalized to the authored graphics white.
+const std::array<double, 256>& pq_decode_lut()
+{
+  static const std::array<double, 256> lut = []
+  {
+    std::array<double, 256> t{};
+    for (int i = 0; i < 256; ++i)
+    {
+      const double N = std::pow(i / 255.0, 1.0 / ST2084_m2);
+      const double L = std::pow(std::max(N - ST2084_c1, 0.0) /
+                                    (ST2084_c2 - ST2084_c3 * N),
+                                1.0 / ST2084_m1);
+      const double rel = L / BDJ_GRAPHICS_WHITE;
+      t[i] = rel < 0.0 ? 0.0 : (rel > 1.0 ? 1.0 : rel);
+    }
+    return t;
+  }();
+  return lut;
+}
+
+// linear light [0..1] -> sRGB 8-bit (IEC 61966-2-1 OETF), LUT to avoid per-pixel
+// pow on full-screen BD-J redraws.
+const std::array<uint8_t, 1025>& srgb_oetf_lut()
+{
+  static const std::array<uint8_t, 1025> lut = []
+  {
+    std::array<uint8_t, 1025> t{};
+    for (int i = 0; i <= 1024; ++i)
+    {
+      const double l = i / 1024.0;
+      const double s = l <= 0.0031308 ? 12.92 * l : 1.055 * std::pow(l, 1.0 / 2.4) - 0.055;
+      const int v = static_cast<int>(s * 255.0 + 0.5);
+      t[i] = static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+    return t;
+  }();
+  return lut;
+}
+
+inline uint8_t oetf8(double l)
+{
+  l = l < 0.0 ? 0.0 : (l > 1.0 ? 1.0 : l);
+  return srgb_oetf_lut()[static_cast<int>(l * 1024.0 + 0.5)];
+}
+
+// One BD-J ARGB pixel authored in BT.2020 PQ -> sRGB BT.709, alpha preserved.
+uint32_t bdj_pq2020_to_srgb709(uint32_t px)
+{
+  const auto& dec = pq_decode_lut();
+  const double c0 = dec[(px >> PIXEL_RSHIFT) & 0xffu];
+  const double c1 = dec[(px >> PIXEL_GSHIFT) & 0xffu];
+  const double c2 = dec[(px >> PIXEL_BSHIFT) & 0xffu];
+  const double r = bt2020_to_bt709[0][0] * c0 + bt2020_to_bt709[0][1] * c1 + bt2020_to_bt709[0][2] * c2;
+  const double g = bt2020_to_bt709[1][0] * c0 + bt2020_to_bt709[1][1] * c1 + bt2020_to_bt709[1][2] * c2;
+  const double b = bt2020_to_bt709[2][0] * c0 + bt2020_to_bt709[2][1] * c1 + bt2020_to_bt709[2][2] * c2;
+  return (px & (0xffu << PIXEL_ASHIFT))
+       | (static_cast<uint32_t>(oetf8(r)) << PIXEL_RSHIFT)
+       | (static_cast<uint32_t>(oetf8(g)) << PIXEL_GSHIFT)
+       | (static_cast<uint32_t>(oetf8(b)) << PIXEL_BSHIFT);
+}
+} // namespace
+
 void CDVDInputStreamBluray::OverlayClose()
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
@@ -1535,6 +1654,23 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
     overlay->pixels.resize(bytes);
     memcpy(overlay->pixels.data(), ov->argb, bytes);
+
+    // On a DV disc session the output plane is held PQ, so BD-J graphics arrive
+    // already BT.2020 PQ; convert to sRGB so the GUI composite's sRGB->2020->PQ
+    // reproduces the authored color instead of double-encoding it into a washed
+    // grey (see helper above). Gated on the STABLE per-session latch, not the
+    // live output mode - the latter flips during a movie-load transition and
+    // baked the resume menu half-washed.
+    if (m_dvDiscSession)
+    {
+      uint32_t* p = reinterpret_cast<uint32_t*>(overlay->pixels.data());
+      const size_t pixelCount = static_cast<size_t>(ov->stride) * ov->h;
+      for (size_t i = 0; i < pixelCount; ++i)
+      {
+        if (p[i] & (0xffu << PIXEL_ASHIFT)) // skip fully transparent pixels
+          p[i] = bdj_pq2020_to_srgb709(p[i]);
+      }
+    }
 
     overlay->linesize = ov->stride * 4;
     overlay->x = ov->x;
