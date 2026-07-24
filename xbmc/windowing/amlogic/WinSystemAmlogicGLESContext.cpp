@@ -318,6 +318,45 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   }
 }
 
+// Clear the OSD/overlay plane to opaque black at playback teardown. On this
+// dual-plane box the OSD/GBM plane keeps scanning out its cached front buffer
+// until a real cleared present swaps in (see the compositing notes above); when
+// a BD menu / subtitle overlay is still up at stop, the overlay renderer is
+// destroyed and no normal render pass overdraws those pixels, so the stale menu
+// lingers. Present a genuine cleared buffer through the vetted PresentRender
+// path (guarded LockFrontBuffer + fence handshake), once per buffer in the
+// swap chain, paced on vblank so each NONBLOCK atomic commit settles before the
+// next buffer is reused. Caller guarantees the rendering thread + current
+// context.
+void CWinSystemAmlogicGLESContext::ClearOverlayPlane()
+{
+  if (!m_pGLContext || !m_amlGBMUtils)
+    return;
+
+  // Bind the default framebuffer: on a DV/HDR (composite) disc the GUI FBO may
+  // still be bound, and a raw glClear would clear that offscreen texture rather
+  // than the back buffer that is presented.
+  if (m_guiFbo.IsValid() && m_guiFbo.IsBound())
+    m_guiFbo.EndRender();
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glDisable(GL_SCISSOR_TEST);
+
+  // Opaque black: makes the OSD plane itself black regardless of the amvideo
+  // plane teardown (a transparent clear would let residual video show through).
+  // black is 0 in every transfer function, so this is correct on the PQ
+  // composite plane too, without running the composite shader.
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+  for (int i = 0; i < 3; i++)
+  {
+    glClear(GL_COLOR_BUFFER_BIT);
+    PresentRender(true, false);
+    m_amlDisplay->aml_drmDevice_vsync();
+  }
+
+  m_guiFboClean = true;
+}
+
 // GUI HDR/DV compositing. The GUI/OSD is rendered into an sRGB FBO, then a
 // single full-screen pass transforms it sRGB -> BT.709->BT.2020 -> ST2084 PQ
 // (CGuiCompositeShaderGLES) into the OSD plane back buffer. This does the
