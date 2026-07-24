@@ -38,6 +38,7 @@ public:
     m_enableTextAlign = false;
     m_overlayContainerFlushable = true;
     m_setForcedMargins = false;
+    m_keepAliveTick = 0;
   }
 
   CDVDOverlay(const CDVDOverlay& src) : std::enable_shared_from_this<CDVDOverlay>(src)
@@ -52,6 +53,7 @@ public:
     m_enableTextAlign = src.m_enableTextAlign;
     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
     m_setForcedMargins = src.m_setForcedMargins;
+    m_keepAliveTick = src.m_keepAliveTick;
   }
 
   virtual ~CDVDOverlay() = default;
@@ -110,6 +112,17 @@ public:
   double iPTSStopTime;
   bool bForced; // display, no matter what
   bool replace; // replace by next nomatter what stoptime it has
+  // Keep-alive expiry for continuously re-posted disc overlays (BD-J ARGB):
+  // 0 = normal lifetime rules (the default for every other overlay). Non-zero =
+  // CurrentHostCounter() stamp of the post; the producer sets it only on
+  // compositions it has observed being re-posted at a sustained cadence, and
+  // the video output skips rendering the overlay once the stamp goes stale -
+  // i.e. once the re-posts stop (the Xlet abandoned the composition; BD-J
+  // sends no clear event). Wall-clock on purpose: the render-side pts free-runs
+  // during stills and the player clock is title-offset, so no pts base is
+  // reliable here. Deliberately NOT part of operator== (it must not affect
+  // subtitle grouping).
+  int64_t m_keepAliveTick;
   unsigned long m_textureid;
 
   int m_3dSubtitleDepth;
