@@ -1367,6 +1367,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
   // access unit's SEI, converted into a synthesized DV RPU emitted after the loop.
   Hdr10PlusMetadata hdr10plus_meta = {};
   bool have_hdr10plus_meta = false;
+  bool au_has_rpu = false;
 
   switch (m_codec)
   {
@@ -1493,6 +1494,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
       {
         if (unit_type == HEVC_NAL_UNSPEC62)
         {
+          au_has_rpu = true;
 #ifdef HAVE_LIBDOVI
           // Convert the RPU itself
           rpu_data = processDoviRpu(buf, nal_size);
@@ -1537,6 +1539,22 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
   if (m_convert_Hdr10Plus && have_hdr10plus_meta)
   {
     auto rpu = create_rpu_nalu_for_hdr10plus(hdr10plus_meta,
+                                             m_convert_Hdr10Plus_peak_brightness_source,
+                                             m_hdrStaticMetadataInfo);
+    if (!rpu.empty())
+    {
+      BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, rpu.data(), rpu.size(),
+                            HEVC_NAL_UNSPEC62);
+      m_lastHdr10PlusMeta = hdr10plus_meta;
+      m_lastHdr10PlusMetaValid = true;
+    }
+  }
+  // HDR10+ SEIs can stop mid-stream (AMZN encodes drop them for end credits)
+  // while the stream is already flagged DV: TV-led DV needs an RPU on every
+  // frame or the TV drops out of DV, so hold the last converted metadata.
+  else if (m_convert_Hdr10Plus && m_lastHdr10PlusMetaValid && !au_has_rpu)
+  {
+    auto rpu = create_rpu_nalu_for_hdr10plus(m_lastHdr10PlusMeta,
                                              m_convert_Hdr10Plus_peak_brightness_source,
                                              m_hdrStaticMetadataInfo);
     if (!rpu.empty())
