@@ -166,6 +166,32 @@ bool CDVDOverlayContainer::ContainsOverlayType(DVDOverlayType type)
   return result;
 }
 
+bool CDVDOverlayContainer::HasDrawableOverlay()
+{
+  std::unique_lock lock(*this);
+
+  auto isDrawable = [](const CDVDOverlay& o)
+  { return o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) || o.IsOverlayType(DVDOVERLAY_TYPE_SPU); };
+
+  for (const std::shared_ptr<CDVDOverlay>& ov : m_overlays)
+  {
+    if (!ov)
+      continue;
+    if (isDrawable(*ov))
+      return true;
+    // One level of recursion only (groups never nest here): a PGS subtitle and a
+    // BD menu composition both reach the container as a GROUP whose members are
+    // the IMAGE overlays - a top-level-only check would report a live subtitle as
+    // "no drawable" and let the renderer blank it.
+    if (ov->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
+      for (const std::shared_ptr<CDVDOverlay>& child :
+           static_cast<const CDVDOverlayGroup&>(*ov).m_overlays)
+        if (child && isDrawable(*child))
+          return true;
+  }
+  return false;
+}
+
 /*
  * iAction should be LIBDVDNAV_BUTTON_NORMAL or LIBDVDNAV_BUTTON_CLICKED
  */
