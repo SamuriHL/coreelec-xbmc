@@ -361,6 +361,13 @@ protected:
   std::atomic<uint32_t> m_uoMask{0};
   std::atomic<uint32_t> m_bdjKeyInterest{0};
   bool m_navmode = false;
+  // Latched true at Open when this disc's DV session is engaged (DV disc + DV
+  // display); held for the whole disc session. Gates the BD-J ARGB overlay's
+  // PQ->sRGB pre-inversion: a STABLE signal that correctly predicts the DV/PQ
+  // output plane, unlike the live aml_dv_get_output_mode() which flips across
+  // the repeated OpenDecoder calls of a movie-load transition (that flicker
+  // baked half of the resume menu washed and half correct).
+  bool m_dvDiscSession = false;
   int m_dispTimeBeforeRead = 0;
   int                 m_nTitles = -1;
   std::string         m_root;
