@@ -264,6 +264,16 @@ public:
   virtual void EndGuiComposite() {}
   virtual void CompositeGui() {}
 
+  // Force the OSD/overlay plane to a cleared (opaque black) state right now by
+  // presenting cleared buffers through the platform present path. Used at
+  // playback teardown when a BD menu / subtitle overlay is still on the plane:
+  // the overlay renderer is being destroyed and no normal render pass will
+  // overdraw those pixels, so the cached front buffer keeps scanning out the
+  // stale menu until an unrelated full-screen redraw. Default no-op; platforms
+  // whose plane retains the last presented buffer (Amlogic) override this.
+  // Must be called on the rendering thread with the GL context current.
+  virtual void ClearOverlayPlane() {}
+
   // True when GUI is rendered to an FBO that is then color-transformed
   // (sRGB -> PQ/HLG) and composited against HDR video in that non-linear
   // space. Alpha blending assumes linear light; blending non-linear values
