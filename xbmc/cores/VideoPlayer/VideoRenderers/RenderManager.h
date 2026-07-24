@@ -38,6 +38,7 @@ class CCaptureBlit;
 } // namespace RENDERING
 } // namespace KODI
 
+class CDVDOverlayContainer;
 struct VideoPicture;
 
 class CWinRenderer;
@@ -116,6 +117,13 @@ public:
    *  (which calls PrepareOverlays). Reads cached state; cheap.
    */
   bool HasVisibleOverlay() const { return m_overlays.HasVisibleOverlay(m_presentsource); }
+
+  /*! \brief Give the overlay renderer the player's overlay container so it can
+   *  clear a stale overlay plane when the container empties during a stall. */
+  void SetOverlayContainer(CDVDOverlayContainer* container)
+  {
+    m_overlays.SetOverlayContainer(container);
+  }
 
   /**
    * If player uses buffering it has to wait for a buffer before it calls
