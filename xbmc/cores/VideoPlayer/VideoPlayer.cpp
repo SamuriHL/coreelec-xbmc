@@ -900,6 +900,21 @@ bool CVideoPlayer::CloseFile(bool reopen)
   if(m_pInputStream)
     m_pInputStream->Abort();
 
+  // If a BD menu / subtitle overlay is still presented, clear the overlay plane
+  // before tearing the renderer down. At this point nothing else will overdraw
+  // those pixels (the overlay renderer is about to be destroyed, the
+  // fullscreen-video window's ClearBackground is a no-op, and the composite
+  // clear is switched off during teardown), so the plane keeps scanning out the
+  // stale menu until an unrelated full-screen redraw. Gated on HasVisibleOverlay
+  // so seamless/overlay-free stops pay no cost; IsProcessThread ensures we are
+  // on the rendering thread with a current GL context (the destructor path may
+  // not be).
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread() && m_renderManager.HasVisibleOverlay())
+  {
+    if (auto system = CServiceBroker::GetWinSystem(); system != nullptr)
+      system->ClearOverlayPlane();
+  }
+
   m_renderManager.UnInit();
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
