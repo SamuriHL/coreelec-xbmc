@@ -312,7 +312,7 @@ public:
 protected:
   struct SPlane;
 
-  void OverlayFlush(int64_t pts);
+  void OverlayFlush(int64_t pts, bool keepAliveEligible = false);
   void OverlayClose();
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
@@ -371,6 +371,22 @@ protected:
   bool m_hasBdjTitles = false;
   bool m_isInMainMenu = false;
   std::atomic<bool> m_hasOverlay{false};
+  /* BD-J ARGB flush-cadence tracker (guarded by m_overlayLock, written on the
+   * JVM graphics thread): a composition that has been re-posted at a sustained
+   * high cadence is one whose visibility is maintained by continuous re-posts -
+   * when they stop, the composition was abandoned (BD-J sends no clear event)
+   * and must expire instead of freezing on screen. Draw-once compositions
+   * (static popups, all HDMV menus) never reach the streak threshold and keep
+   * full persist-forever semantics. */
+  int64_t m_argbFlushLastTick = 0;
+  int m_argbFlushStreak = 0;
+  /* keep-alive stamp of the most recent LIVE ARGB flush (0 = that composition
+   * was not keep-alive). Non-eligible flushes (RedrawMenuOverlays reposting
+   * retained plane content after a stream reopen) inherit this UN-renewed, so
+   * an abandoned composition stays expired after the repost instead of being
+   * resurrected as persist-forever, while a live one keeps rendering (its
+   * ongoing re-posts renew it immediately anyway). */
+  int64_t m_argbLastKeepAliveTick = 0;
   /* popup-menu availability announced by the disc (BD_EVENT_POPUP) - lets
    * OnMenu() try the right key first instead of firing BD_VK_POPUP blind */
   std::atomic<bool> m_popupAvailable{false};
