@@ -91,29 +91,59 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
     CServiceBroker::GetWinSystem()->IsHDRDisplay());
   const bool gui_is_pq(core_is_pq || native_is_pq);
 
-  // Encode the GUI/OSD to match the PQ video-plane output. Prefer the FBO
-  // composite path: the GUI is rendered into an sRGB FBO and transformed to
-  // BT.2020 PQ once, post-blend (CWinSystemAmlogicGLESContext::CompositeGui),
-  // so anti-aliased and translucent GUI edges blend in sRGB space. The legacy
-  // alternative PQ-encodes each primitive in the GUI shaders, blending edges in
-  // PQ space -> aliased menu text. If the composite shader/LUTs fail to build,
-  // fall back to that per-primitive encode so the GUI stays visible, not black.
+  // WHO OWNS the OSD plane's sRGB -> BT.2020 PQ encode decides what Kodi may do,
+  // and the two output classes differ:
+  //
+  //  - DV core engaged (core_is_pq): the kernel's vpp_matrix_update() returns
+  //    early while is_amdv_on() on VD1 (amvecm/amcsc.c), so the VPP never
+  //    programs its OSD transfer stage; DV core2 consumes the OSD plane as
+  //    declared by graphic_fmt below. Nothing else converts the GUI, so Kodi
+  //    must do the full transform itself - the FBO composite.
+  //
+  //  - DV core idle (native_is_pq, i.e. BYPASS native HDR10/HLG passthrough):
+  //    the VPP encodes the OSD plane itself. On G12A+ (all our SoCs bar TL1)
+  //    amvecm/amcsc_pip.c video_post_process() programs OSD1_HDR with SDR_HDR
+  //    for an HDR10 source at PROC_BYPASS, and SDR_HLG for HLG - a real EOTF ->
+  //    BT.709->BT.2020 -> ST2084 encode in hardware. A Kodi-side transform on
+  //    top of it encodes TWICE: gamut compressed twice (desaturated) and
+  //    midtones lifted several stops with white unchanged, i.e. a washed,
+  //    over-bright GUI. So on this path Kodi must NOT transform; it keeps
+  //    upstream CoreELEC's behaviour of only trimming GUI brightness with the
+  //    m_sdrPeak scalar (guipeakluminance), which is what that setting exists
+  //    for on a kernel-encoded OSD plane.
+  //    HDR10, HDR10+ and HLG at PROC_BYPASS all take that OSD encode. The one
+  //    exception is hdr_policy==2 with target_format BT_BYPASS, where the VPP
+  //    leaves OSD1_HDR at HDR_BYPASS and the GUI would be left under-encoded
+  //    (dim) instead. That corner needs the DV core forced to a non-bypass
+  //    target, which makes is_amdv_on() true and lands us in the core_is_pq
+  //    branch above instead, so it is not reachable from here in practice.
+  //
+  // Hence the composite is gated on core_is_pq, NOT on gui_is_pq. If its
+  // shader/LUTs fail to build, fall back to the per-primitive encode so a DV GUI
+  // stays visible rather than black.
   CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
-  const bool composite(gui_is_pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084));
-  if (!gui_is_pq)
+  const bool composite(core_is_pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084));
+  if (!core_is_pq)
     winSystem->SetGuiCompositing(0);
 
-  // Per-primitive PQ is used ONLY as the fallback (composite active would encode
-  // twice - once per primitive into the FBO, once in the composite pass).
+  // Per-primitive m_sdrPeak encode: the intended path for native BYPASS output
+  // (scalar trim only, the VPP does the transform), and the fallback when a DV
+  // composite could not be built. Never alongside an active composite - that
+  // would encode twice, once per primitive into the FBO and once in the pass.
   const bool per_primitive_pq(gui_is_pq && !composite);
-  if (per_primitive_pq)
+  if (core_is_pq && !composite)
     CLog::Log(LOGWARNING, "CRendererAML::Configure - GUI composite unavailable, "
-                          "falling back to per-primitive PQ encode");
+                          "falling back to the m_sdrPeak scalar encode");
   winSystem->GetGfxContext().SetTransferPQ(per_primitive_pq);
 
-  CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI encoded as {} ({})",
-    dv_output_mode, gui_is_pq ? "PQ (FORMAT_HDR8)" : "sRGB (FORMAT_SDR)",
-    !gui_is_pq ? "sRGB" : composite ? "FBO composite" : "per-primitive fallback");
+  // Report the GUI transform and the graphic_fmt actually written below, so an
+  // OSD-brightness complaint can be triaged from the log alone.
+  CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI transform {} ({})",
+    dv_output_mode,
+    !gui_is_pq ? "none, plain sRGB" : composite ? "sRGB->BT.2020 PQ, FBO composite"
+      : core_is_pq ? "m_sdrPeak scalar, composite unavailable"
+                   : "m_sdrPeak scalar only, the VPP encodes the OSD plane",
+    gui_is_pq ? "graphic_fmt=9 FORMAT_HDR8" : "graphic_fmt=2 FORMAT_SDR");
 
   // The DV core2 graphics-input declaration must match the GUI encoding set
   // above. When the GUI plane is PQ-encoded and the DV core composites it
@@ -123,8 +153,17 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // dim (~29% white) and desaturated. When the GUI stays sRGB (SDR output,
   // e.g. VS10 to an SDR display) core2 must keep the sRGB assumption. With
   // the DV core inactive the value is unread, so pairing it unconditionally
-  // with the transfer flag is always safe. Both composite and fallback emit PQ
-  // graphics to the OSD plane, so this stays keyed on gui_is_pq.
+  // with the transfer flag is always safe.
+  //
+  // This stays keyed on gui_is_pq, NOT on composite: the m_sdrPeak scalar path
+  // must also be declared FORMAT_HDR8. That looks wrong - a scalar is not a PQ
+  // encode - but it is the validated pairing, and deliberately so: the default
+  // peak maps to (0.7*40+30)/100 = 0.58, which is the ST2084 code for ~203 nits,
+  // so core2 reading the scalar output AS PQ lands GUI white on BT.2408
+  // reference white. Declaring FORMAT_SDR here instead makes core2 apply its
+  // sRGB EOTF to that same 0.58, i.e. 0.58^2.4-ish = ~29% white - exactly the
+  // dim, desaturated OSD that commit 27bb0c4791 fixed and had confirmed on-box
+  // against a UB820. So the scalar path is only ever safe under FORMAT_HDR8.
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
              gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
 
