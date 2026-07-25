@@ -83,6 +83,11 @@ public:
   double aspect; // display aspect as reported by demuxer
   bool vfr; // variable framerate
   bool stills; // there may be odd still frames in video
+  // Blu-ray: the playlist declares PQ-authored graphics (HDR10/DV video in the
+  // STN table), so PG palettes must be pre-inverted from BT.2020 PQ to sRGB.
+  // Stamped by CVideoPlayer from CDVDInputStreamBluray; part of Equal() so a
+  // playlist that changes regime reopens the subtitle codec.
+  bool pqAuthoredGraphics;
   int level; // encoder level of the stream reported by the decoder. used to qualify hw decoders.
   int profile; // encoder profile of the stream reported by the decoder. used to qualify hw decoders.
   bool ptsinvalid;  // pts cannot be trusted (avi's).

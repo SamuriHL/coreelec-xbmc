@@ -36,6 +36,9 @@ private:
   double          m_StartTime;
   double          m_StopTime;
 
+  // Blu-ray disc declares PQ-authored graphics: PG palettes need the
+  // BT.2020 PQ -> sRGB pre-invert. Stamped onto the hint by CVideoPlayer.
+  bool            m_pqAuthoredGraphics{false};
   int             m_width;
   int             m_height;
 };
