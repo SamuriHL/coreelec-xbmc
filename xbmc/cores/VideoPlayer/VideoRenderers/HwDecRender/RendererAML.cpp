@@ -55,6 +55,56 @@ bool CRendererAML::Register()
   return true;
 }
 
+// Single source of truth for the GUI/OSD encoding decision, shared by Configure
+// (which applies it) and ConfigChanged (which detects that it has gone stale).
+// Deliberately side-effect free: it reports the encoding the output REQUIRES,
+// never whether the composite could actually be built.
+CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(const VideoPicture& picture,
+                                                          unsigned int dvOutputMode,
+                                                          bool isHdrDisplay)
+{
+  const bool core_is_pq(dvOutputMode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                        dvOutputMode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL ||
+                        dvOutputMode == DOLBY_VISION_OUTPUT_MODE_HDR10);
+  if (core_is_pq)
+    return GuiEncoding::Composite;
+
+  // BYPASS = no DV-core forcing: native path, PQ only when the stream itself is
+  // HDR PQ/HLG on an HDR display.
+  const bool native_is_pq(dvOutputMode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+    (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
+    isHdrDisplay);
+  return native_is_pq ? GuiEncoding::Scalar : GuiEncoding::Srgb;
+}
+
+bool CRendererAML::ConfigChanged(const VideoPicture& picture)
+{
+  // A decoder swap can change the resolved DV output mode while every picture
+  // parameter stays identical (BD menu-domain segments are force-mapped to DV,
+  // feature titles are not). IsSameParams cannot see that, so ask for the
+  // reconfigure here - otherwise the GUI keeps the previous segment's encoding
+  // for the rest of playback. Only a change of ENCODING CLASS reconfigures: a
+  // benign mode reshuffle within the same class (IPT <-> IPT_TUNNEL) does not,
+  // so this adds no renderer churn during steady playback, where the mode is
+  // constant anyway.
+  if (!m_bConfigured)
+    return false;
+
+  const unsigned int dv_output_mode(aml_dv_get_output_mode());
+
+  // A DV disc session holds the wire in DV across the no-source gaps of every
+  // decoder swap (the kernel VSIF hold), and CloseDecoder parks the published
+  // mode at BYPASS for the whole of each gap. A BYPASS reading during a session
+  // is therefore the volatile teardown value, not a real output change: acting
+  // on it would recreate the renderer twice per decoder swap - and briefly run a
+  // DV menu through the scalar path, which is not the transform the BD-J
+  // pre-inversion assumes. Wait for the session's next real Configure instead.
+  if (dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_session())
+    return false;
+
+  return ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay) != m_guiEncoding;
+}
+
 bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned int orientation)
 {
   m_sourceWidth = picture.iWidth;
@@ -81,15 +131,10 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // wasn't tagged PQ (OSD left sRGB, dim/desaturated), and a DV source forced to
   // SDR on an HDR display (OSD PQ-encoded then tone-mapped a second time).
   const unsigned int dv_output_mode(aml_dv_get_output_mode());
-  const bool core_is_pq(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_IPT ||
-                        dv_output_mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL ||
-                        dv_output_mode == DOLBY_VISION_OUTPUT_MODE_HDR10);
-  // BYPASS = no DV-core forcing: native path, PQ only when the stream itself is
-  // HDR PQ/HLG on an HDR display.
-  const bool native_is_pq(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
-    (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
-    CServiceBroker::GetWinSystem()->IsHDRDisplay());
-  const bool gui_is_pq(core_is_pq || native_is_pq);
+  m_isHdrDisplay = CServiceBroker::GetWinSystem()->IsHDRDisplay();
+  m_guiEncoding = ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay);
+  const bool core_is_pq(m_guiEncoding == GuiEncoding::Composite);
+  const bool gui_is_pq(m_guiEncoding != GuiEncoding::Srgb);
 
   // WHO OWNS the OSD plane's sRGB -> BT.2020 PQ encode decides what Kodi may do,
   // and the two output classes differ:
