@@ -55,6 +55,7 @@ void CDVDStreamInfo::Clear()
   aspect   = 0.0;
   vfr      = false;
   stills   = false;
+  pqAuthoredGraphics = false;
   level    = 0;
   profile  = 0;
   ptsinvalid = false;
@@ -103,6 +104,7 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
   || height != right.height
   || width != right.width
   || stills != right.stills
+  || pqAuthoredGraphics != right.pqAuthoredGraphics
   || level != right.level
   || profile != right.profile
   || ptsinvalid != right.ptsinvalid
@@ -222,6 +224,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   width    = right.width;
   aspect   = right.aspect;
   stills   = right.stills;
+  pqAuthoredGraphics = right.pqAuthoredGraphics;
   level    = right.level;
   profile  = right.profile;
   ptsinvalid = right.ptsinvalid;
