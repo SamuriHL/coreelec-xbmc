@@ -286,6 +286,10 @@ public:
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
   bool DiscHasDolbyVision();
 
+  /*! \brief Refresh m_pqAuthoredGraphics from the current playitem's STN table.
+   * Player thread only; call wherever m_clip changes. */
+  void UpdatePqAuthoredGraphics();
+
   void ProcessEvent();
   CDVDDemux* GetExtentionDemux() override { return m_pMVCDemux; };
   bool HasExtention() override { return m_bMVCPlayback; }
@@ -384,6 +388,31 @@ protected:
   // the repeated OpenDecoder calls of a movie-load transition (that flicker
   // baked half of the resume menu washed and half correct).
   bool m_dvDiscSession = false;
+
+  /*! \brief True while the CURRENT playitem's video is HDR, i.e. its graphics are
+   * authored in BT.2020 ST.2084 (PQ).
+   *
+   * BD-ROM 3.x keys the graphics regime on the playlist's dynamic range, not on
+   * whether the disc carries Dolby Vision: on any HDR playlist, BD-J and IG
+   * graphics are authored directly in BT.2020 PQ (they never pass through the DV
+   * composer). m_dvDiscSession only covers DV discs, so a plain HDR10 UHD had its
+   * PQ graphics treated as sRGB and encoded a second time - the washed grey-blue
+   * this pre-inversion exists to prevent.
+   *
+   * Taken from the clip's own STN table (bd_stream_info::dynamic_range_type), so
+   * it is disc-authored STATIC metadata that is stable for the whole playitem -
+   * deliberately not the volatile aml_dv_get_output_mode(), which flips across a
+   * movie-load transition and once baked half the resume menu washed.
+   *
+   * Resolved per PLAYLIST (with a first-clip fallback), refreshed wherever
+   * m_titleInfo is rebuilt as well as at BD_EVENT_PLAYITEM, and never reset to a
+   * "regime unknown" false while a playlist is being swapped - see
+   * UpdatePqAuthoredGraphics and FreeTitleInfo for why that stability matters.
+   *
+   * Atomic: written on the player thread, read per draw on the BD-J thread in
+   * OverlayCallbackARGB. */
+  std::atomic<bool> m_pqAuthoredGraphics{false};
+  bool m_pqRegimeLogged = false;
   int m_dispTimeBeforeRead = 0;
   int                 m_nTitles = -1;
   std::string         m_root;
