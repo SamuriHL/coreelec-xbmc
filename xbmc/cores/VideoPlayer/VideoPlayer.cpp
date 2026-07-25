@@ -5030,6 +5030,15 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     }
     case StreamType::SUBTITLE:
+#if defined(HAVE_LIBBLURAY)
+      // PG palettes are authored in BT.2020 PQ on an HDR title, exactly like
+      // BD-J overlays. The PG decoder is a plain ffmpeg overlay codec with no
+      // view of the input stream, so carry the disc's regime on the hint - the
+      // same way hint.stills is stamped for video above.
+      if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+              std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        hint.pqAuthoredGraphics = bluray->HasPqAuthoredGraphics();
+#endif
       res = OpenSubtitleStream(hint);
       break;
     case StreamType::TELETEXT:
