@@ -142,6 +142,16 @@ public:
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
   bool IsMenuDomainVideo();
+  /*! \brief True when the current playlist declares PQ-authored graphics, i.e.
+   * its video stream is HDR10 or Dolby Vision in the MPLS STN table.
+   *
+   * Both the BD-J overlay path and the PG (subtitle) palette path need the
+   * pre-invert in that case. The PG decoder is a separate codec with no view
+   * of the input stream, so CVideoPlayer stamps this onto the subtitle
+   * CDVDStreamInfo - the same way it stamps hint.stills from
+   * IsMenuDomainVideo(). Atomic: written on the player thread, read when a
+   * subtitle stream is opened. */
+  bool HasPqAuthoredGraphics() const { return m_pqAuthoredGraphics; }
   bool OnMouseMove(const CPoint &point) override  { return MouseMove(point); }
   bool OnMouseClick(const CPoint &point) override { return MouseClick(point); }
   void SkipStill() override;
