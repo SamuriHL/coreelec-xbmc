@@ -6,6 +6,7 @@
  *  See LICENSES/README.md for more information.
  */
 
+#include <atomic>
 #include <fcntl.h>
 #include <regex>
 #include <string.h>
@@ -476,7 +477,10 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 // GUI/OSD PQ-encoding gate in CRendererAML::Configure reads this so it follows
 // the real output the sink receives (PQ for IPT/IPT_TUNNEL/HDR10, SDR for
 // SDR10/SDR8) instead of guessing from the source hdrType + display capability.
-static unsigned int s_dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+// Atomic: written on the player thread from CAMLCodec::Open/CloseDecoder, read on
+// the render thread (CRendererAML::Configure) and per output picture from
+// CRendererAML::ConfigChanged.
+static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
 void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
