@@ -767,6 +767,42 @@ void CDVDInputStreamBluray::FreeTitleInfo()
 
   m_titleInfo = nullptr;
   m_clip = nullptr;
+  // m_pqAuthoredGraphics is deliberately NOT cleared here. FreeTitleInfo runs on
+  // the player thread as the first half of a playlist rebuild, while the BD-J
+  // thread keeps drawing; clearing it would open a window in which overlays are
+  // composed under a "regime unknown" reading and come out un-inverted, so a
+  // menu repainted across a playlist change would bake half washed and half
+  // correct - the exact defect the stable-signal rule exists to prevent. Holding
+  // the previous playlist's regime until the new one is known is both stable and
+  // almost always right (regimes rarely differ between adjacent playlists).
+}
+
+void CDVDInputStreamBluray::UpdatePqAuthoredGraphics()
+{
+  // STN tables are per-clip but the dynamic range is a property of the playlist,
+  // so fall back to the first clip when no PLAYITEM event has fired yet - the
+  // same idiom GetDiscStreamHdrMetadata uses. Without it the first draw of a
+  // menu can land before BD_EVENT_PLAYITEM and be composed un-inverted.
+  const BLURAY_CLIP_INFO* clip = m_clip;
+  if (!clip && m_titleInfo && m_titleInfo->clip_count > 0)
+    clip = &m_titleInfo->clips[0];
+
+  if (!clip || !clip->video_streams || clip->video_stream_count == 0)
+    return; // nothing authoritative to read; keep the last known regime
+
+  const uint8_t range = clip->video_streams[0].dynamic_range_type;
+  const bool pq = range != BLURAY_DYNAMIC_RANGE_SDR;
+
+  // Log the first resolution as well as every change: on a disc that reads SDR
+  // and stays SDR, a change-only log emits nothing and a field log cannot tell
+  // "read SDR" apart from "never ran".
+  if (!m_pqRegimeLogged || pq != m_pqAuthoredGraphics)
+    CLog::Log(LOGDEBUG,
+              "CDVDInputStreamBluray - playlist graphics regime: {} (dynamic_range_type {})",
+              pq ? "BT.2020 PQ, pre-inverting BD-J overlays" : "sRGB, no pre-inversion", range);
+  m_pqRegimeLogged = true;
+
+  m_pqAuthoredGraphics = pq;
 }
 
 std::shared_ptr<const BlurayTitleUiSnapshot> CDVDInputStreamBluray::BuildTitleUiSnapshot() const
@@ -930,6 +966,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
     {
       FreeTitleInfo();
       m_titleInfo = bd_get_playlist_info(m_bd, m_playlist, m_angle);
+      // FreeTitleInfo nulled m_clip and no PLAYITEM follows an angle re-announce
+      // mid-playitem, so re-derive the graphics regime from the new title info.
+      UpdatePqAuthoredGraphics();
       // same playlist, different angle: chapters/duration are unchanged in
       // practice - refresh the presented snapshot in place, no deferral
       m_titleUiPresented = BuildTitleUiSnapshot();
@@ -1015,6 +1054,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
       m_clip = &m_titleInfo->clips[m_event.param];
+    UpdatePqAuthoredGraphics();
     uint64_t clip_start, clip_in, bytepos;
     ret = bd_get_clip_infos(m_bd, m_event.param, &clip_start, &clip_in, &bytepos, nullptr);
     if (ret)
@@ -1724,13 +1764,26 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     overlay->pixels.resize(bytes);
     memcpy(overlay->pixels.data(), ov->argb, bytes);
 
-    // On a DV disc session the output plane is held PQ, so BD-J graphics arrive
-    // already BT.2020 PQ; convert to sRGB so the GUI composite's sRGB->2020->PQ
+    // BD-J graphics on an HDR playlist arrive already BT.2020 PQ; convert them to
+    // sRGB so the single forward sRGB->2020->PQ encode downstream (the GUI
+    // composite under DV output, or the VPP's own OSD stage on native HDR10)
     // reproduces the authored color instead of double-encoding it into a washed
-    // grey (see helper above). Gated on the STABLE per-session latch, not the
-    // live output mode - the latter flips during a movie-load transition and
-    // baked the resume menu half-washed.
-    if (m_dvDiscSession)
+    // grey (see helper above).
+    //
+    // Two STABLE signals, never the live output mode - that flips during a
+    // movie-load transition and baked the resume menu half-washed:
+    //   m_dvDiscSession       - whole-disc DV latch
+    //   m_pqAuthoredGraphics  - the playlist's authored dynamic range, which also
+    //                           covers a plain HDR10 UHD carrying no DV stream
+    //
+    // NOTE this is NOT a no-op for DV discs. m_dvDiscSession additionally requires
+    // a DV-capable display and the DV setting enabled, so the new term newly fires
+    // for a DV disc played (a) on an HDR10-only display - the validated profile-7
+    // FEL -> VS10 path - (b) with Dolby Vision disabled in settings, or (c) on an
+    // SDR display. In all three the graphics really are PQ-authored, so
+    // pre-inverting them is the correct call and the downstream encode is the VPP's
+    // or none at all, but those configurations have not been eyeballed on-box.
+    if (m_dvDiscSession || m_pqAuthoredGraphics)
     {
       uint32_t* p = reinterpret_cast<uint32_t*>(overlay->pixels.data());
       const size_t pixelCount = static_cast<size_t>(ov->stride) * ov->h;
@@ -2251,6 +2304,9 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
   FreeTitleInfo();
 
   m_titleInfo = bd_get_playlist_info(m_bd, playitem, m_angle);
+  // Establish this playlist's graphics regime before any BD-J draw can arrive;
+  // BD_EVENT_PLAYITEM refines it per clip afterwards.
+  UpdatePqAuthoredGraphics();
   LogTitleAppInfo();
 
   // bootstrap only: the very first playlist has no pipeline in front of it,
@@ -2670,6 +2726,7 @@ bool CDVDInputStreamBluray::SetState(const std::string& xmlstate)
   }
 
   m_titleInfo = bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
+  UpdatePqAuthoredGraphics();
   if (!m_titleInfo)
   {
     CLog::LogF(LOGERROR, "Open - failed to get title info");
