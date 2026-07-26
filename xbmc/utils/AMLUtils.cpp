@@ -939,6 +939,20 @@ void aml_dv_apply_vsvdb()
             __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
 }
 
+// CMv4.0 append live-apply generation. Bumped from the settings thread, read by
+// the codec thread per packet (see CDVDVideoCodecAmlogic::ApplyCmv40Settings).
+static std::atomic<unsigned int> s_cmv40SettingsGen{0};
+
+void aml_dv_cmv40_settings_changed()
+{
+  s_cmv40SettingsGen.fetch_add(1, std::memory_order_release);
+}
+
+unsigned int aml_dv_cmv40_settings_generation()
+{
+  return s_cmv40SettingsGen.load(std::memory_order_acquire);
+}
+
 int aml_display_vsvdb_max_nits()
 {
   // single source of truth for the VSVDB parse + v2 luminance LUT (the codec
