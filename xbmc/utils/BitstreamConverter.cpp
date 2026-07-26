@@ -2244,17 +2244,39 @@ int max_pq_to_nits(int pq)
 // Append CMv4.0 safe-default metadata to a CMv2.9 RPU (in place; caller emits).
 // No-op if already CMv4.0 (level254 present) or the mode does not call for an
 // append on this stream (NO_L2 requires an empty L2 block).
-bool AppendCMv40(DOVICMv40Mode mode, const DoviVdrDmData* vdr, DoviRpuOpaque* rpu)
+//
+// Reports WHICH of those outcomes occurred rather than a bare bool: the caller
+// logs it, and CMV40_APPEND_FAILED is otherwise undetectable on-box.
+DOVICMv40AppendResult AppendCMv40(DOVICMv40Mode mode,
+                                  const DoviVdrDmData* vdr,
+                                  DoviRpuOpaque* rpu)
 {
   if (!vdr || !rpu)
-    return false;
+    return CMV40_APPEND_NO_DM_DATA;
   if (vdr->dm_data.level254)
-    return false;
+    return CMV40_APPEND_ALREADY;
   const bool level2IsEmpty = (vdr->dm_data.level2.len == 0);
   const bool shouldAppend = (mode == CMV40_ALWAYS) || level2IsEmpty;
   if (!shouldAppend)
-    return false;
-  return dovi_rpu_add_cmv40_safe_default_metadata(rpu) == 1;
+    return CMV40_APPEND_NOT_WANTED;
+  // libdovi: 1 = metadata inserted, 0 = RPU already had CMv4.0, -1 = error.
+  const int ret = dovi_rpu_add_cmv40_safe_default_metadata(rpu);
+  if (ret == 1)
+    return CMV40_APPEND_ADDED;
+  return ret == 0 ? CMV40_APPEND_ALREADY : CMV40_APPEND_FAILED;
+}
+
+const char* Cmv40AppendResultName(DOVICMv40AppendResult r)
+{
+  switch (r)
+  {
+    case CMV40_APPEND_ADDED:      return "metadata added";
+    case CMV40_APPEND_ALREADY:    return "no change - RPU already carries CMv4.0";
+    case CMV40_APPEND_NOT_WANTED: return "skipped - mode does not append to this RPU";
+    case CMV40_APPEND_NO_DM_DATA: return "skipped - RPU has no VDR DM data";
+    case CMV40_APPEND_FAILED:     return "FAILED - libdovi rejected the append";
+  }
+  return "unknown";
 }
 } // namespace
 
@@ -2408,8 +2430,24 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
         m_smart_last_effective = effectiveMode;
       }
     }
-    if (effectiveMode != CMV40_NONE && AppendCMv40(effectiveMode, vdr, rpu))
-      processed = true;
+    if (effectiveMode != CMV40_NONE)
+    {
+      const DOVICMv40AppendResult appendResult = AppendCMv40(effectiveMode, vdr, rpu);
+      if (appendResult == CMV40_APPEND_ADDED)
+        processed = true;
+      // What the RPU actually GOT. The Smart lines above only report the
+      // decision, and the L5 stage has usually already set `processed`, so
+      // without this an append that never happened is invisible in the log.
+      // First attempt + every outcome change: one line per healthy stream.
+      if (!m_cmv40_append_result_logged || appendResult != m_cmv40_last_append_result)
+      {
+        CLog::Log(appendResult == CMV40_APPEND_FAILED ? LOGERROR : LOGINFO,
+                  "CBitstreamConverter::processDoviRpu - CMv4.0 append -> {}",
+                  Cmv40AppendResultName(appendResult));
+        m_cmv40_append_result_logged = true;
+        m_cmv40_last_append_result = appendResult;
+      }
+    }
     if (vdr)
       dovi_rpu_free_vdr_dm_data(vdr);
   }
