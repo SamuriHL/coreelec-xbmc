@@ -367,6 +367,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
                 dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
             const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
                                  m_hints.dovi.dv_profile == 8);
+            // Run the RPU processing (L5 / CMv4.0 append) on already-annex-b
+            // input (TS/M2TS) too - the hvcC and dual-layer disc paths always
+            // process, but the annex-b path used to require the S5-only
+            // profile-7 -> 8.1 conversion flag and silently skipped it.
+            m_bitstream->SetProcessDoviRpu(realDV);
             const int cw = m_hints.width, ch = m_hints.height;
             const bool preCropped = realDV && cw > 0 && ch > 0 &&
                                     ((cw * 9 / 16 > ch + 40) || (ch * 16 / 9 > cw + 40));
