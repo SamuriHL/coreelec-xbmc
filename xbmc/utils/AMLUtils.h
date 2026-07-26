@@ -73,6 +73,12 @@ bool aml_support_avs3();
 bool aml_support_dolby_vision();
 bool aml_dolby_vision_enabled();
 bool aml_dv_core_active();
+// True when this stream will leave the box as player-led low-latency Dolby
+// Vision (LLDV): the DV LED setting is player-led AND the output stays Dolby
+// Vision (i.e. VS10 is not converting it to HDR10/SDR). In that mode the sink
+// re-acquires DV on any mid-stream CM version change, so the per-frame Smart
+// CMv4.0 decision has to be pinned.
+bool aml_dv_lldv_output_active();
 bool aml_dv_source_engages_core();
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
 bool aml_display_support_hdr_pq();
