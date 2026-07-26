@@ -105,6 +105,10 @@ protected:
   void            DrainMetadataToClock();
   double          RenderDisplayLatency();
   void            FrameRateTracking(uint8_t *pData, int iSize, double dts, double pts);
+  // Read the CMv4.0 append settings (mode / Smart threshold / display peak) and
+  // push them to m_bitstream. Called at stream open and again from AddData when
+  // the settings generation moves, so changing them mid-playback takes effect.
+  void            ApplyCmv40Settings();
   //void            RemoveInfo(CDVDAmlogicInfo* info);
 
   std::shared_ptr<CAMLCodec> m_Codec;
@@ -129,6 +133,11 @@ protected:
   // HDR10+ -> DV 8.1 convert armed at Open; the DV engage decision is deferred to
   // AddData once the bitstream confirms HDR10+ (covers file sources too).
   bool            m_hdr10plusToDvCandidate = false;
+  // CMv4.0 append live-apply: false until the stream configures CMv4.0 at all
+  // (non-DV / DV-disabled streams never re-push), plus the settings generation
+  // this codec last consumed.
+  bool            m_cmv40Configured{false};
+  unsigned int    m_cmv40SettingsGen{0};
 
   CBitstreamParser *m_bitparser;
   CBitstreamConverter *m_bitstream;
