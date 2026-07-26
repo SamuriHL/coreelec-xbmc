@@ -630,7 +630,7 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
         }
         else
         {
-          if (m_convert_dovi)
+          if (m_convert_dovi || m_process_dovi_rpu)
           {
             uint32_t nal_buf_size = iSize;
             AVIOContext *pb;
@@ -681,11 +681,14 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
               }
               else
               {
-                if (nal_type != HEVC_NAL_UNSPEC63)
+                // Drop the enhancement layer only for the profile-7 -> 8.1
+                // conversion; in RPU-processing-only mode (L5/CMv4.0 on an
+                // annex-b stream) the in-band EL must survive for FEL/MEL.
+                if (nal_type != HEVC_NAL_UNSPEC63 || !m_convert_dovi)
                   BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
               }
 
-              if (nal_type != HEVC_NAL_UNSPEC63)
+              if (nal_type != HEVC_NAL_UNSPEC63 || !m_convert_dovi)
                 CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: nal_type: {}, size: {}",
                   nal_type, size);
 

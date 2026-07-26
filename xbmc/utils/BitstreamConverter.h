@@ -152,6 +152,12 @@ public:
   void ResetStartDecode();
   bool CanStartDecode() const;
   void SetConvertDovi(bool value) { m_convert_dovi = value; }
+  // Real DV RPU stream (profile 5/7/8): run processDoviRpu on the already-
+  // annex-b single-stream path too (TS/M2TS input), so L5 active-area and
+  // CMv4.0 append apply there like they do on the hvcC and dual-layer paths.
+  // Without this, that path only processed the RPU when the profile-7 -> 8.1
+  // conversion (m_convert_dovi, S5-only) was active.
+  void SetProcessDoviRpu(bool value) { m_process_dovi_rpu = value; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
   // HDR10+ -> Dolby Vision profile 8.1: synthesize a DV RPU from HDR10+ dynamic
@@ -261,6 +267,7 @@ protected:
   AVCodecID m_codec;
   bool m_start_decode;
   bool m_convert_dovi;
+  bool m_process_dovi_rpu{false};
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   int m_doviL5Mode{DOVI_L5_SOURCE};
