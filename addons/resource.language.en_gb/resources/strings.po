@@ -25670,7 +25670,7 @@ msgstr ""
 #. Description of setting with label #60320 "Append CMv4.0 metadata"
 #: system/settings/settings.xml
 msgctxt "#60321"
-msgid "Append Dolby Vision CMv4.0 metadata to CMv2.9 titles. \"Smart\" appends per-frame unless the frame's content peak exceeds the display's peak brightness by the threshold, in which case CMv2.9 is kept so its L2 trims apply. Requires a Dolby Vision display in TV-led mode."
+msgid "Append Dolby Vision CMv4.0 metadata to CMv2.9 titles. \"Smart\" appends per-frame unless the frame's content peak exceeds the display's peak brightness by the threshold, in which case CMv2.9 is kept so its L2 trims apply. \"Smart\" is not available on player-led Dolby Vision output: switching the CM version mid-stream makes the display re-acquire Dolby Vision, so \"Smart\" behaves as plain \"Always\" there. It works per-frame for TV-led Dolby Vision output and for VS10 HDR10/SDR output."
 msgstr ""
 
 msgctxt "#60322"
@@ -25842,7 +25842,7 @@ msgstr ""
 #. Description of setting with label #60340
 #: system/settings/settings.xml
 msgctxt "#60341"
-msgid "Inject the peak luminance set above into the display's Dolby Vision VSVDB (EDID), so the DV engine actually tone-maps for that brightness instead of the value the TV advertises. Useful when the TV over- or under-reports its real peak. Only the max-luminance field is changed; all other VSVDB data is kept. Snapped to the nearest Dolby PQ step. Requires a display with a v2 VSVDB and a peak value above (0 = auto does nothing)."
+msgid "Inject the peak luminance set above into the display's Dolby Vision VSVDB (EDID), so the DV engine actually tone-maps for that brightness instead of the value the TV advertises. Useful when the TV over- or under-reports its real peak. Only the max-luminance field is changed; all other VSVDB data is kept. Snapped to the nearest Dolby PQ step. Requires a display with a v2 VSVDB and a peak value above (0 = auto does nothing). On player-led (low-latency) Dolby Vision output the DV engine takes its target peak from the VSVDB, and the peak is additionally capped to each title's own mastering peak - so a value set here can be lowered, but never raised, for content graded below it."
 msgstr ""
 
 #. Label of Dolby Vision VSVDB colour-space override setting
