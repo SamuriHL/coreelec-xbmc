@@ -307,6 +307,21 @@ bool aml_dv_core_active()
          aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS;
 }
 
+bool aml_dv_lldv_output_active()
+{
+  // Player-led is signalled to the sink as low-latency DV (dolby_vision_ll_policy
+  // = LL_YUV422, see CAMLCodec::OpenDecoder). It only actually reaches the wire as
+  // DV when VS10 is leaving the output as Dolby Vision - a VS10 conversion to
+  // HDR10/SDR carries no DV signal at all, so none of the LLDV constraints apply.
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
+    return false;
+  const unsigned int mode = aml_dv_get_vs10_pending();
+  return mode != DOLBY_VISION_OUTPUT_MODE_HDR10 &&
+         mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
+         mode != DOLBY_VISION_OUTPUT_MODE_SDR8;
+}
+
 bool aml_dv_source_engages_core()
 {
   // Whether a Dolby Vision *source* will be processed by the DV core: natively on

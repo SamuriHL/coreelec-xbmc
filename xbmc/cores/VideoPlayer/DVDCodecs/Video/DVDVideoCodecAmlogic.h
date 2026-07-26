@@ -138,6 +138,7 @@ protected:
   // this codec last consumed.
   bool            m_cmv40Configured{false};
   unsigned int    m_cmv40SettingsGen{0};
+  bool            m_cmv40SmartPinnedLogged{false};
 
   CBitstreamParser *m_bitparser;
   CBitstreamConverter *m_bitstream;
