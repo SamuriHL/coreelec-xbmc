@@ -110,6 +110,20 @@ enum DOVICMv40Mode : int
   CMV40_SMART,      // per-frame: append unless content peak > display*(1+pct)
 };
 
+// What actually happened to the RPU when an append was attempted. The Smart
+// decision logging says what we DECIDED; this says what the RPU GOT, which is
+// not inferable from the rest of the log: the L5 stage has usually already
+// flagged the RPU for re-serialisation, so a libdovi append that silently did
+// nothing looks identical to one that worked.
+enum DOVICMv40AppendResult : int
+{
+  CMV40_APPEND_ADDED = 0,    // CMv4.0 metadata inserted
+  CMV40_APPEND_ALREADY,      // RPU already carried CMv4.0 - nothing to do
+  CMV40_APPEND_NOT_WANTED,   // mode does not call for an append on this RPU
+  CMV40_APPEND_NO_DM_DATA,   // RPU carries no VDR DM data to extend
+  CMV40_APPEND_FAILED,       // libdovi refused or errored
+};
+
 // DV Level 5 (active-area / letterbox) handling for the RPU. See
 // CBitstreamConverter::processDoviRpu.
 enum DOVIL5Mode : int
@@ -172,9 +186,11 @@ public:
   // (still never overriding a real source L5).
   void SetDoviL5Geometric(bool value) { m_doviL5Geometric = value; }
   // CMv4.0 append: mode + smart-bypass inputs. Set the two bypass inputs
-  // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinel). The
-  // bypass inputs are only consulted when the mode is CMV40_SMART.
-  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; m_cmv40_native_logged = false; }
+  // BEFORE SetAppendCMv40 (it resets the per-decision logging sentinels). The
+  // bypass inputs are only consulted when the mode is CMV40_SMART. Safe to
+  // re-call mid-stream (live-apply); the sentinel reset re-states the current
+  // decision and append outcome once, rather than per frame.
+  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; m_cmv40_native_logged = false; m_cmv40_append_result_logged = false; }
   void SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
   void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
@@ -261,6 +277,10 @@ protected:
   int m_smart_threshold_pct{20};
   DOVICMv40Mode m_smart_last_effective{CMV40_SMART};
   bool m_cmv40_native_logged{false};
+  // append-outcome logging: emit on the first attempt and whenever the outcome
+  // changes, so a healthy stream costs one line but a failure cannot hide
+  bool m_cmv40_append_result_logged{false};
+  DOVICMv40AppendResult m_cmv40_last_append_result{CMV40_APPEND_ADDED};
   bool m_doviIsFEL{false};
   bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
