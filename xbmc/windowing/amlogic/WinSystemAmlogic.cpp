@@ -447,11 +447,15 @@ bool CWinSystemAmlogic::InitWindowSystem()
     vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10DV", VS10DvFiller);
 
     // Live-apply the VSVDB max-luminance override when the shared display-peak
-    // value or the force toggle changes during DV playback.
+    // value or the force toggle changes during DV playback, and the CMv4.0
+    // append mode / Smart threshold when those change (both used to be latched
+    // at stream open, so changing them mid-playback appeared to do nothing).
     vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE});
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD});
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -513,6 +517,19 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     return;
 
   const std::string& settingId = setting->GetId();
+
+  // CMv4.0 append mode / Smart threshold: publish to the codec, which re-pushes
+  // them to its bitstream converter on the next packet. Unconditional - the
+  // generation counter is inert when nothing is decoding, and a stream opening
+  // later reads the settings directly anyway. display.maxnits feeds BOTH this
+  // and the VSVDB inject below; bumping it here is what keeps the Smart bypass
+  // threshold and the peak the amdv core tone-maps to from diverging when the
+  // slider moves mid-playback.
+  if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND ||
+      settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD ||
+      settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS)
+    aml_dv_cmv40_settings_changed();
+
   if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&

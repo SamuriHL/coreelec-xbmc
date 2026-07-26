@@ -404,31 +404,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           }
 
           // Smart CMv4.0 append: push mode + smart-bypass inputs to the
-          // bitstream (read once at stream open, like the DV settings above).
+          // bitstream. Re-applied live from AddData when the settings change.
           if (!user_dv_disable)
           {
-            const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-            const int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
-            if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
-            {
-              // Display peak nits for the Smart bypass threshold. The same
-              // display.maxnits value also drives the VSVDB force-inject (see
-              // aml_dv_apply_vsvdb), so the Smart threshold and the peak the amdv
-              // core tone-maps to stay consistent by construction. 0 = auto-read
-              // the display's real VSVDB (EDID) max luminance and fill the field.
-              int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
-              if (nits <= 0)
-              {
-                nits = GetDisplayVsvdbMaxNits();
-                if (nits > 0)
-                  settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS, nits);
-              }
-              // set the bypass inputs BEFORE the mode (SetAppendCMv40 resets the sentinel)
-              m_bitstream->SetSmartBypassDisplayNits(nits);
-              m_bitstream->SetSmartBypassThresholdPct(
-                  settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
-            }
-            m_bitstream->SetAppendCMv40(static_cast<DOVICMv40Mode>(cmv40));
+            m_cmv40Configured = true;
+            ApplyCmv40Settings();
           }
         }
       }
@@ -622,6 +602,40 @@ void CDVDVideoCodecAmlogic::Close(void)
   m_opened = false;
 }
 
+void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
+{
+  if (!m_bitstream)
+    return;
+
+  // Snapshot the generation BEFORE reading the values: a change landing between
+  // the two reads then just re-applies on the next packet, rather than being
+  // swallowed by a generation we never actually consumed.
+  m_cmv40SettingsGen = aml_dv_cmv40_settings_generation();
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
+  {
+    // Display peak nits for the Smart bypass threshold. The same display.maxnits
+    // value also drives the VSVDB force-inject (see aml_dv_apply_vsvdb); because
+    // that setting live-applies, the Smart threshold has to follow it here or the
+    // two silently diverge mid-playback. 0 = auto-read the display's real VSVDB
+    // (EDID) max luminance and fill the field.
+    int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+    if (nits <= 0)
+    {
+      nits = GetDisplayVsvdbMaxNits();
+      if (nits > 0)
+        settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS, nits);
+    }
+    // set the bypass inputs BEFORE the mode (SetAppendCMv40 resets the sentinels)
+    m_bitstream->SetSmartBypassDisplayNits(nits);
+    m_bitstream->SetSmartBypassThresholdPct(
+        settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
+  }
+  m_bitstream->SetAppendCMv40(static_cast<DOVICMv40Mode>(cmv40));
+}
+
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 {
   // Handle Input, add demuxer packet to input queue, we must accept it or
@@ -681,6 +695,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         m_bitstream->SetDoviL5DetectedOffsets(l5valid, l5t, l5b, l5l, l5r);
         // osdst: refresh overlay (OSD/subtitle) visibility for the L5 un-mask.
         m_bitstream->SetDoviL5OverlayVisible(aml_dv_l5_overlay_visible());
+      }
+
+      // CMv4.0 append settings changed while this stream is decoding: re-push
+      // them so the mode / Smart threshold / display peak take effect now
+      // instead of at the next stream open. Gated on the generation counter
+      // because re-pushing the mode resets the per-decision logging sentinels.
+      if (m_cmv40Configured && aml_dv_cmv40_settings_generation() != m_cmv40SettingsGen)
+      {
+        CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{} - CMv4.0 append settings changed - "
+                           "re-applying to the live stream", __FUNCTION__);
+        ApplyCmv40Settings();
       }
 
       // Merge BL+EL whenever the DV core will actually run -- including the VS10
