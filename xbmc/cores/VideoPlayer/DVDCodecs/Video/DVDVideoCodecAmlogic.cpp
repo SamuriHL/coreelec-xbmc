@@ -613,7 +613,25 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
   m_cmv40SettingsGen = aml_dv_cmv40_settings_generation();
 
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  // Smart is per-frame by design, and a mid-stream CM2.9<->4.0 change rewrites the
+  // RPU's block set (L3/L9/L254/L11). On player-led DV output the sink re-acquires
+  // Dolby Vision on that change - a visible black frame plus the TV's DV banner,
+  // several times a minute. Pin Smart to plain append there; the setting still
+  // behaves per-frame for TV-led DV and for VS10 HDR10/SDR output, where the CM
+  // version never reaches the wire.
+  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART && aml_dv_lldv_output_active())
+  {
+    if (!m_cmv40SmartPinnedLogged)
+    {
+      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{} - CMv4.0 Smart is not available on "
+                         "player-led (low-latency) Dolby Vision output - using append "
+                         "instead; per-frame switching would re-latch the display",
+                __FUNCTION__);
+      m_cmv40SmartPinnedLogged = true;
+    }
+    cmv40 = CMV40_ALWAYS;
+  }
   if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
   {
     // Display peak nits for the Smart bypass threshold. The same display.maxnits
