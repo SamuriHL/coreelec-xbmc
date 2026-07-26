@@ -155,6 +155,14 @@ bool aml_disc_mode_hold();
 // Injection-aware: reads the cached panel block, not dv_cap (which reports
 // the injected block while an override is live).
 int aml_display_vsvdb_max_nits();
+// CMv4.0 append settings (mode / Smart threshold / display peak) live-apply.
+// The settings thread bumps a generation counter; the codec compares it per
+// packet and re-pushes the settings to its CBitstreamConverter when it moves.
+// A counter rather than the values themselves because re-pushing the mode
+// resets the per-decision logging sentinels - it must happen on change only,
+// not every packet.
+void aml_dv_cmv40_settings_changed();
+unsigned int aml_dv_cmv40_settings_generation();
 // Dolby Vision L5 active-area detection: a background thread software-decodes the
 // playing file and finds the letterbox/pillarbox bars from luma; the offsets are
 // injected into the DV RPU by CBitstreamConverter (no kernel params).
