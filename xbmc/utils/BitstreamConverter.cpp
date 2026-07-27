@@ -2245,6 +2245,9 @@ int max_pq_to_nits(int pq)
 }
 
 // Append CMv4.0 safe-default metadata to a CMv2.9 RPU (in place; caller emits).
+// L8 trim blocks are synthesised from the stream's L2 trims: in CM v4.0 the DM
+// computes its trims from L8 ONLY, so an append without L8 silently drops the
+// authored trims (the original motivation for the Smart per-frame bypass).
 // No-op if already CMv4.0 (level254 present) or the mode does not call for an
 // append on this stream (NO_L2 requires an empty L2 block).
 //
@@ -2262,8 +2265,11 @@ DOVICMv40AppendResult AppendCMv40(DOVICMv40Mode mode,
   const bool shouldAppend = (mode == CMV40_ALWAYS) || level2IsEmpty;
   if (!shouldAppend)
     return CMV40_APPEND_NOT_WANTED;
-  // libdovi: 1 = metadata inserted, 0 = RPU already had CMv4.0, -1 = error.
-  const int ret = dovi_rpu_add_cmv40_safe_default_metadata(rpu);
+  // libdovi: 2 = inserted + L8 from L2, 1 = inserted (no L2 trims),
+  //          0 = RPU already had CMv4.0, -1 = error.
+  const int ret = dovi_rpu_add_cmv40_metadata_with_l8_trims(rpu);
+  if (ret == 2)
+    return CMV40_APPEND_ADDED_TRIMS;
   if (ret == 1)
     return CMV40_APPEND_ADDED;
   return ret == 0 ? CMV40_APPEND_ALREADY : CMV40_APPEND_FAILED;
@@ -2273,11 +2279,12 @@ const char* Cmv40AppendResultName(DOVICMv40AppendResult r)
 {
   switch (r)
   {
-    case CMV40_APPEND_ADDED:      return "metadata added";
-    case CMV40_APPEND_ALREADY:    return "no change - RPU already carries CMv4.0";
-    case CMV40_APPEND_NOT_WANTED: return "skipped - mode does not append to this RPU";
-    case CMV40_APPEND_NO_DM_DATA: return "skipped - RPU has no VDR DM data";
-    case CMV40_APPEND_FAILED:     return "FAILED - libdovi rejected the append";
+    case CMV40_APPEND_ADDED:       return "metadata added (stream has no L2 trims)";
+    case CMV40_APPEND_ADDED_TRIMS: return "metadata added - L2 trims carried into L8";
+    case CMV40_APPEND_ALREADY:     return "no change - RPU already carries CMv4.0";
+    case CMV40_APPEND_NOT_WANTED:  return "skipped - mode does not append to this RPU";
+    case CMV40_APPEND_NO_DM_DATA:  return "skipped - RPU has no VDR DM data";
+    case CMV40_APPEND_FAILED:      return "FAILED - libdovi rejected the append";
   }
   return "unknown";
 }
@@ -2436,7 +2443,7 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     if (effectiveMode != CMV40_NONE)
     {
       const DOVICMv40AppendResult appendResult = AppendCMv40(effectiveMode, vdr, rpu);
-      if (appendResult == CMV40_APPEND_ADDED)
+      if (appendResult == CMV40_APPEND_ADDED || appendResult == CMV40_APPEND_ADDED_TRIMS)
         processed = true;
       // What the RPU actually GOT. The Smart lines above only report the
       // decision, and the L5 stage has usually already set `processed`, so
