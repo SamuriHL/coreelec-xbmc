@@ -117,7 +117,8 @@ enum DOVICMv40Mode : int
 // nothing looks identical to one that worked.
 enum DOVICMv40AppendResult : int
 {
-  CMV40_APPEND_ADDED = 0,    // CMv4.0 metadata inserted
+  CMV40_APPEND_ADDED = 0,    // CMv4.0 metadata inserted (stream had no L2 trims)
+  CMV40_APPEND_ADDED_TRIMS,  // inserted + L8 synthesised from the stream's L2 trims
   CMV40_APPEND_ALREADY,      // RPU already carried CMv4.0 - nothing to do
   CMV40_APPEND_NOT_WANTED,   // mode does not call for an append on this RPU
   CMV40_APPEND_NO_DM_DATA,   // RPU carries no VDR DM data to extend
