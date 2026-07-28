@@ -24,6 +24,7 @@
 #include "windowing/WinSystem.h"
 
 #include <cstddef>
+#include <optional>
 #include <utility>
 
 using namespace KODI::VIDEO::SUBTITLES;
@@ -344,10 +345,15 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
     // value would decode to the wrong luminance.
     const bool prePQ = m_pqAuthoredGraphics &&
                        m_pCodecContext->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+    // Built once for the whole palette - the constructor resolves the GUI
+    // reference white, so it must not be reconstructed per entry.
+    std::optional<PQGRAPHICS::CPQGraphicsTransform> transform;
+    if (prePQ)
+      transform.emplace();
     for (int i = 0; i < rect.nb_colors; i++)
     {
       const uint32_t px = Endian_SwapLE32(((uint32_t*)rect.data[1])[i]);
-      overlay->palette[i] = prePQ ? PQGRAPHICS::PQ2020ToSrgb709(px) : px;
+      overlay->palette[i] = transform ? transform->Convert(px) : px;
     }
 
     // CProcessInfo would be the natural owner of the source stereo layout, but it is not
