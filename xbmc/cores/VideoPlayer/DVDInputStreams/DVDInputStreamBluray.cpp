@@ -800,7 +800,9 @@ void CDVDInputStreamBluray::UpdatePqAuthoredGraphics()
   if (!m_pqRegimeLogged || pq != m_pqAuthoredGraphics)
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamBluray - playlist graphics regime: {} (dynamic_range_type {})",
-              pq ? "BT.2020 PQ, pre-inverting BD-J overlays" : "sRGB, no pre-inversion", range);
+              pq ? "BT.2020 PQ, pre-inverting BD-J and HDMV overlays"
+                 : "sRGB, no pre-inversion",
+              range);
   m_pqRegimeLogged = true;
 
   m_pqAuthoredGraphics = pq;
@@ -1328,15 +1330,48 @@ static uint8_t  clamp(double v)
   return (v) > 255.0 ? 255 : ((v) < 0.0 ? 0 : static_cast<uint32_t>((v + 0.5)));
 }
 
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e)
+// HDMV palette entry (interactive-graphics menus, and PG rendered by libbluray's
+// graphics controller) -> packed RGBA.
+//
+// The palette's colour space follows the PLAYLIST, exactly as BD-J ARGB does:
+// an SDR playlist authors BT.601 Y'CbCr, an HDR/DV playlist authors BT.2020
+// ST.2084 (PQ) Y'CbCr (BD-ROM 3.x). Decoding a BT.2020 PQ CLUT with the BT.601
+// matrix and then handing it to a pipeline that treats overlays as sRGB washes
+// HDMV menus exactly the way BD-J overlays washed before 27eb9a2d61 - wrong hue
+// from the wrong matrix, then crushed and desaturated by the double encode.
+//
+// Both halves are therefore gated on the same stable regime signal the BD-J and
+// PG-subtitle paths use. On an SDR playlist this stays bit-for-bit the old
+// BT.601 conversion, which is what keeps currently-correct HDMV discs (Halo's
+// menus are on an SDR playlist) unchanged.
+//
+// Coefficients are limited-range 8-bit: Y scaled 255/219, chroma 255/224, over
+// BT.2020 non-constant-luminance Kr=0.2627 Kb=0.0593.
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e, bool pqAuthored)
 {
-  double r = 1.164 * (e.Y - 16)                        + 1.596 * (e.Cr - 128);
-  double g = 1.164 * (e.Y - 16) - 0.391 * (e.Cb - 128) - 0.813 * (e.Cr - 128);
-  double b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
-  return static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
-       | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
-       | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
-       | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
+  double r, g, b;
+  if (pqAuthored)
+  {
+    r = 1.164384 * (e.Y - 16)                             + 1.678706 * (e.Cr - 128);
+    g = 1.164384 * (e.Y - 16) - 0.187326 * (e.Cb - 128)   - 0.650424 * (e.Cr - 128);
+    b = 1.164384 * (e.Y - 16) + 2.141766 * (e.Cb - 128);
+  }
+  else
+  {
+    r = 1.164 * (e.Y - 16)                        + 1.596 * (e.Cr - 128);
+    g = 1.164 * (e.Y - 16) - 0.391 * (e.Cb - 128) - 0.813 * (e.Cr - 128);
+    b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
+  }
+
+  const uint32_t px = static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
+                    | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
+                    | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
+                    | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
+
+  // Pre-invert to sRGB so exactly one forward sRGB->2020->PQ encode remains
+  // downstream. Safe to apply to the packed value: build_rgba does not
+  // premultiply, and PQ2020ToSrgb709 passes alpha through untouched.
+  return pqAuthored ? PQGRAPHICS::PQ2020ToSrgb709(px) : px;
 }
 
 // --- BD-J HDR menu graphics: recover authored color for the PQ GUI composite ---
@@ -1553,6 +1588,14 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   std::unique_lock lock(m_overlayLock);
   SPlane& plane(m_planes[ov->plane]);
 
+  // Authored-graphics regime for this disc/playlist, read from the same two
+  // STABLE signals the BD-J ARGB path uses (never the live output mode - it
+  // flips across a movie-load's OpenDecoder churn and bakes a half-converted
+  // composition). Decides both the YCbCr matrix and the PQ pre-invert in
+  // build_rgba, keeping HDMV menus consistent with BD-J overlays and PG
+  // subtitles on the same disc.
+  const bool pqGraphics = m_dvDiscSession || m_pqAuthoredGraphics;
+
   if (ov->cmd == BD_OVERLAY_CLEAR)
   {
     plane.o.clear();
@@ -1587,7 +1630,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     {
       std::vector<uint32_t> pal(256);
       for (unsigned i = 0; i < 256; i++)
-        pal[i] = build_rgba(ov->palette[i]);
+        pal[i] = build_rgba(ov->palette[i], pqGraphics);
       for (SOverlay& o : plane.o)
       {
         if (o->palette.empty())
@@ -1617,7 +1660,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
       overlay->palette.resize(256);
 
       for(unsigned i = 0; i < 256; i++)
-        overlay->palette[i] = build_rgba(ov->palette[i]);
+        overlay->palette[i] = build_rgba(ov->palette[i], pqGraphics);
     }
     else
       overlay->palette.clear();
