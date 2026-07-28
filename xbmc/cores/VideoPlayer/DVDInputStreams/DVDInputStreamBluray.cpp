@@ -1418,7 +1418,9 @@ static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e)
 // disc (sRGB graphics VS10-mapped to DV output) would be over-inverted; not seen
 // on tested discs (Superman menus are all PQ-authored), documented as a risk.
 // The transform itself lives in PQGraphicsTransform so the PG (subtitle)
-// palette path can apply the identical decode - see PQ2020ToSrgb709.
+// palette path can apply the identical decode - see CPQGraphicsTransform. It
+// resolves the GUI reference white from the same source the composite uses, so
+// decode and encode stay exact inverses of each other.
 
 void CDVDInputStreamBluray::OverlayClose()
 {
@@ -1753,12 +1755,15 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // or none at all, but those configurations have not been eyeballed on-box.
     if (m_dvDiscSession || m_pqAuthoredGraphics)
     {
+      // One transform per composition: it resolves the GUI reference white and
+      // bakes it into a decode LUT, so it must not be rebuilt per pixel.
+      const PQGRAPHICS::CPQGraphicsTransform transform;
       uint32_t* p = reinterpret_cast<uint32_t*>(overlay->pixels.data());
       const size_t pixelCount = static_cast<size_t>(ov->stride) * ov->h;
       for (size_t i = 0; i < pixelCount; ++i)
       {
         if (p[i] & (0xffu << PIXEL_ASHIFT)) // skip fully transparent pixels
-          p[i] = PQGRAPHICS::PQ2020ToSrgb709(p[i]);
+          p[i] = transform.Convert(p[i]);
       }
     }
 
