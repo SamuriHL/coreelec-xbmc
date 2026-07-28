@@ -8,6 +8,7 @@
 
 #include "GuiCompositeShaderGLES.h"
 
+#include "cores/VideoPlayer/PQGraphicsTransform.h"
 #include "utils/log.h"
 
 extern "C"
@@ -33,19 +34,9 @@ float ForwardPQ(float L)
   return std::pow((ST2084_c1 + ST2084_c2 * Lm1) / (1.0f + ST2084_c3 * Lm1), ST2084_m2);
 }
 
-// ST2084 EOTF: PQ code -> PQ-normalized luminance (nits / 10000). Exact inverse
-// of ForwardPQ, kept beside it so the constants are never duplicated elsewhere.
-float InversePQ(float E)
-{
-  if (E <= 0.0f)
-    return 0.0f;
-  const float Em2 = std::pow(std::min(E, 1.0f), 1.0f / ST2084_m2);
-  const float num = std::max(Em2 - ST2084_c1, 0.0f);
-  const float den = ST2084_c2 - ST2084_c3 * Em2;
-  if (den <= 0.0f)
-    return 1.0f;
-  return std::pow(num / den, 1.0f / ST2084_m1);
-}
+// The PQ code -> luminance direction (ST2084 EOTF) now lives in
+// PQGRAPHICS::PeakFromPQCode, so the overlay pre-invert and this composite
+// resolve the GUI peak through one implementation. PeakFromPQCode delegates.
 
 // IEC 61966-2-1 sRGB EOTF.
 float SRGBToLinear(float v)
@@ -166,21 +157,21 @@ std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
 
 float CGuiCompositeShaderGLES::PeakFromPQCode(float code)
 {
-  // The legacy Amlogic GUI peak is a PQ CODE, not nits. On the per-primitive
-  // path the scalar-encoded OSD plane is declared FORMAT_HDR8, so the DV core
-  // reads it as PQ - which is exactly why the default (0.7*40+30)/100 = 0.58
-  // lands GUI white on ~199 nits, within 2% of the 203-nit BT.2408 reference
-  // white this composite used to hardcode. Decoding the code therefore makes
-  // the same setting mean the same luminance on both paths.
+  // Delegates to PQGRAPHICS so this composite and the overlay pre-invert that
+  // must be its exact inverse (PQGraphicsTransform) can never resolve the same
+  // setting to different luminances - a mismatch there silently amplifies every
+  // pre-inverted overlay and clips brightly-authored menus.
   //
-  // Clamped to 1000 nits. The raw curve reaches 10000 nits at the top of the
-  // slider, which no panel can show, and the PQ LUT only has LUT_SIZE entries
-  // spread over [0, peak] - stretching it that far crushes GUI shadows badly.
-  // The clamp engages around slider 64 (code 0.748), so the top third of the
-  // range is deliberately flat; CreateLUTs logs the resolved nits so a log shows
-  // when it is in effect. Above that point this intentionally stops tracking the
+  // Semantics are unchanged, and documented at the definition: the legacy
+  // Amlogic GUI peak is a PQ CODE, not nits (the scalar-encoded OSD plane is
+  // declared FORMAT_HDR8 so the DV core reads it as PQ), which is why the
+  // default (0.7*40+30)/100 = 0.58 lands GUI white on ~199 nits, within 2% of
+  // the 203-nit BT.2408 reference this composite used to hardcode. The 1000-nit
+  // clamp engages around slider 64 (code 0.748), so the top third of the range
+  // is deliberately flat; CreateLUTs logs the resolved nits so a log shows when
+  // it is in effect. Above that point this intentionally stops tracking the
   // per-primitive path, which applies no clamp because it needs no LUT.
-  return std::min(InversePQ(code), 0.1f);
+  return static_cast<float>(PQGRAPHICS::PeakFromPQCode(code));
 }
 
 std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float sdrPeak)
