@@ -44,6 +44,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -841,7 +842,9 @@ void CDVDInputStreamBluray::UpdatePqAuthoredGraphics()
   if (!m_pqRegimeLogged || pq != m_pqAuthoredGraphics)
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamBluray - playlist graphics regime: {} (dynamic_range_type {})",
-              pq ? "BT.2020 PQ, pre-inverting BD-J overlays" : "sRGB, no pre-inversion", range);
+              pq ? "BT.2020 PQ, pre-inverting BD-J and HDMV overlays"
+                 : "sRGB, no pre-inversion",
+              range);
   m_pqRegimeLogged = true;
 
   m_pqAuthoredGraphics = pq;
@@ -1375,15 +1378,48 @@ static uint8_t  clamp(double v)
   return (v) > 255.0 ? 255 : ((v) < 0.0 ? 0 : static_cast<uint32_t>((v + 0.5)));
 }
 
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e)
+// HDMV palette entry (interactive-graphics menus, and PG rendered by libbluray's
+// graphics controller) -> packed RGBA.
+//
+// The palette's colour space follows the PLAYLIST, exactly as BD-J ARGB does:
+// an SDR playlist authors BT.601 Y'CbCr, an HDR/DV playlist authors BT.2020
+// ST.2084 (PQ) Y'CbCr (BD-ROM 3.x). Pass a transform to decode the PQ variant;
+// pass nullptr for the SDR one, which keeps the original BT.601 conversion
+// bit-for-bit and is what leaves SDR-menu discs untouched.
+//
+// Measured on Halo Season 2 Disc 1, whose menu chrome is authored at
+// 106/202/294 nits: without the decode those land at 46/60/68 nits, because a
+// PQ code gets read as if it were sRGB and then encoded a second time. Bright
+// content loses the most, which is why the SELECTED-BUTTON HIGHLIGHT looked
+// almost absent while dimmer chrome still looked plausible.
+//
+// Coefficients are limited-range 8-bit: Y scaled 255/219, chroma 255/224, over
+// BT.2020 non-constant-luminance Kr=0.2627 Kb=0.0593.
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,
+                           const PQGRAPHICS::CPQGraphicsTransform* pq)
 {
-  double r = 1.164 * (e.Y - 16)                        + 1.596 * (e.Cr - 128);
-  double g = 1.164 * (e.Y - 16) - 0.391 * (e.Cb - 128) - 0.813 * (e.Cr - 128);
-  double b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
-  return static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
-       | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
-       | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
-       | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
+  double r, g, b;
+  if (pq)
+  {
+    r = 1.164384 * (e.Y - 16)                             + 1.678706 * (e.Cr - 128);
+    g = 1.164384 * (e.Y - 16) - 0.187326 * (e.Cb - 128)   - 0.650424 * (e.Cr - 128);
+    b = 1.164384 * (e.Y - 16) + 2.141766 * (e.Cb - 128);
+  }
+  else
+  {
+    r = 1.164 * (e.Y - 16)                        + 1.596 * (e.Cr - 128);
+    g = 1.164 * (e.Y - 16) - 0.391 * (e.Cb - 128) - 0.813 * (e.Cr - 128);
+    b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
+  }
+
+  const uint32_t px = static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
+                    | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
+                    | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
+                    | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
+
+  // Safe on the packed value: build_rgba does not premultiply (OverlayRendererUtil
+  // folds alpha in later) and the transform passes alpha through untouched.
+  return pq ? pq->Convert(px) : px;
 }
 
 // --- BD-J HDR menu graphics: recover authored color for the PQ GUI composite ---
@@ -1602,6 +1638,16 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   std::unique_lock lock(m_overlayLock);
   SPlane& plane(m_planes[ov->plane]);
 
+  // Authored-graphics regime for this disc/playlist, from the same two STABLE
+  // signals the BD-J ARGB path uses - never the live output mode, which flips
+  // across a movie-load's OpenDecoder churn and bakes a half-converted
+  // composition. Built once here, not per palette entry: the constructor
+  // resolves the GUI reference white and builds a decode LUT.
+  std::optional<PQGRAPHICS::CPQGraphicsTransform> pqTransform;
+  if (m_dvDiscSession || m_pqAuthoredGraphics)
+    pqTransform.emplace();
+  const PQGRAPHICS::CPQGraphicsTransform* const pq = pqTransform ? &*pqTransform : nullptr;
+
   if (ov->cmd == BD_OVERLAY_CLEAR)
   {
     plane.o.clear();
@@ -1636,7 +1682,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     {
       std::vector<uint32_t> pal(256);
       for (unsigned i = 0; i < 256; i++)
-        pal[i] = build_rgba(ov->palette[i]);
+        pal[i] = build_rgba(ov->palette[i], pq);
       for (SOverlay& o : plane.o)
       {
         if (o->palette.empty())
@@ -1666,7 +1712,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
       overlay->palette.resize(256);
 
       for(unsigned i = 0; i < 256; i++)
-        overlay->palette[i] = build_rgba(ov->palette[i]);
+        overlay->palette[i] = build_rgba(ov->palette[i], pq);
     }
     else
       overlay->palette.clear();
