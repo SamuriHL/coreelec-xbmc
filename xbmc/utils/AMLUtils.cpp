@@ -920,53 +920,112 @@ static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 void aml_dv_apply_vsvdb()
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE))
-  {
-    aml_dv_clear_vsvdb();
-    return;
-  }
 
-  // Shared display peak value (0 = auto): nothing to force onto the panel, so
-  // leave its real advertised VSVDB in place.
-  int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
-  if (nits <= 0)
+  // Two independent reasons to inject a modified VSVDB. Either alone is enough;
+  // they patch disjoint fields of the same block.
+  const int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+  // Shared display peak value (0 = auto): nothing to force onto the panel.
+  const bool wantMaxLum =
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE) && nits > 0;
+
+  // EDID 4k60 override. The kernel refuses to raise the DV EOTF for a 2160p60/50
+  // mode when the sink's VSVDB says it cannot do it (meson_hdmi.c
+  // meson_hdmitx_update_dv_eotf returns -ERANGE on !dvcap->sup_2160p60hz), so a
+  // display whose EDID under-reports blocks 60Hz DV entirely. Forcing the bit in
+  // the injected block clears that gate. Player-led only: this is the LLDV path
+  // the option exists for, and TV-led output must keep honouring the sink.
+  const bool wantForce60 =
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60) &&
+      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+
+  if (!wantMaxLum && !wantForce60)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0) - not injecting", __FUNCTION__);
     aml_dv_clear_vsvdb();
     return;
   }
 
   int b[16];
   size_t n = aml_get_display_vsvdb(b, 16);
-  // Need the v2 payload byte b[7]; version is in b[5] bits 7:5.
-  if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
+  // Version lives in b[5] bits 7:5 for every VSVDB version.
+  if (n < 6)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{} - no v2 VSVDB from display ({} bytes) - not injecting",
+    CLog::Log(LOGINFO, "AMLUtils::{} - no usable VSVDB from display ({} bytes) - not injecting",
               __FUNCTION__, static_cast<int>(n));
     aml_dv_clear_vsvdb();
     return;
   }
+  const int ver = (b[5] >> 5) & 0x07;
+  bool patched = false;
 
-  // Snap the requested nits to the nearest Dolby PQ max-luminance step.
-  int idx = 0, best = 0x7fffffff;
-  for (int i = 0; i < 32; i++)
+  int idx = 0;
+  if (wantMaxLum)
   {
-    int d = vsvdb_v2_max_lum_lut[i] - nits;
-    if (d < 0) d = -d;
-    if (d < best) { best = d; idx = i; }
+    // Max-luminance/primaries live in the v2 payload only.
+    if (ver != 2 || n < 8)
+    {
+      CLog::Log(LOGINFO, "AMLUtils::{} - max-lum override needs a v2 VSVDB (display is v{}, "
+                         "{} bytes) - skipping that patch", __FUNCTION__, ver, static_cast<int>(n));
+    }
+    else
+    {
+      // Snap the requested nits to the nearest Dolby PQ max-luminance step.
+      int best = 0x7fffffff;
+      for (int i = 0; i < 32; i++)
+      {
+        int d = vsvdb_v2_max_lum_lut[i] - nits;
+        if (d < 0) d = -d;
+        if (d < best) { best = d; idx = i; }
+      }
+
+      // Patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keep the rest.
+      b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
+      patched = true;
+    }
   }
 
-  // Patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keep the rest.
-  b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
+  if (wantForce60)
+  {
+    // sup_2160p60hz is bit 1 of the capability byte (b[5], the same byte that
+    // carries the version) and is read from the EDID for v0 and v1 blocks only -
+    // hdmitx_edid_parse.c hardcodes it to 1 for v2, so a v2 display already
+    // permits 60Hz DV and there is nothing to override.
+    if (ver != 0 && ver != 1)
+    {
+      CLog::Log(LOGINFO, "AMLUtils::{} - 4k60 EDID override is a no-op on a v{} VSVDB "
+                         "(the kernel already reports 60Hz support) - skipping that patch",
+                __FUNCTION__, ver);
+    }
+    else if (b[5] & 0x02)
+    {
+      CLog::Log(LOGINFO, "AMLUtils::{} - display already advertises 4k60 DV - "
+                         "4k60 EDID override not needed", __FUNCTION__);
+    }
+    else
+    {
+      b[5] |= 0x02;
+      patched = true;
+      CLog::Log(LOGINFO, "AMLUtils::{} - forcing sup_2160p60hz in the v{} VSVDB "
+                         "(EDID under-reports 4k60 DV)", __FUNCTION__, ver);
+    }
+  }
+
+  if (!patched)
+  {
+    aml_dv_clear_vsvdb();
+    return;
+  }
 
   // Optional colour-space / primary override: replace only the v2 primary fields
   // (Gx/Gy/Rx/Bx/Ry/By in bytes 8-11), preserving the display's version, DM-version,
   // capability and dv-type bits. 0 = keep the display's advertised primaries (max-lum
   // patch only). Values are the Dolby VSVDB v2 primary fields (coord minus per-channel
   // base, x256), i.e. Gx: 43=BT.2020 / 67=DCI-P3 / 76=BT.709.
+  // Bytes 8-11 are v2 primary fields; a v0/v1 block lays them out differently, so this
+  // patch is confined to the v2 max-lum path it belongs to (its UI parent is that
+  // setting) and must never run on a block reached only via the 4k60 override.
   const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
   const char* csName = "display";
-  if (cs >= 1 && cs <= 3 && n >= 12)
+  if (wantMaxLum && ver == 2 && cs >= 1 && cs <= 3 && n >= 12)
   {
     static const int primaries[3][6] = {
         // Rx, Ry, Gx, Gy, Bx, By
@@ -1011,8 +1070,13 @@ void aml_dv_apply_vsvdb()
   vsvdb_data.Set(data);
   force_vsvdb.Set(FORCE_VSVDB_USE_DATA);
   aml_hdmitx_reload_edid();
-  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
-            __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
+  std::string what;
+  if (wantMaxLum && ver == 2)
+    what = StringUtils::Format("{} nits (idx {}), primaries {}", vsvdb_v2_max_lum_lut[idx], idx,
+                               csName);
+  if (wantForce60 && (ver == 0 || ver == 1))
+    what += (what.empty() ? "" : ", ") + std::string("forced 4k60");
+  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {}, data [{}]", __FUNCTION__, what, data);
 }
 
 // CMv4.0 append live-apply generation. Bumped from the settings thread, read by
