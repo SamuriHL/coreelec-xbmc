@@ -487,6 +487,7 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_DV = "coreelec.amlogic.dolbyvision.vs10.dv";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE = "coreelec.amlogic.dolbyvision.vsvdb.maxlum.override";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE = "coreelec.amlogic.dolbyvision.vsvdb.colourspace";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60 = "coreelec.amlogic.dolbyvision.edid.force60hz";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_MODE = "coreelec.amlogic.dolbyvision.l5.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK = "coreelec.amlogic.dolbyvision.l5.osd.unmask";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT = "coreelec.amlogic.dolbyvision.hdr10plus.convert";
