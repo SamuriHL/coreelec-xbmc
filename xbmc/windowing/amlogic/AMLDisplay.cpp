@@ -515,7 +515,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_modes(void)
 // set mode of drmDevice
 bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
   const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-  bool frac_reclock)
+  bool frac_reclock, bool hotplug)
 {
   bool ret = false;
 
@@ -547,12 +547,57 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
   ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, frac_reclock, true);
 
-  if (!ret && force_mode_switch)
-    set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
+  // Hotplug recovery: the sink came back at a mode string we are already on, so no
+  // modeset ran above and the connector needs forcing back up. Restricted to hotplug on
+  // purpose - the other reasons a mode switch gets forced (an HDR/DV transition or a
+  // stereo change at an unchanged resolution) must NOT re-clock the link, which is the
+  // Superman BD-J black screen fixed in 13dfe694e7.
+  if (!ret && hotplug)
+    aml_force_drmDevice_update();
 
   aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name, !ret);
 
   CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - finished set drmDevice mode", __FUNCTION__);
+
+  return ret;
+}
+
+// Force the connector back up at the mode that is already live (hotplug recovery).
+//
+// The UPDATE property has to travel in an ALLOW_MODESET commit to do anything: the
+// kernel stores it on the connector state (meson_hdmi.c meson_hdmitx_atomic_set_property
+// -> hdmitx_state->update = true) but only acts on it in meson_hdmitx_atomic_check, where
+// the "if (new_hdmitx_state->update) connectors_changed = true" sits inside
+// "if (state->allow_modeset && new_crtc_state)". It does not survive to a later commit
+// either - meson_hdmitx_atomic_duplicate_state clears update for each new state. Setting
+// it through drmModeObjectSetProperty (set_drmProp with a NULL request), as this path did
+// before, is therefore a guaranteed no-op.
+//
+// CRTC_ID/ACTIVE are included so the crtc state is part of the commit; atomic_check bails
+// out early with new_crtc_state == NULL otherwise, which would defeat the whole point.
+bool CAMLDRMUtils::aml_force_drmDevice_update()
+{
+  bool ret = false;
+
+  if (!m_connector || !m_crtc)
+  {
+    CLog::Log(LOGWARNING, "CAMLDRMUtils::{} - no connector/crtc to update", __FUNCTION__);
+    return ret;
+  }
+
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req)
+    return ret;
+
+  set_drmProp(m_connector->connector_id, "CRTC_ID", DRM_MODE_OBJECT_CONNECTOR, m_crtc->crtc_id, req);
+  set_drmProp(m_crtc->crtc_id, "ACTIVE", DRM_MODE_OBJECT_CRTC, 1, req);
+  set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, req);
+
+  ret = (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0);
+  CLog::Log(ret ? LOGDEBUG : LOGERROR, "CAMLDRMUtils::{} - forced connector update {}",
+    __FUNCTION__, ret ? "committed" : "failed");
+
+  drmModeAtomicFree(req);
 
   return ret;
 }
@@ -854,14 +899,15 @@ CAMLDisplay::CAMLDisplay()
 }
 
 bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  const RenderStereoMode stereo_mode, bool force_mode_switch, bool frac_reclock)
+  const RenderStereoMode stereo_mode, bool force_mode_switch, bool frac_reclock, bool hotplug)
 {
   bool result = false;
 
   if (aml_get_cpufamily_id() < AML_T7)
   {
     handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock,
+                                   hotplug);
     if (stereo_mode != RenderStereoMode::OFF)
       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/phy", 1);
   }
@@ -870,7 +916,8 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string 
     if (stereo_mode == RenderStereoMode::HARDWAREBASED ||
         stereo_mode == RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock,
+                                   hotplug);
     if (stereo_mode != RenderStereoMode::HARDWAREBASED &&
         stereo_mode != RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
@@ -914,7 +961,7 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 }
 
 bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  bool force_mode_switch, bool frac_reclock)
+  bool force_mode_switch, bool frac_reclock, bool hotplug)
 {
   std::string mode = res.strId.c_str();
   std::vector<std::string> _mode = StringUtils::Split(mode, ' ');
@@ -937,7 +984,7 @@ bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string
     CLog::Log(LOGDEBUG, "CAMLDisplay::{}: try to set mode: {}", __FUNCTION__, mode.c_str());
 
   m_amlDRMUtils->aml_set_drmDevice_mode(res, mode, m_stereo_mode, framebuffer_name, force_mode_switch,
-    frac_reclock);
+    frac_reclock, hotplug);
 
   return true;
 }
