@@ -153,7 +153,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   if (hints.samplerate != m_streaminfo.samplerate)
     SwitchCodecIfNeeded();
 
-  // LAV Audio: enable the passthrough codec's internal-clock sync if selected
+  // LAV Audio: configure the passthrough codec's internal-clock retiming
   ConfigureLavAudioSync();
 
   // LAV PCM sync: for non-passthrough (decoded) audio, enable the internal
@@ -904,7 +904,7 @@ void CVideoPlayerAudio::ConfigureLavAudioSync()
   if (!enable)
     return;
 
-  CLog::LogF(LOGDEBUG, "LAV Audio passthrough sync enabled");
+  CLog::LogF(LOGDEBUG, "LAV Audio passthrough internal-clock retiming active");
 
   // If the codec is (re)created while playback is already in sync (e.g. a
   // display reset that flips passthrough), rebase its internal clock to the
