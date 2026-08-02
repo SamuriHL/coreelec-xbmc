@@ -109,9 +109,12 @@ private:
   static constexpr size_t JITTER_WINDOW_SIZE = 256;
   CFloatingAverage<double, JITTER_WINDOW_SIZE> m_jitterTracker;
 
-  // Jitter correction thresholds (DVD_TIME_BASE units = microseconds). TrueHD/DTS
-  // use a looser threshold for bitstreaming tolerance (whole frames only, no resample).
-  static constexpr double JITTER_THRESHOLD_TRUEHD_DTS = 100000.0; // 100 ms
+  // Jitter correction thresholds (DVD_TIME_BASE units = microseconds). TrueHD keeps
+  // LAV's looser threshold: the MAT packer's sample offset (GetSamplesOffset) feeds
+  // sub-frame accuracy into the jitter measurement, so the residual error stays far
+  // below the deadband. Every other passthrough codec - DTS included - has no such
+  // compensation and must stay tighter than CVideoPlayerAudio's +20/-27ms sync gate.
+  static constexpr double JITTER_THRESHOLD_TRUEHD = 100000.0; // 100 ms
   static constexpr double JITTER_THRESHOLD_DEFAULT = 10000.0; // 10 ms
   double m_jitterThreshold{JITTER_THRESHOLD_DEFAULT};
 
