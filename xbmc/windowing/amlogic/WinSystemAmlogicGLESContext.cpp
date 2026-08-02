@@ -113,6 +113,11 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
 
+  // Re-arm the one-shot frac-rate re-clock whenever we are back in the GUI, so each
+  // playback session gets exactly one chance to correct a frac-only rate mismatch.
+  if (!CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
+    m_frac_reclock_armed = true;
+
   // get current used resolution
   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
   {
@@ -171,6 +176,21 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     // same resolution, check frac rate and other parameter
     if ((cur_fractional_rate != fractional_rate) || force_mode_switch_by_hdr || (m_stereo_mode != stereo_mode))
       m_force_mode_switch = true;
+
+    // The display clock only follows FRAC_RATE_POLICY through an allow_modeset commit,
+    // so a frac-only change at an unchanged mode string is inert unless we authorise a
+    // re-clock for it. Authorise one per playback session: the request that establishes
+    // video carries the content's rate, whereas the repeated same-mode-string calls that
+    // follow during a disc's pre-menu video alternate the GUI's nominal rate against the
+    // content's (24.000 vs 23.976), and re-clocking on each of those is the opening-video
+    // judder fixed in d4377ca3a3.
+    if ((cur_fractional_rate != fractional_rate) && m_frac_reclock_armed)
+    {
+      m_frac_reclock = true;
+      m_frac_reclock_armed = false;
+      CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: authorising frac rate re-clock "
+        "{:d} -> {:d} at unchanged resolution", __FUNCTION__, cur_fractional_rate, fractional_rate);
+    }
   }
 
   if (m_force_mode_switch)
