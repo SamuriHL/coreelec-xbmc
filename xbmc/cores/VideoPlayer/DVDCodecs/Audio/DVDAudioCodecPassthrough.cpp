@@ -86,25 +86,31 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
       m_codecName = "pt-dtshd";
-      // TrueHD/DTS bitstreaming can only skip/duplicate whole frames, so use a
-      // looser jitter threshold (LAV Filters).
-      m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+      // LAV groups DTS with TrueHD on a 100ms threshold because bitstreaming can
+      // only skip/duplicate whole frames. That rationale does not carry here: this
+      // path never skips or duplicates a frame, it only re-stamps frame.pts, and
+      // that pts is what CVideoPlayerAudio measures A/V error from. A 100ms codec
+      // deadband inside the player's +20/-27ms sync gate cannot settle - the clock
+      // roams the deadband, trips the gate, and CDVDClock::ErrorAdjust answers in
+      // whole 41.7ms video frames that overshoot to the far edge, forever. TrueHD
+      // escapes it via the MAT packer sample offset; DTS has no equivalent.
+      m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD:
       m_codecName = "pt-dtshd";
-      m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+      m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE:
       m_codecName = "pt-dts";
       m_parser.SetCoreOnly(true);
-      m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+      m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
       break;
 
     case CAEStreamInfo::STREAM_TYPE_TRUEHD:
       m_codecName = "pt-truehd";
-      m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+      m_jitterThreshold = JITTER_THRESHOLD_TRUEHD;
       CLog::LogF(LOGDEBUG, "passthrough output device is {}", m_deviceIsRAW ? "RAW" : "IEC");
       break;
 
