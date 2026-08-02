@@ -118,9 +118,11 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       return false;
   }
 
-  if (m_lavStyleSyncEnabled)
-    CLog::LogF(LOGDEBUG, "LAV Audio sync enabled, jitter threshold {:.0f}ms for {}",
-               m_jitterThreshold / 1000.0, m_codecName);
+  // Report the threshold unconditionally: retiming is always on for non-realtime
+  // passthrough in this build, and m_lavStyleSyncEnabled is not even settled yet here
+  // (VideoPlayerAudio calls SetLavStyleSyncEnabled after Open), so gating the line on
+  // it only ever suppressed it.
+  CLog::LogF(LOGDEBUG, "{}: jitter threshold {:.0f}ms", m_codecName, m_jitterThreshold / 1000.0);
 
   m_dataSize = 0;
   m_bufferSize = 0;
