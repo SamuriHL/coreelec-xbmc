@@ -109,15 +109,6 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   // check for frac_rate_policy change
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
   int cur_fractional_rate = m_amlDisplay->aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
-  if (cur_fractional_rate < 0)
-  {
-    // The property could not be read (most likely connector churn). Treat it as already
-    // matching so nothing downstream reads a failed read as "the rate differs" - that
-    // would force a mode switch, and a teardown, on no evidence at all.
-    CLog::Log(LOGWARNING, "CWinSystemAmlogicGLESContext::{}: could not read FRAC_RATE_POLICY",
-      __FUNCTION__);
-    cur_fractional_rate = fractional_rate;
-  }
 
   bool nativeGUI = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
 
@@ -125,21 +116,15 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
 
-  // What FRAC_RATE_POLICY the PLAYING CONTENT needs. Decided by which published variant
-  // the fps sits closer to - the same comparison CResolutionUtils::ChooseBestResolution
-  // makes when it picks the mode - so the two cannot disagree. An absolute window would:
-  // it is scale-dependent (the gap to the nearest integer after x1.001 is 0.001*fps, so
-  // every integer fps below 10 falls inside a fixed 0.01 band and misclassifies), and a
-  // fixed 0.01 is tighter than VideoPlayerVideo's own MAXFRAMERATEDIFF, which is what
-  // decides when a re-measured fps is published in the first place.
+  // What FRAC_RATE_POLICY the PLAYING CONTENT needs. A 1000/1001 rate (23.976 / 29.97 /
+  // 59.94) scaled by 1.001 lands on an integer; a true 24/30/60 does not. Used below to
+  // tell a genuine content-driven rate request from the GUI's nominal one - the two
+  // arrive at the SAME mode string, because aml_probe_resolutions publishes the
+  // fractional variant as a duplicate strId, so the request alone cannot be trusted.
   const float contentFps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-  int contentFrac = 0;
-  if (contentFps > 0.0f)
-  {
-    const double fps = static_cast<double>(contentFps);
-    const double nominal = std::round(fps * 1.001);
-    contentFrac = (std::fabs(fps - nominal / 1.001) < std::fabs(fps - nominal)) ? 1 : 0;
-  }
+  const bool contentIsFractional =
+      contentFps > 0.0f && std::fabs(contentFps * 1.001f - std::round(contentFps * 1.001f)) < 0.01f;
+  const int contentFrac = contentIsFractional ? 1 : 0;
 
   // get current used resolution
   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
@@ -216,27 +201,19 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     //
     // No fps yet (contentFps == 0, i.e. not playing) means we cannot tell which request is
     // genuine, so we decline and leave the display alone.
-    // Outside fullscreen video the request is authoritative: returning to the GUI is a
-    // legitimate rate change and MUST be allowed. CDataCacheCore's fps is only cleared when
-    // a player is built, never on stop, so in the GUI it is stale or zero and the content
-    // test cannot answer - declining there would strand the display on the last title's
-    // policy, and since aml_get_native_resolution then reports a rate no published mode
-    // matches exactly, every later resolution set would tear the window down and rebuild it.
-    const bool playingFullScreen =
-        CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo();
     if (cur_fractional_rate != fractional_rate)
     {
-      if (!playingFullScreen || (contentFps > 0.0f && fractional_rate == contentFrac))
+      if (contentFps > 0.0f && fractional_rate == contentFrac)
       {
         m_frac_reclock = true;
         CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: authorising frac rate re-clock "
-          "{:d} -> {:d} at unchanged resolution ({})", __FUNCTION__, cur_fractional_rate,
-          fractional_rate, playingFullScreen ? "matches content" : "not playing, request wins");
+          "{:d} -> {:d} at unchanged resolution (content {:.3f}fps)", __FUNCTION__,
+          cur_fractional_rate, fractional_rate, contentFps);
       }
       else
       {
         CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: declining frac rate change "
-          "{:d} -> {:d} - content is {:.3f}fps and needs policy {:d}", __FUNCTION__,
+          "{:d} -> {:d} - does not match content ({:.3f}fps, needs {:d})", __FUNCTION__,
           cur_fractional_rate, fractional_rate, contentFps, contentFrac);
       }
     }
