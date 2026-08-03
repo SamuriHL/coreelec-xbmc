@@ -6,10 +6,13 @@
  *  See LICENSES/README.md for more information.
  */
 
+#include <cmath>
+
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -113,10 +116,15 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
 
-  // Re-arm the one-shot frac-rate re-clock whenever we are back in the GUI, so each
-  // playback session gets exactly one chance to correct a frac-only rate mismatch.
-  if (!CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
-    m_frac_reclock_armed = true;
+  // What FRAC_RATE_POLICY the PLAYING CONTENT needs. A 1000/1001 rate (23.976 / 29.97 /
+  // 59.94) scaled by 1.001 lands on an integer; a true 24/30/60 does not. Used below to
+  // tell a genuine content-driven rate request from the GUI's nominal one - the two
+  // arrive at the SAME mode string, because aml_probe_resolutions publishes the
+  // fractional variant as a duplicate strId, so the request alone cannot be trusted.
+  const float contentFps = CServiceBroker::GetDataCacheCore().GetVideoFps();
+  const bool contentIsFractional =
+      contentFps > 0.0f && std::fabs(contentFps * 1.001f - std::round(contentFps * 1.001f)) < 0.01f;
+  const int contentFrac = contentIsFractional ? 1 : 0;
 
   // get current used resolution
   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
@@ -177,19 +185,37 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     if ((cur_fractional_rate != fractional_rate) || force_mode_switch_by_hdr || (m_stereo_mode != stereo_mode))
       m_force_mode_switch = true;
 
-    // The display clock only follows FRAC_RATE_POLICY through an allow_modeset commit,
-    // so a frac-only change at an unchanged mode string is inert unless we authorise a
-    // re-clock for it. Authorise one per playback session: the request that establishes
-    // video carries the content's rate, whereas the repeated same-mode-string calls that
-    // follow during a disc's pre-menu video alternate the GUI's nominal rate against the
-    // content's (24.000 vs 23.976), and re-clocking on each of those is the opening-video
-    // judder fixed in d4377ca3a3.
-    if ((cur_fractional_rate != fractional_rate) && m_frac_reclock_armed)
+    // The display clock only follows FRAC_RATE_POLICY through an allow_modeset commit, so
+    // a frac-only change at an unchanged mode string does nothing unless we authorise a
+    // re-clock. Authorise it ONLY when the requested policy is the one the playing content
+    // actually needs.
+    //
+    // Anything looser re-clocks on the wrong value: the mode set that enters video already
+    // bundled the content's rate, so from then on the only requests that DIFFER from what
+    // is live are the GUI's nominal ones (24.000 against live 23.976, same "...24hz"
+    // string). Acting on those both re-clocks mid-video - the opening-video judder
+    // d4377ca3a3 removed - and parks the title on the wrong clock, which is the very bug
+    // this is meant to fix. Matching against the content instead is self-limiting: once
+    // the display is on the content's policy the mismatch is gone, so it cannot ping-pong,
+    // and no per-session latch is needed.
+    //
+    // No fps yet (contentFps == 0, i.e. not playing) means we cannot tell which request is
+    // genuine, so we decline and leave the display alone.
+    if (cur_fractional_rate != fractional_rate)
     {
-      m_frac_reclock = true;
-      m_frac_reclock_armed = false;
-      CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: authorising frac rate re-clock "
-        "{:d} -> {:d} at unchanged resolution", __FUNCTION__, cur_fractional_rate, fractional_rate);
+      if (contentFps > 0.0f && fractional_rate == contentFrac)
+      {
+        m_frac_reclock = true;
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: authorising frac rate re-clock "
+          "{:d} -> {:d} at unchanged resolution (content {:.3f}fps)", __FUNCTION__,
+          cur_fractional_rate, fractional_rate, contentFps);
+      }
+      else
+      {
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: declining frac rate change "
+          "{:d} -> {:d} - does not match content ({:.3f}fps, needs {:d})", __FUNCTION__,
+          cur_fractional_rate, fractional_rate, contentFps, contentFrac);
+      }
     }
   }
 
