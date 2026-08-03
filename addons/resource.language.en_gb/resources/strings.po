@@ -25695,15 +25695,3 @@ msgstr ""
 msgctxt "#60358"
 msgid "Software-decoded video has no hardware video layer for the Dolby Vision engine to process."
 msgstr ""
-
-#. Label: Dolby Vision - override the display EDID to allow 4k60 Dolby Vision
-#: system/settings/settings.xml
-msgctxt "#60359"
-msgid "Override EDID to allow 4k60 Dolby Vision"
-msgstr ""
-
-#. Help: Dolby Vision - override the display EDID to allow 4k60 Dolby Vision
-#: system/settings/settings.xml
-msgctxt "#60360"
-msgid "Some displays under-report Dolby Vision support in their EDID, claiming they cannot accept it at 50/60Hz when they can. That makes 50/60Hz Dolby Vision content play without Dolby Vision. Enable this only if your display really does accept 4k60 Dolby Vision - forcing it on a display that genuinely cannot will give you no picture. Has no effect on displays that already advertise 4k60 support."
-msgstr ""
