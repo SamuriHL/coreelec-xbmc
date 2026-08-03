@@ -84,9 +84,6 @@ protected:
   // a playback session, so mid-playback GUI/content rate flapping cannot re-clock.
   bool m_frac_reclock;
   bool m_frac_reclock_armed;
-  // True only when this mode set is hotplug recovery. Gates the forced connector
-  // update, which must not fire for the other reasons a mode switch gets forced.
-  bool m_hotplug_mode_switch;
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;
   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
