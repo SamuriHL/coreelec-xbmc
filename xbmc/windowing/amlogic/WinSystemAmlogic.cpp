@@ -49,8 +49,6 @@ std::unique_ptr<CAMLDisplay> CWinSystemAmlogic::m_amlDisplay = nullptr;
 CWinSystemAmlogic::CWinSystemAmlogic()
 :  m_libinput(new CLibInputHandler)
 ,  m_force_mode_switch(false)
-,  m_frac_reclock(false)
-,  m_frac_reclock_armed(true)
 ,  m_fdMonitorId(-1)
 ,  m_udev(NULL)
 ,  m_callback_data(NULL, NULL)
@@ -522,11 +520,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     }
   }
 
-  m_amlDisplay->set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch,
-                                     m_frac_reclock);
+  m_amlDisplay->set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch);
   // reset force mode switch
   m_force_mode_switch = false;
-  m_frac_reclock = false;
 
   m_bWindowCreated = true;
   return true;
