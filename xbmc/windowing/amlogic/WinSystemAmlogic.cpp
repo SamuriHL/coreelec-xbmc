@@ -159,10 +159,6 @@ void CWinSystemAmlogic::MonitorStop()
 
 void CWinSystemAmlogic::HotplugEvent()
 {
-  // The sink may be a different display now; the cached "genuine panel VSVDB" belongs to
-  // the old one and must not be re-injected onto the new one.
-  aml_dv_invalidate_vsvdb_cache();
-
   m_amlDisplay->aml_init_drmDevice();
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
@@ -327,16 +323,6 @@ bool CWinSystemAmlogic::InitWindowSystem()
       setting->SetVisible(false);
       settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, AML_DV_TV_LED);
     }
-
-    // The 4k60 EDID override is not gated on the DV LED mode, so it needs hiding here
-    // explicitly - its only XML dependency (disabledolbyvision is false) still holds on a
-    // box that cannot do DV, because that setting is forced false just above.
-    setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60);
-    if (setting)
-    {
-      setting->SetVisible(false);
-      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60, false);
-    }
   }
   else
   {
@@ -418,7 +404,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60});
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60,
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_LED});
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -495,7 +482,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60)
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60 &&
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_LED)
     return;
 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
