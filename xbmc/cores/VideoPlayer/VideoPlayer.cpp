@@ -3895,19 +3895,29 @@ void CVideoPlayer::HandleMessages()
         {
           bool open = true;
 #if defined(HAVE_LIBBLURAY)
-          // BD navmode: route the choice through the HDMV VM (PSR1 via
-          // bd_select_stream) so the per-packet live dictation agrees with
-          // the user instead of reverting the choice on the next packet
-          // (review finding A11). A UO-masked change keeps the dictated
-          // stream (the input stream already toasted the refusal).
+          // BD: route the choice into PSR1 (bd_select_stream) so the per-packet
+          // live dictation agrees with the user instead of reverting the choice
+          // on the next packet (review finding A11). Every Blu-ray mode, not
+          // just navmode - see below.
           if (std::shared_ptr<CDVDInputStreamBluray> bluray =
                   std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
-              bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
-              STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+              bluray && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
           {
             CDemuxStream* ds =
                 m_pDemuxer ? m_pDemuxer->GetStream(st.demuxerId, st.id) : nullptr;
-            open = ds && bluray->SelectAudioStream(ds->dvdNavId);
+            const bool selected = ds && bluray->SelectAudioStream(ds->dvdNavId);
+
+            // The dictation above is NOT navmode-gated, so it reverts a manual
+            // pick in every mode; the write-back must run wherever it runs, or
+            // "Play main movie"/simplified-menu/resume playback loses the user's
+            // choice on the next audio packet (A11 was only ever fixed for
+            // navmode). A refusal is authoritative ONLY in navmode, where a VM
+            // really is refusing via the UO mask and the input stream has already
+            // toasted; elsewhere a false return just means the pid is absent from
+            // this playitem's STN table, and declining to switch at all would turn
+            // the control dead instead of merely ineffective.
+            if (bluray->GetSupportedMenuType() == MenuType::NATIVE)
+              open = selected;
           }
 #endif
           if (open)
