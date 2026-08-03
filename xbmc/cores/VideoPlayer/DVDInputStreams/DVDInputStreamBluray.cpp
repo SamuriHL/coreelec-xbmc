@@ -365,11 +365,21 @@ bool CDVDInputStreamBluray::SelectAudioStream(int pid)
 
 bool CDVDInputStreamBluray::SelectSubtitleStream(int pid, bool enable)
 {
-  if (!m_bd || !m_navmode || !m_titleInfo || !m_clip)
+  // NOT navmode-gated, for the same reason as SelectAudioStream: selecting a
+  // stream is a plain PSR write, and PSR2 is what GetDictatedPgPid() resolves
+  // against in every mode.
+  if (!m_bd || !m_titleInfo || !m_clip)
+  {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::SelectSubtitleStream - pid {:#x}: no current clip "
+                        "(bd {}, titleInfo {}, clip {})", pid, m_bd != nullptr,
+              m_titleInfo != nullptr, m_clip != nullptr);
     return false;
-  // app-side UO enforcement (libbluray at RELAXED skips its own check)
-  if (m_uoMask.load() & (BLURAY_UO_PG_TEXTST_CHANGE_MASK |
-                         BLURAY_UO_PG_TEXTST_ENABLE_DISABLE_MASK))
+  }
+  // app-side UO enforcement (libbluray at RELAXED skips its own check).
+  // navmode only - the non-menu paths bypass the VM by design, so a
+  // navigation-domain restriction must not refuse (or toast on) them.
+  if (m_navmode && (m_uoMask.load() & (BLURAY_UO_PG_TEXTST_CHANGE_MASK |
+                                       BLURAY_UO_PG_TEXTST_ENABLE_DISABLE_MASK)))
   {
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamBluray::SelectSubtitleStream - subtitle change masked by disc UO");
