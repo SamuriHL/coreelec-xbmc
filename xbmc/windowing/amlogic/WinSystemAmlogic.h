@@ -78,12 +78,6 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
   CHDRCapabilities m_hdr_caps;
   bool m_force_mode_switch;
-  // A frac-rate-only change needs a full DRM modeset to be applied at all (see
-  // CAMLDRMUtils::aml_set_drmDevice_active). m_frac_reclock authorises exactly that
-  // for one mode set; m_frac_reclock_armed limits it to the mode set that establishes
-  // a playback session, so mid-playback GUI/content rate flapping cannot re-clock.
-  bool m_frac_reclock;
-  bool m_frac_reclock_armed;
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;
   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
