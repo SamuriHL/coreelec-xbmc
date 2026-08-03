@@ -424,9 +424,19 @@ bool CDVDInputStreamBluray::Open()
     root = url.GetHostName();
     filename = URIUtils::GetFileName(url.GetFileName());
 
-    // Check whether disc is AACS protected
+    // Check whether disc is AACS protected.
+    // Disc mode (bd_open_disc) exists solely so libbluray can run Bus Encryption
+    // against a PHYSICAL DRIVE (f4d6b4022f); it is stdio-only and cannot open a
+    // VFS URL at all. An image has no drive, so probe the image FILE itself and
+    // never the udf:// view of its contents - that view does contain
+    // AACS/Unit_Key_RO.inf, which routed every protected image into disc mode and
+    // failed the open outright (udf://, and any nfs:// or smb:// image behind it).
+    // Stripping here rather than inside the menu branch below also fixes the
+    // identical failure on menu RESUME of a protected image.
     CURL url2(root);
     CFileItem item(url2, false);
+    if (url2.IsProtocol("udf"))
+      item.SetPath(url2.GetHostName());
     openDisc = VIDEO::IsProtectedBlurayDisc(item);
 
     // check for a menu call for an image file
@@ -434,13 +444,6 @@ bool CDVDInputStreamBluray::Open()
         !(m_item.GetStartOffset() == STARTOFFSET_RESUME && m_item.IsResumable()))
     {
       resumable = false;
-
-      // Remove udf:// if present
-      if (url2.IsProtocol("udf"))
-      {
-        item.SetPath(url2.GetHostName());
-        openDisc = VIDEO::IsProtectedBlurayDisc(item);
-      }
 
       if (item.IsDiscImage())
       {
