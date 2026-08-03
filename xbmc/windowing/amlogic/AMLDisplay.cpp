@@ -514,8 +514,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_modes(void)
 
 // set mode of drmDevice
 bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
-  const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-  bool frac_reclock)
+  const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch)
 {
   bool ret = false;
 
@@ -545,7 +544,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   }
 
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
-  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, frac_reclock, true);
+  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true);
 
   if (!ret && force_mode_switch)
     set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
@@ -714,40 +713,27 @@ std::string CAMLDRMUtils::aml_get_drmDevice_preferred_mode()
 }
 
 bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rate,
-  const RenderStereoMode stereo_mode, bool frac_reclock, bool active)
+  const RenderStereoMode stereo_mode, bool active)
 {
   bool ret = false;
   drmModeModeInfoPtr drmDevicemode = NULL;
   drmModeModeInfo syntheticMode = {};
 
-  // Re-modeset when the mode STRING changes, or when the caller has decided this is
-  // a genuine frac-rate-only change (frac_reclock). A full DRM modeset
+  // Re-modeset only when the mode STRING actually changes. A full DRM modeset
   // (drmModeAtomicCommit with DRM_MODE_ATOMIC_ALLOW_MODESET) re-trains the HDMI/DV
   // link; forcing it on an already-live mode - e.g. an SDR<->DV switch at an
   // unchanged resolution, which the amdv/VSIF layer performs without a DRM re-clock -
-  // makes strict sinks drop to black (the Superman BD-J menu-entry regression), so it
-  // stays off for every other reason a mode set can be forced.
-  //
-  // A frac-only change cannot be applied any other way: the kernel only re-clocks when
-  // FRAC_RATE_POLICY differs INSIDE an allow_modeset commit (meson_hdmi.c,
-  // meson_hdmitx_atomic_check - the comparison that sets mode_changed sits under
-  // "if (state->allow_modeset ...)"). Setting the property on its own stores the value
-  // and re-clocks nothing, which is why the mode-string-only gate silently left the
-  // display on the wrong 23.976/24.000 clock. The caller gates frac_reclock to the mode
-  // set that establishes video playback precisely so the repeated same-mode-string calls
-  // during a disc's pre-menu video (video 23.976 vs GUI 24.000, alternating) cannot each
-  // fire one - that alternation was the opening-video judder fixed in d4377ca3a3.
-  const int current_fractional_rate =
-    get_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
-  const bool frac_changed = (current_fractional_rate != fractional_rate);
-
-  if (!StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) ||
-      (frac_reclock && frac_changed))
+  // makes strict sinks drop to black (the Superman BD-J menu-entry regression).
+  // The correct FRAC_RATE_POLICY is still applied here whenever the mode string does
+  // change (it is bundled into the modeset commit below), so switching into a
+  // resolution always lands on the right 23.976/24.000 clock. We deliberately do NOT
+  // re-clock on a frac-only difference at an unchanged mode string: repeated
+  // set_display_resolution calls during a disc's pre-menu video arrive at the same
+  // "...24hz" string with slightly different reported rates (video 23.976 vs GUI
+  // 24.000) and a frac-only re-clock there fires spurious modesets = visible judder
+  // on the opening sequence. Mode-string-only matches the pre-rebase fork (smooth).
+  if (!StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode))
   {
-    if (frac_reclock && frac_changed)
-      CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - frac rate {:d} -> {:d} at unchanged mode {}, re-clocking",
-        __FUNCTION__, current_fractional_rate, fractional_rate, mode);
-
     for (int i = 0; i < m_connector->count_modes; i++)
     {
       std::string connector_mode = static_cast<std::string>(m_connector->modes[i].name);
@@ -854,14 +840,14 @@ CAMLDisplay::CAMLDisplay()
 }
 
 bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  const RenderStereoMode stereo_mode, bool force_mode_switch, bool frac_reclock)
+  const RenderStereoMode stereo_mode, bool force_mode_switch)
 {
   bool result = false;
 
   if (aml_get_cpufamily_id() < AML_T7)
   {
     handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch);
     if (stereo_mode != RenderStereoMode::OFF)
       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/phy", 1);
   }
@@ -870,7 +856,7 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string 
     if (stereo_mode == RenderStereoMode::HARDWAREBASED ||
         stereo_mode == RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, frac_reclock);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch);
     if (stereo_mode != RenderStereoMode::HARDWAREBASED &&
         stereo_mode != RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
@@ -914,7 +900,7 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 }
 
 bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  bool force_mode_switch, bool frac_reclock)
+  bool force_mode_switch)
 {
   std::string mode = res.strId.c_str();
   std::vector<std::string> _mode = StringUtils::Split(mode, ' ');
@@ -936,8 +922,7 @@ bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string
   else
     CLog::Log(LOGDEBUG, "CAMLDisplay::{}: try to set mode: {}", __FUNCTION__, mode.c_str());
 
-  m_amlDRMUtils->aml_set_drmDevice_mode(res, mode, m_stereo_mode, framebuffer_name, force_mode_switch,
-    frac_reclock);
+  m_amlDRMUtils->aml_set_drmDevice_mode(res, mode, m_stereo_mode, framebuffer_name, force_mode_switch);
 
   return true;
 }
