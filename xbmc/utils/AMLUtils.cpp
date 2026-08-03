@@ -841,11 +841,6 @@ static const int vsvdb_v2_max_lum_lut[32] = {
 
 // Read the display's advertised VSVDB block (hex after "VSVDB: " in dv_cap) into
 // bytes[]; returns the byte count (0 on failure).
-// A v0 VSVDB is 26 bytes (kernel accepts only length 0x19); v1 is 12 or 15, v2 12.
-// Buffers must hold the LONGEST block - a truncated read re-injected as a short
-// vsvdb_data leaves the kernel parsing stale tail bytes for white point / peak luminance.
-static constexpr size_t VSVDB_MAX_BYTES = 32;
-
 static size_t aml_read_display_vsvdb(int bytes[], size_t max)
 {
   CSysfsPath dv_cap{"/sys/class/amhdmitx/amhdmitx0/dv_cap"};
@@ -884,9 +879,9 @@ void aml_dv_clear_vsvdb()
   // injection is live), so a live injection is detected by comparing the
   // parsed VSVDB (dv_cap) against the panel's cached genuine block; equal
   // means nothing is injected and the EDID round-trip is skipped.
-  int cur[VSVDB_MAX_BYTES], panel[VSVDB_MAX_BYTES];
-  const size_t curN = aml_read_display_vsvdb(cur, VSVDB_MAX_BYTES);
-  const size_t panelN = aml_get_display_vsvdb(panel, VSVDB_MAX_BYTES);
+  int cur[16], panel[16];
+  const size_t curN = aml_read_display_vsvdb(cur, 16);
+  const size_t panelN = aml_get_display_vsvdb(panel, 16);
   if (curN > 0 && curN == panelN && std::equal(cur, cur + curN, panel))
     return;
   CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
@@ -904,7 +899,7 @@ void aml_dv_clear_vsvdb()
 // drop the override and re-read the EDID once to recover the panel's block.
 static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 {
-  static int s_cache[VSVDB_MAX_BYTES];
+  static int s_cache[16];
   static size_t s_cache_n = 0;
   static bool s_cached = false;
   if (!s_cached)
@@ -915,7 +910,7 @@ static size_t aml_get_display_vsvdb(int bytes[], size_t max)
       force_vsvdb.Set(0);
       aml_hdmitx_reload_edid();
     }
-    s_cache_n = aml_read_display_vsvdb(s_cache, VSVDB_MAX_BYTES);
+    s_cache_n = aml_read_display_vsvdb(s_cache, 16);
     s_cached = (s_cache_n > 0);
   }
   size_t n = std::min(s_cache_n, max);
@@ -951,8 +946,8 @@ void aml_dv_apply_vsvdb()
     return;
   }
 
-  int b[VSVDB_MAX_BYTES];
-  size_t n = aml_get_display_vsvdb(b, VSVDB_MAX_BYTES);
+  int b[16];
+  size_t n = aml_get_display_vsvdb(b, 16);
   // Version lives in b[5] bits 7:5 for every VSVDB version.
   if (n < 6)
   {
@@ -992,34 +987,15 @@ void aml_dv_apply_vsvdb()
 
   if (wantForce60)
   {
-    // sup_2160p60hz is bit 1 of the capability byte (b[5], the same byte that carries the
-    // version) and is read from the EDID for v0 and v1 blocks ONLY. On v2 that same bit is
-    // sup_backlight_control, so setting it there would corrupt an unrelated capability and
-    // achieve nothing: hdmitx_edid_parse.c's check_dv_truly_support() recomputes v2 as
-    // is_4k60_supported(EDID) && max_tmds_clk >= 594, ignoring the VSVDB bit entirely.
-    // A v2 display CAN therefore be blocked at 60Hz, and this override cannot help it -
-    // the determinant is the CTA VIC list and Max_TMDS_Clock, not the VSVDB.
-    //
-    // Even on v0/v1 the same function ANDs the result with max_tmds_clk >= 594, so a sink
-    // advertising less than 594MHz keeps the block regardless of what we inject.
-    const size_t declaredLen = static_cast<size_t>(b[0] & 0x1f) + 1;
-    const bool lenOk = (n == declaredLen) &&
-                       ((ver == 0 && n == 26) || (ver == 1 && (n == 12 || n == 15)));
+    // sup_2160p60hz is bit 1 of the capability byte (b[5], the same byte that
+    // carries the version) and is read from the EDID for v0 and v1 blocks only -
+    // hdmitx_edid_parse.c hardcodes it to 1 for v2, so a v2 display already
+    // permits 60Hz DV and there is nothing to override.
     if (ver != 0 && ver != 1)
     {
-      CLog::Log(LOGINFO, "AMLUtils::{} - 4k60 EDID override does not apply to a v{} VSVDB "
-                         "(the kernel derives v2 4k60 from the CTA VIC list and Max_TMDS, "
-                         "not from this block) - skipping that patch", __FUNCTION__, ver);
-    }
-    else if (!lenOk)
-    {
-      // The kernel rejects a v0 block that is not length 0x19, and a v1 block that is
-      // neither 0x0B nor 0x0E (ERROR_LENGTH discards the whole DV block). Injecting a
-      // short or inconsistent read would hand it a buffer whose tail it still parses -
-      // white point and peak luminance would come from stale bytes.
-      CLog::Log(LOGWARNING, "AMLUtils::{} - refusing the 4k60 override: v{} VSVDB read is "
-                            "{} bytes, declared {} - not a length the kernel accepts",
-                __FUNCTION__, ver, static_cast<int>(n), static_cast<int>(declaredLen));
+      CLog::Log(LOGINFO, "AMLUtils::{} - 4k60 EDID override is a no-op on a v{} VSVDB "
+                         "(the kernel already reports 60Hz support) - skipping that patch",
+                __FUNCTION__, ver);
     }
     else if (b[5] & 0x02)
     {
@@ -1031,8 +1007,7 @@ void aml_dv_apply_vsvdb()
       b[5] |= 0x02;
       patched = true;
       CLog::Log(LOGINFO, "AMLUtils::{} - forcing sup_2160p60hz in the v{} VSVDB "
-                         "(EDID under-reports 4k60 DV); note the kernel still ANDs this "
-                         "with Max_TMDS_Clock >= 594MHz", __FUNCTION__, ver);
+                         "(EDID under-reports 4k60 DV)", __FUNCTION__, ver);
     }
   }
 
@@ -1086,8 +1061,8 @@ void aml_dv_apply_vsvdb()
   // dv_cap also self-heals: a real HPD/EDID re-parse reverts it to the
   // panel's block, the compare fails, and the override is re-applied.
   {
-    int cur[VSVDB_MAX_BYTES];
-    const size_t curN = aml_read_display_vsvdb(cur, VSVDB_MAX_BYTES);
+    int cur[16];
+    const size_t curN = aml_read_display_vsvdb(cur, 16);
     if (curN == n && std::equal(cur, cur + n, b))
       return;
   }
@@ -1125,8 +1100,8 @@ int aml_display_vsvdb_max_nits()
   // single source of truth for the VSVDB parse + v2 luminance LUT (the codec
   // layer used to duplicate both AND read dv_cap directly, which reports the
   // INJECTED block while a max-lum override is live - review finding F15)
-  int b[VSVDB_MAX_BYTES];
-  const size_t n = aml_get_display_vsvdb(b, VSVDB_MAX_BYTES);
+  int b[16];
+  const size_t n = aml_get_display_vsvdb(b, 16);
   if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
     return 0;
   const int idx = (b[7] >> 3) & 0x1F;
