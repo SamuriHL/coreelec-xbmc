@@ -21,6 +21,8 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "platform/linux/SysfsPath.h"
+#include "threads/CriticalSection.h"
+#include "threads/SingleLock.h"
 #include "cores/DataCacheCore.h"
 #include "dialogs/GUIDialogKaiToast.h"
 #include "resources/LocalizeStrings.h"
@@ -846,6 +848,12 @@ static const int vsvdb_v2_max_lum_lut[32] = {
 // vsvdb_data leaves the kernel parsing stale tail bytes for white point / peak luminance.
 static constexpr size_t VSVDB_MAX_BYTES = 32;
 
+// Guards the cached panel VSVDB and the non-atomic inject sequence (vsvdb_data ->
+// force_vsvdb -> EDID reload). Reached from the GUI/settings thread and the codec thread
+// concurrently: OnSettingChanged only proceeds while a DV stream is decoding, which is
+// exactly when the codec thread is live.
+static CCriticalSection s_vsvdbSection;
+
 static size_t aml_read_display_vsvdb(int bytes[], size_t max)
 {
   CSysfsPath dv_cap{"/sys/class/amhdmitx/amhdmitx0/dv_cap"};
@@ -880,6 +888,7 @@ static size_t aml_get_display_vsvdb(int bytes[], size_t max);
 
 void aml_dv_clear_vsvdb()
 {
+  std::unique_lock<CCriticalSection> lock(s_vsvdbSection);
   // force_vsvdb is CONSUMED by the EDID parse (it reads back 0 while an
   // injection is live), so a live injection is detected by comparing the
   // parsed VSVDB (dv_cap) against the panel's cached genuine block; equal
@@ -902,12 +911,24 @@ void aml_dv_clear_vsvdb()
 // back to "display") would keep the previously-injected values. Cache the real
 // block; if an override is already active with nothing cached (Kodi restart),
 // drop the override and re-read the EDID once to recover the panel's block.
+// File scope so the cache can be dropped when the sink changes; all access is under
+// s_vsvdbSection.
+static int s_vsvdbCache[VSVDB_MAX_BYTES];
+static size_t s_vsvdbCacheN = 0;
+static bool s_vsvdbCached = false;
+
+void aml_dv_invalidate_vsvdb_cache()
+{
+  std::unique_lock<CCriticalSection> lock(s_vsvdbSection);
+  if (s_vsvdbCached)
+    CLog::Log(LOGDEBUG, "AMLUtils::{} - dropping the cached panel VSVDB", __FUNCTION__);
+  s_vsvdbCached = false;
+  s_vsvdbCacheN = 0;
+}
+
 static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 {
-  static int s_cache[VSVDB_MAX_BYTES];
-  static size_t s_cache_n = 0;
-  static bool s_cached = false;
-  if (!s_cached)
+  if (!s_vsvdbCached)
   {
     CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
     if (force_vsvdb.Exists() && force_vsvdb.Get<unsigned int>().value() != 0)
@@ -915,17 +936,18 @@ static size_t aml_get_display_vsvdb(int bytes[], size_t max)
       force_vsvdb.Set(0);
       aml_hdmitx_reload_edid();
     }
-    s_cache_n = aml_read_display_vsvdb(s_cache, VSVDB_MAX_BYTES);
-    s_cached = (s_cache_n > 0);
+    s_vsvdbCacheN = aml_read_display_vsvdb(s_vsvdbCache, VSVDB_MAX_BYTES);
+    s_vsvdbCached = (s_vsvdbCacheN > 0);
   }
-  size_t n = std::min(s_cache_n, max);
+  size_t n = std::min(s_vsvdbCacheN, max);
   for (size_t i = 0; i < n; i++)
-    bytes[i] = s_cache[i];
+    bytes[i] = s_vsvdbCache[i];
   return n;
 }
 
 void aml_dv_apply_vsvdb()
 {
+  std::unique_lock<CCriticalSection> lock(s_vsvdbSection);
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
   // Two independent reasons to inject a modified VSVDB. Either alone is enough;
@@ -939,11 +961,16 @@ void aml_dv_apply_vsvdb()
   // mode when the sink's VSVDB says it cannot do it (meson_hdmi.c
   // meson_hdmitx_update_dv_eotf returns -ERANGE on !dvcap->sup_2160p60hz), so a
   // display whose EDID under-reports blocks 60Hz DV entirely. Forcing the bit in
-  // the injected block clears that gate. Player-led only: this is the LLDV path
-  // the option exists for, and TV-led output must keep honouring the sink.
+  // the injected block clears that gate.
+  //
+  // NOT gated on player-led, deliberately. The kernel only advertises the player-led
+  // capability bit (LL_YCbCr_422_12BIT) for a v2 block or a v1/0x0B block with
+  // low_latency == 1 (meson_hdmi.c get_dv_info), and Kodi only offers the player-led
+  // option when that bit is present. Requiring player-led therefore made this
+  // unreachable on exactly the blocks it can help - v0 and v1/0x0E - while leaving it
+  // visible only where it is a no-op (v2) or nearly so.
   const bool wantForce60 =
-      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60) &&
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60);
 
   if (!wantMaxLum && !wantForce60)
   {
@@ -1000,8 +1027,9 @@ void aml_dv_apply_vsvdb()
     // A v2 display CAN therefore be blocked at 60Hz, and this override cannot help it -
     // the determinant is the CTA VIC list and Max_TMDS_Clock, not the VSVDB.
     //
-    // Even on v0/v1 the same function ANDs the result with max_tmds_clk >= 594, so a sink
-    // advertising less than 594MHz keeps the block regardless of what we inject.
+    // On v0, v1/0x0E, and v1/0x0B in standard mode, the same function ANDs the result with
+    // max_tmds_clk >= 594, so a sink advertising less than 594MHz keeps the block whatever
+    // we inject. (v1/0x0B with low_latency 2 or 3 is left untouched by that function.)
     const size_t declaredLen = static_cast<size_t>(b[0] & 0x1f) + 1;
     const bool lenOk = (n == declaredLen) &&
                        ((ver == 0 && n == 26) || (ver == 1 && (n == 12 || n == 15)));
