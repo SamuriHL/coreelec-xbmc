@@ -3994,18 +3994,21 @@ void CVideoPlayer::HandleMessages()
         {
           bool open = true;
 #if defined(HAVE_LIBBLURAY)
-          // BD navmode: route through the VM (PSR2) - see the audio handler.
+          // BD: route the choice into PSR2 - see the audio handler; the PG
+          // dictation is likewise not navmode-gated, so the write-back runs in
+          // every Blu-ray mode and a refusal is authoritative only in navmode.
           // DEMUX-source streams only: external subtitles (.srt over a disc)
           // are not in the VM's stream table and must open normally (judge
           // finding - the unconditional gate locked external subs out).
           if (std::shared_ptr<CDVDInputStreamBluray> bluray =
                   std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
-              bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
-              STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+              bluray && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
           {
             CDemuxStream* ds =
                 m_pDemuxer ? m_pDemuxer->GetStream(st.demuxerId, st.id) : nullptr;
-            open = ds && bluray->SelectSubtitleStream(ds->dvdNavId, true);
+            const bool selected = ds && bluray->SelectSubtitleStream(ds->dvdNavId, true);
+            if (bluray->GetSupportedMenuType() == MenuType::NATIVE)
+              open = selected;
           }
 #endif
           if (open)
@@ -4050,13 +4053,13 @@ void CVideoPlayer::HandleMessages()
         SetEnableStream(m_CurrentSubtitle, false);
 
 #if defined(HAVE_LIBBLURAY)
-      // BD navmode: mirror the visibility into PSR2's enable bit so the VM
-      // and the dictation agree with what the user sees (demux-source
-      // streams only - external subs are not in the VM's stream table)
+      // BD: mirror the visibility into PSR2's enable bit so the dictation
+      // agrees with what the user sees - every Blu-ray mode, since the
+      // dictation itself is not navmode-gated (demux-source streams only -
+      // external subs are not in the VM's stream table)
       if (std::shared_ptr<CDVDInputStreamBluray> bluray =
               std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
-          bluray && bluray->GetSupportedMenuType() == MenuType::NATIVE &&
-          m_CurrentSubtitle.id >= 0 && m_pDemuxer &&
+          bluray && m_CurrentSubtitle.id >= 0 && m_pDemuxer &&
           STREAM_SOURCE_MASK(m_CurrentSubtitle.source) == STREAM_SOURCE_DEMUX)
       {
         if (CDemuxStream* ds =
