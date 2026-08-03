@@ -311,11 +311,25 @@ void CDVDInputStreamBluray::PlayMenuSound(uint32_t id)
 
 bool CDVDInputStreamBluray::SelectAudioStream(int pid)
 {
-  if (!m_bd || !m_navmode || !m_titleInfo || !m_clip)
+  // NOT navmode-gated: bd_select_stream/_select_audio_stream is a plain
+  // bd_psr_write of PSR1 (libbluray bluray.c:3152-3168) - it needs no VM, no
+  // title and no navigation state, and PSR1 is what GetDictatedAudioPid()
+  // resolves against in every mode. Requiring navmode here left the per-packet
+  // dictation unopposed on the non-menu paths.
+  if (!m_bd || !m_titleInfo || !m_clip)
+  {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::SelectAudioStream - pid {:#x}: no current clip "
+                        "(bd {}, titleInfo {}, clip {})", pid, m_bd != nullptr,
+              m_titleInfo != nullptr, m_clip != nullptr);
     return false;
+  }
   // app-side UO enforcement: with libbluray pinned at RELAXED its own
-  // bd_select_stream UO check is skipped, so honor the mask here
-  if (m_uoMask.load() & BLURAY_UO_PRIMARY_AUDIO_CHANGE_MASK)
+  // bd_select_stream UO check is skipped, so honor the mask here.
+  // navmode only - the UO mask is a navigation-domain restriction, and the
+  // non-menu paths bypass the VM by design (bd_select_playlist, no bd_play).
+  // Enforcing it there would refuse - and toast - on playback the disc's own
+  // navigation never governs.
+  if (m_navmode && (m_uoMask.load() & BLURAY_UO_PRIMARY_AUDIO_CHANGE_MASK))
   {
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamBluray::SelectAudioStream - audio change masked by disc UO");
