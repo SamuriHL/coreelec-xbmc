@@ -728,33 +728,23 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
   // makes strict sinks drop to black (the Superman BD-J menu-entry regression), so it
   // stays off for every other reason a mode set can be forced.
   //
-  // A frac-only change cannot be applied without a modeset. meson_hdmitx_atomic_check
-  // sets mode_changed whenever FRAC_RATE_POLICY differs, so the re-clock happens either
-  // way - bundling it into our own commit here just makes it explicit rather than having
-  // it fall out of a property write. Either route re-trains the link, which is why the
-  // caller must only ask for it when the rate genuinely needs to change.
-  //
-  // Read the property only when the caller has authorised a frac re-clock: this runs on
-  // every mode set, including the common no-op path, and m_connector can be freed and
-  // re-acquired by aml_init_drmDevice() on the hotplug thread.
-  int current_fractional_rate = -1;
-  bool frac_changed = false;
-  if (frac_reclock && m_connector)
-  {
-    current_fractional_rate =
-      get_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
-    // get_drmProp returns -1 when the property cannot be read (most likely during
-    // connector churn). Treat that as "unknown", never as "differs" - the latter would
-    // fire a full re-clock at exactly the wrong moment.
-    frac_changed = (current_fractional_rate >= 0 && current_fractional_rate != fractional_rate);
-    if (current_fractional_rate < 0)
-      CLog::Log(LOGWARNING, "CAMLDRMUtils::{} - could not read FRAC_RATE_POLICY, "
-        "declining the frac re-clock", __FUNCTION__);
-  }
+  // A frac-only change cannot be applied any other way: the kernel only re-clocks when
+  // FRAC_RATE_POLICY differs INSIDE an allow_modeset commit (meson_hdmi.c,
+  // meson_hdmitx_atomic_check - the comparison that sets mode_changed sits under
+  // "if (state->allow_modeset ...)"). Setting the property on its own stores the value
+  // and re-clocks nothing, which is why the mode-string-only gate silently left the
+  // display on the wrong 23.976/24.000 clock. The caller gates frac_reclock to the mode
+  // set that establishes video playback precisely so the repeated same-mode-string calls
+  // during a disc's pre-menu video (video 23.976 vs GUI 24.000, alternating) cannot each
+  // fire one - that alternation was the opening-video judder fixed in d4377ca3a3.
+  const int current_fractional_rate =
+    get_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
+  const bool frac_changed = (current_fractional_rate != fractional_rate);
 
-  if (!StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) || frac_changed)
+  if (!StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) ||
+      (frac_reclock && frac_changed))
   {
-    if (frac_changed)
+    if (frac_reclock && frac_changed)
       CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - frac rate {:d} -> {:d} at unchanged mode {}, re-clocking",
         __FUNCTION__, current_fractional_rate, fractional_rate, mode);
 

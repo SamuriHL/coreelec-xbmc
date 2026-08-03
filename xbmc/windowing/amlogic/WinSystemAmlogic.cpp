@@ -50,6 +50,7 @@ CWinSystemAmlogic::CWinSystemAmlogic()
 :  m_libinput(new CLibInputHandler)
 ,  m_force_mode_switch(false)
 ,  m_frac_reclock(false)
+,  m_frac_reclock_armed(true)
 ,  m_fdMonitorId(-1)
 ,  m_udev(NULL)
 ,  m_callback_data(NULL, NULL)
@@ -404,9 +405,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                                      CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_LED});
+                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD});
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -484,8 +483,7 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60 &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_LED)
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_EDID_FORCE60)
     return;
 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
