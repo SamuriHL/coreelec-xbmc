@@ -1214,16 +1214,29 @@ void CRenderManager::PrepareNextRender()
     int idx = *iter;
     int lateframes = 0;
 
+    // the slot for rendering in time is [pts .. (pts + frametime)]
+    // renderer/drivers have internal queues, being slightly late here does not mean that
+    // we are really late. The likelihood that we recover decreases the greater m_lateframes
+    // get. Skipping a frame is easier than having decoder dropping one (lateframes > 10)
+    // m_lateframes is not modified in the loop below, so the relaxation is hoisted.
+    constexpr double lateWindow = 0.98;
+    const double x = (m_lateframes <= 6) ? lateWindow : 0;
+
     while (iter != m_queued.end())
     {
-      // the slot for rendering in time is [pts .. (pts + frametime)]
-      // renderer/drivers have internal queues, being slightly late here does not mean that
-      // we are really late. The likelihood that we recover decreases the greater m_lateframes
-      // get. Skipping a frame is easier than having decoder dropping one (lateframes > 10)
-      double x = (m_lateframes <= 6) ? 0.98 : 0;
       if (renderPts < m_Queue[*iter].pts + x * frametime)
         break;
-      lateframes++;
+      // Count lateness against the FIXED window, never the relaxed one. Once
+      // m_lateframes passes 6, x becomes 0 and the test above is the exact negation
+      // of the enclosing `renderPts >= nextFramePts`, so counting with it makes the
+      // counter self-sustaining: lateframes is then >= 1 on every pass, the reset at
+      // `else m_lateframes = 0` below becomes unreachable, and the renderer's late
+      // tolerance stays permanently halved (skip at 1.0 instead of 1.98 frametime),
+      // throwing away the driver-queue slack this window exists to provide.
+      // A single +m_frameTime CDVDClock::ErrorAdjust is enough to trigger it; only a
+      // later negative correction, a display reset or a Configure would clear it.
+      if (renderPts >= m_Queue[*iter].pts + lateWindow * frametime)
+        lateframes++;
       idx = *iter;
       ++iter;
     }
