@@ -164,6 +164,7 @@ void CActiveAESettings::SettingOptionsAudioDevicesFillerGeneral(
 {
   current = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
   std::string firstDevice;
+  std::string preferredDevice;
 
   std::unique_lock lock(m_instance->m_cs);
 
@@ -186,6 +187,13 @@ void CActiveAESettings::SettingOptionsAudioDevicesFillerGeneral(
       if (sink == sinkList.begin())
         firstDevice = sink->second;
 
+      /* ...and prefer that same device for PCM: on those SoCs it is the only
+       * HDMI PCM device with an ALSA channel map, so it is the only one that
+       * can announce a correct channel allocation for multi-channel LPCM. */
+      if (!passthrough && filter_passthrough && preferredDevice.empty() &&
+          StringUtils::StartsWith(sink->second, "ALSA:surround71"))
+        preferredDevice = sink->second;
+
       list.emplace_back(sink->first, sink->second);
 
       if (StringUtils::EqualsNoCase(current, sink->second))
@@ -194,6 +202,6 @@ void CActiveAESettings::SettingOptionsAudioDevicesFillerGeneral(
   }
 
   if (!foundValue)
-    current = firstDevice;
+    current = preferredDevice.empty() ? firstDevice : preferredDevice;
 }
 }
