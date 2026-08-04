@@ -27,6 +27,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -581,6 +582,15 @@ void CDVDVideoCodecAmlogic::Close(void)
   // Stop any in-flight L5 active-area detection thread.
   aml_dv_detect_active_area_stop();
 
+  // Any BL/EL packets still awaiting a partner are ours to free - Reset() and
+  // Reopen() drained this list but Close() never did, so every stop with a
+  // non-empty queue leaked its buffers for the life of the process.
+  while (!m_packages.empty())
+  {
+    PopPackageFront();
+  }
+  m_packagesOverflowLogged = false;
+
   m_videoBufferPool = nullptr;
 
   if (m_Codec)
@@ -759,8 +769,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with dts: {:.3f} (incoming {} dts: {:.3f})", __FUNCTION__,
               isELPackageBackup ? "EL" : "BL", dtsBackup/DVD_TIME_BASE,
               packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE);
-            KODI::MEMORY::AlignedFree(pDataBackup);
-            m_packages.pop_front();
+            PopPackageFront();
             continue;
           }
           if (dtsKnown && dtsBackup > packet.dts + dtsTolerance)
@@ -800,10 +809,34 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
         if (!dual_layer_converted)
         {
+          // Guard against unbounded growth. If pairing stops working at all -
+          // a mis-tagged stream, a malformed file - this list otherwise grows
+          // until the process is OOM-killed; measured at ~450MB per 33s on a
+          // 4K60 title, with zero frames decoded. Drop the OLDEST entries, not
+          // the incoming one, so a late partner can still pair. Never feed an
+          // unpaired packet to the decoder instead: the single-argument
+          // Convert() does not wrap EL NALs as HEVC_NAL_UNSPEC63, so an orphan
+          // EL would arrive as native nuh_layer_id=1 slices.
+          constexpr size_t maxPackagesBytes = 64 * 1024 * 1024;
+          if (m_packagesBytes > maxPackagesBytes)
+          {
+            if (!m_packagesOverflowLogged)
+            {
+              CLog::Log(LOGERROR, "{}::{} - BL/EL pairing is not converging ({} packets, {} MB "
+                                  "queued) - dropping the oldest. Expect missing video.",
+                        __MODULE_NAME__, __FUNCTION__, m_packages.size(),
+                        m_packagesBytes / (1024 * 1024));
+              m_packagesOverflowLogged = true;
+            }
+            while (m_packagesBytes > maxPackagesBytes / 2 && !m_packages.empty())
+              PopPackageFront();
+          }
+
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
           m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts));
+          m_packagesBytes += iSize;
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
@@ -958,10 +991,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   // pop package only from list if hardware decoder did accept the data
   if (data_added && dual_layer_converted)
   {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
+    PopPackageFront();
   }
 
   return data_added;
@@ -1015,17 +1045,27 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
   }
 }
 
+void CDVDVideoCodecAmlogic::PopPackageFront()
+{
+  if (m_packages.empty())
+    return;
+
+  const DLDemuxPacket& pkt = m_packages.front();
+  KODI::MEMORY::AlignedFree(std::get<0>(pkt));
+  const size_t bytes = std::get<1>(pkt);
+  m_packagesBytes -= std::min(m_packagesBytes, bytes);
+  m_packages.pop_front();
+}
+
 void CDVDVideoCodecAmlogic::Reset(void)
 {
   m_Codec->Reset();
 
   while (!m_packages.empty())
   {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
+    PopPackageFront();
   }
+  m_packagesOverflowLogged = false;
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
@@ -1068,10 +1108,7 @@ void CDVDVideoCodecAmlogic::Reopen(void)
 
   while (!m_packages.empty())
   {
-    DLDemuxPacket dual_layer_packet = m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
+    PopPackageFront();
   }
 
   m_mpeg2_sequence_pts = 0;
