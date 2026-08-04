@@ -28,11 +28,11 @@ std::unique_ptr<IScreenshotSurface> CScreenshotSurfaceAML::CreateSurface()
   return std::unique_ptr<CScreenshotSurfaceAML>(new CScreenshotSurfaceAML());
 }
 
-bool CScreenshotSurfaceAML::Capture()
+bool CScreenshotSurfaceAML::Read(const ScreenshotContext& /*ctx*/)
 {
-  std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
-  CServiceBroker::GetGUI()->GetWindowManager().Render();
-
+  // Upstream moved capture behind the screenshot service (c2dbf2dcbb) and the
+  // interface now guarantees a fully rendered frame on the render thread, so
+  // the re-render and gfx-context lock that used to live here are gone.
 #ifndef HAS_GLES
   glReadBuffer(GL_BACK);
 #endif
@@ -73,11 +73,15 @@ bool CScreenshotSurfaceAML::Capture()
   }
 
   delete[] surface;
-  return true;
-}
 
-void CScreenshotSurfaceAML::CaptureVideo(bool blendToBuffer)
-{
-  // Captures the current visible videobuffer and blend it into m_buffer (captured overlay)
+  // The rows above are already flipped to top-down and swapped to BGRA, so the
+  // stride stays positive and the coding is tagged for the consumer's swscale.
+  m_format = AV_PIX_FMT_BGRA;
+
+  // On Amlogic the video sits on its own plane and never appears in the GL
+  // framebuffer, so blend it in or the screenshot is GUI-only. This was the
+  // separate CaptureVideo() the old interface called after Capture().
   CScreenshotAML::CaptureVideoFrame(m_buffer, m_width, m_height);
+
+  return true;
 }

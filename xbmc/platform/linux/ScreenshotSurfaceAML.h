@@ -19,6 +19,5 @@ public:
   static void Register();
   static std::unique_ptr<IScreenshotSurface> CreateSurface();
 
-  bool Capture() override;
-  void CaptureVideo(bool blendToBuffer) override;
+  bool Read(const ScreenshotContext& ctx) override;
 };
