@@ -253,6 +253,12 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_program = UINT_MAX;
   m_seekToKeyFrame = false;
+  // Reset() is Dispose() + Open() on the SAME object, so these must be cleared
+  // here and not only in the constructor. A stale m_dv_dual_stream makes the
+  // next non-DV title fall into the discard branch in AddStream and lose its
+  // only video stream - playback with no video at all.
+  m_dv_dual_stream = false;
+  m_dv_bl_stream_idx = -1;
 
   const AVIOInterruptCB int_cb = { interrupt_cb, this };
 
@@ -1726,6 +1732,46 @@ void CDVDDemuxFFmpeg::RemoveStream(CDemuxStream *stream)
   }
 }
 
+int CDVDDemuxFFmpeg::FirstVideoStreamIndex() const
+{
+  if (!m_pFormatContext)
+    return -1;
+
+  // Mirror AddStream's own rejections. GoPro 'fdsc' repair tracks and
+  // AV_DISPOSITION_ATTACHED_PIC cover art are video-typed but never enter
+  // m_streams, and with a program selected only that program's streams are
+  // added. Naming a stream that is never added would make every real video
+  // stream compare "not the base layer" - reintroducing the misdetection this
+  // exists to prevent.
+  auto accept = [this](unsigned int idx) {
+    const AVStream* st = m_pFormatContext->streams[idx];
+    return st && st->discard != AVDISCARD_ALL && st->codecpar &&
+           st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+           st->codecpar->codec_tag != MKTAG('f', 'd', 's', 'c') &&
+           (st->disposition & AV_DISPOSITION_ATTACHED_PIC) == 0;
+  };
+
+  if (m_program != UINT_MAX && m_program < m_pFormatContext->nb_programs)
+  {
+    const AVProgram* prog = m_pFormatContext->programs[m_program];
+    int best = -1;
+    for (unsigned int i = 0; i < prog->nb_stream_indexes; i++)
+    {
+      const unsigned int idx = prog->stream_index[i];
+      // stream_index[] is not necessarily ascending - take the lowest.
+      if (accept(idx) && (best < 0 || static_cast<int>(idx) < best))
+        best = static_cast<int>(idx);
+    }
+    return best;
+  }
+
+  for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
+    if (accept(i))
+      return static_cast<int>(i);
+
+  return -1;
+}
+
 CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 {
   AVStream* pStream = m_pFormatContext->streams[streamIdx];
@@ -1896,12 +1942,38 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
         const AVPacketSideData* sideData = nullptr;
 
-        // check if it's dual video stream and one of it is type DV
-        auto it = std::find_if(m_streams.begin(), m_streams.end(),
-          [&st](const std::pair<int, CDemuxStream*>& v)
+        // Resolve the base layer as the first video stream the demuxer would
+        // actually ACCEPT. This feeds the isELPackage test in the read path
+        // (stream->uniqueId != m_dv_bl_stream_idx); leaving it at -1 would flag
+        // BOTH layers of a genuine dual stream as EL, so every packet queues in
+        // the codec waiting for a BL partner that never arrives - the OOM that
+        // b9028b3015 exists to prevent. Upstream's loop below handles the
+        // audio-first *detection* half by requiring a prior VIDEO stream.
+        m_dv_bl_stream_idx = FirstVideoStreamIndex();
+
+        std::vector<CDemuxStream*> streams = GetStreams();
+        for (auto* s : streams) {
+          if (s->type == StreamType::VIDEO)
           {
-            if (v.second->type != StreamType::VIDEO)
-              return false;
+            CDemuxStreamVideo *vs = static_cast<CDemuxStreamVideo*>(s);
+            if (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION || st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+            {
+              m_dv_dual_stream = true;
+              break;
+            }
+            else
+            {
+              // The EL can be added before the BL on the lazy add-on-packet
+              // paths. Without the DV configuration the BL plays base-layer-only
+              // (no FEL) - the failure the comment above exists to prevent - so
+              // do not let it pass silently.
+              CLog::Log(LOGWARNING,
+                        "CDVDDemuxFFmpeg::AddStream - dual-layer DV: base-layer stream {} "
+                        "unavailable, it will not receive the DV configuration",
+                        m_dv_bl_stream_idx);
+            }
+          }
+        }
 
             CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
             return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||

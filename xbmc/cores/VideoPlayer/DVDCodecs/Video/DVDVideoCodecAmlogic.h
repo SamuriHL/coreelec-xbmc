@@ -146,6 +146,9 @@ private:
   std::shared_ptr<CAMLVideoBufferPool> m_videoBufferPool;
   static std::atomic<bool> m_InstanceGuard;
 
+  // BL/EL packets awaiting their partner. Bounded by m_packagesBytes: if
+  // pairing never converges this list would otherwise grow until the process
+  // is OOM-killed.
   std::list<DLDemuxPacket> m_packages;
 
   uint32_t m_metadataToken{0};
@@ -158,4 +161,8 @@ private:
   AMLFrameMetadata m_pendingMeta;
   AMLFrameMetadata m_lastMeta;
   CAMLFrameMetadataSequencer m_metadataSequencer;
+  size_t m_packagesBytes = 0;
+  bool m_packagesOverflowLogged = false;
+  // Free the head of m_packages, keeping m_packagesBytes in step.
+  void PopPackageFront();
 };
