@@ -45,15 +45,12 @@ inline bool IsValidPts(double pts)
   return (pts >= 0.0) && (pts <= MAX_REASONABLE_PTS);
 }
 
-// Passthrough vsync-clock lipsync gate: when the vblank reference clock drives
-// CDVDClock, CDVDClock::ErrorAdjust already quantizes corrections to whole frame
-// times inside a +20/-27ms window. Tighten the outer SYNC_DISCON gate to that
-// window so it governs steady-state lipsync instead of the coarse
-// maxpassthroughoffsyncduration (~50ms), which otherwise lets passthrough
-// audio-behind drift accumulate before any correction fires (a seek re-anchors
-// it). Ported from the CE21 LAV build (was gated there on m_lavFullSyncEnabled;
-// here LAV is always-on for passthrough so the gate is unconditional).
-constexpr unsigned int DISCON_VSYNC_ADJUST_TIME_MS = 20;
+// (Removed: DISCON_VSYNC_ADJUST_TIME_MS, the 20ms passthrough vsync-clock gate.
+// It was ported from the CE21 LAV build where it was OPT-IN behind
+// m_lavFullSyncEnabled, and made unconditional here because LAV is always-on -
+// which is precisely why only CE22 builds showed the DTS sawtooth. A gate
+// narrower than ErrorAdjust's whole-frame correction cannot settle; see the
+// long note at the SYNC_DISCON gate in OutputPacket.)
 } // namespace
 
 class CDVDMsgAudioCodecChange : public CDVDMsg
@@ -711,34 +708,28 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   {
     double syncerror = m_audioSink.GetSyncError();
 
-    // While the vsync reference clock is master, let ErrorAdjust's own quantized
-    // +20/-27ms window govern lipsync by tightening the outer gate to it. Only
-    // applies while the vblank clock runs; GetVsyncAdjust() != 0 is the same
-    // discriminator ErrorAdjust uses for its quantized path. Without this,
-    // audio-behind drift on the passthrough path accumulates to
-    // m_disconAdjustTimeMs (~50ms) before any correction and only a seek/flush
-    // re-anchors it.
-    unsigned int adjustTimeMs = m_disconAdjustTimeMs;
-    bool vsyncQuantized = false;
-    if (m_pClock->GetVsyncAdjust() != 0)
-    {
-      int missedvblanks;
-      double clockspeed, refreshrate;
-      if (m_pClock->GetClockInfo(missedvblanks, clockspeed, refreshrate))
-      {
-        adjustTimeMs = std::min(adjustTimeMs, DISCON_VSYNC_ADJUST_TIME_MS);
-        vsyncQuantized = true;
-      }
-    }
-
-    // ErrorAdjust's vsync-quantized window is ASYMMETRIC (+20/-27ms,
-    // DVDClock::ErrorAdjust): a symmetric outer gate called it per-frame for
-    // errors in the (-27,-20]ms band where it always returns 0 (review
-    // finding) - mirror the asymmetry here
-    const double gateAhead = DVD_MSEC_TO_TIME(adjustTimeMs);
-    const double gateBehind =
-        vsyncQuantized ? std::max(gateAhead, DVD_MSEC_TO_TIME(27.0)) : gateAhead;
-    if (syncerror > gateAhead || syncerror < -gateBehind)
+    // The outer gate MUST stay wider than ErrorAdjust's correction step.
+    // On the vsync-clock path ErrorAdjust answers a tripped gate with a WHOLE
+    // video frame (m_frameTime; 41.7ms at 23.976) - see CDVDClock::ErrorAdjust.
+    // So a gate narrower than a frame leaves the residual sitting next to the
+    // OPPOSITE edge and the loop can never settle.
+    //
+    // b10c7e9eb7 tightened this to +20/-27ms and produced exactly that: a
+    // permanent sawtooth on DTS passthrough - error walks to -27ms, takes
+    // -41.7ms to +14.7ms, walks to +20ms, takes +41.7ms back to -21.7ms, for
+    // ~12 corrections/hour, each one a visible frame of A/V desync. Measured
+    // on-box 2026-08-03 over a 50-minute title.
+    //
+    // Upstream and CE21 (avdvplus, pannal) use this plain 50ms gate and do NOT
+    // show the defect: 50 - 41.7 = 8.3ms residual, i.e. it lands near zero and
+    // the next correction is a whole drift-cycle away. DTS is the codec that
+    // exposes it because TrueHD gets sub-frame accuracy from the MAT packer's
+    // sample offset and AC3/E-AC3 errors stay small.
+    //
+    // DO NOT narrow this below m_frameTime again without re-testing a DTS title
+    // end to end. The audio-behind drift that b10c7e9eb7 set out to shorten is
+    // the lesser evil: it is static, whereas the sawtooth is visible motion.
+    if (std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
     {
       double correction = m_pClock->ErrorAdjust(syncerror, "CVideoPlayerAudio::OutputPacket");
       if (correction != 0)
