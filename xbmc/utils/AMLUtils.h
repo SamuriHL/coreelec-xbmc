@@ -6,6 +6,8 @@
  *  See LICENSES/README.md for more information.
  */
 
+#pragma once
+
 #include "utils/StreamDetails.h"
 
 #include <cstdint>
