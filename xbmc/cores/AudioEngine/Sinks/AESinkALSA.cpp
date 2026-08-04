@@ -646,6 +646,11 @@ void CAESinkALSA::aml_configure_simple_control(std::string &device, const enum I
           AEDeviceType devType = AEDeviceTypeFromName(device);
           enum spdif_id spdif_id = HDMITX_SRC_NUM;
           int soc_id = aml_get_cpufamily_id();
+          /* "surround71" is the multi-channel LPCM device and feeds a TDM lane
+           * group, not SPDIF-B. Mux HDMITX to the same block the samples are
+           * written to, otherwise only the first lane reaches the sink and a
+           * 5.1/7.1 stream is heard as stereo. */
+          bool is_surround71 = (device.substr(0, device.find(':')) == "surround71");
 
           switch (devType) {
             case AE_DEVTYPE_HDMI:
@@ -658,7 +663,7 @@ void CAESinkALSA::aml_configure_simple_control(std::string &device, const enum I
                     spdif_id = HDMITX_SRC_TDM_B;
                     break;
                   default:
-                    spdif_id = HDMITX_SRC_SPDIF_B;
+                    spdif_id = is_surround71 ? HDMITX_SRC_TDM_B : HDMITX_SRC_SPDIF_B;
                     break;
                 }
               }
@@ -670,7 +675,7 @@ void CAESinkALSA::aml_configure_simple_control(std::string &device, const enum I
                     spdif_id = HDMITX_SRC_TDM_C;
                     break;
                   default:
-                    spdif_id = HDMITX_SRC_SPDIF_B;
+                    spdif_id = is_surround71 ? HDMITX_SRC_TDM_C : HDMITX_SRC_SPDIF_B;
                     break;
                 }
               }
