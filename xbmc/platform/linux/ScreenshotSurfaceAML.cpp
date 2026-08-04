@@ -28,11 +28,8 @@ std::unique_ptr<IScreenshotSurface> CScreenshotSurfaceAML::CreateSurface()
   return std::unique_ptr<CScreenshotSurfaceAML>(new CScreenshotSurfaceAML());
 }
 
-bool CScreenshotSurfaceAML::Capture()
+bool CScreenshotSurfaceAML::Read(const ScreenshotContext& ctx)
 {
-  std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
-  CServiceBroker::GetGUI()->GetWindowManager().Render();
-
 #ifndef HAS_GLES
   glReadBuffer(GL_BACK);
 #endif
