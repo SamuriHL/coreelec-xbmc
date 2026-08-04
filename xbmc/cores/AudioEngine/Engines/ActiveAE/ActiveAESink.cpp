@@ -13,6 +13,7 @@
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "utils/AMLUtils.h"
 #include "utils/EndianSwap.h"
 #include "utils/MemUtils.h"
 #include "utils/log.h"
@@ -746,6 +747,14 @@ std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool p
 
   const AESinkDevice dev = CAESinkFactory::ParseDevice(device);
 
+  /* On Amlogic S5/T7 and newer, "surround71" is the only HDMI PCM device that
+   * exposes an ALSA channel map. Without one the HDMI channel allocation stays 0
+   * and a multi-channel LPCM stream is announced to the sink as stereo, which
+   * most AVRs mute. Prefer it whenever we have to pick a PCM device ourselves;
+   * an explicit user choice is matched earlier and still wins. */
+  const int soc_id = aml_get_cpufamily_id();
+  const bool prefer_lpcm = !passthrough && (soc_id >= AML_S5 || soc_id == AML_T7);
+
   // find exact match of deviceName in same driver
   if (!dev.driver.empty() && !dev.name.empty())
   {
@@ -819,6 +828,10 @@ std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool p
         // filter L-PCM device when passthrough on Amlogic S5/T7
         if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
           continue;
+
+        // ...and prefer that same device for PCM, ahead of any "default" name
+        if (prefer_lpcm && d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71")
+          return d.ToDeviceString(sink.m_sinkName);
 
         if (firstDevice.empty())
           firstDevice = d.ToDeviceString(sink.m_sinkName);
