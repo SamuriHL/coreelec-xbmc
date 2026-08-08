@@ -2086,10 +2086,19 @@ bool CActiveAE::RunStages()
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
         double error = playingPts - (*it)->m_pClock->GetClock();
 
-        // underestimate error for TrueHD passthrough
-        // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
-        if (isTrueHDPassthrough)
-          error *= 0.45;
+        // Upstream scales TrueHD passthrough error by 0.45 here ("underestimate
+        // error ... to avoid unnecessary a/v sync corrections", 87d09a828f).
+        // Deliberately NOT done in this fork: every consumer of m_syncError
+        // gets the same shrunken number, so the VideoPlayerAudio DISCON gate
+        // (50ms measured) only fires at ~111ms PHYSICAL error - a permanent,
+        // clearly audible lip-sync dead zone that the debug stats then report
+        // as "in sync" (observed as exactly that complaint on S6-class boxes,
+        // whose TDM sink path develops real error; see
+        // docs/s6_truehd_av_drift.md). Oscillation is already prevented
+        // structurally: the gate stays wider than ErrorAdjust's whole-frame
+        // step (see the comment block in VideoPlayerAudio.cpp), and TrueHD
+        // corrections land with sub-frame accuracy via the MAT packer's sample
+        // offset, so honest measurement cannot ping-pong.
 
         if (error > maxError)
         {
