@@ -866,6 +866,17 @@ std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool p
       if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
         continue;
 
+      // ...and prefer that same device for PCM here too. This is the
+      // any-driver fallback, reached when the configured device has no
+      // parseable driver at all (an empty audiooutput.audiodevice). Without
+      // the preference it returns "default", which on S5/S6 resolves to
+      // hw:X,1 - the internal analog codec, not the HDMI TDM - so a box that
+      // has never had a device chosen comes up with no HDMI audio, which is
+      // the exact failure the same preference in the loop above exists to
+      // prevent.
+      if (prefer_lpcm && d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71")
+        return d.ToDeviceString(sink.m_sinkName);
+
       if (firstDevice.empty())
         firstDevice = d.ToDeviceString(sink.m_sinkName);
 
