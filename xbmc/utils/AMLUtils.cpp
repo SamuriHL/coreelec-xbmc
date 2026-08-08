@@ -678,7 +678,27 @@ void aml_dv_apply_target_overrides(unsigned int mode)
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     min_lum = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM);
     if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+    {
+      // ONLY an explicit user value sets the DM target. 0 leaves
+      // amdv_target_max_override at 0, i.e. the DM keeps its own built-in
+      // target - which is what a user who has chosen nothing gets.
+      //
+      // Deliberately NOT auto-detected from the display here. The VSVDB peak
+      // describes the player-led Dolby Vision contract, not what an HDR10
+      // output should be mapped for, and it is an advertised figure rather
+      // than a measured one - panels routinely claim a peak their real
+      // sustained output does not reach. Pushing it as the DM target raises
+      // the target above the built-in on essentially every DV display, which
+      // removes highlight roll-off that was previously being applied and
+      // clips specular detail at the panel instead of mapping it.
+      //
+      // This also keeps 0 meaning the same thing everywhere: it is the only
+      // value that reaches the built-in target, and no cached or injected
+      // EDID reading can ever become a tone-mapping target behind the user's
+      // back. The Smart CMv4.0 bypass threshold still auto-detects
+      // separately - that is a comparison, not a target.
       max_nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+    }
   }
   min_override.Set(min_lum < 0 ? 0 : min_lum);
   max_override.Set(max_nits < 0 ? 0 : max_nits);
