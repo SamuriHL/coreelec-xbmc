@@ -160,6 +160,10 @@ void CWinSystemAmlogic::MonitorStop()
 
 void CWinSystemAmlogic::HotplugEvent()
 {
+  // A different panel may now be attached, so the cached VSVDB - which
+  // describes one specific display - can no longer be trusted.
+  aml_display_vsvdb_invalidate();
+
   m_amlDisplay->aml_init_drmDevice();
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
