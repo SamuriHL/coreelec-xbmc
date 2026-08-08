@@ -22,6 +22,7 @@
 #include "platform/linux/powermanagement/LinuxPowerSyscall.h"
 #include "platform/linux/ScreenshotSurfaceAML.h"
 #include "platform/linux/FDEventMonitor.h"
+#include "platform/linux/ScreenshotSurfaceAML.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "settings/DisplaySettings.h"
