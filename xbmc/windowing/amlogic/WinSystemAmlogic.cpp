@@ -198,6 +198,10 @@ void CWinSystemAmlogic::HotplugEvent()
 {
   SetPresentationReady(false);
 
+  // A different panel may now be attached, so the cached VSVDB - which
+  // describes one specific display - can no longer be trusted.
+  aml_display_vsvdb_invalidate();
+
   try
   {
     m_amlDisplay->aml_init_drmDevice();
