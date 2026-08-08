@@ -25572,7 +25572,7 @@ msgstr ""
 #. Description of setting with label #60330
 #: system/settings/settings.xml
 msgctxt "#60331"
-msgid "Your display's Dolby Vision peak brightness in nits. 0 = auto-detect from the display's EDID (VSVDB); on first Smart CMv4.0 playback the detected value is filled in here. This single value is used both for the Smart CMv4.0 bypass decision and, when 'Force peak onto display' below is enabled, as the peak the Dolby Vision engine tone-maps to."
+msgid "Your display's Dolby Vision peak brightness in nits. 0 = auto: the Smart CMv4.0 bypass decision reads the display's own EDID (VSVDB) peak, and nothing is forced onto the Dolby Vision engine. Setting a value here is an explicit override: it replaces the auto-detected peak for the Smart CMv4.0 bypass decision, is injected into the display's VSVDB when 'Force peak onto display' below is enabled, and becomes the peak the Dolby Vision engine tone-maps to for VS10 HDR10 output."
 msgstr ""
 
 #. Label of Dolby Vision VS10 SDR8 output setting
