@@ -3695,19 +3695,29 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
 
   if (items.IsEmpty())
   {
-    // No playlist reaches MIN_MOVIE_DURATION and the disc names none
-    // (calibration/demo/concert compilation discs). Fall back to the full
-    // playlist list rather than failing the whole browse; SINGLE keeps its
-    // pick-the-longest semantics.
+    // No playlist reaches MIN_MOVIE_DURATION (calibration/demo/concert
+    // compilation discs). Fall back to the full playlist list rather than
+    // failing the whole browse.
+    //
+    // `job` is deliberately NOT widened to ALL here. Only the duration floor
+    // has failed; the caller's notion of which playlists it wants is still
+    // valid and is what keeps the result to a sensible size - SINGLE picks the
+    // longest, and MAIN keeps everything within MAIN_TITLE_LENGTH_PERCENT of
+    // the longest, which is precisely the "multiple editions" set. Promoting
+    // to ALL disables both that and the >1-chapter filter, so every playlist
+    // on the disc survives - and MAIN now has a caller that turns each
+    // returned item into a library entry (GetOrShowPlaylistSelection's
+    // returnMultipleItems path, added upstream), which would add a calibration
+    // or concert disc as one movie with dozens of "versions" and prompt once
+    // per playlist. The two changes only interact through this line.
     CLog::LogFC(LOGDEBUG, LOGBLURAY,
                 "No movie-length playlists found - falling back to all {} playlists",
                 playlistMap.size());
     std::vector<PlaylistInformation> all;
     std::ranges::transform(playlistMap, std::back_inserter(all),
                            [](const PlaylistMapEntry& pair) { return pair.second; });
-    const GetTitle fallbackJob{job == GetTitle::MAIN ? GetTitle::ALL : job};
-    FilterMoviePlaylistsByResolution(all, fallbackJob, mainPlaylist);
-    GetMainMoviePlaylists(all, fallbackJob, mainPlaylist);
+    FilterMoviePlaylistsByResolution(all, job, mainPlaylist);
+    GetMainMoviePlaylists(all, job, mainPlaylist);
     EndMoviePlaylistSearch(all);
     PopulateMovieFileItems(url, items, mainPlaylist, allTitles, all, m_getStreamDetails,
                            m_playlistNames);
