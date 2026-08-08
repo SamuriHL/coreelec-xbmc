@@ -829,6 +829,7 @@ static void aml_hdmitx_reload_edid()
 }
 
 static size_t aml_get_display_vsvdb(int bytes[], size_t max);
+static bool aml_display_vsvdb_cached();
 
 void aml_dv_clear_vsvdb()
 {
@@ -836,11 +837,28 @@ void aml_dv_clear_vsvdb()
   // injection is live), so a live injection is detected by comparing the
   // parsed VSVDB (dv_cap) against the panel's cached genuine block; equal
   // means nothing is injected and the EDID round-trip is skipped.
-  int cur[16], panel[16];
-  const size_t curN = aml_read_display_vsvdb(cur, 16);
-  const size_t panelN = aml_get_display_vsvdb(panel, 16);
-  if (curN > 0 && curN == panelN && std::equal(cur, cur + curN, panel))
-    return;
+  //
+  // That comparison is only meaningful once we ALREADY hold the panel's real
+  // block. With a cold cache and an injection still live - Kodi restarted
+  // without a clean shutdown, e.g. after an OOM kill - reading it here would
+  // populate the cache FROM the injected block, the comparison would then
+  // trivially match, and we would return without clearing: the injection
+  // persists for the whole session and every later reader gets the injected
+  // values as "the panel's". Fall through to the unconditional clear instead,
+  // and let the cache populate from the recovered EDID afterwards.
+  if (!aml_display_vsvdb_cached())
+  {
+    CLog::Log(LOGINFO, "AMLUtils::{} - no cached panel VSVDB yet; clearing unconditionally",
+              __FUNCTION__);
+  }
+  else
+  {
+    int cur[16], panel[16];
+    const size_t curN = aml_read_display_vsvdb(cur, 16);
+    const size_t panelN = aml_get_display_vsvdb(panel, 16);
+    if (curN > 0 && curN == panelN && std::equal(cur, cur + curN, panel))
+      return;
+  }
   CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
   if (!force_vsvdb.Exists())
     return;
@@ -854,11 +872,35 @@ void aml_dv_clear_vsvdb()
 // back to "display") would keep the previously-injected values. Cache the real
 // block; if an override is already active with nothing cached (Kodi restart),
 // drop the override and re-read the EDID once to recover the panel's block.
+// Cache state for the panel's genuine VSVDB. Split out so aml_dv_clear_vsvdb()
+// can tell "we know the panel's block" from "we have never read one", and so a
+// display change can throw the block away - it describes one specific panel.
+static int s_vsvdb_cache[16];
+static size_t s_vsvdb_cache_n = 0;
+static bool s_vsvdb_cached = false;
+
+static bool aml_display_vsvdb_cached()
+{
+  return s_vsvdb_cached;
+}
+
+void aml_display_vsvdb_invalidate()
+{
+  // The cached block belongs to whichever panel was attached when it was read.
+  // Without this, swapping TV or AVR mid-session leaves every consumer - the
+  // Smart CMv4.0 bypass threshold and the VSVDB injection base - working from
+  // the old display's capabilities until Kodi is restarted.
+  if (s_vsvdb_cached)
+    CLog::Log(LOGINFO, "AMLUtils::{} - display changed, dropping cached VSVDB", __FUNCTION__);
+  s_vsvdb_cached = false;
+  s_vsvdb_cache_n = 0;
+}
+
 static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 {
-  static int s_cache[16];
-  static size_t s_cache_n = 0;
-  static bool s_cached = false;
+  int (&s_cache)[16] = s_vsvdb_cache;
+  size_t& s_cache_n = s_vsvdb_cache_n;
+  bool& s_cached = s_vsvdb_cached;
   if (!s_cached)
   {
     CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
@@ -885,12 +927,20 @@ void aml_dv_apply_vsvdb()
     return;
   }
 
-  // Shared display peak value (0 = auto): nothing to force onto the panel, so
-  // leave its real advertised VSVDB in place.
+  // Shared display peak value (0 = auto) and the optional colour-space
+  // override. Either one on its own is a reason to inject; only when BOTH are
+  // off is there nothing to force onto the panel.
+  //
+  // The colour-space spinner has its own visibility rule (it shows whenever
+  // 'Force peak onto display' is on) and no dependency on the peak, so gating
+  // the whole injection on a non-zero peak made a colour space the user had
+  // explicitly chosen silently do nothing.
   int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
-  if (nits <= 0)
+  const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
+  if (nits <= 0 && cs == 0)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0) - not injecting", __FUNCTION__);
+    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0) and colour space is display - "
+                       "not injecting", __FUNCTION__);
     aml_dv_clear_vsvdb();
     return;
   }
@@ -906,24 +956,32 @@ void aml_dv_apply_vsvdb()
     return;
   }
 
-  // Snap the requested nits to the nearest Dolby PQ max-luminance step.
-  int idx = 0, best = 0x7fffffff;
-  for (int i = 0; i < 32; i++)
+  // Snap the requested nits to the nearest Dolby PQ max-luminance step and
+  // patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keeping
+  // the rest. Skipped entirely when the peak is auto - we are then here only
+  // for a colour-space override and must leave the panel's own peak alone.
+  // -1 = peak left as the display advertised it (auto peak + colour-space-only
+  // injection); otherwise the LUT index we snapped to, for the log line below.
+  int idx = -1;
+  if (nits > 0)
   {
-    int d = vsvdb_v2_max_lum_lut[i] - nits;
-    if (d < 0) d = -d;
-    if (d < best) { best = d; idx = i; }
+    int best = 0x7fffffff;
+    idx = 0;
+    for (int i = 0; i < 32; i++)
+    {
+      int d = vsvdb_v2_max_lum_lut[i] - nits;
+      if (d < 0) d = -d;
+      if (d < best) { best = d; idx = i; }
+    }
+    b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
   }
-
-  // Patch the 5-bit "Maximum Luminance (PQ)" field (b[7] bits 7:3), keep the rest.
-  b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
 
   // Optional colour-space / primary override: replace only the v2 primary fields
   // (Gx/Gy/Rx/Bx/Ry/By in bytes 8-11), preserving the display's version, DM-version,
   // capability and dv-type bits. 0 = keep the display's advertised primaries (max-lum
   // patch only). Values are the Dolby VSVDB v2 primary fields (coord minus per-channel
-  // base, x256), i.e. Gx: 43=BT.2020 / 67=DCI-P3 / 76=BT.709.
-  const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
+  // base, x256), i.e. Gx: 43=BT.2020 / 67=DCI-P3 / 76=BT.709. (cs is read above,
+  // because it also decides whether we inject at all.)
   const char* csName = "display";
   if (cs >= 1 && cs <= 3 && n >= 12)
   {
@@ -970,8 +1028,12 @@ void aml_dv_apply_vsvdb()
   vsvdb_data.Set(data);
   force_vsvdb.Set(FORCE_VSVDB_USE_DATA);
   aml_hdmitx_reload_edid();
-  CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
-            __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
+  if (idx >= 0)
+    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
+              __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
+  else
+    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> display peak kept, primaries {}, data [{}]",
+              __FUNCTION__, csName, data);
 }
 
 // CMv4.0 append live-apply generation. Bumped from the settings thread, read by
