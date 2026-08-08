@@ -1581,6 +1581,18 @@ double CDVDDemuxFFmpeg::SelectAspect(AVStream* st, bool& forced)
 
 void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
 {
+  // The dual-layer DV state is derived from the stream LAYOUT, so it cannot
+  // outlive a rebuild of that layout. Open() already clears it, but this
+  // function is also reached from Read() on a mid-session program change,
+  // which Blu-ray explicitly exercises when the playlist switches. Left set,
+  // a profile-7 dual-layer title followed by a single-layer or non-DV
+  // playlist keeps tagging packets isDualStream while nothing is ever tagged
+  // as the enhancement layer, so every frame is held back waiting for a
+  // partner that cannot arrive - no picture, and the queue grows until the
+  // system OOM-kills Kodi. AddStream re-derives both below.
+  m_dv_dual_stream = false;
+  m_dv_bl_stream_idx = -1;
+
   // changes must keep increasing across rebuilds; consumers detect a rebuild by comparing values
   std::map<int, int> prevChanges;
   for (const auto& [streamIdx, stream] : m_streams)
