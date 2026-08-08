@@ -653,14 +653,21 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
     // value also drives the VSVDB force-inject (see aml_dv_apply_vsvdb); because
     // that setting live-applies, the Smart threshold has to follow it here or the
     // two silently diverge mid-playback. 0 = auto-read the display's real VSVDB
-    // (EDID) max luminance and fill the field.
+    // (EDID) max luminance.
+    //
+    // The auto-read value is used LOCALLY and deliberately NOT written back into
+    // the setting. It used to be persisted, which silently turned a Dolby Vision
+    // EDID number into a user-looking value that aml_dv_apply_target_overrides
+    // then handed to the kernel as the VS10 HDR10 DM tone-mapping target - a peak
+    // from the wrong domain (VSVDB describes the player-led DV contract, not what
+    // an HDR10 output should be mapped for), applied without the user ever having
+    // chosen it, and carried between boxes by a cloned userdata. Keeping the
+    // setting at 0 means "no explicit peak": the Smart threshold still auto-
+    // detects here, while the DM keeps its own built-in target unless the user
+    // deliberately enters a value.
     int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
     if (nits <= 0)
-    {
       nits = GetDisplayVsvdbMaxNits();
-      if (nits > 0)
-        settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS, nits);
-    }
     // set the bypass inputs BEFORE the mode (SetAppendCMv40 resets the sentinels)
     m_bitstream->SetSmartBypassDisplayNits(nits);
     m_bitstream->SetSmartBypassThresholdPct(
