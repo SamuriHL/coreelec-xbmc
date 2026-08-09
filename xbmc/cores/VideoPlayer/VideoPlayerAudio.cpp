@@ -465,6 +465,24 @@ void CVideoPlayerAudio::Process()
           {
             m_audioSink.Resume();
             m_stalled = false;
+
+            // Resuming re-runs the ENTIRE AE start-sync: CActiveAE's
+            // RESUMESTREAM sets the stream back to SYNC_START, and if the pause
+            // outlived the sink keep-alive the sink is torn down and reopened
+            // too, so alignment happens against a freshly emptied buffer. That
+            // is the same transient the settle window exists for - but this
+            // path never re-armed it, unlike SYNC_INSYNC (above) and the sink
+            // rebuild in ProcessDecoderOutput.
+            //
+            // Measured on am9pro 2026-08-09 (DTS-HD MA, 3 pause/resume cycles,
+            // 200s each): the landing moved -49.0, -14.5 and -12.9 ms - random
+            // magnitude but ALWAYS the same direction, so repeated pause/resume
+            // walks A/V one way until it reaches the 50ms gate and buys a
+            // visible whole-frame correction. `settle:past` throughout all
+            // three, i.e. the gate was live across every transient.
+            m_disconSettleTimer.Set(6000ms);
+            CLog::Log(LOGDEBUG, LOGAUDIO,
+                      "CVideoPlayerAudio - resume: DISCON settle re-armed");
           }
         }
       }
@@ -704,6 +722,22 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // frame off for the rest of the stream (observed as a per-BD-playitem random
   // 1-4 frame lipsync offset; with per-playitem display resets the transient
   // still measured 40-80ms at the 3s mark, hence the longer window).
+  // Periodic sync-error trace. GetSyncError() is the smoothed metric the gate
+  // below actually acts on, but it is otherwise only ever written to the log at
+  // the instant a correction fires - so an error that parks BELOW the gate is
+  // completely invisible, which is precisely the post-sink-reopen landing
+  // defect. Deliberately logged OUTSIDE the settle-timer gate: the settle
+  // window is when a landing is decided, so that is the interesting part.
+  // Rate-limited to ~1/s; OutputPacket runs ~50/s.
+  if (m_synctype == SYNC_DISCON && m_syncErrorLogTimer.IsTimePast())
+  {
+    m_syncErrorLogTimer.Set(1000ms);
+    CLog::Log(LOGDEBUG, LOGAUDIO,
+              "CVideoPlayerAudio:: syncerror:{:.1f}ms settle:{} level:{:d}",
+              m_audioSink.GetSyncError() / 1000.0,
+              m_disconSettleTimer.IsTimePast() ? "past" : "armed", GetLevel());
+  }
+
   if (m_synctype == SYNC_DISCON && m_disconSettleTimer.IsTimePast())
   {
     double syncerror = m_audioSink.GetSyncError();

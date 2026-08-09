@@ -120,6 +120,8 @@ protected:
   // churn with per-playitem display resets); corrections taken on them walk
   // the clock a whole video frame at a time.
   XbmcThreads::EndTime<> m_disconSettleTimer;
+  // Rate limiter for the periodic sync-error trace (LOGAUDIO).
+  XbmcThreads::EndTime<> m_syncErrorLogTimer;
 
   int m_synctype;
   int m_prevsynctype;
