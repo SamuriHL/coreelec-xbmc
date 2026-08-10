@@ -118,4 +118,7 @@ private:
   // Running output timestamp (like LAV's m_rtStart) and its resync flag.
   double m_internalClock{LOCAL_NOPTS};
   bool m_needsResync{true};
+
+  // Rate limiter for the standing-jitter trace (see GetData).
+  unsigned int m_jitterTraceCount{0};
 };
