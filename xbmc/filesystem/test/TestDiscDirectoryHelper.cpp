@@ -271,9 +271,12 @@ TEST_F(TestDiscDirectoryHelper, GetEpisodePlaylists_AllPlaylistsBelowMinEpisodeD
   EXPECT_FALSE(helper.GetEpisodePlaylists(url, items, allTitles, 0, episodes, clips, playlists));
   ASSERT_EQ(items.Size(), 0);
 
-  EXPECT_FALSE(helper.GetAllEpisodePlaylists(url, items, allTitles, GetTitle::MAIN, episodes, clips,
-                                             playlists));
-  ASSERT_EQ(items.Size(), 0);
+  // GetAllEpisodePlaylists browses rather than matching episodes, so this fork falls back to the
+  // parsed playlist list instead of failing. It has no library-entry caller, so it always widens.
+  EXPECT_TRUE(helper.GetAllEpisodePlaylists(url, items, allTitles, GetTitle::MAIN, episodes, clips,
+                                            playlists));
+  EXPECT_EQ(items.Size(), 1);
+  EXPECT_EQ(GetPlaylistFromPath(items[0]->GetPath()), 800);
 
   EXPECT_TRUE(helper.GetAllEpisodePlaylists(url, items, allTitles, GetTitle::ALL, episodes, clips,
                                             playlists));
@@ -4070,7 +4073,9 @@ TEST_F(TestDiscDirectoryHelper, GetMoviePlaylists_SinglePlaylist)
   EXPECT_EQ(GetPlaylistFromPath(items[0]->GetPath()), 1u);
 }
 
-// All playlists below MIN_MOVIE_DURATION (30min) → false for SINGLE/MAIN, true for ALL
+// All playlists below MIN_MOVIE_DURATION (30min). Upstream fails the browse outright; this fork
+// falls back to the parsed playlist list instead, so every job now succeeds. The caller's job
+// still decides how much of that list survives.
 TEST_F(TestDiscDirectoryHelper, GetMoviePlaylists_AllPlaylistsTooShort)
 {
   CDiscDirectoryHelper helper;
@@ -4088,19 +4093,62 @@ TEST_F(TestDiscDirectoryHelper, GetMoviePlaylists_AllPlaylistsTooShort)
   };
   ASSERT_TRUE(Validate(clips, playlists));
 
-  EXPECT_FALSE(
+  // SINGLE keeps pick-the-longest semantics through the fallback
+  EXPECT_TRUE(
       helper.GetMoviePlaylists(url, items, allTitles, -1, GetTitle::SINGLE, clips, playlists));
-  ASSERT_EQ(items.Size(), 0);
+  ASSERT_EQ(items.Size(), 1);
+  EXPECT_EQ(GetPlaylistFromPath(items[0]->GetPath()), 1u);
 
-  EXPECT_FALSE(
+  // MAIN with the default NARROW fallback still applies the 70%-of-longest filter, so the 5min
+  // playlist is dropped
+  EXPECT_TRUE(
       helper.GetMoviePlaylists(url, items, allTitles, -1, GetTitle::MAIN, clips, playlists));
-  ASSERT_EQ(items.Size(), 0);
+  ASSERT_EQ(items.Size(), 1);
+  EXPECT_EQ(GetPlaylistFromPath(items[0]->GetPath()), 1u);
 
   // ALL job skips the duration filter, so short playlists are included
   EXPECT_TRUE(helper.GetMoviePlaylists(url, items, allTitles, -1, GetTitle::ALL, clips, playlists));
   ASSERT_EQ(items.Size(), 2);
   auto returned{GetPlaylists(items)};
   std::set<unsigned int> expected{1u, 2u};
+  EXPECT_TRUE(std::ranges::includes(returned, expected));
+}
+
+// Concert/compilation disc: one chaptered feature plus one-chapter song playlists, none reaching
+// MIN_MOVIE_DURATION. The interactive browse (DurationFallback::WIDEN) must show the whole disc;
+// the library-scan versions path (default NARROW) must not, or each song becomes a movie
+// "version". Both callers pass GetTitle::MAIN, so only the fallback policy separates them.
+TEST_F(TestDiscDirectoryHelper, GetMoviePlaylists_ShortDisc_FallbackPolicySeparatesCallers)
+{
+  CDiscDirectoryHelper helper;
+  CURL url("bluray://test/");
+  CFileItemList items;
+  CFileItemList allTitles;
+
+  PlaylistMap playlists{
+      {1u, MakePlaylist(1u, 20min, {1u}, {10min, 10min})}, // feature, chaptered
+      {2u, MakePlaylist(2u, 5min, {2u}, {5min})}, // song, single chapter
+      {3u, MakePlaylist(3u, 4min, {3u}, {4min})}, // song, single chapter
+  };
+  ClipMap clips{
+      {1u, MakeClip(20min, {1u})},
+      {2u, MakeClip(5min, {2u})},
+      {3u, MakeClip(4min, {3u})},
+  };
+  ASSERT_TRUE(Validate(clips, playlists));
+
+  // NARROW: the >1-chapter filter removes both songs, then 70%-of-longest keeps only the feature
+  EXPECT_TRUE(helper.GetMoviePlaylists(url, items, allTitles, -1, GetTitle::MAIN, clips, playlists,
+                                       DurationFallback::NARROW));
+  ASSERT_EQ(items.Size(), 1);
+  EXPECT_EQ(GetPlaylistFromPath(items[0]->GetPath()), 1u);
+
+  // WIDEN: both filters are disabled, so the browse lists every playlist on the disc
+  EXPECT_TRUE(helper.GetMoviePlaylists(url, items, allTitles, -1, GetTitle::MAIN, clips, playlists,
+                                       DurationFallback::WIDEN));
+  ASSERT_EQ(items.Size(), 3);
+  const auto returned{GetPlaylists(items)};
+  const std::set<unsigned int> expected{1u, 2u, 3u};
   EXPECT_TRUE(std::ranges::includes(returned, expected));
 }
 
