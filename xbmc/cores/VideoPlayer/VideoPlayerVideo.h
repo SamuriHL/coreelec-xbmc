@@ -135,6 +135,9 @@ protected:
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_rewindStalled;
   bool m_paused;
+  /* diagnostics only: last keep-alive stamp already reported as expired, so
+   * the expiry is logged once per composition instead of once per frame */
+  int64_t m_lastExpiredKeepAliveTick{0};
   IDVDStreamPlayer::ESyncState m_syncState;
   std::atomic_bool m_bAbortOutput;
 
