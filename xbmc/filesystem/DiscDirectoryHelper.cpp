@@ -2868,7 +2868,8 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
                                              int mainPlaylist,
                                              GetTitle job,
                                              const ClipMap& clips,
-                                             const PlaylistMap& playlistMap)
+                                             const PlaylistMap& playlistMap,
+                                             DurationFallback durationFallback)
 {
   items.Clear();
   Reset();
@@ -2886,22 +2887,22 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
     // compilation discs). Fall back to the full playlist list rather than
     // failing the whole browse.
     //
-    // `job` is deliberately NOT widened to ALL here. Only the duration floor
-    // has failed; the caller's notion of which playlists it wants is still
-    // valid and is what keeps the result to a sensible size - SINGLE picks the
-    // longest, and MAIN keeps everything within MAIN_TITLE_LENGTH_PERCENT of
-    // the longest, which is precisely the "multiple editions" set. Promoting
-    // to ALL disables both that and the >1-chapter filter, so every playlist
-    // on the disc survives - and MAIN now has a caller that turns each
-    // returned item into a library entry (GetOrShowPlaylistSelection's
-    // returnMultipleItems path, added upstream), which would add a calibration
-    // or concert disc as one movie with dozens of "versions" and prompt once
-    // per playlist. The two changes only interact through this line.
+    // Whether `job` is also widened to ALL is the caller's decision, not ours,
+    // because the two callers that pass MAIN want opposite things here. ALL is
+    // the single guard on both the >1-chapter filter and the 70%-of-longest
+    // filter, so keeping MAIN cuts such a disc back to one or two entries:
+    // right for GetOrShowPlaylistSelection's returnMultipleItems path, which
+    // turns each returned item into a library "version" and would otherwise
+    // add a concert disc as one movie with dozens of them; wrong for the
+    // interactive browse, which is the one caller that should show the whole
+    // disc when the duration floor is all that failed.
     CLog::LogFC(LOGDEBUG, LOGBLURAY,
                 "No movie-length playlists found - falling back to all {} playlists",
                 playlistMap.size());
     std::ranges::transform(playlistMap, std::back_inserter(playlists),
                            [](const PlaylistMapEntry& pair) { return pair.second; });
+    if (durationFallback == DurationFallback::WIDEN && job == GetTitle::MAIN)
+      job = GetTitle::ALL;
   }
   FilterMoviePlaylistsByResolution(playlists, job, mainPlaylist);
   GetMainMoviePlaylists(playlists, job, mainPlaylist);

@@ -39,6 +39,22 @@ enum class GetTitle : uint8_t
   ALL
 };
 
+/*!
+ * \brief What the duration fallback is allowed to do to the caller's job.
+ *
+ * When no playlist reaches MIN_MOVIE_DURATION the full playlist list is restored rather than
+ * failing the browse outright. WIDEN additionally promotes GetTitle::MAIN to GetTitle::ALL, which
+ * is what actually disables the >1-chapter and 70%-of-longest filters, so every parsed playlist
+ * survives. Only an interactive browse wants that. A caller that turns each returned item into a
+ * library entry must keep its own job (NARROW), or a concert/calibration disc becomes one movie
+ * with dozens of "versions".
+ */
+enum class DurationFallback : bool
+{
+  NARROW,
+  WIDEN
+};
+
 enum class SortTitles : uint8_t
 {
   SORT_TITLES_NONE,
@@ -277,6 +293,8 @@ public:
    * \param job determines whether to get all possible movie playlists (ie. multiple versions) or just one (for initial library scan)
    * \param clips map of clips on disc (populated in CBlurayDirectory)
    * \param playlistMap map of playlists on disc (populated in CBlurayDirectory)
+   * \param durationFallback whether a disc with no playlist over MIN_MOVIE_DURATION may widen job
+   *        to ALL. Defaults to NARROW; only an interactive browse should pass WIDEN.
    * \return true if at least one playlist is found, otherwise false
    */
   bool GetMoviePlaylists(const CURL& url,
@@ -285,7 +303,8 @@ public:
                          int mainPlaylist,
                          GetTitle job,
                          const ClipMap& clips,
-                         const PlaylistMap& playlistMap);
+                         const PlaylistMap& playlistMap,
+                         DurationFallback durationFallback = DurationFallback::NARROW);
 
   /*!
    * \brief Populates a vector array of CVideoInfoTags with information for the episodes on a bluray disc
