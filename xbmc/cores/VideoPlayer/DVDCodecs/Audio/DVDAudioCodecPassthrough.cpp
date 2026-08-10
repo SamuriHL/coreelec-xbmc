@@ -400,8 +400,11 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   const bool haveDemuxerPts = IsValidPts(demuxerPts);
 
   // STEP 1: resync the internal clock when needed (codec creation, after seeks).
-  // If a RESYNC arrives later via SyncToResyncPts(), it overrides this with the
-  // authoritative coordinated A/V clock value.
+  // This seed is EXACT - it is the true PTS of the content being emitted - and
+  // it is authoritative. SyncToResyncPts() may have parked a provisional
+  // pts + delay estimate here first so there is always a usable clock, but it
+  // deliberately leaves m_needsResync set so this overrides it; see the comment
+  // there for what happens when the estimate is trusted instead.
   if (m_needsResync && haveDemuxerPts)
   {
     m_internalClock = demuxerPts;
@@ -429,6 +432,31 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 
       CLog::LogF(LOGDEBUG, "jitter correction {:.2f}ms (threshold {:.0f}ms)", absMinJitter / 1000.0,
                  m_jitterThreshold / 1000.0);
+    }
+
+    // The STANDING jitter - how far the free-running internal clock currently
+    // sits from the demuxer - is otherwise only ever written to the log at the
+    // instant a correction fires. Everything BELOW m_jitterThreshold is silent,
+    // and that threshold is 100ms for TrueHD and every DTS variant, so an
+    // offset of up to 100ms can sit here for a whole title, uncorrected and
+    // unlogged.
+    //
+    // It is also invisible to every A/V sync statistic Kodi has, structurally:
+    // frame.pts below is emitted FROM this clock, and ActiveAE's sync error is
+    // computed from that same pts, so a constant offset between the clock and
+    // the real audio content cancels out of the measurement entirely. The only
+    // way to see it is to print it here.
+    //
+    // Suspected source is SyncToResyncPts(pts + delay) in VideoPlayerAudio's
+    // GENERAL_RESYNC handler: user logs on AC3 titles (10ms threshold, so the
+    // correction fires and is logged) show it seeding this clock -40.9, +30.2,
+    // -37.0, -32.8, -72.4, -34.1, -33.7 and +61.2ms away from the demuxer. On
+    // TrueHD/DTS the 100ms threshold would keep every one of those.
+    if (++m_jitterTraceCount >= 100)
+    {
+      m_jitterTraceCount = 0;
+      CLog::LogF(LOGDEBUG, "standing jitter {:+.2f}ms (absmin {:+.2f}ms, threshold {:.0f}ms)",
+                 jitter / 1000.0, absMinJitter / 1000.0, m_jitterThreshold / 1000.0);
     }
   }
 
@@ -517,14 +545,40 @@ void CDVDAudioCodecPassthrough::SyncToResyncPts(double pts)
   if (!m_lavStyleSyncEnabled)
     return;
 
-  // VideoPlayer::Sync() sends RESYNC with a coordinated A/V clock value; trust it
-  // directly for the internal clock.
+  // VideoPlayer::Sync() sends RESYNC with a coordinated A/V clock value, and the
+  // caller passes pts + m_audioSink.GetDelay(). That is an ESTIMATE, not ground
+  // truth: it is only as good as the sink's delay report at that instant. Stock
+  // Kodi uses pts + delay purely as a fallback seed for m_audioClock and throws
+  // it away on the next frame that carries a real timestamp - this fork used to
+  // promote it to authoritative here by clearing m_needsResync, which pinned the
+  // internal clock to whatever error the delay estimate happened to carry.
+  //
+  // That error is permanent on TrueHD/DTS, because every audio timestamp is
+  // emitted FROM this clock (GetData STEP 3) and the jitter tracker only pulls
+  // it back past m_jitterThreshold = 100ms. Nothing else can see it either: the
+  // A/V sync error ActiveAE reports is computed from the same emitted pts, so a
+  // constant clock-vs-content offset cancels out of the measurement entirely.
+  //
+  // Measured on am9pro 2026-08-10, DTS-HD MA, 12 seeks (jittertrace2):
+  //   GENERAL_RESYNC(1559.792 ... cache:0.449)
+  //   internal clock set to RESYNC pts 1560.241s     <- 1559.792 + 0.449
+  //   standing jitter -77.21ms                       <- 1ms later, 77ms wrong
+  // and it held at -77 +/- 1ms for the whole segment with ZERO corrections,
+  // because 77 < 100. Parked offsets over 9 seeds: -15.5 -1.1 -0.4 -1.3 -77.5
+  // +0.7 -0.2 +0.8 +0.5 ms. Most draws are harmless; the tail is audible
+  // (ITU-R BT.1359-1 puts audio-early detectability near 45ms) and it is exactly
+  // the "sometimes out of sync, a seek fixes it, stats show nothing" report.
+  //
+  // So keep the value as an immediate fallback - it is better than no clock at
+  // all when the next frames carry no PTS - but LEAVE m_needsResync SET, so
+  // GetData STEP 1 re-seeds from the true demuxer PTS as soon as one arrives.
+  // That seed is exact by construction ("internal clock synced to demuxer PTS").
   if (IsValidPts(pts))
   {
     m_internalClock = pts;
-    m_needsResync = false;
     m_jitterTracker.Reset();
-    CLog::LogF(LOGDEBUG, "internal clock set to RESYNC pts {:.3f}s", pts / DVD_TIME_BASE);
+    CLog::LogF(LOGDEBUG, "internal clock provisionally set to RESYNC pts {:.3f}s (awaiting demuxer)",
+               pts / DVD_TIME_BASE);
   }
 }
 
