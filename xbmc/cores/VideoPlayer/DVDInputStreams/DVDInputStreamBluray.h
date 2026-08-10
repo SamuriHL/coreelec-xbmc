@@ -210,14 +210,60 @@ public:
    *   movie's ending, still unpresented (dropping it would cut the last
    *   queue-depth seconds of every film).
    * Same-state transitions keep their existing classes. */
-  bool ShouldDiscardStreamQueue() const
+  /* The decision and its reason come from ONE place, so a log line can never
+   * drift from the behaviour it describes.
+   *
+   * This is spelled out because the inputs are otherwise invisible in a log:
+   * m_menu is set silently by BD_EVENT_TITLE (see ProcessEvent) as well as by
+   * the logged BD_EVENT_MENU, so a discard cannot be attributed to a branch
+   * from the event lines alone - a menu->title discard and a title->menu
+   * discard look identical unless the reason is recorded here. */
+  enum class QueueDecision : uint8_t
+  {
+    KEEP_TITLE_TO_TITLE,
+    KEEP_MENU_TO_MENU,
+    KEEP_TITLE_TO_MENU_NATURAL,
+    DISCARD_MENU_TO_TITLE,
+    DISCARD_TITLE_TO_MENU_USER,
+  };
+
+  QueueDecision ClassifyStreamQueue() const
   {
     if (m_menuAtHold && !m_menu)
-      return true;
+      return QueueDecision::DISCARD_MENU_TO_TITLE;
     if (!m_menuAtHold && m_menu)
-      return std::chrono::steady_clock::now() - m_lastUserMenuCall <
-             std::chrono::seconds(20);
-    return false;
+      return m_lastUserMenuCall.has_value() &&
+                     std::chrono::steady_clock::now() - *m_lastUserMenuCall <
+                         std::chrono::seconds(20)
+                 ? QueueDecision::DISCARD_TITLE_TO_MENU_USER
+                 : QueueDecision::KEEP_TITLE_TO_MENU_NATURAL;
+    return m_menuAtHold ? QueueDecision::KEEP_MENU_TO_MENU
+                        : QueueDecision::KEEP_TITLE_TO_TITLE;
+  }
+
+  static const char* DescribeQueueDecision(QueueDecision decision)
+  {
+    switch (decision)
+    {
+      case QueueDecision::KEEP_TITLE_TO_TITLE:
+        return "title->title, nothing to discard";
+      case QueueDecision::KEEP_MENU_TO_MENU:
+        return "menu->menu, nothing to discard";
+      case QueueDecision::KEEP_TITLE_TO_MENU_NATURAL:
+        return "title->menu with no recent user menu call - draining the feature tail";
+      case QueueDecision::DISCARD_MENU_TO_TITLE:
+        return "menu->title - dropping the queued menu remainder";
+      case QueueDecision::DISCARD_TITLE_TO_MENU_USER:
+        return "title->menu after a user menu call - dropping the queued feature remainder";
+    }
+    return "unclassified";
+  }
+
+  bool ShouldDiscardStreamQueue() const
+  {
+    const QueueDecision decision = ClassifyStreamQueue();
+    return decision == QueueDecision::DISCARD_MENU_TO_TITLE ||
+           decision == QueueDecision::DISCARD_TITLE_TO_MENU_USER;
   }
 
   /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist:
@@ -365,10 +411,16 @@ protected:
   bool m_seamlessHold = false;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
-   * ended and the disc returned to menu" (drain it). Player thread only,
-   * min() = never. */
-  std::chrono::steady_clock::time_point m_lastUserMenuCall{
-      std::chrono::steady_clock::time_point::min()};
+   * ended and the disc returned to menu" (drain it). Player thread only.
+   *
+   * std::optional, deliberately NOT a sentinel time_point: steady_clock's
+   * duration is 64-bit nanoseconds, so now() - time_point::min() overflows
+   * and wraps NEGATIVE, which compares as "called just now". That made every
+   * natural end-of-title return to the menu discard the film's queued ending
+   * until the viewer happened to press Menu once. A value-initialised {} is
+   * no better - steady_clock's epoch is boot, so it misreads for the first
+   * 20s of uptime. */
+  std::optional<std::chrono::steady_clock::time_point> m_lastUserMenuCall;
   /* "no stream selected" sentinel (PSR semantics: PSR1=0xff / PSR2=0x0fff
    * both exceed any clip stream count, so the dictation getters resolve
    * them to -1) */
@@ -394,6 +446,9 @@ protected:
    * full persist-forever semantics. */
   int64_t m_argbFlushLastTick = 0;
   int m_argbFlushStreak = 0;
+  /* diagnostics only: tracks whether the keep-alive streak is currently
+   * earned, so OverlayFlush logs the transitions instead of every flush */
+  bool m_argbKeepAliveActive = false;
   /* keep-alive stamp of the most recent LIVE ARGB flush (0 = that composition
    * was not keep-alive). Non-eligible flushes (RedrawMenuOverlays reposting
    * retained plane content after a stream reopen) inherit this UN-renewed, so
