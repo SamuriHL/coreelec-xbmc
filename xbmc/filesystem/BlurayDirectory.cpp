@@ -727,8 +727,10 @@ bool CBlurayDirectory::GetDirectory(const CURL& url, CFileItemList& items)
     {
 
       if (file == "root/titles")
+        // Interactive browse: on a disc where nothing reaches MIN_MOVIE_DURATION, show every
+        // playlist rather than the near-longest few. Nothing here becomes a library entry.
         helper.GetMoviePlaylists(m_url, items, allTitles, GetMainPlaylist(), GetTitle::MAIN, clips,
-                                 playlists);
+                                 playlists, DurationFallback::WIDEN);
       else if (file == "root/titles/all")
         helper.GetMoviePlaylists(m_url, items, allTitles, GetMainPlaylist(), GetTitle::ALL, clips,
                                  playlists);
@@ -753,6 +755,8 @@ bool CBlurayDirectory::GetDirectory(const CURL& url, CFileItemList& items)
         helper.GetMoviePlaylists(m_url, items, allTitles, GetMainPlaylist(), GetTitle::SINGLE,
                                  clips, playlists);
       else if (file == "root/main/all")
+        // Library scan (GetOrShowPlaylistSelection's returnMultipleItems path): each item returned
+        // here becomes a movie "version", so the duration fallback must stay NARROW.
         helper.GetMoviePlaylists(m_url, items, allTitles, GetMainPlaylist(), GetTitle::MAIN, clips,
                                  playlists);
       else
