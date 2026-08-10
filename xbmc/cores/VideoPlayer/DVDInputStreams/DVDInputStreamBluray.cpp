@@ -1503,6 +1503,7 @@ void CDVDInputStreamBluray::OverlayClose()
   m_argbFlushStreak = 0;
   m_argbFlushLastTick = 0;
   m_argbLastKeepAliveTick = 0;
+  m_argbKeepAliveActive = false;
 #endif
 }
 
@@ -1610,8 +1611,34 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
     m_argbFlushLastTick = now;
 
     constexpr int KEEPALIVE_STREAK_THRESHOLD = 20;
-    group->m_keepAliveTick = (m_argbFlushStreak >= KEEPALIVE_STREAK_THRESHOLD) ? now : 0;
+    const bool earned = m_argbFlushStreak >= KEEPALIVE_STREAK_THRESHOLD;
+    group->m_keepAliveTick = earned ? now : 0;
     m_argbLastKeepAliveTick = group->m_keepAliveTick;
+
+    // Transition-logged ONLY: this path runs at the Xlet's repaint cadence
+    // (~2-4ms while streaking), so a per-flush line would flood the log.
+    //
+    // The streak is a cadence test, not a semantic one: it assumes only an
+    // abandoned self-drawn subtitle repaints this fast. A BD-J menu with an
+    // unthrottled repaint loop can also earn the stamp, and would then be
+    // dropped ~1s after it settles into a static screen - the disc sends no
+    // clear, so it would simply vanish. That has not been seen in the field;
+    // this line plus the expiry line in CVideoPlayerVideo::ProcessOverlays
+    // make it identifiable from a debug log if it ever is.
+    if (earned != m_argbKeepAliveActive)
+    {
+      m_argbKeepAliveActive = earned;
+      CLog::Log(LOGDEBUG,
+                "CDVDInputStreamBluray::OverlayFlush - ARGB keep-alive {} "
+                "(streak {}, last interval {:.1f}ms)",
+                earned ? "EARNED: this composition now expires ~1s after re-posts stop"
+                       : "released: compositions persist again",
+                m_argbFlushStreak,
+                interval < CurrentHostFrequency()
+                    ? static_cast<double>(interval) * 1000.0 /
+                          static_cast<double>(CurrentHostFrequency())
+                    : -1.0);
+    }
   }
   else
   {
