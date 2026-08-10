@@ -1625,6 +1625,12 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
   if (std::shared_ptr<CDVDInputStreamBluray> bluray =
           std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
   {
+    // Record WHY, not just what: m_menu is set silently by BD_EVENT_TITLE as
+    // well as by the logged BD_EVENT_MENU, so the branch taken here cannot be
+    // reconstructed from the event lines alone.
+    CLog::Log(LOGINFO, "VideoPlayer: BD queue decision - {}",
+              CDVDInputStreamBluray::DescribeQueueDecision(bluray->ClassifyStreamQueue()));
+
     if (bluray->ShouldDiscardStreamQueue())
     {
       // the transition crosses the menu boundary (menu->title OR
