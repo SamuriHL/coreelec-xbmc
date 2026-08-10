@@ -959,9 +959,26 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
       if (pOverlay->m_keepAliveTick != 0 && m_speed != DVD_PLAYSPEED_PAUSE && !m_paused)
       {
         constexpr int64_t KEEPALIVE_TTL_MS = 1000;
-        if (CurrentHostCounter() - pOverlay->m_keepAliveTick >
-            CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000)
+        const int64_t stale = CurrentHostCounter() - pOverlay->m_keepAliveTick;
+        if (stale > CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000)
+        {
+          // Diagnostics: logged once per distinct composition, not per
+          // rendered frame. Expiry is meant for an abandoned BD-J self-drawn
+          // subtitle, but the qualifying test is repaint cadence rather than
+          // content - a BD-J menu that repaints fast enough to earn the stamp
+          // and then goes static would be dropped here and simply vanish. If a
+          // vanished-menu report ever arrives, this line names the culprit.
+          if (m_lastExpiredKeepAliveTick != pOverlay->m_keepAliveTick)
+          {
+            m_lastExpiredKeepAliveTick = pOverlay->m_keepAliveTick;
+            CLog::Log(LOGDEBUG,
+                      "CVideoPlayerVideo::ProcessOverlays - keep-alive overlay expired "
+                      "after {:.0f}ms without a re-post: dropping composition",
+                      static_cast<double>(stale) * 1000.0 /
+                          static_cast<double>(CurrentHostFrequency()));
+          }
           continue;
+        }
       }
 
       double pts2 = pOverlay->bForced ? pts : pts - m_iSubtitleDelay;
