@@ -76,6 +76,13 @@ void CEngineStats::Reset(unsigned int sampleRate, bool pcm)
   m_bufferedSamples = 0;
   m_suspended = false;
   m_pcmOutput = pcm;
+  // ★ TEMPORARY DIAGNOSTIC: arm the burst log. Reset() is reached from
+  // FlushEngine() on BOTH the codec/format-switch path and the seek path, so
+  // this brackets the transient of each. ~400 calls at ~150/s = ~2.7 s.
+  m_burstLog = 400;
+  CLog::Log(LOGDEBUG, LOGAUDIO,
+            "ActiveAE::Reset AERESET sampleRate:{} pcm:{} - burst log armed ({} calls)",
+            sampleRate, pcm, m_burstLog);
 }
 
 void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples)
@@ -199,8 +206,11 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
         if (a.n == 0 || delay > a.max)
           a.max = delay;
         ++a.n;
-        if (freq > 0 && now - a.last >= freq)
+        const bool burst = m_burstLog > 0;
+        if (burst || (freq > 0 && now - a.last >= freq))
         {
+          if (burst)
+            --m_burstLog;
           a.last = now;
           CLog::Log(LOGDEBUG, LOGAUDIO,
                     "ActiveAE::UpdateStream AEBUF id:{} nStats:{} calls/s:{} "
@@ -291,8 +301,11 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
         if (sa.n == 0 || buffertime > sa.max)
           sa.max = buffertime;
         ++sa.n;
-        if (freq > 0 && now - sa.last >= freq)
+        const bool sburst = m_burstLog > 0;
+        if (sburst || (freq > 0 && now - sa.last >= freq))
         {
+          if (sburst)
+            --m_burstLog;
           sa.last = now;
           // ★ id and nStats are the load-bearing additions: without them a
           // 1.28 s vs 0.02 s split between UpdateStream and here cannot be told
