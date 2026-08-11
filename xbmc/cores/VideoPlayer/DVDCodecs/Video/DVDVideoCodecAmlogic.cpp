@@ -1285,10 +1285,21 @@ void CDVDVideoCodecAmlogic::FrameRateTracking(uint8_t *pData, int iSize, double 
       if (m_mpeg2_sequence_pts == DVD_NOPTS_VALUE)
         m_mpeg2_sequence_pts = dts;
 
-      m_hints.fpsrate = m_mpeg2_sequence->fps_rate;
-      m_hints.fpsscale = m_mpeg2_sequence->fps_scale;
-      m_framerate = static_cast<float>(m_mpeg2_sequence->fps_rate) / m_mpeg2_sequence->fps_scale;
-      m_video_rate = (int)(0.5 + (96000.0 / m_framerate));
+      // The demuxer's rate wins when it flagged the stream interlaced: an
+      // interlaced MPEG-2 sequence header reports the FIELD rate, so adopting
+      // it here silently halves the picture rate the decoder is clocked at.
+      // This gate was on CODEC_INTERLACED and was lost with that symbol in the
+      // 2026-08-10 rebase; re-expressed against upstream's probed flag.
+      if (!m_hints.interlaced)
+      {
+        m_hints.fpsrate = m_mpeg2_sequence->fps_rate;
+        m_hints.fpsscale = m_mpeg2_sequence->fps_scale;
+      }
+      if (m_hints.fpsrate && m_hints.fpsscale)
+      {
+        m_framerate = static_cast<float>(m_hints.fpsrate) / m_hints.fpsscale;
+        m_video_rate = (int)(0.5 + (96000.0 / m_framerate));
+      }
 
       m_hints.width    = m_mpeg2_sequence->width;
       m_hints.height   = m_mpeg2_sequence->height;
