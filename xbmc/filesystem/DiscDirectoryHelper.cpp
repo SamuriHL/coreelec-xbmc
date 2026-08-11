@@ -2903,6 +2903,15 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
                            [](const PlaylistMapEntry& pair) { return pair.second; });
     if (durationFallback == DurationFallback::WIDEN && job == GetTitle::MAIN)
       job = GetTitle::ALL;
+
+    // Re-apply the duplicate removal above. The fallback repopulates straight
+    // from playlistMap, which undoes it - and on the NARROW path every survivor
+    // becomes a library "version", so duplicates would land in exactly the list
+    // the caller's narrowness exists to keep small. Runs after the widening on
+    // purpose: RemoveDuplicateMoviePlaylists early-returns on GetTitle::ALL, so
+    // the interactive browse keeps showing the whole disc, matching what
+    // upstream's own root/titles/all returns.
+    RemoveDuplicateMoviePlaylists(playlists, clips, job, mainPlaylist);
   }
   FilterMoviePlaylistsByResolution(playlists, job, mainPlaylist);
   GetMainMoviePlaylists(playlists, job, mainPlaylist);
