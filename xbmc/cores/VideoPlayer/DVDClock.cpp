@@ -82,6 +82,41 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
 void CDVDClock::SetVsyncAdjust(double adjustment)
 {
   std::unique_lock lock(m_critSection);
+
+  // ★ RenderManager derives this from fmod(renderPts - nextFramePts, frametime).
+  // fmod takes the sign of its DIVIDEND, so the result spans
+  // (-frametime, +frametime) - two full frame periods for a quantity that is
+  // physically a sub-frame display phase. Left unreduced it parks near a whole
+  // frame: measured on am9pro 2026-08-11 at -39.775ms of a 41.708ms frame, when
+  // the true phase was -1.9ms.
+  //
+  // That matters because CAudioSinkAE::GetClock() adds this to the clock audio
+  // is synced against, so audio gets aligned to a point displaced by almost a
+  // full frame. And because the phase slides, the displacement slides with it:
+  // over a 7.6 minute TrueHD run vsyncAdjust ramped +29.31ms while ActiveAE's
+  // syncerror fell -29.31ms, their sum holding constant to within 0.01ms. That
+  // is the entire "S6 TrueHD A/V drift" - ErrorAdjust then moves VIDEO a whole
+  // frame to chase an error that was never physical. See
+  // ../../../docs/s6_truehd_av_drift.md (samurihl work tree, NOT Kodi's docs/).
+  //
+  // ★ Deliberately reduced HERE rather than at the fmod in RenderManager. The
+  // renderer feeds its own copy into "renderPts += frametime/2 - m_syncOffset",
+  // where a whole-frame shift changes which frame is selected for display -
+  // reducing it there would alter render cadence. Reducing it here cannot:
+  // GetVsyncAdjust() has exactly two callers, CAudioSinkAE::GetClock() (the
+  // defect) and the "!= 0" test in ErrorAdjust below, which a whole-frame shift
+  // does not affect.
+  //
+  // fmod first so a pathological input cannot spin the range reduction.
+  if (m_frameTime > 0.0)
+  {
+    adjustment = fmod(adjustment, m_frameTime);
+    if (adjustment > m_frameTime / 2)
+      adjustment -= m_frameTime;
+    else if (adjustment <= -m_frameTime / 2)
+      adjustment += m_frameTime;
+  }
+
   m_vSyncAdjust = adjustment;
 }
 
