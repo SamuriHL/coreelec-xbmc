@@ -183,15 +183,25 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
     m_bFpsInvalid = false;
 
-    if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 25.0f, 0.01f))
+    // Only promote to field rate for content the demuxer actually flagged as
+    // interlaced. CoreELEC gated this on CODEC_UNKNOWN_I_P ("the demuxer could
+    // not tell I from P"); upstream d3903fbd00 replaced that with the probed
+    // `interlaced` flag (ffmpeg field_order) and the 2026-08-10 rebase dropped
+    // the gate along with the symbol, leaving the promotion UNCONDITIONAL - so
+    // genuine 25p and 29.97p PROGRESSIVE content was being declared 50i/59.94i,
+    // halving its frame duration and setting the interlaced flag against it.
+    if (hint.interlaced)
     {
-      m_fFrameRate = 50.0;
-      m_processInfo.SetVideoInterlaced(true);
-    }
-    if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 29.97f, 0.01f))
-    {
-      m_fFrameRate = 60000.0 / 1001.0;
-      m_processInfo.SetVideoInterlaced(true);
+      if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 25.0f, 0.01f))
+      {
+        m_fFrameRate = 50.0;
+        m_processInfo.SetVideoInterlaced(true);
+      }
+      else if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 29.97f, 0.01f))
+      {
+        m_fFrameRate = 60000.0 / 1001.0;
+        m_processInfo.SetVideoInterlaced(true);
+      }
     }
     m_retryProgressive = 0;
     m_processInfo.SetVideoFps(static_cast<float>(m_fFrameRate));
@@ -658,7 +668,7 @@ void CVideoPlayerVideo::Process()
           if (m_vfmt.size() > 4)
           {
             bool vfmtIsInterlaced = m_vfmt.compare("progressive") != 0;
-            if (vfmtIsInterlaced)
+            if (vfmtIsInterlaced || !m_hints.interlaced)
               m_processInfo.SetVideoInterlaced(vfmtIsInterlaced);
           }
           CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::DEMUXER_PACKET - checking interlace vfmt: {}", m_vfmt);
@@ -756,12 +766,13 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
     // Detect progressive content misidentified as interlaced: if picture
     // duration consistently equals double what the fps implies, halve fps.
-    // Never override when the demuxer flagged interlaced —
+    // Never override when the demuxer flagged interlaced (hint.interlaced) —
     // MBAFF streams have genuine progressive macroblocks that cause transient
     // "progressive" vfmt readings and 40ms frame durations, but the stream
     // is still interlaced overall. Only allow for runtime-detected interlace
     // (not demuxer-flagged) when hardware confirms progressive.
     if (m_processInfo.GetVideoInterlaced() &&
+        !m_hints.interlaced &&
         m_vfmt == "progressive" &&
         MathUtils::FloatEquals(static_cast<float>(m_picture.iDuration), static_cast<float>(2 * DVD_TIME_BASE) / m_processInfo.GetVideoFps(), 700.0f))
     {
