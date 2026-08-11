@@ -27,6 +27,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
+#include <map>
 #include <memory>
 #include <mutex>
 
@@ -175,19 +176,23 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
       // which one fails to grow by ~1 s at playback start.
       // Safe: we already hold m_lock and stream->m_statsLock, which guard every
       // field read below. Throttled on wall time.
+      // ★ Throttle is PER STREAM ID: a single global throttle would print only
+      // one stream per second and silently hide a second one, which is exactly
+      // the ambiguity that made the first capture inconclusive.
       {
-        static int64_t s_lastUpd = 0;
+        static std::map<unsigned int, int64_t> s_lastUpd; // guarded by m_lock
         const int64_t now = CurrentHostCounter();
         const int64_t freq = CurrentHostFrequency();
-        if (freq > 0 && now - s_lastUpd >= freq)
+        int64_t& last = s_lastUpd[stream->m_id];
+        if (freq > 0 && now - last >= freq)
         {
-          s_lastUpd = now;
+          last = now;
           CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::UpdateStream AEBUF id:{} procBufDelay:{:.4f}s "
+                    "ActiveAE::UpdateStream AEBUF id:{} nStats:{} procBufDelay:{:.4f}s "
                     "procSamples:{} sampleDelay:{:.4f}s -> bufferedTime:{:.4f}s "
                     "streamBuffered:{:.4f}s rr:{:.6f} pcmOut:{}",
-                    stream->m_id, pbDelay, nSamples, delay - pbDelay, delay,
-                    stream->m_bufferedTime, str.m_resampleRatio, m_pcmOutput);
+                    stream->m_id, m_streamStats.size(), pbDelay, nSamples, delay - pbDelay,
+                    delay, stream->m_bufferedTime, str.m_resampleRatio, m_pcmOutput);
         }
       }
 
@@ -256,18 +261,23 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       // Safe: m_lock and stream->m_statsLock are both held here, guarding every
       // field read. Throttled on wall time.
       {
-        static int64_t s_lastSync = 0;
+        static std::map<unsigned int, int64_t> s_lastSync; // guarded by m_lock
         const int64_t now = CurrentHostCounter();
         const int64_t freq = CurrentHostFrequency();
-        if (freq > 0 && now - s_lastSync >= freq)
+        int64_t& last = s_lastSync[stream->m_id];
+        if (freq > 0 && now - last >= freq)
         {
-          s_lastSync = now;
+          last = now;
+          // ★ id and nStats are the load-bearing additions: without them a
+          // 1.28 s vs 0.02 s split between UpdateStream and here cannot be told
+          // apart from the two lines simply describing DIFFERENT streams.
           CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::GetSyncInfo AEDELAY total:{:.4f}s (raw:{:.4f}s) = "
+                    "ActiveAE::GetSyncInfo AEDELAY id:{} nStats:{} total:{:.4f}s (raw:{:.4f}s) = "
                     "sink:{:.4f}s + bufSamples:{:.4f}s({} smp) + sinkLatency:{:.4f}s "
-                    "+ streamBuf:{:.4f}s*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
-                    info.delay, status.delay, dgSinkDelay, dgBufSamples,
-                    m_bufferedSamples, static_cast<double>(m_sinkLatency), buffertime,
+                    "+ streamBuf:{:.4f}s(str:{:.4f}+stm:{:.4f})*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
+                    stream->m_id, m_streamStats.size(), info.delay, status.delay, dgSinkDelay,
+                    dgBufSamples, m_bufferedSamples, static_cast<double>(m_sinkLatency),
+                    buffertime, str.m_bufferedTime, stream->m_bufferedTime,
                     str.m_resampleRatio, str.m_syncError,
                     static_cast<int>(str.m_syncState));
         }
