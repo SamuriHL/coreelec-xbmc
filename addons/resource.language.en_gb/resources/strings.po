@@ -23806,6 +23806,16 @@ msgctxt "#38083"
 msgid "Added to playlist to play next"
 msgstr ""
 
+#. Label for the AVR start re-sync setting (CoreELEC/Amlogic)
+msgctxt "#38090"
+msgid "Re-sync audio device after playback start"
+msgstr ""
+
+#. Help text for the AVR start re-sync setting (CoreELEC/Amlogic)
+msgctxt "#38091"
+msgid "Some AV receivers and TVs latch their lip-sync compensation while the HDMI mode switch at playback start is still settling, leaving audio audibly late until a manual seek forces a clean re-lock. This performs that re-lock automatically: one brief internal reseek (a short audio/video interruption) a few seconds into playback, once the audio sync has settled. Only enable this if you experience audio delay from the start of playback that a small seek fixes. Off by default; takes effect on the next playback start."
+msgstr ""
+
 #empty strings from id 38084 to 38099
 #strings 38084 to 38099 reserved for music library
 
