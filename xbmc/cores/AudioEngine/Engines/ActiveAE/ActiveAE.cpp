@@ -26,7 +26,6 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
-#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -2655,37 +2654,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
     }
 
-    // Upstream accepts any landing under a flat 30ms here. On a PCM stream that
-    // is harmless: the resampler keeps trimming the error afterwards via
-    // CalcResampleRatio, so the residual washes out. A PASSTHROUGH stream has
-    // no audio-side actuator at all once INSYNC - SetSyncType forces resample
-    // mode 0 for SYNC_DISCON - so whatever start-sync leaves here is PERMANENT.
-    // And it cannot be cleaned up downstream either: VideoPlayerAudio's
-    // correction gate has to stay wider than one video frame (41.7ms at 23.976)
-    // or ErrorAdjust's whole-frame step overshoots into a sawtooth, so the
-    // entire 30ms accept band sits inside the player's blind spot.
-    //
-    // Measured on am9pro (S6, DTS-HD MA 5.1): every sink (re)open parked an
-    // offset that nothing ever corrected - three pause/resume cycles landed at
-    // -49.0, -14.5 and -12.9ms, always the same direction, accumulating until
-    // the 50ms gate finally fired a visible whole-frame correction. The trace
-    // ends exactly here: "average error -21.317679 below threshold of 30".
-    //
-    // So tighten the band for RAW down to the actuator's own granularity. In
-    // MODE_RAW the correction quantum is a whole audio frame (pause_burst_ms is
-    // capped at GetDuration()), so a residual below ~1.5 frames cannot be
-    // improved by another pass and looping would only add artefacts. Never
-    // widen past upstream's 30ms, and keep a 5ms floor so a codec reporting a
-    // tiny frame duration cannot make this unsatisfiable.
-    double acceptError = 30.0;
-    if (m_mode == MODE_RAW)
-    {
-      const double frameMs = stream->m_format.m_streamInfo.GetDuration();
-      if (frameMs > 0.0)
-        acceptError = std::clamp(frameMs * 1.5, 5.0, 30.0);
-    }
-
-    if (fabs(error) < acceptError)
+    if (fabs(error) < 30)
     {
       if (stream->m_lastSyncError > threshold * 2)
       {
@@ -2702,7 +2671,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
-                  error, acceptError);
+                  error, 30.0);
       }
     }
 
