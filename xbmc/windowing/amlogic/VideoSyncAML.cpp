@@ -38,24 +38,49 @@ float g_measuredNominal = 0.0f;
 double g_lastLoggedFps = 0.0;
 int g_discardStreak = 0;
 
-// The integer-vs-fractional rate gap is 1000ppm and measurement noise over the
-// 5s window is sub-ppm, so a real panel mismatch sits comfortably between the
-// two bounds. A deviation above MAX cannot be a fractional-rate gap — it means
-// vblanks stalled inside the measuring window (mode set, HDMI renegotiation,
-// blanking) — so such a measurement is discarded instead of becoming the
-// master clock rate. MIN and MAX gate both the restart decision in Run() and
-// the apply decision in GetFps(); keeping them shared is what prevents a
-// restart loop if the thresholds ever drifted apart.
+// A deviation above MAX cannot be a genuine panel rate — it means vblanks
+// stalled inside the measuring window (mode set, HDMI renegotiation, blanking)
+// — so such a measurement is discarded instead of becoming the master clock
+// rate. MIN and MAX gate both the restart decision in Run() and the apply
+// decision in GetFps(); keeping them shared is what prevents a restart loop if
+// the thresholds ever drifted apart.
+//
+// ★ MIN was 0.0003 (300ppm), dimensioned for the integer-vs-fractional gap
+// (24.000 vs 23.976 = 1000ppm) on the assumption that a panel is otherwise on
+// its nominal rate. It is not. Measured on am9pro 2026-08-10, 2160p23.976
+// settled, DV playback: the panel's true vblank rate deviates ~59ppm from
+// nominal, five times BELOW the old floor, so this correction sat dormant while
+// CVideoReferenceClock advanced on the nominal rate (it increments by
+// NrVBlanks/m_RefreshRate). That put the master clock 58.63 +/- 3.91 ppm SLOW
+// against wall time while the audio timeline tracked wall to -0.98 +/- 2.04 ppm
+// - a 211 ms/hour A/V divergence that walked to the 50ms gate and bought a
+// visible whole-frame ErrorAdjust roughly every four minutes. That is the
+// long-running "audio drifts out of sync on S6" defect; it was never an audio
+// fault, which is why every audio-side fix left it untouched.
+//
+// The measurement is (exact integer vblank count) / (hardware DRM timestamp
+// delta) over >=5s, so its noise is set by timestamp jitter - low single-digit
+// ppm at worst. 10ppm therefore sits several times above the noise and several
+// times below a real deviation of ~59ppm. Do NOT raise it back toward the
+// fractional-rate gap: anything above ~30ppm re-opens this defect, since 30ppm
+// is already 108 ms/hour.
 constexpr uint64_t MEASURE_WINDOW_NS = UINT64_C(5000000000);
-constexpr double RATE_MISMATCH_MIN = 0.0003;
+constexpr double RATE_MISMATCH_MIN = 0.00001;
 constexpr double RATE_MISMATCH_MAX = 0.005;
 // Two consecutive in-band windows must agree this closely before their rate
-// becomes the master clock rate. Settled-panel measurement noise is sub-ppm,
-// so 100ppm is generous for a real mismatch; a transient wobble (HDMI
-// retrain at disc open moving CRTC timing inside one window - observed
-// 23.9988 on a true 23.976 panel, which then armed a 50ms/min A/V drift)
-// cannot agree with the settled window that follows it.
-constexpr double RATE_CONFIRM_AGREE = 0.0001;
+// becomes the master clock rate. A transient wobble (HDMI retrain at disc open
+// moving CRTC timing inside one window - observed 23.9988 on a true 23.976
+// panel, which then armed a 50ms/min A/V drift) cannot agree with the settled
+// window that follows it.
+//
+// ★ Was 0.0001 (100ppm), which is WIDER than the ~59ppm deviation this now has
+// to resolve - it could not have discriminated at this scale even once MIN was
+// lowered. Tightened to 10ppm: still several times the measurement noise (see
+// RATE_MISMATCH_MIN), while a transient sits hundreds of ppm away and cannot
+// agree by accident. If a future capture shows repeated "awaiting confirmation
+// window" lines that never reach the applying LOGWARNING, this is the constant
+// that is too tight - the two log lines distinguish the cases directly.
+constexpr double RATE_CONFIRM_AGREE = 0.00001;
 } // namespace
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
