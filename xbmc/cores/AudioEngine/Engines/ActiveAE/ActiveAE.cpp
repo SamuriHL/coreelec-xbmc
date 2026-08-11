@@ -179,20 +179,38 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
       // ★ Throttle is PER STREAM ID: a single global throttle would print only
       // one stream per second and silently hide a second one, which is exactly
       // the ambiguity that made the first capture inconclusive.
+      // ★ UpdateStream is called from AddSamples for EVERY sink push (~50/s at
+      // 20 ms buffers). A 1 Hz throttle against a 20 ms periodic call ALIASES -
+      // it can land on the same phase every time and report an unrepresentative
+      // value. The previous capture showed a constant 1.2800 s here against
+      // 0.0200 s read back in GetSyncInfo, which looked like a lost write; it is
+      // equally consistent with most calls computing 0.02 and the sampled ones
+      // computing 1.28. So accumulate min/max/count over each second instead of
+      // sampling one call. If min==max==1.28 the write really is being lost;
+      // if min~0.02 and max~1.28 the earlier reading was an aliasing artefact.
       {
-        static std::map<unsigned int, int64_t> s_lastUpd; // guarded by m_lock
+        struct Acc { int64_t last; float min; float max; int n; };
+        static std::map<unsigned int, Acc> s_acc; // guarded by m_lock
         const int64_t now = CurrentHostCounter();
         const int64_t freq = CurrentHostFrequency();
-        int64_t& last = s_lastUpd[stream->m_id];
-        if (freq > 0 && now - last >= freq)
+        Acc& a = s_acc[stream->m_id];
+        if (a.n == 0 || delay < a.min)
+          a.min = delay;
+        if (a.n == 0 || delay > a.max)
+          a.max = delay;
+        ++a.n;
+        if (freq > 0 && now - a.last >= freq)
         {
-          last = now;
+          a.last = now;
           CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::UpdateStream AEBUF id:{} nStats:{} procBufDelay:{:.4f}s "
-                    "procSamples:{} sampleDelay:{:.4f}s -> bufferedTime:{:.4f}s "
+                    "ActiveAE::UpdateStream AEBUF id:{} nStats:{} calls/s:{} "
+                    "bufferedTime min:{:.4f}s max:{:.4f}s last:{:.4f}s "
+                    "(procBuf:{:.4f}s procSamples:{} sampleDelay:{:.4f}s) "
                     "streamBuffered:{:.4f}s rr:{:.6f} pcmOut:{}",
-                    stream->m_id, m_streamStats.size(), pbDelay, nSamples, delay - pbDelay,
-                    delay, stream->m_bufferedTime, str.m_resampleRatio, m_pcmOutput);
+                    stream->m_id, m_streamStats.size(), a.n, a.min, a.max, delay, pbDelay,
+                    nSamples, delay - pbDelay, stream->m_bufferedTime, str.m_resampleRatio,
+                    m_pcmOutput);
+          a.n = 0;
         }
       }
 
@@ -261,25 +279,36 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       // Safe: m_lock and stream->m_statsLock are both held here, guarding every
       // field read. Throttled on wall time.
       {
-        static std::map<unsigned int, int64_t> s_lastSync; // guarded by m_lock
+        // Same aliasing risk as AEBUF: track the range seen over each second,
+        // not a single sampled call.
+        struct SAcc { int64_t last; float min; float max; int n; };
+        static std::map<unsigned int, SAcc> s_sacc; // guarded by m_lock
         const int64_t now = CurrentHostCounter();
         const int64_t freq = CurrentHostFrequency();
-        int64_t& last = s_lastSync[stream->m_id];
-        if (freq > 0 && now - last >= freq)
+        SAcc& sa = s_sacc[stream->m_id];
+        if (sa.n == 0 || buffertime < sa.min)
+          sa.min = buffertime;
+        if (sa.n == 0 || buffertime > sa.max)
+          sa.max = buffertime;
+        ++sa.n;
+        if (freq > 0 && now - sa.last >= freq)
         {
-          last = now;
+          sa.last = now;
           // ★ id and nStats are the load-bearing additions: without them a
           // 1.28 s vs 0.02 s split between UpdateStream and here cannot be told
           // apart from the two lines simply describing DIFFERENT streams.
           CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::GetSyncInfo AEDELAY id:{} nStats:{} total:{:.4f}s (raw:{:.4f}s) = "
-                    "sink:{:.4f}s + bufSamples:{:.4f}s({} smp) + sinkLatency:{:.4f}s "
-                    "+ streamBuf:{:.4f}s(str:{:.4f}+stm:{:.4f})*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
-                    stream->m_id, m_streamStats.size(), info.delay, status.delay, dgSinkDelay,
-                    dgBufSamples, m_bufferedSamples, static_cast<double>(m_sinkLatency),
-                    buffertime, str.m_bufferedTime, stream->m_bufferedTime,
+                    "ActiveAE::GetSyncInfo AEDELAY id:{} nStats:{} calls/s:{} total:{:.4f}s "
+                    "(raw:{:.4f}s) = sink:{:.4f}s + bufSamples:{:.4f}s({} smp) + "
+                    "sinkLatency:{:.4f}s + streamBuf:{:.4f}s[min:{:.4f} max:{:.4f}]"
+                    "(str:{:.4f}+stm:{:.4f})*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
+                    stream->m_id, m_streamStats.size(), sa.n, info.delay, status.delay,
+                    dgSinkDelay, dgBufSamples, m_bufferedSamples,
+                    static_cast<double>(m_sinkLatency), buffertime, sa.min, sa.max,
+                    str.m_bufferedTime, stream->m_bufferedTime,
                     str.m_resampleRatio, str.m_syncError,
                     static_cast<int>(str.m_syncState));
+          sa.n = 0;
         }
       }
 
