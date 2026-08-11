@@ -2086,39 +2086,28 @@ bool CActiveAE::RunStages()
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
         double error = playingPts - (*it)->m_pClock->GetClock();
 
-        // Upstream scales TrueHD passthrough error by 0.45 here ("underestimate
-        // error ... to avoid unnecessary a/v sync corrections", 87d09a828f).
-        // Deliberately NOT done in this fork: every consumer of m_syncError
-        // gets the same shrunken number, so the VideoPlayerAudio DISCON gate
-        // (50ms measured) only fires at ~111ms PHYSICAL error - a permanent,
-        // clearly audible lip-sync dead zone on S6-class boxes, whose TDM sink
-        // path develops real error (see ../../../../../docs/s6_truehd_av_drift.md,
-        // in the samurihl work tree, NOT Kodi's own docs/).
+        // Restored to upstream (2026-08-11). This fork had removed the scaling
+        // on the argument that it created a ~111ms physical dead zone masking
+        // "real error the S6 TDM sink path develops". Both halves of that
+        // rationale are now disproven:
         //
-        // Anti-oscillation rests on ONE property, not two: the gate stays wider
-        // than ErrorAdjust's whole-frame step at every rate above ~20fps (see the
-        // comment block in VideoPlayerAudio.cpp), so a correction cannot overshoot
-        // into a sawtooth. It does NOT rest on sub-frame correction accuracy - in
-        // SYNC_INSYNC passthrough there is no audio-side actuator at all
-        // (SetSyncType forces resample mode 0 for SYNC_DISCON), the only actuator
-        // is CDVDClock::ErrorAdjust's whole-frame step, and the MAT packer's
-        // sample offset never reaches frame.pts - it is used solely in the
-        // retimer's jitter comparison.
+        //   1. The real fault is the receiver latching its lip-sync during the
+        //      HDMI mode switch at playback start. That offset sits BELOW ALSA -
+        //      no value of this gate can see it, let alone correct it, so the
+        //      dead zone was never what stopped us fixing it.
+        //   2. `error` was measured carrying a vsyncAdjust sawtooth of up to a
+        //      full frame period. Removing the 0.45 made corrections MORE
+        //      sensitive to that artefact - i.e. more likely to move VIDEO when
+        //      audio was fine, the exact failure the scaling exists to prevent.
         //
-        // ★ KNOWN EXPOSURE, measured but not eliminated. This fork's LAV-style
-        // passthrough retimer is always on for non-realtime streams and emits a
-        // FREE-RUNNING PTS accumulator, resynced to the demuxer only when it
-        // drifts past JITTER_THRESHOLD_TRUEHD_DTS = 100ms. That bookkeeping offset
-        // rides on `error` here, so in principle the 50ms gate now sits INSIDE the
-        // retimer's own tolerance and could fire on an artefact - moving VIDEO
-        // when audio was fine. The 0.45 masked this by coincidence (0.45*100=45,
-        // just under the gate). Measured on S6 over two instrumented 75-minute
-        // TrueHD runs on the unscaled build: curr_pts-clock stayed at 5-9ms,
-        // monotonic, tracking physical skew ~1:1, and the retimer logged ZERO
-        // jitter corrections - so the artefact contributed nothing at that scale.
-        // If a title with a badly deviating PTS grid ever drives spurious
-        // corrections, the fix is to couple the two constants (gate below the
-        // jitter threshold), not to reinstate a blanket underestimate.
+        // See ../../../../../docs/s6_truehd_av_drift.md (samurihl work tree, NOT
+        // Kodi's own docs/) for the measurements. Original patch kept outside git
+        // at samurihl/reverted-patches/ if this ever needs revisiting.
+        //
+        // underestimate error for TrueHD passthrough
+        // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
+        if (isTrueHDPassthrough)
+          error *= 0.45;
 
         if (error > maxError)
         {
