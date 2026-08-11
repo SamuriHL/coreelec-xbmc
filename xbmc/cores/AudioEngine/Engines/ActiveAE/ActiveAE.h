@@ -209,6 +209,11 @@ protected:
   float m_sinkCacheTotal;
   float m_sinkLatency;
   int m_bufferedSamples;
+  // ★ TEMPORARY DIAGNOSTIC (2026-08-11): burst-log budget, re-armed by Reset().
+  // Reset() is called from FlushEngine(), which runs on BOTH paths we need to
+  // compare - the codec/format switch AND the seek - so this captures exactly
+  // the startup transient of each at full rate instead of 1 Hz.
+  int m_burstLog = 0;
   unsigned int m_sinkSampleRate;
   AEDelayStatus m_sinkDelay;
   bool m_suspended;
