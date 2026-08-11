@@ -3717,6 +3717,15 @@ bool CDiscDirectoryHelper::GetMoviePlaylists(const CURL& url,
                            [](const PlaylistMapEntry& pair) { return pair.second; });
     const GetTitle fallbackJob{
         durationFallback == DurationFallback::WIDEN && job == GetTitle::MAIN ? GetTitle::ALL : job};
+
+    // Re-apply the duplicate removal the normal search does. The fallback
+    // repopulates straight from playlistMap, which undoes it - and on the
+    // NARROW path every survivor becomes a library "version", so duplicates
+    // would land in exactly the list the caller's narrowness exists to keep
+    // small. ALL keeps them, matching what upstream's own root/titles/all
+    // returns.
+    if (fallbackJob != GetTitle::ALL)
+      RemoveDuplicateMoviePlaylists(all, clips, mainPlaylist);
     FilterMoviePlaylistsByResolution(all, fallbackJob, mainPlaylist);
     GetMainMoviePlaylists(all, fallbackJob, mainPlaylist);
     EndMoviePlaylistSearch(all);
