@@ -23,11 +23,9 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
-#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
-#include <map>
 #include <memory>
 #include <mutex>
 
@@ -76,13 +74,6 @@ void CEngineStats::Reset(unsigned int sampleRate, bool pcm)
   m_bufferedSamples = 0;
   m_suspended = false;
   m_pcmOutput = pcm;
-  // ★ TEMPORARY DIAGNOSTIC: arm the burst log. Reset() is reached from
-  // FlushEngine() on BOTH the codec/format-switch path and the seek path, so
-  // this brackets the transient of each. ~400 calls at ~150/s = ~2.7 s.
-  m_burstLog = 400;
-  CLog::Log(LOGDEBUG, LOGAUDIO,
-            "ActiveAE::Reset AERESET sampleRate:{} pcm:{} - burst log armed ({} calls)",
-            sampleRate, pcm, m_burstLog);
 }
 
 void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples)
@@ -162,68 +153,15 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
         str.m_resampleRatio = 1.0;
       }
 
-      const float pbDelay = delay; // diagnostic: processing-buffer share, before samples
-
       std::unique_lock lock(stream->m_statsLock);
       std::deque<CSampleBuffer*>::iterator itBuf;
-      int nSamples = 0; // diagnostic: how many buffers the sample deque holds
       for(itBuf=stream->m_processingSamples.begin(); itBuf!=stream->m_processingSamples.end(); ++itBuf)
       {
-        ++nSamples;
         if (m_pcmOutput)
           delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
         else
           delay += static_cast<float>(m_sinkFormat.m_streamInfo.GetDuration() / 1000.0);
       }
-      // ★ TEMPORARY DIAGNOSTIC (2026-08-11). ~1 s of audio is buffered somewhere
-      // Kodi under-reports: the ALSA ring is MEASURED at 170.7 ms max
-      // (buffer_size 32768 / 192000), and the UB820 is clean through the same
-      // AVR, so the second is neither downstream nor in the chain - it is here.
-      // This splits str.m_bufferedTime into its two producers so we can see
-      // which one fails to grow by ~1 s at playback start.
-      // Safe: we already hold m_lock and stream->m_statsLock, which guard every
-      // field read below. Throttled on wall time.
-      // ★ Throttle is PER STREAM ID: a single global throttle would print only
-      // one stream per second and silently hide a second one, which is exactly
-      // the ambiguity that made the first capture inconclusive.
-      // ★ UpdateStream is called from AddSamples for EVERY sink push (~50/s at
-      // 20 ms buffers). A 1 Hz throttle against a 20 ms periodic call ALIASES -
-      // it can land on the same phase every time and report an unrepresentative
-      // value. The previous capture showed a constant 1.2800 s here against
-      // 0.0200 s read back in GetSyncInfo, which looked like a lost write; it is
-      // equally consistent with most calls computing 0.02 and the sampled ones
-      // computing 1.28. So accumulate min/max/count over each second instead of
-      // sampling one call. If min==max==1.28 the write really is being lost;
-      // if min~0.02 and max~1.28 the earlier reading was an aliasing artefact.
-      {
-        struct Acc { int64_t last; float min; float max; int n; };
-        static std::map<unsigned int, Acc> s_acc; // guarded by m_lock
-        const int64_t now = CurrentHostCounter();
-        const int64_t freq = CurrentHostFrequency();
-        Acc& a = s_acc[stream->m_id];
-        if (a.n == 0 || delay < a.min)
-          a.min = delay;
-        if (a.n == 0 || delay > a.max)
-          a.max = delay;
-        ++a.n;
-        const bool burst = m_burstLog > 0;
-        if (burst || (freq > 0 && now - a.last >= freq))
-        {
-          if (burst)
-            --m_burstLog;
-          a.last = now;
-          CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::UpdateStream AEBUF id:{} nStats:{} calls/s:{} "
-                    "bufferedTime min:{:.4f}s max:{:.4f}s last:{:.4f}s "
-                    "(procBuf:{:.4f}s procSamples:{} sampleDelay:{:.4f}s) "
-                    "streamBuffered:{:.4f}s rr:{:.6f} pcmOut:{}",
-                    stream->m_id, m_streamStats.size(), a.n, a.min, a.max, delay, pbDelay,
-                    nSamples, delay - pbDelay, stream->m_bufferedTime, str.m_resampleRatio,
-                    m_pcmOutput);
-          a.n = 0;
-        }
-      }
-
       str.m_bufferedTime = static_cast<double>(delay);
       stream->m_bufferedTime = 0;
       break;
@@ -261,14 +199,12 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
   std::unique_lock lock(m_lock);
   AEDelayStatus status;
   status = m_sinkDelay;
-  const double dgSinkDelay = status.delay; // diagnostic: raw sink (ALSA) share
   if (m_pcmOutput)
     status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
   else
     status.delay +=
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
 
-  const double dgBufSamples = status.delay - dgSinkDelay; // diagnostic
   status.delay += static_cast<double>(m_sinkLatency);
 
   for (auto &str : m_streamStats)
@@ -279,52 +215,6 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       float buffertime = static_cast<float>(str.m_bufferedTime) + stream->m_bufferedTime;
       status.delay += static_cast<double>(buffertime) * str.m_resampleRatio;
       info.delay = status.GetDelay();
-
-      // ★ TEMPORARY DIAGNOSTIC (2026-08-11). The reported total is what
-      // VideoPlayerAudio turns into playingPts, so if the TRUE buffered audio
-      // exceeds this by ~1 s, audio is a second late while syncerror reads ~0 -
-      // which is exactly what is observed (0.2 ms at start). This prints every
-      // term that feeds the total, so the one that fails to grow by ~1 s at
-      // playback start is named directly. Compare START vs POST-SEEK.
-      // Safe: m_lock and stream->m_statsLock are both held here, guarding every
-      // field read. Throttled on wall time.
-      {
-        // Same aliasing risk as AEBUF: track the range seen over each second,
-        // not a single sampled call.
-        struct SAcc { int64_t last; float min; float max; int n; };
-        static std::map<unsigned int, SAcc> s_sacc; // guarded by m_lock
-        const int64_t now = CurrentHostCounter();
-        const int64_t freq = CurrentHostFrequency();
-        SAcc& sa = s_sacc[stream->m_id];
-        if (sa.n == 0 || buffertime < sa.min)
-          sa.min = buffertime;
-        if (sa.n == 0 || buffertime > sa.max)
-          sa.max = buffertime;
-        ++sa.n;
-        const bool sburst = m_burstLog > 0;
-        if (sburst || (freq > 0 && now - sa.last >= freq))
-        {
-          if (sburst)
-            --m_burstLog;
-          sa.last = now;
-          // ★ id and nStats are the load-bearing additions: without them a
-          // 1.28 s vs 0.02 s split between UpdateStream and here cannot be told
-          // apart from the two lines simply describing DIFFERENT streams.
-          CLog::Log(LOGDEBUG, LOGAUDIO,
-                    "ActiveAE::GetSyncInfo AEDELAY id:{} nStats:{} calls/s:{} total:{:.4f}s "
-                    "(raw:{:.4f}s) = sink:{:.4f}s + bufSamples:{:.4f}s({} smp) + "
-                    "sinkLatency:{:.4f}s + streamBuf:{:.4f}s[min:{:.4f} max:{:.4f}]"
-                    "(str:{:.4f}+stm:{:.4f})*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
-                    stream->m_id, m_streamStats.size(), sa.n, info.delay, status.delay,
-                    dgSinkDelay, dgBufSamples, m_bufferedSamples,
-                    static_cast<double>(m_sinkLatency), buffertime, sa.min, sa.max,
-                    str.m_bufferedTime, stream->m_bufferedTime,
-                    str.m_resampleRatio, str.m_syncError,
-                    static_cast<int>(str.m_syncState));
-          sa.n = 0;
-        }
-      }
-
       info.error = str.m_syncError;
       info.errortime = str.m_errorTime;
       info.state = str.m_syncState;
