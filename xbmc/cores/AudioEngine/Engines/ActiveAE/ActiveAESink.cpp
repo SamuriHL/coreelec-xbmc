@@ -16,7 +16,6 @@
 #include "utils/AMLUtils.h"
 #include "utils/EndianSwap.h"
 #include "utils/MemUtils.h"
-#include "utils/TimeUtils.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -973,26 +972,8 @@ void CActiveAESink::OpenSink()
 
   if (m_sink)
   {
-    // ★ TEMPORARY DIAGNOSTIC (2026-08-11). This teardown is the ONLY thing the
-    // codec/format switch does that the seek does not: the seek's FLUSH handler
-    // is just ReturnBuffers() and never touches the ALSA device, yet the seek
-    // FIXES the ~1 s audio-late while the format switch CAUSES it. Drain() is
-    // snd_pcm_drain(), which BLOCKS until buffered audio has played out - time
-    // it, and record the format being torn down against the one being opened.
-    const int64_t t0 = CurrentHostCounter();
     m_sink->Drain();
-    const int64_t t1 = CurrentHostCounter();
     m_sink->Deinitialize();
-    const int64_t t2 = CurrentHostCounter();
-    const double f = static_cast<double>(CurrentHostFrequency()) / 1000.0;
-    CLog::Log(LOGDEBUG, LOGAUDIO,
-              "CActiveAESink::OpenSink AESWITCH teardown drain:{:.1f}ms deinit:{:.1f}ms "
-              "old[rate:{} ch:{} raw:{} frames:{}] -> new[rate:{} ch:{} raw:{}]",
-              f > 0 ? (t1 - t0) / f : -1.0, f > 0 ? (t2 - t1) / f : -1.0,
-              m_sinkFormat.m_sampleRate, m_sinkFormat.m_channelLayout.Count(),
-              m_sinkFormat.m_dataFormat == AE_FMT_RAW, m_sinkFormat.m_frames,
-              m_requestedFormat.m_sampleRate, m_requestedFormat.m_channelLayout.Count(),
-              m_requestedFormat.m_dataFormat == AE_FMT_RAW);
     m_sink.reset();
   }
 
