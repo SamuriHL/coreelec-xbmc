@@ -162,9 +162,23 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   m_audioClock = 0;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
 
-  // AVR start re-sync is once per playback
+  // AVR start re-sync: arm on EVERY audio stream open, once per stream.
+  //
+  // Originally this disarmed here and armed only on PLAYER_DISPLAY_RESET, on the
+  // reasoning that the HDMI mode switch provokes the receiver's lip-sync latch.
+  // Measured on-box 2026-08-11 and that is wrong: a disc opens ac3 for the intro
+  // (16:03:19), takes its single display reset (16:03:21), then switches to the
+  // truehd feature (16:03:35). The reseek fired against the INTRO and the feature
+  // - the stream that actually matters - never re-armed, because no second
+  // display reset ever comes.
+  //
+  // What provokes the latch is the HDMI AUDIO FORMAT CHANGE, i.e. the sink
+  // reopen, which happens at every stream open - not the video mode switch. Arm
+  // here instead. The 6s settle window means a burst of rapid stream changes
+  // cannot produce a burst of reseeks: each one needs 6s of settled INSYNC
+  // playback before it can fire.
   m_avrStartResyncDone = false;
-  m_avrStartResyncArmed = false;
+  m_avrStartResyncArmed = true;
 
   m_prevsynctype = -1;
   m_synctype = SYNC_DISCON;
@@ -839,10 +853,10 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // See ../../../docs/s6_truehd_av_drift.md (samurihl work tree, NOT Kodi's
   // docs/). Ported from pannal's CE21 p3i branch, which has never shown this.
   //
-  // Fire once per playback, only after a display reset actually occurred (the
-  // mode switch is what provokes the latch) and only once m_disconSettleTimer
-  // has expired - before that the AE start-sync is still skipping/inserting
-  // frames and a seek would land on immature state.
+  // Fire once per audio stream (armed at OpenStream - see the note there on why
+  // the display-reset trigger was wrong), and only once m_disconSettleTimer has
+  // expired: before that the AE start-sync is still skipping/inserting frames
+  // and a seek would land on immature state.
   //
   // ★ OPT-IN, and default OFF. pannal defaults his ON because he additionally
   // gates on GetVideoFpsSnapped() - streams whose container rate the demuxer
