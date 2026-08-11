@@ -23,6 +23,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
@@ -153,15 +154,43 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
         str.m_resampleRatio = 1.0;
       }
 
+      const float pbDelay = delay; // diagnostic: processing-buffer share, before samples
+
       std::unique_lock lock(stream->m_statsLock);
       std::deque<CSampleBuffer*>::iterator itBuf;
+      int nSamples = 0; // diagnostic: how many buffers the sample deque holds
       for(itBuf=stream->m_processingSamples.begin(); itBuf!=stream->m_processingSamples.end(); ++itBuf)
       {
+        ++nSamples;
         if (m_pcmOutput)
           delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
         else
           delay += static_cast<float>(m_sinkFormat.m_streamInfo.GetDuration() / 1000.0);
       }
+      // ★ TEMPORARY DIAGNOSTIC (2026-08-11). ~1 s of audio is buffered somewhere
+      // Kodi under-reports: the ALSA ring is MEASURED at 170.7 ms max
+      // (buffer_size 32768 / 192000), and the UB820 is clean through the same
+      // AVR, so the second is neither downstream nor in the chain - it is here.
+      // This splits str.m_bufferedTime into its two producers so we can see
+      // which one fails to grow by ~1 s at playback start.
+      // Safe: we already hold m_lock and stream->m_statsLock, which guard every
+      // field read below. Throttled on wall time.
+      {
+        static int64_t s_lastUpd = 0;
+        const int64_t now = CurrentHostCounter();
+        const int64_t freq = CurrentHostFrequency();
+        if (freq > 0 && now - s_lastUpd >= freq)
+        {
+          s_lastUpd = now;
+          CLog::Log(LOGDEBUG, LOGAUDIO,
+                    "ActiveAE::UpdateStream AEBUF id:{} procBufDelay:{:.4f}s "
+                    "procSamples:{} sampleDelay:{:.4f}s -> bufferedTime:{:.4f}s "
+                    "streamBuffered:{:.4f}s rr:{:.6f} pcmOut:{}",
+                    stream->m_id, pbDelay, nSamples, delay - pbDelay, delay,
+                    stream->m_bufferedTime, str.m_resampleRatio, m_pcmOutput);
+        }
+      }
+
       str.m_bufferedTime = static_cast<double>(delay);
       stream->m_bufferedTime = 0;
       break;
@@ -199,12 +228,14 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
   std::unique_lock lock(m_lock);
   AEDelayStatus status;
   status = m_sinkDelay;
+  const double dgSinkDelay = status.delay; // diagnostic: raw sink (ALSA) share
   if (m_pcmOutput)
     status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
   else
     status.delay +=
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
 
+  const double dgBufSamples = status.delay - dgSinkDelay; // diagnostic
   status.delay += static_cast<double>(m_sinkLatency);
 
   for (auto &str : m_streamStats)
@@ -215,6 +246,33 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       float buffertime = static_cast<float>(str.m_bufferedTime) + stream->m_bufferedTime;
       status.delay += static_cast<double>(buffertime) * str.m_resampleRatio;
       info.delay = status.GetDelay();
+
+      // ★ TEMPORARY DIAGNOSTIC (2026-08-11). The reported total is what
+      // VideoPlayerAudio turns into playingPts, so if the TRUE buffered audio
+      // exceeds this by ~1 s, audio is a second late while syncerror reads ~0 -
+      // which is exactly what is observed (0.2 ms at start). This prints every
+      // term that feeds the total, so the one that fails to grow by ~1 s at
+      // playback start is named directly. Compare START vs POST-SEEK.
+      // Safe: m_lock and stream->m_statsLock are both held here, guarding every
+      // field read. Throttled on wall time.
+      {
+        static int64_t s_lastSync = 0;
+        const int64_t now = CurrentHostCounter();
+        const int64_t freq = CurrentHostFrequency();
+        if (freq > 0 && now - s_lastSync >= freq)
+        {
+          s_lastSync = now;
+          CLog::Log(LOGDEBUG, LOGAUDIO,
+                    "ActiveAE::GetSyncInfo AEDELAY total:{:.4f}s (raw:{:.4f}s) = "
+                    "sink:{:.4f}s + bufSamples:{:.4f}s({} smp) + sinkLatency:{:.4f}s "
+                    "+ streamBuf:{:.4f}s*rr{:.6f} | syncErrRaw:{:.3f} state:{}",
+                    info.delay, status.delay, dgSinkDelay, dgBufSamples,
+                    m_bufferedSamples, static_cast<double>(m_sinkLatency), buffertime,
+                    str.m_resampleRatio, str.m_syncError,
+                    static_cast<int>(str.m_syncState));
+        }
+      }
+
       info.error = str.m_syncError;
       info.errortime = str.m_errorTime;
       info.state = str.m_syncState;
