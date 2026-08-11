@@ -18,6 +18,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 
 #include <mutex>
@@ -732,10 +733,31 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   if (m_synctype == SYNC_DISCON && m_syncErrorLogTimer.IsTimePast())
   {
     m_syncErrorLogTimer.Set(1000ms);
+
+    // ★ RATE TRACE (2026-08-10). syncerror is a DIFFERENCE, so a steady walk in
+    // it says nothing about WHICH of its two terms is moving. Measured on
+    // am9pro the same evening: the audio and video WIRE rates are locked to
+    // +2.9 +/- 4.6 ppm and the ALSA delay report tracks the true buffer depth
+    // exactly, yet syncerror still walks -224 ms/hour. So the divergence is
+    // between the audio pts timeline and the master clock, and nothing logged
+    // today can say which one it is.
+    //
+    // Emit both timelines against a WALL reference (CurrentHostCounter, the
+    // reference clock's own MONOTONIC_RAW base) so each rate can be fitted
+    // independently:
+    //   d(apts)/d(host)  -> audio media time per wall second
+    //   d(clock)/d(host) -> master clock per wall second
+    // Whichever departs from 1.0 by ~62 ppm is the defect; if both track 1.0
+    // then syncerror itself is being computed from something stale.
+    const double hostSeconds =
+        static_cast<double>(CurrentHostCounter()) / static_cast<double>(CurrentHostFrequency());
     CLog::Log(LOGDEBUG, LOGAUDIO,
-              "CVideoPlayerAudio:: syncerror:{:.1f}ms settle:{} level:{:d}",
+              "CVideoPlayerAudio:: syncerror:{:.1f}ms settle:{} level:{:d} "
+              "apts:{:.6f} clock:{:.6f} host:{:.6f} delay:{:.6f}",
               m_audioSink.GetSyncError() / 1000.0,
-              m_disconSettleTimer.IsTimePast() ? "past" : "armed", GetLevel());
+              m_disconSettleTimer.IsTimePast() ? "past" : "armed", GetLevel(),
+              m_audioClock / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, hostSeconds,
+              m_audioSink.GetDelay() / DVD_TIME_BASE);
   }
 
   if (m_synctype == SYNC_DISCON && m_disconSettleTimer.IsTimePast())
