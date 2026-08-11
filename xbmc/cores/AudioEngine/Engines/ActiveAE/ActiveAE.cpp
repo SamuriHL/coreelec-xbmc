@@ -23,6 +23,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
@@ -2120,6 +2121,53 @@ bool CActiveAE::RunStages()
         // If a title with a badly deviating PTS grid ever drives spurious
         // corrections, the fix is to couple the two constants (gate below the
         // jitter threshold), not to reinstate a blanket underestimate.
+
+        // ★ TEMPORARY DIAGNOSTIC (2026-08-11). syncerror walks ~226 ms/hour on
+        // S6 TrueHD passthrough while the master clock and the audio PTS
+        // timeline both track wall time to ~1ppm, and VideoPlayerAudio's own
+        // (apts - delay - clock) is FLAT at -37ms. The walk is therefore
+        // bookkeeping inside THIS computation, not physical A/V divergence.
+        //
+        // Leading hypothesis: the clock term. m_pClock is CAudioSinkAE, whose
+        // GetClock() adds CDVDClock::GetVsyncAdjust(), which VideoPlayerAudio's
+        // own read does not include - it is the one term structurally present
+        // here and absent there. It is -mean(fmod(renderPts - nextFramePts,
+        // frametime)) from RenderManager: a PHASE, bounded to one frame period,
+        // so it can only ramp and wrap, never drift without bound.
+        //
+        // Supporting evidence is weak so far and must not be overstated: the
+        // observed walk (30.2ms over 7.7 min) fits inside one 41.708ms frame,
+        // and that is all. Converting 226 ms/hour into an "11 minute wrap" and
+        // then checking the same 7.7 min against that line is circular - it
+        // restates the rate, it does not test it. The real test is a capture
+        // longer than a full wrap: a phase term MUST snap back by one frame,
+        // a genuine rate error never will.
+        //
+        // The other candidates are the pts term (buf->timestamp minus a start
+        // offset computed by INTEGER division) and the delay term - note this
+        // uses the sink-only GetDelay(), which unlike the stream variant does
+        // NOT add m_sinkLatency. Log every term separately so the carrier is
+        // named rather than inferred. Throttled on wall time, not iteration
+        // count, so the PCM path's much smaller buffers cannot flood the log.
+        // Remove once the carrier is identified.
+        {
+          static int64_t s_lastTrace = 0;
+          const int64_t now = CurrentHostCounter();
+          const int64_t freq = CurrentHostFrequency();
+          if (freq > 0 && now - s_lastTrace >= freq)
+          {
+            s_lastTrace = now;
+            AEDelayStatus streamStatus;
+            m_stats.GetDelay(streamStatus, *it);
+            CLog::Log(LOGDEBUG, LOGAUDIO,
+                      "ActiveAE::sync host:{:.6f} bufts:{:.3f} startoff:{} rate:{} pts:{:.3f} "
+                      "sinkdelay:{:.3f} streamdelay:{:.3f} clock:{:.3f} error:{:.3f} raw:{}",
+                      static_cast<double>(now) / static_cast<double>(freq),
+                      static_cast<double>(buf->timestamp), buf->pkt_start_offset,
+                      buf->pkt->config.sample_rate, pts, delay, streamStatus.GetDelay() * 1000,
+                      (*it)->m_pClock->GetClock(), error, m_mode == MODE_RAW);
+          }
+        }
 
         if (error > maxError)
         {
