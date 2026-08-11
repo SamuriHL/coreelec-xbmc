@@ -36,6 +36,7 @@ static inline bool aml_disc_mode_hold() { return false; }
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
@@ -710,6 +711,50 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       PresentSingle(clear, flags, alpha);
 
     presented = true;
+
+    // ★ TEMPORARY DIAGNOSTIC (2026-08-11). The reported fault is ~1000 ms of
+    // audio-late, verified against an on-screen stopwatch and reproduced on BOTH
+    // SoCs. The same disc through the same VRROOM + Pioneer AVR + LG G6 is
+    // flawless on a reference Panasonic UB820, so the disc and the whole
+    // downstream chain are exonerated - it is ours.
+    //
+    // Everything measured so far is either audio-vs-clock (which reads correct
+    // to ~20 ms) or /sys/class/tsync/pts_video (which reads only ~120 ms of
+    // video advance). Neither can produce 1 s, and 860 ms of hidden audio
+    // latency has nowhere to live: the ALSA ring is ~170 ms and the FIFOs past
+    // it are single-digit ms. So the sysfs reading is the prime suspect - with
+    // tsync disabled and the plane in freerun_mode=1 it may simply not
+    // correspond to the frame on screen. That assumption was never verified.
+    //
+    // This logs the frame Kodi is ACTUALLY presenting against the master clock,
+    // at the moment it presents it, with no sysfs semantics involved:
+    //   pts-clock ~ m_displayLatency (~167 ms)  => Kodi's scheduling is correct,
+    //       and the ~1 s is downstream (the free-running plane ignoring us).
+    //   pts-clock ~ 1 s                         => Kodi is scheduling a second
+    //       early and the defect is here, in the renderer.
+    // Those two need completely different fixes, which is why this exists.
+    // Throttled on wall time. Remove once the term is identified.
+    {
+      static int64_t s_lastPresentTrace = 0;
+      const int64_t now = CurrentHostCounter();
+      const int64_t freq = CurrentHostFrequency();
+      if (freq > 0 && now - s_lastPresentTrace >= freq)
+      {
+        s_lastPresentTrace = now;
+        const double clock = m_dvdClock.GetClock();
+        // Deliberately NOT logging m_queued/m_discard/m_free sizes here: those
+        // deques are guarded by m_presentlock, which this path does not hold,
+        // and calling size() on them concurrently is a data race. m.pts is the
+        // buffer we are presenting right now, and m_displayLatency/m_presentpts
+        // are plain doubles - a stale read of those is harmless for a trace.
+        CLog::Log(LOGDEBUG, LOGAVTIMING,
+                  "CRenderManager::Render PRESENT pts:{:.6f} clock:{:.6f} "
+                  "pts-clock:{:.1f}ms displayLatency:{:.1f}ms presentpts:{:.6f}",
+                  m.pts / DVD_TIME_BASE, clock / DVD_TIME_BASE,
+                  (m.pts - clock) / 1000.0, m_displayLatency / 1000.0,
+                  m_presentpts / DVD_TIME_BASE);
+      }
+    }
   }
 
   // the just-presented region is video-only: OSD, GUI and subtitles come later
