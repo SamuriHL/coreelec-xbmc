@@ -140,8 +140,6 @@ protected:
   SInfo            m_info;
 
   bool m_displayReset = false;
-  bool m_avrStartResyncDone = false;  // AVR start re-sync: fire once per playback
-  bool m_avrStartResyncArmed = false; // a display reset happened this playback
   unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
   int m_disconAdjustCounter = 0;
 
