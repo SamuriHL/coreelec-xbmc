@@ -257,10 +257,12 @@ protected:
   struct CClockSync
   {
     void Reset();
-    double m_error;
-    int m_errCount;
-    double m_syncOffset;
-    bool m_enabled;
+    double m_error = 0.0;
+    double m_ref = 0.0;
+    bool m_refValid = false;
+    int m_errCount = 0;
+    double m_syncOffset = 0.0;
+    bool m_enabled = false;
   };
   CClockSync m_clockSync;
 
