@@ -678,9 +678,35 @@ float CActiveAEStreamBuffers::GetDelay()
 {
   float delay = 0;
 
+  // For RAW (bitstream passthrough) a buffer holds exactly one IEC61937/MAT
+  // packet, and its duration is m_streamInfo.GetDuration() (milliseconds).
+  //
+  // nb_samples/config.sample_rate has no time meaning here: the RAW pool ctor
+  // forces m_frameSize=1 / m_frames=61440 (ActiveAEBuffer.cpp) so nb_samples
+  // counts BYTES, while config.sample_rate stays the ENCODED rate (48000), not
+  // the 192000 Hz wire rate. It is therefore always an overstatement, by a
+  // codec-dependent factor. Worst case is TrueHD MAT, whose burst is exactly
+  // 61440 bytes (TRUEHD_BUF_SIZE == MAX_IEC61937_PACKET): 61440/48000 = 1.280 s
+  // reported against a true 20 ms, i.e. exactly 64x.
+  //
+  // This lands in VideoPlayer as str.m_bufferedTime via CEngineStats::
+  // UpdateStream -> GetDelay(status, stream), where it sets the A/V start anchor
+  // and throttles buffer hand-out against MAX_CACHE_LEVEL. It does NOT reach the
+  // AE sync servo, which reads the sink-only GetDelay(status) overload.
+  //
+  // The engine already special-cases RAW the same way elsewhere; the closest
+  // match is ActiveAE.cpp:2002, which keys on this same format object's
+  // m_dataFormat. See also CActiveAEBufferPool::Create and CActiveAEStream::
+  // AddData. (CEngineStats::UpdateStream reaches the same result through a
+  // different discriminator - m_pcmOutput plus m_sinkFormat - which coincides
+  // with this one only because MODE_RAW sets outputFormat = inputFormat.)
+  const bool isRaw = m_inputFormat.m_dataFormat == AE_FMT_RAW;
+  const float rawPacketTime =
+      isRaw ? static_cast<float>(m_inputFormat.m_streamInfo.GetDuration()) / 1000.0f : 0.0f;
+
   for (auto &buf : m_inputSamples)
   {
-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
   }
 
   delay += m_resampleBuffers->GetDelay();
@@ -688,7 +714,7 @@ float CActiveAEStreamBuffers::GetDelay()
 
   for (auto &buf : m_outputSamples)
   {
-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
   }
 
   return delay;
