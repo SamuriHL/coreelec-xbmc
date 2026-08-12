@@ -75,6 +75,8 @@ RESOLUTION ChooseHeldResolution(float fps, RESOLUTION incumbent, bool is3D)
 void CRenderManager::CClockSync::Reset()
 {
   m_error = 0;
+  m_ref = 0;
+  m_refValid = false;
   m_errCount = 0;
   m_syncOffset = 0;
   m_enabled = false;
@@ -1174,6 +1176,28 @@ void CRenderManager::PrepareNextRender()
   if (m_clockSync.m_enabled)
   {
     double err = fmod(renderPts - nextFramePts, frametime);
+    // ★ err is a CIRCULAR quantity sampled on (-frametime, +frametime). When the
+    // phase sits near a fmod discontinuity the samples split between two branches
+    // one frametime apart, and their LINEAR mean is then a mixing fraction that
+    // sweeps the range as the split ratio shifts - measured on am9pro sweeping
+    // ~64x faster than the true phase moves. CAudioSinkAE::GetClock() adds the
+    // negated mean to the clock audio syncs against, so audio chases the sweep
+    // and CDVDClock::ErrorAdjust "corrects" by moving video a whole frame: the
+    // S6 drift/jolt cycle. Unwrap each sample onto the branch nearest a
+    // persistent reference so the mean is the cluster centre, not a mixture.
+    // The reference is seeded from the first sample of the session (so the
+    // no-straddle case is bit-identical to the plain mean) and then follows the
+    // window means; it must persist across windows - re-seeding per window would
+    // make the branch choice a per-window coin flip in the straddle case and
+    // flap frame selection by a whole frame every window.
+    // See docs/s6_truehd_av_drift.md (samurihl tree, not Kodi's docs/).
+    if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
+    {
+      m_clockSync.m_ref = err;
+      m_clockSync.m_refValid = true;
+    }
+    else
+      err -= frametime * std::round((err - m_clockSync.m_ref) / frametime);
     m_clockSync.m_error += err;
     m_clockSync.m_errCount ++;
     if (m_clockSync.m_errCount > 30)
@@ -1182,6 +1206,18 @@ void CRenderManager::PrepareNextRender()
       m_clockSync.m_syncOffset = average;
       m_clockSync.m_error = 0;
       m_clockSync.m_errCount = 0;
+
+      // Track the cluster with the reference, wrapped back onto the raw sample
+      // range (-frametime, +frametime) so a slowly rotating phase cannot walk
+      // it (and the unwrapped means with it) arbitrarily far from zero.
+      double ref = average;
+      if (!std::isfinite(ref))
+        ref = 0; // never let a poisoned value stick in the persistent reference
+      else if (ref <= -frametime)
+        ref += frametime;
+      else if (ref > frametime)
+        ref -= frametime;
+      m_clockSync.m_ref = ref;
 
       m_dvdClock.SetVsyncAdjust(-average);
     }
