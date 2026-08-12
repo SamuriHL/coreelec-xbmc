@@ -373,17 +373,43 @@ float CActiveAEBufferPoolResample::GetDelay()
   float delay = 0;
   std::deque<CSampleBuffer*>::iterator itBuf;
 
+  // RAW: one buffer == one IEC61937/MAT packet, duration m_streamInfo.GetDuration().
+  // See CActiveAEStreamBuffers::GetDelay for why nb_samples/config.sample_rate is
+  // not a duration in RAW mode.
+  //
+  // DEFENSIVE ONLY: in MODE_RAW no resampler is ever built (input and output
+  // formats are identical after the ctor mangling), so ResampleBuffers drains
+  // m_inputSamples straight through and all three containers here are empty by
+  // the time CActiveAEStreamBuffers::GetDelay calls us. The fix that actually
+  // bites is in CActiveAEStreamBuffers::GetDelay - start debugging there, not
+  // here. This guard exists so a future RAW path that retains buffers in-pool
+  // cannot silently reintroduce the defect.
+  //
+  // m_format is the OUTPUT format for this pool (see the ctor); m_inputFormat is
+  // the input. They are identical in MODE_RAW, but keep the two deques keyed on
+  // their own format so a mode where only one side is RAW stays correct.
+  const bool inIsRaw = m_inputFormat.m_dataFormat == AE_FMT_RAW;
+  const bool outIsRaw = m_format.m_dataFormat == AE_FMT_RAW;
+  const float rawInPacketTime =
+      inIsRaw ? static_cast<float>(m_inputFormat.m_streamInfo.GetDuration()) / 1000.0f : 0.0f;
+  const float rawOutPacketTime =
+      outIsRaw ? static_cast<float>(m_format.m_streamInfo.GetDuration()) / 1000.0f : 0.0f;
+
   if (m_procSample)
-    delay += (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
+    delay += outIsRaw
+                 ? rawOutPacketTime
+                 : (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
 
   for(itBuf=m_inputSamples.begin(); itBuf!=m_inputSamples.end(); ++itBuf)
   {
-    delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
+    delay += inIsRaw ? rawInPacketTime
+                     : (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
   }
 
   for(itBuf=m_outputSamples.begin(); itBuf!=m_outputSamples.end(); ++itBuf)
   {
-    delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
+    delay += outIsRaw ? rawOutPacketTime
+                      : (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
   }
 
   if (m_resampler)
@@ -511,8 +537,20 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
         in->timestamp = m_lastSamplePts;
       }
 
-      m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
-                         m_format.m_sampleRate;
+      // RAW carries one IEC61937/MAT packet per buffer, and nb_samples is a BYTE
+      // count against the ENCODED rate - see CActiveAEStreamBuffers::GetDelay.
+      // Advancing by nb_samples/m_sampleRate would step TrueHD by 1280 ms per
+      // packet instead of 20 ms. That inflated value is only ever read by the
+      // else branch above, and a buffer reaches it at most once per flush (the
+      // next packet carries a real timestamp and reassigns m_lastSamplePts), so
+      // this cannot accumulate - but a single substitution would still hand
+      // ActiveAE.cpp's sync-error calculation a fabricated +1.28 s, which scales
+      // below the SYNC_INSYNC clamp and would be absorbed without a warning.
+      if (m_format.m_dataFormat == AE_FMT_RAW)
+        m_lastSamplePts += static_cast<int64_t>(m_format.m_streamInfo.GetDuration());
+      else
+        m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
+                           m_format.m_sampleRate;
 
       m_outputSamples.push_back(in);
       busy = true;
@@ -666,17 +704,29 @@ float CActiveAEBufferPoolAtempo::GetDelay()
 {
   float delay = 0;
 
+  // RAW: one buffer == one IEC61937/MAT packet - see CActiveAEStreamBuffers::GetDelay.
+  //
+  // DEFENSIVE ONLY, as in CActiveAEBufferPoolResample::GetDelay: this pool is
+  // always constructed, but at tempo 1.0 the filter is inactive and
+  // ProcessBuffers drains every container straight through, so all three are
+  // empty by the time we are called. This pool has a single format, so m_format
+  // legitimately covers both deques.
+  const bool isRaw = m_format.m_dataFormat == AE_FMT_RAW;
+  const float rawPacketTime =
+      isRaw ? static_cast<float>(m_format.m_streamInfo.GetDuration()) / 1000.0f : 0.0f;
+
   if (m_procSample)
-    delay += (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
+    delay += isRaw ? rawPacketTime
+                   : (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
 
   for (auto &buf : m_inputSamples)
   {
-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
   }
 
   for (auto &buf : m_outputSamples)
   {
-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
   }
 
   if (m_pTempoFilter->IsActive())
