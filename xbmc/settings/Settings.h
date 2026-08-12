@@ -474,7 +474,6 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
   static constexpr auto SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK = "coreelec.amlogic.usedisplayasclock";
-  static constexpr auto SETTING_COREELEC_AMLOGIC_AVR_START_RESYNC = "coreelec.amlogic.avr_start_resync";
   static constexpr auto SETTING_COREELEC_AMLOGIC_VIDEOSYNC_FALLBACK_ON_STALL = "coreelec.amlogic.videosync.fallback.on.stall";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISABLE = "coreelec.amlogic.disabledolbyvision";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
