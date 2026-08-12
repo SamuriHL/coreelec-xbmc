@@ -2087,22 +2087,20 @@ bool CActiveAE::RunStages()
         double error = playingPts - (*it)->m_pClock->GetClock();
 
         // Restored to upstream (2026-08-11). This fork had removed the scaling
-        // on the argument that it created a ~111ms physical dead zone masking
-        // "real error the S6 TDM sink path develops". Both halves of that
-        // rationale are now disproven:
+        // on the argument that it created a physical dead zone masking real
+        // error; measurement showed removing it made corrections MORE
+        // sensitive to the vsyncAdjust sawtooth (up to a full frame period)
+        // riding on `error` - i.e. more likely to move VIDEO when audio was
+        // fine, the exact failure the scaling exists to prevent. (An earlier
+        // version of this comment blamed a receiver lip-sync latch for the
+        // then-open menu->feature offset; that was wrong - the offset was
+        // fabricated video frame labels, fixed in AMLCodec by the per-AU pts
+        // checkin. The sawtooth measurement stands on its own.)
         //
-        //   1. The real fault is the receiver latching its lip-sync during the
-        //      HDMI mode switch at playback start. That offset sits BELOW ALSA -
-        //      no value of this gate can see it, let alone correct it, so the
-        //      dead zone was never what stopped us fixing it.
-        //   2. `error` was measured carrying a vsyncAdjust sawtooth of up to a
-        //      full frame period. Removing the 0.45 made corrections MORE
-        //      sensitive to that artefact - i.e. more likely to move VIDEO when
-        //      audio was fine, the exact failure the scaling exists to prevent.
-        //
-        // See ../../../../../docs/s6_truehd_av_drift.md (samurihl work tree, NOT
-        // Kodi's own docs/) for the measurements. Original patch kept outside git
-        // at samurihl/reverted-patches/ if this ever needs revisiting.
+        // The accumulator therefore holds SCALED milliseconds for TrueHD
+        // passthrough. SyncStream credits its corrections with the same
+        // factor (errorScale) - the two sides must stay in one currency or
+        // the servo over-credits itself by 1/0.45.
         //
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
@@ -2499,6 +2497,21 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   if (!stream->m_pClock)
     return ret;
 
+  // The measurement loop scales TrueHD passthrough errors by 0.45 before
+  // Add() (see the isTrueHDPassthrough block above), so the accumulator holds
+  // SCALED milliseconds. Every physical correction below must therefore be
+  // credited in the same currency, or the servo books 1/0.45 = 2.2x more
+  // correction than it performed: booked-vs-true drift accumulates per
+  // clamped burst and the servo can park anywhere up to the ~222 ms-true
+  // re-arm threshold. (The FIXED servo's floor is 30 scaled = 67 ms true -
+  // the pre-existing upstream band, unchanged here.) Same predicate as the
+  // measurement side.
+  const double errorScale =
+      (m_mode == MODE_RAW &&
+       m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+          ? 0.45
+          : 1.0;
+
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
@@ -2585,12 +2598,13 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           if (error > stream->m_format.m_streamInfo.GetDuration())
             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
 
-          stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
+          stream->m_syncError.Correction(-ret->pkt->pause_burst_ms * errorScale);
           error -= ret->pkt->pause_burst_ms;
         }
         else
         {
-          stream->m_syncError.Correction(-framesToDelay*1000/ret->pkt->config.sample_rate);
+          stream->m_syncError.Correction(-framesToDelay * 1000.0 / ret->pkt->config.sample_rate *
+                                          errorScale);
           error -= framesToDelay*1000/ret->pkt->config.sample_rate;
           for(int i=0; i<ret->pkt->planes; i++)
           {
@@ -2623,7 +2637,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       {
         if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
         {
-          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
+          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration() *
+                                         errorScale);
           error += stream->m_format.m_streamInfo.GetDuration();
           buf->pkt->nb_samples = 0;
         }
@@ -2637,7 +2652,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           memmove(buf->pkt->data[i], buf->pkt->data[i]+bytesToSkip, buf->pkt->linesize - bytesToSkip);
         }
         buf->pkt->nb_samples -= framesToSkip;
-        stream->m_syncError.Correction((double)framesToSkip * 1000 / buf->pkt->config.sample_rate);
+        stream->m_syncError.Correction((double)framesToSkip * 1000 / buf->pkt->config.sample_rate *
+                                       errorScale);
         error += (double)framesToSkip * 1000 / buf->pkt->config.sample_rate;
       }
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
