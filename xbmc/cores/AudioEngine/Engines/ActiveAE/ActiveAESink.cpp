@@ -374,8 +374,21 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
         case CSinkDataProtocol::SAMPLE:
           CSampleBuffer *samples;
           samples = *((CSampleBuffer**)msg->data);
-          CThread::Sleep(std::chrono::milliseconds(1000 * samples->pkt->nb_samples /
-                                                   samples->pkt->config.sample_rate));
+          // Consume in real time. In RAW the packet duration is
+          // m_streamInfo.GetDuration() (ms): nb_samples counts BYTES and
+          // config.sample_rate is the encoded rate, so the PCM expression would
+          // sleep 1280 ms per TrueHD MAT packet instead of 20 ms - and this
+          // handler is what returns buffers to the stream pool, so a 64x
+          // overstatement here throttles buffer recycling by the same factor.
+          // Key on m_requestedFormat: CAESinkFactory::Create mutates
+          // m_sinkFormat by reference, so m_sinkFormat.m_dataFormat can read
+          // S16NE while we are in RAW. Neither format is cleared by UNCONFIGURE.
+          if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+            CThread::Sleep(std::chrono::milliseconds(std::max(
+                1, static_cast<int>(m_requestedFormat.m_streamInfo.GetDuration()))));
+          else
+            CThread::Sleep(std::chrono::milliseconds(1000 * samples->pkt->nb_samples /
+                                                     samples->pkt->config.sample_rate));
           msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
           m_extTimeout = 0ms;
           return;
@@ -488,6 +501,13 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           else
           {
             m_state = S_TOP_UNCONFIGURED;
+            // Re-run the state machine on this same message so the
+            // S_TOP_UNCONFIGURED handler consumes it and replies RETURNSAMPLE,
+            // exactly as the success branch above relies on. Without this the
+            // message is released unanswered - Message::Release does not reply
+            // for async messages - and the CSampleBuffer is lost from the
+            // stream's pool for good, one per sink-open failure.
+            m_bStateMachineSelfTrigger = true;
           }
           return;
         case CSinkDataProtocol::DRAIN:
