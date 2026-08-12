@@ -1245,10 +1245,16 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
-    // A packet dropped for a/v sync has no frames and never enters the loop above. Query the
-    // sink anyway, otherwise the engine is told the sink holds no audio at all and the next
-    // sync error measurements are off by the whole sink delay.
-    if (!m_needIecPack && totalFrames == 0)
+    // A skip-corrected RAW buffer (nb_samples == 0, no pause burst - see
+    // SyncStream's MODE_RAW skip branch) writes nothing, so the loop above
+    // never ran and `status` is still default-constructed: publishing it
+    // would report ZERO sink delay for one stats cycle. That zero flows into
+    // playingPts = pts - delay and pushes the measured sync error POSITIVE -
+    // telling the servo audio is early at the exact moment it is correcting
+    // audio-late, a positive-feedback nudge in the wrong direction. Measure
+    // the real delay instead; the packet-count decrement below stays, because
+    // the empty buffer was counted when it entered the sink queue.
+    if (status.tick == 0)
       m_sink->GetDelay(status);
     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
   }
