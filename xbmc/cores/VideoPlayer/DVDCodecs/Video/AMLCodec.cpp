@@ -304,6 +304,7 @@ typedef struct am_packet {
     int           avduration;
     int           isvalid;
     int           newflag;
+    int           pts_checkedin;
     uint64_t      lastpts;
     unsigned char *data;
     unsigned char *buf;
@@ -599,6 +600,7 @@ static void am_packet_init(am_packet_t *pkt)
   pkt->avduration = 0;
   pkt->isvalid    = 0;
   pkt->newflag    = 1;
+  pkt->pts_checkedin = 0;
   pkt->lastpts    = UINT64_0;
   pkt->data       = NULL;
   pkt->buf        = NULL;
@@ -701,6 +703,36 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
         }
         if (pkt->data_size && para->vcodec.dec_mode == STREAM_TYPE_STREAM)
           pkt->newflag = 0;
+        pkt->pts_checkedin = 1;
+    }
+    else if (para->vcodec.dec_mode == STREAM_TYPE_STREAM &&
+             para->video_format == VFORMAT_HEVC &&
+             pkt->isvalid && pkt->data_size && !pkt->pts_checkedin)
+    {
+        // STREAM mode cleared newflag after the first packet, which made the
+        // pts checkin ONE-SHOT for the whole decode session: the kernel pts
+        // server holds a single record, every subsequent frame's lookup
+        // misses, vh265 emits pts 0, and the amlvideo bridge fabricates the
+        // frame labels by dead reckoning (seed + n*duration) from an
+        // accumulator that nothing resets across a mid-playback stream
+        // reopen. Any seed-vs-content mismatch planted at a BD menu->feature
+        // transition is then frozen into every label of the session - the
+        // measured, stable ~824 ms audio-late offset (A2), invisible to all
+        // of Kodi's sync accounting because the books are internally
+        // consistent.
+        //
+        // Check in every AU's real pts (FRAME mode has always done this -
+        // the clear at the top of this block is STREAM-gated), paired with
+        // the AU's own stream offset because this runs before the data
+        // write below. Per-frame lookups then HIT inside ptsserv's
+        // 2500-byte window and the labels carry content truth end to end;
+        // the fabrication path becomes unreachable and a boundary seed
+        // error cannot displace anything. Guarded per-AU so the EAGAIN
+        // retry path cannot check the same AU in twice; failure is
+        // deliberately non-fatal - a missed checkin just means that one
+        // frame falls back to the old behaviour.
+        check_in_pts(para, pkt);
+        pkt->pts_checkedin = 1;
     }
 
     buf = pkt->data;
@@ -2745,6 +2777,8 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   am_private->am_pkt.isvalid    = 1;
   am_private->am_pkt.avduration = 0;
+  // new AU: its pts has not been checked in yet (see write_av_packet)
+  am_private->am_pkt.pts_checkedin = 0;
 
   // handle pts
   if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE)
