@@ -162,24 +162,6 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   m_audioClock = 0;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
 
-  // AVR start re-sync: arm on EVERY audio stream open, once per stream.
-  //
-  // Originally this disarmed here and armed only on PLAYER_DISPLAY_RESET, on the
-  // reasoning that the HDMI mode switch provokes the receiver's lip-sync latch.
-  // Measured on-box 2026-08-11 and that is wrong: a disc opens ac3 for the intro
-  // (16:03:19), takes its single display reset (16:03:21), then switches to the
-  // truehd feature (16:03:35). The reseek fired against the INTRO and the feature
-  // - the stream that actually matters - never re-armed, because no second
-  // display reset ever comes.
-  //
-  // What provokes the latch is the HDMI AUDIO FORMAT CHANGE, i.e. the sink
-  // reopen, which happens at every stream open - not the video mode switch. Arm
-  // here instead. The 6s settle window means a burst of rapid stream changes
-  // cannot produce a burst of reseeks: each one needs 6s of settled INSYNC
-  // playback before it can fire.
-  m_avrStartResyncDone = false;
-  m_avrStartResyncArmed = true;
-
   m_prevsynctype = -1;
   m_synctype = SYNC_DISCON;
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK))
@@ -570,10 +552,6 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
     {
       m_displayReset = true;
-      // Latch it: m_displayReset is consumed (cleared) by SwitchCodecIfNeeded,
-      // but the AVR start re-sync below must still know a mode switch happened
-      // this playback, seconds later once the sync epoch has settled.
-      m_avrStartResyncArmed = true;
     }
   }
 }
@@ -837,53 +815,6 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       m_processInfo.SetAudioDecoderName(m_pAudioCodec->GetName());
       m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_AVCHANGE));
     }
-  }
-
-  // AVR start re-sync (opt-in). Some receivers and TVs latch their lip-sync
-  // compensation while the HDMI mode switch at playback start is still
-  // settling. The resulting offset sits BELOW ALSA: snd_pcm_delay is honest,
-  // CEngineStats is honest, syncerror is honest - every timing number Kodi has
-  // reconciles perfectly and all of them are blind to it. Only a seek forces
-  // the receiver to re-lock.
-  //
-  // Measured on am9pro (S6) and ugoos (G12B) 2026-08-11: ~1000 ms of audio-late
-  // at an on-screen stopwatch, while the box's own numbers said ~145 ms total.
-  // The same disc through the same VRROOM/AVR/TV is flawless on a reference
-  // Panasonic UB820, and a manual mid-playback seek fixes it - both verified.
-  // See ../../../docs/s6_truehd_av_drift.md (samurihl work tree, NOT Kodi's
-  // docs/). Ported from pannal's CE21 p3i branch, which has never shown this.
-  //
-  // Fire once per audio stream (armed at OpenStream - see the note there on why
-  // the display-reset trigger was wrong), and only once m_disconSettleTimer has
-  // expired: before that the AE start-sync is still skipping/inserting frames
-  // and a seek would land on immature state.
-  //
-  // ★ OPT-IN, and default OFF. pannal defaults his ON because he additionally
-  // gates on GetVideoFpsSnapped() - streams whose container rate the demuxer
-  // had to repair - having found the latch tracks exactly those files and that
-  // firing unconditionally "regressed healthy content (audible drop + brief
-  // blackout for no benefit)". That gate depends on his SnapMsQuantisedFrameRate
-  // work, which this fork does not carry, so the equivalent protection here is
-  // that the user must switch it on. If the fps-snap ever lands, add the gate
-  // and the default can follow pannal's.
-  if (m_avrStartResyncArmed && !m_avrStartResyncDone && m_syncState == IDVDStreamPlayer::SYNC_INSYNC &&
-      m_disconSettleTimer.IsTimePast() &&
-      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          CSettings::SETTING_COREELEC_AMLOGIC_AVR_START_RESYNC))
-  {
-    m_avrStartResyncDone = true;
-    m_avrStartResyncArmed = false;
-    CLog::Log(LOGINFO, "CVideoPlayerAudio:: AVR start re-sync: issuing internal reseek");
-
-    CDVDMsgPlayerSeek::CMode mode;
-    mode.time = 100;
-    mode.relative = true;
-    mode.backward = false;
-    mode.accurate = true;
-    mode.sync = true;
-    mode.restore = false;
-    mode.trickplay = true;
-    m_messageParent.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
   }
 
   return true;
