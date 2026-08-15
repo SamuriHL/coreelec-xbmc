@@ -27,7 +27,6 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
