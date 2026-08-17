@@ -5050,17 +5050,46 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     }
     case StreamType::SUBTITLE:
-#if defined(HAVE_LIBBLURAY)
+    {
       // PG palettes are authored in BT.2020 PQ on an HDR title, exactly like
       // BD-J overlays. The PG decoder is a plain ffmpeg overlay codec with no
-      // view of the input stream, so carry the disc's regime on the hint - the
+      // view of the input stream, so carry the regime on the hint - the
       // same way hint.stills is stamped for video above.
+      bool haveDiscRegime = false;
+#if defined(HAVE_LIBBLURAY)
+      // Disc playback: the playitem's STN table states the regime outright.
       if (std::shared_ptr<CDVDInputStreamBluray> bluray =
               std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+      {
         hint.pqAuthoredGraphics = bluray->HasPqAuthoredGraphics();
+        haveDiscRegime = true;
+      }
 #endif
+      // File playback (UHD remuxes) has no STN table, so infer the regime
+      // from the video's authored dynamic range: a PQ or Dolby Vision source
+      // carries its disc's PQ-authored PG track. Key on the demuxer's
+      // pristine hdr_type - NOT m_CurrentVideo.hint.hdrType, which the VS10
+      // engage above rewrites to DOLBYVISION even for SDR sources, and NOT
+      // the transfer characteristic, which profile-5 DV may leave
+      // unspecified. Inherent heuristic residue: an SDR-authored PG track
+      // muxed into an HDR file (e.g. 1080p subs in a 4K remux) is
+      // indistinguishable from the disc original and will be inverted too.
+      if (!haveDiscRegime && m_pDemuxer && m_CurrentVideo.id >= 0)
+      {
+        CDemuxStream* videoStream =
+            m_pDemuxer->GetStream(m_CurrentVideo.demuxerId, m_CurrentVideo.id);
+        if (videoStream && videoStream->type == StreamType::VIDEO)
+        {
+          const StreamHdrType hdr =
+              static_cast<CDemuxStreamVideo*>(videoStream)->hdr_type;
+          hint.pqAuthoredGraphics = hdr == StreamHdrType::HDR_TYPE_HDR10 ||
+                                    hdr == StreamHdrType::HDR_TYPE_HDR10PLUS ||
+                                    hdr == StreamHdrType::HDR_TYPE_DOLBYVISION;
+        }
+      }
       res = OpenSubtitleStream(hint);
       break;
+    }
     case StreamType::TELETEXT:
       res = OpenTeletextStream(hint);
       break;
