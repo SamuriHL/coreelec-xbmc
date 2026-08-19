@@ -392,6 +392,8 @@ public:
    */
   virtual void SetVideoResolution(unsigned int width, unsigned int height) {}
 
+  virtual bool IsStreaming() const { return false; }
+
   /*
    * When a file carries two independent full video streams of different HDR
    * formats, the uniqueId of the one the user's preference selects; -1 when

@@ -117,6 +117,8 @@ public:
   std::string GetStreamCodecName(int iStreamId) override;
   int GetPreferredVideoStream() const override { return m_dv_preferred_video_stream; }
 
+  bool IsStreaming() const override;
+
   bool Aborted();
 
   AVFormatContext* m_pFormatContext;
