@@ -1973,17 +1973,6 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
               m_dv_dual_stream = true;
               break;
             }
-            else
-            {
-              // The EL can be added before the BL on the lazy add-on-packet
-              // paths. Without the DV configuration the BL plays base-layer-only
-              // (no FEL) - the failure the comment above exists to prevent - so
-              // do not let it pass silently.
-              CLog::Log(LOGWARNING,
-                        "CDVDDemuxFFmpeg::AddStream - dual-layer DV: base-layer stream {} "
-                        "unavailable, it will not receive the DV configuration",
-                        m_dv_bl_stream_idx);
-            }
           }
         }
 
