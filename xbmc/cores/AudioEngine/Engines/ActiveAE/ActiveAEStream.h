@@ -252,15 +252,20 @@ protected:
   // step, not the park. Remember the alignment and land the resume start-sync
   // AT it instead of at a fresh draw around zero.
   //
-  // The target is anchored ONCE per anchor epoch - at the first INSYNC landing
-  // after stream start or a flush (seek) - never re-snapshotted from a resume
-  // landing. Re-snapshotting would integrate the walk's one-sided landing
-  // residual across pause cycles (the resume walk always approaches from
-  // above, so each landing rests a few ms above its aim point) and ratchet the
-  // absolute park into the player's 50ms correction gate.
+  // The target is anchored ONCE per anchor epoch - at the first SETTLED
+  // INSYNC measurement after stream start or a flush (seek) - never
+  // re-snapshotted from a resume landing. Re-snapshotting would integrate the
+  // walk's one-sided landing residual across pause cycles (the resume walk
+  // always approaches from above, so each landing rests a few ms above its
+  // aim point) and ratchet the absolute park into the player's 50ms
+  // correction gate. The landing itself is provisional (measured against a
+  // refilling sink); the first settled measurements confirm it and re-land
+  // if it diverged (m_resumeSyncChecks bounds the re-land budget).
   double m_resumeSyncTarget;        // accumulator currency (0.45-scaled for TrueHD)
   bool m_resumeSyncTargetValid;     // set at the epoch's first landing, cleared by flush
-  bool m_useResumeSyncTarget;       // one-shot: armed at pause, consumed at the landing
+  bool m_useResumeSyncTarget;       // armed at pause, cleared once the landing is
+                                    // confirmed by a settled INSYNC measurement
+  int m_resumeSyncChecks;           // re-land budget for the post-settle confirmation
 };
 }
 
