@@ -698,14 +698,15 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           // re-parks tens of ms away from the pre-pause alignment is a visible
           // lipsync step (measured 2026-08-19: -44.5ms in one pause/resume
           // cycle, parked under the 50ms DISCON gate forever). The target
-          // itself was captured at the epoch's first landing - NOT here - so a
-          // pause right after a landing (when the accumulator's last error was
-          // just flushed to zero) still aims at the true park.
+          // itself was captured at the epoch's first settled measurement - NOT
+          // here - so a pause right after a landing (when the accumulator's
+          // last error was just flushed to zero) still aims at the true park.
           if (!stream->m_paused && m_mode == MODE_RAW &&
               stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC &&
               stream->m_resumeSyncTargetValid)
           {
             stream->m_useResumeSyncTarget = true;
+            stream->m_resumeSyncChecks = 2;
             CLog::Log(LOGDEBUG,
                       "CActiveAE - pause with parked sync error {:f} ms, resume will land there",
                       stream->m_resumeSyncTarget);
@@ -1597,6 +1598,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   stream->m_useResumeSyncTarget = false;
   stream->m_resumeSyncTargetValid = false;
   stream->m_resumeSyncTarget = 0.0;
+  stream->m_resumeSyncChecks = 0;
   stream->ResetFreeBuffers();
 
   // Reset Logic State Variables to revive Servo
@@ -2588,6 +2590,58 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} above threshold of {:f}", error,
               threshold);
   }
+  else if (newerror && m_mode == MODE_RAW && stream->m_useResumeSyncTarget &&
+           stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+  {
+    // Post-settle confirmation of a resume landing. The landing walk measures
+    // against a sink that is still refilling, so its bookkeeping can diverge
+    // from physical reality by tens of ms (measured 2026-08-19: books said
+    // -7ms from target, the settled accumulator read 30ms further out). This
+    // first fresh measurement after the landing comes from a settled sink; if
+    // it is outside the band, re-run the adjust aimed at the same target -
+    // bounded by m_resumeSyncChecks so a genuinely unstable basis degrades to
+    // upstream behavior instead of chasing noise. `error` is already shifted
+    // by the target here.
+    double confirmBand = 30.0;
+    const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+    if (frameMs > 0.0)
+      confirmBand = std::clamp(frameMs * 1.5, 5.0, 30.0);
+
+    if (fabs(error) > confirmBand && stream->m_resumeSyncChecks > 0)
+    {
+      stream->m_resumeSyncChecks--;
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
+      stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
+      stream->m_resampleIntegral = 0;
+      stream->m_lastSyncError = error;
+      CLog::Log(LOGDEBUG,
+                "ActiveAE::SyncStream - settled {:f} ms from the resume target, re-landing "
+                "({:d} checks left)",
+                error, stream->m_resumeSyncChecks);
+    }
+    else
+    {
+      stream->m_useResumeSyncTarget = false;
+      CLog::Log(LOGDEBUG,
+                "ActiveAE::SyncStream - resume landing settled {:f} ms from the pre-pause park "
+                "({:d} checks left)",
+                error, stream->m_resumeSyncChecks);
+    }
+  }
+  else if (newerror && m_mode == MODE_RAW && !stream->m_resumeSyncTargetValid &&
+           stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+  {
+    // Capture this anchor epoch's resume target from the first SETTLED
+    // measurement after the first landing (stream start, or first landing
+    // after a seek/flush) - not from the landing residual itself, which is
+    // booked against a refilling sink and measured ~10ms from the settled
+    // truth. This alignment is what the viewer calibrates to. Mutually
+    // exclusive with the confirmation branch above: an armed flag implies a
+    // valid target. Clamped defensively to the accept band.
+    stream->m_resumeSyncTarget = std::clamp(error, -30.0, 30.0);
+    stream->m_resumeSyncTargetValid = true;
+    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - epoch sync park settled at {:f} ms", error);
+  }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
@@ -2742,23 +2796,14 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                     "ActiveAE::SyncStream - resume landed {:f} ms from the pre-pause park of "
                     "{:f} ms",
                     error, stream->m_resumeSyncTarget);
-          stream->m_useResumeSyncTarget = false;
+          // Keep the target armed: the walk above measured against a refilling
+          // sink, so this landing is provisional until the first settled
+          // INSYNC measurement confirms it (see the confirmation block above).
           // Deliberately do NOT fold the landing residual into the target:
           // re-snapshotting the achieved park would integrate the one-sided
           // landing residual across pause cycles and ratchet the absolute park
           // into the player's 50ms correction gate. The target stays anchored
           // to this epoch's first landing; residuals stay centered on it.
-        }
-        else if (m_mode == MODE_RAW && !stream->m_resumeSyncTargetValid)
-        {
-          // First landing of this anchor epoch (stream start, or first landing
-          // after a seek/flush): this alignment is what the viewer calibrates
-          // to - remember it as the resume landing target. Captured here, not
-          // at pause time, because the Flush below zeroes the accumulator's
-          // last error for the next interval (a pause inside that window would
-          // otherwise snapshot 0.0). Clamped defensively to the accept band.
-          stream->m_resumeSyncTarget = std::clamp(error, -30.0, 30.0);
-          stream->m_resumeSyncTargetValid = true;
         }
         stream->m_syncError.Flush(1000ms);
         stream->m_resampleIntegral = 0;
