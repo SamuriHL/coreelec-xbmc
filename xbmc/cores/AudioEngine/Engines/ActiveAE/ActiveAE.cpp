@@ -2606,7 +2606,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     double confirmBand = 30.0;
     const double frameMs = stream->m_format.m_streamInfo.GetDuration();
     if (frameMs > 0.0)
-      confirmBand = std::clamp(frameMs * 1.5, 5.0, 30.0);
+      confirmBand = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
 
     if (fabs(error) > confirmBand && stream->m_resumeSyncChecks > 0)
     {
@@ -2757,25 +2757,23 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // Upstream accepts any landing under a flat 30ms. For the RESUME landing
     // that is too loose: the quantity that matters there is the step away from
     // the pre-pause park, and a RAW stream has no post-INSYNC actuator to trim
-    // it later. Tighten the band to the actuator's own granularity (the whole
-    // audio frame that pause_burst_ms/skip are quantized to) for the resume
-    // landing ONLY - ordinary starts and seeks keep upstream's 30ms band and
-    // its cost profile (this deliberately does NOT reinstate the reverted
-    // global tightening, 077796745f). 5ms floor so a codec reporting a tiny
-    // frame duration cannot make the condition unsatisfiable. Note the honest
-    // bounds: a walk approaching from above exits at the first value inside
-    // the band, i.e. rests in [band - frame, band) - the tightening shrinks
-    // that rest zone (DTS-HD MA: 16ms band), it does not zero it. For frames
-    // >= 20ms (TrueHD, AC3, EAC3, DTS-2048) the clamp leaves the band at
-    // upstream's 30 - no-op by design, never wider. The pre-existing
-    // DTS-2048@32kHz case (64ms frame, band < frame/2) cannot converge inside
-    // the band on the skip side and falls back to upstream behavior.
+    // it later. Tighten the band to just past the skip arm's rest bound
+    // (frame/2 + 1: 6.3ms for DTS-HD MA, 11 for TrueHD, 17 for AC3/EAC3) for
+    // the resume landing ONLY - ordinary starts and seeks keep upstream's 30ms
+    // band and its cost profile (this deliberately does NOT reinstate the
+    // reverted global tightening, 077796745f). Termination: the burst arm
+    // inserts sub-frame remainders so it can always reach the band from above,
+    // and the skip arm acts whenever -error > frame/2 < band, so no value is
+    // left where neither the arms nor the accept test can act. The 5ms floor
+    // keeps a tiny reported frame duration from starving the band; the 30
+    // ceiling means very large frames (DTS-2048 low-rate) simply keep
+    // upstream's behavior.
     double acceptError = 30.0;
     if (m_mode == MODE_RAW && stream->m_useResumeSyncTarget)
     {
       const double frameMs = stream->m_format.m_streamInfo.GetDuration();
       if (frameMs > 0.0)
-        acceptError = std::clamp(frameMs * 1.5, 5.0, 30.0);
+        acceptError = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
     }
 
     if (fabs(error) < acceptError)
