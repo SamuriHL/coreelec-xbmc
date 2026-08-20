@@ -246,6 +246,21 @@ protected:
   CSyncError m_syncError;
   double m_lastSyncError;
   CAESyncInfo::AESyncState m_syncState;
+  // Pause/resume re-runs start-sync from scratch, which lands anywhere in the
+  // accept band - an independent redraw of the parked A/V offset. The viewer
+  // is calibrated to the PRE-pause alignment, so the perceptual defect is the
+  // step, not the park. Remember the alignment and land the resume start-sync
+  // AT it instead of at a fresh draw around zero.
+  //
+  // The target is anchored ONCE per anchor epoch - at the first INSYNC landing
+  // after stream start or a flush (seek) - never re-snapshotted from a resume
+  // landing. Re-snapshotting would integrate the walk's one-sided landing
+  // residual across pause cycles (the resume walk always approaches from
+  // above, so each landing rests a few ms above its aim point) and ratchet the
+  // absolute park into the player's 50ms correction gate.
+  double m_resumeSyncTarget;        // accumulator currency (0.45-scaled for TrueHD)
+  bool m_resumeSyncTargetValid;     // set at the epoch's first landing, cleared by flush
+  bool m_useResumeSyncTarget;       // one-shot: armed at pause, consumed at the landing
 };
 }
 
