@@ -2597,11 +2597,12 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // against a sink that is still refilling, so its bookkeeping can diverge
     // from physical reality by tens of ms (measured 2026-08-19: books said
     // -7ms from target, the settled accumulator read 30ms further out). This
-    // first fresh measurement after the landing comes from a settled sink; if
-    // it is outside the band, re-run the adjust aimed at the same target -
-    // bounded by m_resumeSyncChecks so a genuinely unstable basis degrades to
-    // upstream behavior instead of chasing noise. `error` is already shifted
-    // by the target here.
+    // first fresh measurement after the landing arrives ~4s later (see the
+    // landing Flush), past the measured 2-3s reopen transient, so it comes
+    // from a settled sink; if it is outside the band, re-run the adjust aimed
+    // at the same target - bounded by m_resumeSyncChecks so a genuinely
+    // unstable basis degrades to upstream behavior instead of chasing noise.
+    // `error` is already shifted by the target here.
     double confirmBand = 30.0;
     const double frameMs = stream->m_format.m_streamInfo.GetDuration();
     if (frameMs > 0.0)
@@ -2805,7 +2806,12 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           // into the player's 50ms correction gate. The target stays anchored
           // to this epoch's first landing; residuals stay centered on it.
         }
-        stream->m_syncError.Flush(1000ms);
+        // A resume landing gets a 4s first measurement window: the sink-reopen
+        // transient takes ~2-3s to settle (measured 2026-08-20: the absolute
+        // park read +12.2 at 1s, +29.0 at 2s, steady +28.6 from 2.5s), so a 1s
+        // confirmation samples mid-transient, reads in-band, and wrongly
+        // clears the flag. Ordinary landings keep the 1s cadence.
+        stream->m_syncError.Flush(stream->m_useResumeSyncTarget ? 4000ms : 1000ms);
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
