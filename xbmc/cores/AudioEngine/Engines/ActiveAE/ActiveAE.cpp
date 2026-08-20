@@ -26,6 +26,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -690,6 +691,25 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
           stream = *(CActiveAEStream**)msg->data;
+          // Arm the resume landing target. The resume start-sync lands AT the
+          // remembered epoch alignment (see SyncStream) instead of taking a
+          // fresh draw around zero: a RAW stream has no post-INSYNC actuator,
+          // so wherever start-sync lands is permanent, and a resume that
+          // re-parks tens of ms away from the pre-pause alignment is a visible
+          // lipsync step (measured 2026-08-19: -44.5ms in one pause/resume
+          // cycle, parked under the 50ms DISCON gate forever). The target
+          // itself was captured at the epoch's first landing - NOT here - so a
+          // pause right after a landing (when the accumulator's last error was
+          // just flushed to zero) still aims at the true park.
+          if (!stream->m_paused && m_mode == MODE_RAW &&
+              stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC &&
+              stream->m_resumeSyncTargetValid)
+          {
+            stream->m_useResumeSyncTarget = true;
+            CLog::Log(LOGDEBUG,
+                      "CActiveAE - pause with parked sync error {:f} ms, resume will land there",
+                      stream->m_resumeSyncTarget);
+          }
           if (!stream->m_paused && m_streams.size() == 1)
           {
             FlushEngine();
@@ -1571,6 +1591,12 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   stream->m_paused = false;
   stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
   stream->m_syncError.Flush();
+  // A flush (seek, stream switch) is a deliberate re-anchor: the fresh landing
+  // toward zero IS the intended alignment, so drop the anchor epoch's target.
+  // The landing that follows starts the next epoch and captures the new one.
+  stream->m_useResumeSyncTarget = false;
+  stream->m_resumeSyncTargetValid = false;
+  stream->m_resumeSyncTarget = 0.0;
   stream->ResetFreeBuffers();
 
   // Reset Logic State Variables to revive Servo
@@ -2539,6 +2565,20 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                                           : stream->GetErrorInterval();
   bool newerror = stream->m_syncError.Get(error, timeout);
 
+  // Resume-from-pause landing: aim the state machine at the epoch's parked
+  // error instead of zero, so the resume reproduces the alignment the viewer
+  // was already watching (the step is the audible defect, not the park). The
+  // shift is a constant on the local decision variable only - the accumulator
+  // and its Correction() bookkeeping stay in absolute terms. Same units on
+  // both sides: the accumulator and the target both carry the TrueHD
+  // 0.45-scaled currency when it applies. (On TrueHD the landing accuracy is
+  // additionally capped by the parked upstream currency mismatch inside the
+  // ADJUST walk - the local variable is decremented by the physical burst
+  // while Correction() credits the scaled amount - which this change neither
+  // fixes nor worsens.)
+  if (m_mode == MODE_RAW && stream->m_useResumeSyncTarget)
+    error -= stream->m_resumeSyncTarget;
+
   if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
@@ -2659,7 +2699,31 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
     }
 
-    if (fabs(error) < 30)
+    // Upstream accepts any landing under a flat 30ms. For the RESUME landing
+    // that is too loose: the quantity that matters there is the step away from
+    // the pre-pause park, and a RAW stream has no post-INSYNC actuator to trim
+    // it later. Tighten the band to the actuator's own granularity (the whole
+    // audio frame that pause_burst_ms/skip are quantized to) for the resume
+    // landing ONLY - ordinary starts and seeks keep upstream's 30ms band and
+    // its cost profile (this deliberately does NOT reinstate the reverted
+    // global tightening, 077796745f). 5ms floor so a codec reporting a tiny
+    // frame duration cannot make the condition unsatisfiable. Note the honest
+    // bounds: a walk approaching from above exits at the first value inside
+    // the band, i.e. rests in [band - frame, band) - the tightening shrinks
+    // that rest zone (DTS-HD MA: 16ms band), it does not zero it. For frames
+    // >= 20ms (TrueHD, AC3, EAC3, DTS-2048) the clamp leaves the band at
+    // upstream's 30 - no-op by design, never wider. The pre-existing
+    // DTS-2048@32kHz case (64ms frame, band < frame/2) cannot converge inside
+    // the band on the skip side and falls back to upstream behavior.
+    double acceptError = 30.0;
+    if (m_mode == MODE_RAW && stream->m_useResumeSyncTarget)
+    {
+      const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+      if (frameMs > 0.0)
+        acceptError = std::clamp(frameMs * 1.5, 5.0, 30.0);
+    }
+
+    if (fabs(error) < acceptError)
     {
       if (stream->m_lastSyncError > threshold * 2)
       {
@@ -2672,11 +2736,35 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       else
       {
         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
+        if (stream->m_useResumeSyncTarget)
+        {
+          CLog::Log(LOGDEBUG,
+                    "ActiveAE::SyncStream - resume landed {:f} ms from the pre-pause park of "
+                    "{:f} ms",
+                    error, stream->m_resumeSyncTarget);
+          stream->m_useResumeSyncTarget = false;
+          // Deliberately do NOT fold the landing residual into the target:
+          // re-snapshotting the achieved park would integrate the one-sided
+          // landing residual across pause cycles and ratchet the absolute park
+          // into the player's 50ms correction gate. The target stays anchored
+          // to this epoch's first landing; residuals stay centered on it.
+        }
+        else if (m_mode == MODE_RAW && !stream->m_resumeSyncTargetValid)
+        {
+          // First landing of this anchor epoch (stream start, or first landing
+          // after a seek/flush): this alignment is what the viewer calibrates
+          // to - remember it as the resume landing target. Captured here, not
+          // at pause time, because the Flush below zeroes the accumulator's
+          // last error for the next interval (a pause inside that window would
+          // otherwise snapshot 0.0). Clamped defensively to the accept band.
+          stream->m_resumeSyncTarget = std::clamp(error, -30.0, 30.0);
+          stream->m_resumeSyncTargetValid = true;
+        }
         stream->m_syncError.Flush(1000ms);
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
-                  error, 30.0);
+                  error, acceptError);
       }
     }
 
