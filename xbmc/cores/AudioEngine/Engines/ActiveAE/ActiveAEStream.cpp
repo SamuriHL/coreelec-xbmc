@@ -54,6 +54,7 @@ CActiveAEStream::CActiveAEStream(AEAudioFormat* format, unsigned int streamid, C
   m_resumeSyncTarget = 0.0;
   m_resumeSyncTargetValid = false;
   m_useResumeSyncTarget = false;
+  m_resumeSyncChecks = 0;
 }
 
 void CActiveAEStream::IncFreeBuffers()
