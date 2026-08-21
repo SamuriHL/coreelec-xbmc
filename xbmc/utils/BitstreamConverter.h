@@ -163,10 +163,28 @@ public:
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
   // HDR10+ -> Dolby Vision profile 8.1: synthesize a DV RPU from HDR10+ dynamic
   // metadata and inject it into the stream (see ProcessSeiPrefix / the h265 loop).
-  void SetConvertHdr10Plus(bool value) { m_convert_Hdr10Plus = value; }
+  void SetConvertHdr10Plus(bool value)
+  {
+    m_convert_Hdr10Plus = value;
+    if (!value)
+    {
+      m_hdr10PlusConversionActive = false;
+      m_lastHdr10PlusMetaValid = false;
+    }
+  }
   void SetConvertHdr10PlusPeakBrightnessSource(enum PeakBrightnessSource value)
   {
     m_convert_Hdr10Plus_peak_brightness_source = value;
+  }
+  // For a dual DV/HDR10+ source, conversion preference chooses synthesized P8.1
+  // only after HDR10+ is confirmed. Native priority instead keeps the HDR10+ SEI
+  // and suppresses the original DV RPU/EL after the same confirmation.
+  void SetPreferConvertHdr10Plus(bool value) { m_prefer_Hdr10Plus_conversion = value; }
+  void SetDualPriorityHdr10Plus(bool value)
+  {
+    m_dual_priority_Hdr10Plus = value;
+    if (!value)
+      m_nativeHdr10PlusActive = false;
   }
   // Compat shim for the other platforms (WebOS/Android) that still drive the
   // stock boolean: on -> Zero, off -> Source.
@@ -202,6 +220,8 @@ public:
   void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
   bool GetIsHdrPlus() const { return m_IsHdr10Plus; }
+  bool GetHdr10PlusConversionActive() const { return m_hdr10PlusConversionActive; }
+  bool GetNativeHdr10PlusActive() const { return m_nativeHdr10PlusActive; }
 
   static bool mpeg2_sequence_header(const uint8_t* data,
                                     const uint32_t size,
@@ -242,6 +262,14 @@ protected:
   // display + content light level) from SEI, used to build the synthesized RPU.
   void ApplyMasteringDisplayColourVolume(const MasteringDisplayColourVolume& metadata);
   void ApplyContentLightLevel(const ContentLightLevel& metadata);
+  bool ExtractHdr10PlusMetadata(const uint8_t* data, uint32_t size, Hdr10PlusMetadata& metadata);
+  bool InspectHdr10PlusNalus(const uint8_t* data,
+                             uint32_t size,
+                             uint8_t lengthSize,
+                             Hdr10PlusMetadata& metadata,
+                             bool& hasMetadata);
+  void UpdateHdr10PlusPolicy(bool hasMetadata);
+  bool SuppressOriginalDovi() const;
 
   typedef struct omx_bitstream_ctx {
       uint8_t  length_size;
@@ -294,6 +322,10 @@ protected:
   bool m_IsHdr10Plus{false};
   bool m_Hdr10PlusTested{false};
   bool m_convert_Hdr10Plus{false};
+  bool m_prefer_Hdr10Plus_conversion{false};
+  bool m_dual_priority_Hdr10Plus{false};
+  bool m_hdr10PlusConversionActive{false};
+  bool m_nativeHdr10PlusActive{false};
   enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source{PeakBrightnessSource::HistogramPlus};
   HDRStaticMetadataInfo m_hdrStaticMetadataInfo;
   // Held across access units that carry neither an HDR10+ SEI nor a native RPU,

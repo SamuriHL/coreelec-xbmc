@@ -79,6 +79,8 @@ void CProcessInfo::ResetVideoCodecInfo()
   m_videoQueueDataLevel = 0;
   m_videoIsInterlaced = false;
   m_doviIsFEL = false;
+  m_IsHdr10Plus = false;
+  m_hdr10PlusPlaybackMode = HDR10PlusPlaybackMode::NONE;
   m_deintMethods.clear();
   m_deintMethods.push_back(EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE);
   m_deintMethodDefault = EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE;
@@ -323,6 +325,20 @@ bool CProcessInfo::GetIsHdr10Plus()
   std::unique_lock lock(m_videoCodecSection);
 
   return m_IsHdr10Plus;
+}
+
+void CProcessInfo::SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode mode)
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  m_hdr10PlusPlaybackMode = mode;
+}
+
+HDR10PlusPlaybackMode CProcessInfo::GetHdr10PlusPlaybackMode()
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  return m_hdr10PlusPlaybackMode;
 }
 
 EINTERLACEMETHOD CProcessInfo::GetFallbackDeintMethod()

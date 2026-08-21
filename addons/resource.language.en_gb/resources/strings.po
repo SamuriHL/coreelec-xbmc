@@ -25652,6 +25652,42 @@ msgctxt "#60102"
 msgid "Converts HDR10+ dynamic metadata to DV profile 8.1 in real time, allowing the DV engine to apply scene-by-scene tonemapping for HDR10+ content."
 msgstr ""
 
+#. Label of "dual Dolby Vision and HDR10+ content preference" setting
+#: system/settings/settings.xml
+msgctxt "#60401"
+msgid "Preferred HDR for dual Dolby Vision and HDR10+ content"
+msgstr ""
+
+#. Description of setting with label #60401
+#: system/settings/settings.xml
+msgctxt "#60402"
+msgid "When Dolby Vision and HDR10+ are both present, which HDR to prefer. Choosing HDR10+ discards any Dolby Vision FEL enhancement layer."
+msgstr ""
+
+#. Option value of setting #60401
+#: system/settings/settings.xml
+msgctxt "#60403"
+msgid "Dolby Vision"
+msgstr ""
+
+#. Option value of setting #60401
+#: system/settings/settings.xml
+msgctxt "#60404"
+msgid "HDR10+"
+msgstr ""
+
+#. Label of "prefer converted HDR10+ over original Dolby Vision" setting
+#: system/settings/settings.xml
+msgctxt "#60405"
+msgid "Prefer converted HDR10+ over original Dolby Vision"
+msgstr ""
+
+#. Description of setting with label #60405
+#: system/settings/settings.xml
+msgctxt "#60406"
+msgid "When Dolby Vision and HDR10+ are both present, prefer Dolby Vision profile 8.1 synthesized from HDR10+ metadata over the original Dolby Vision. Any FEL enhancement layer is discarded."
+msgstr ""
+
 #. Label of Dolby Vision "force peak onto display (VSVDB inject)" setting
 #: system/settings/settings.xml
 msgctxt "#60340"

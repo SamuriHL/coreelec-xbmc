@@ -385,6 +385,10 @@ CBitstreamConverter::CBitstreamConverter()
   m_removeDovi = false;
   m_removeHdr10Plus = false;
   m_convert_Hdr10Plus = false;
+  m_prefer_Hdr10Plus_conversion = false;
+  m_dual_priority_Hdr10Plus = false;
+  m_hdr10PlusConversionActive = false;
+  m_nativeHdr10PlusActive = false;
   m_hdrStaticMetadataInfo = {};
   m_combine = false;
 }
@@ -630,18 +634,31 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
         }
         else
         {
-          if (m_convert_dovi || m_process_dovi_rpu)
+          if (m_codec == AV_CODEC_ID_HEVC &&
+              (m_convert_dovi || m_process_dovi_rpu || m_removeDovi || m_removeHdr10Plus ||
+               m_convert_Hdr10Plus || m_dual_priority_Hdr10Plus))
           {
             uint32_t nal_buf_size = iSize;
             AVIOContext *pb;
             uint32_t offset = 0, size_eos;
             uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
+            Hdr10PlusMetadata hdr10plus_meta{};
+            bool have_hdr10plus_meta = false;
+            bool au_has_rpu = false;
 
             if (avio_open_dyn_buf(&pb) < 0)
               return false;
 
             nal_buf_size = avc_parse_nal_units(pb, pData, iSize);
             avio_close_dyn_buf(pb, &buf);
+
+            if ((m_convert_Hdr10Plus || m_dual_priority_Hdr10Plus) &&
+                !InspectHdr10PlusNalus(buf, nal_buf_size, 4, hdr10plus_meta, have_hdr10plus_meta))
+            {
+              av_free(buf);
+              return false;
+            }
+            UpdateHdr10PlusPolicy(have_hdr10plus_meta);
 
             // process frame data
             start = buf;
@@ -653,46 +670,115 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
               size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
               buf += 4;
               nal_type = (buf[0] >> 1) & 0x3f;
+              const uint32_t source_size = size;
 
               if (nal_type == AVC_NAL_END_SEQUENCE)
               {
                 buf_eos = buf;
                 size_eos = size;
               }
-              else if (nal_type == HEVC_NAL_UNSPEC62)
-              {
-                const uint8_t *nalu_62_data = buf;
-#ifdef HAVE_LIBDOVI
-                const DoviData* rpu_data = processDoviRpu(buf, size);
-
-                if (rpu_data)
-                {
-                  nalu_62_data = rpu_data->data;
-                  size = rpu_data->len;
-                }
-#endif
-
-                BitstreamAllocAndCopy(&m_convertBuffer, &offset, nalu_62_data, size, nal_type);
-
-#ifdef HAVE_LIBDOVI
-                if (rpu_data)
-                  dovi_data_free(rpu_data);
-#endif
-              }
               else
               {
-                // Drop the enhancement layer only for the profile-7 -> 8.1
-                // conversion; in RPU-processing-only mode (L5/CMv4.0 on an
-                // annex-b stream) the in-band EL must survive for FEL/MEL.
-                if (nal_type != HEVC_NAL_UNSPEC63 || !m_convert_dovi)
-                  BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
+                bool write_buf = !SuppressOriginalDovi() ||
+                                 (nal_type != HEVC_NAL_UNSPEC62 && nal_type != HEVC_NAL_UNSPEC63);
+                const uint8_t* buf_to_write = buf;
+                uint32_t size_to_write = size;
+                std::vector<uint8_t> filteredSei;
+
+                if (nal_type == HEVC_NAL_SEI_PREFIX && size >= 7)
+                {
+                  Hdr10PlusMetadata currentMetadata{};
+                  if (m_convert_Hdr10Plus && !m_removeHdr10Plus &&
+                      ExtractHdr10PlusMetadata(buf, size, currentMetadata))
+                  {
+                    hdr10plus_meta = currentMetadata;
+                    have_hdr10plus_meta = true;
+                    filteredSei = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, size);
+                    if (filteredSei.empty())
+                      write_buf = false;
+                    else
+                    {
+                      buf_to_write = filteredSei.data();
+                      size_to_write = filteredSei.size();
+                    }
+                  }
+                  else if (m_removeHdr10Plus)
+                  {
+                    const bool containsHdr10Plus = CHevcSei::ContainsHdr10Plus(buf, size);
+                    m_IsHdr10Plus = m_IsHdr10Plus || containsHdr10Plus;
+                    if (containsHdr10Plus)
+                    {
+                      filteredSei = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, size);
+                      if (filteredSei.empty())
+                        write_buf = false;
+                      else
+                      {
+                        buf_to_write = filteredSei.data();
+                        size_to_write = filteredSei.size();
+                      }
+                    }
+                  }
+                }
+
+                if (write_buf && nal_type == HEVC_NAL_UNSPEC62)
+                {
+                  au_has_rpu = true;
+#ifdef HAVE_LIBDOVI
+                  const DoviData* rpu_data = processDoviRpu(buf, size);
+
+                  if (rpu_data)
+                  {
+                    buf_to_write = rpu_data->data;
+                    size_to_write = rpu_data->len;
+                  }
+#endif
+
+                  BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_to_write, size_to_write,
+                                        nal_type);
+
+#ifdef HAVE_LIBDOVI
+                  if (rpu_data)
+                    dovi_data_free(rpu_data);
+#endif
+                }
+                else if (write_buf && !(m_convert_dovi && nal_type == HEVC_NAL_UNSPEC63))
+                {
+                  BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_to_write, size_to_write,
+                                        nal_type);
+                }
               }
 
-              if (nal_type != HEVC_NAL_UNSPEC63 || !m_convert_dovi)
-                CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: nal_type: {}, size: {}",
-                  nal_type, size);
+              if ((!SuppressOriginalDovi() ||
+                   (nal_type != HEVC_NAL_UNSPEC62 && nal_type != HEVC_NAL_UNSPEC63)) &&
+                  (nal_type != HEVC_NAL_UNSPEC63 || !m_convert_dovi))
+                CLog::Log(LOGDEBUG, LOGVIDEO,
+                          "CBitstreamConverter::Convert: nal_type: {}, size: {}", nal_type,
+                          source_size);
 
-              buf += size;
+              buf += source_size;
+            }
+
+            if (m_hdr10PlusConversionActive && have_hdr10plus_meta)
+            {
+              auto rpu = create_rpu_nalu_for_hdr10plus(hdr10plus_meta,
+                                                       m_convert_Hdr10Plus_peak_brightness_source,
+                                                       m_hdrStaticMetadataInfo);
+              if (!rpu.empty())
+              {
+                BitstreamAllocAndCopy(&m_convertBuffer, &offset, rpu.data(), rpu.size(),
+                                      HEVC_NAL_UNSPEC62);
+                m_lastHdr10PlusMeta = hdr10plus_meta;
+                m_lastHdr10PlusMetaValid = true;
+              }
+            }
+            else if (m_hdr10PlusConversionActive && m_lastHdr10PlusMetaValid && !au_has_rpu)
+            {
+              auto rpu = create_rpu_nalu_for_hdr10plus(m_lastHdr10PlusMeta,
+                                                       m_convert_Hdr10Plus_peak_brightness_source,
+                                                       m_hdrStaticMetadataInfo);
+              if (!rpu.empty())
+                BitstreamAllocAndCopy(&m_convertBuffer, &offset, rpu.data(), rpu.size(),
+                                      HEVC_NAL_UNSPEC62);
             }
 
             // append end of sequence if exist
@@ -703,6 +789,7 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
 
             m_convertSize = offset;
             m_combine = true;
+            m_Hdr10PlusTested = true;
           }
           else
           {
@@ -839,6 +926,9 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
   {
     uint32_t offset = 0, size_eos;
     uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
+    Hdr10PlusMetadata hdr10plus_meta{};
+    bool have_hdr10plus_meta = false;
+    bool au_has_rpu = false;
 
     uint32_t bl_frame_nal_buf_size = iSize_bl;
     uint32_t el_frame_nal_buf_size = iSize_el;
@@ -859,25 +949,79 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     // process bl frame data
     start = buf;
     end = buf + bl_frame_nal_buf_size;
+    if ((m_convert_Hdr10Plus || m_dual_priority_Hdr10Plus) &&
+        !InspectHdr10PlusNalus(buf, bl_frame_nal_buf_size, 4, hdr10plus_meta, have_hdr10plus_meta))
+    {
+      if (!m_convert_bitstream)
+        av_free(start);
+      return false;
+    }
+    UpdateHdr10PlusPolicy(have_hdr10plus_meta);
+
     while (end - buf > 4)
     {
       uint32_t size;
       uint8_t  nal_type;
       size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+      const uint32_t source_size = size;
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
-      if (nal_type != AVC_NAL_END_SEQUENCE)
-        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
-      else
+      if (nal_type == AVC_NAL_END_SEQUENCE)
       {
         buf_eos = buf;
         size_eos = size;
       }
+      else if (nal_type == HEVC_NAL_SEI_PREFIX && size >= 7)
+      {
+        bool write_buf = true;
+        const uint8_t* buf_to_write = buf;
+        uint32_t size_to_write = size;
+        std::vector<uint8_t> filteredSei;
+        Hdr10PlusMetadata currentMetadata{};
+
+        if (m_convert_Hdr10Plus && !m_removeHdr10Plus &&
+            ExtractHdr10PlusMetadata(buf, size, currentMetadata))
+        {
+          hdr10plus_meta = currentMetadata;
+          have_hdr10plus_meta = true;
+          filteredSei = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, size);
+          if (filteredSei.empty())
+            write_buf = false;
+          else
+          {
+            buf_to_write = filteredSei.data();
+            size_to_write = filteredSei.size();
+          }
+        }
+        else if (m_removeHdr10Plus)
+        {
+          const bool containsHdr10Plus = CHevcSei::ContainsHdr10Plus(buf, size);
+          m_IsHdr10Plus = m_IsHdr10Plus || containsHdr10Plus;
+          if (containsHdr10Plus)
+          {
+            filteredSei = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, size);
+            if (filteredSei.empty())
+              write_buf = false;
+            else
+            {
+              buf_to_write = filteredSei.data();
+              size_to_write = filteredSei.size();
+            }
+          }
+        }
+
+        if (write_buf)
+          BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_to_write, size_to_write, nal_type);
+      }
+      else
+      {
+        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
+      }
       CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
         nal_type, size);
 
-      buf += size;
+      buf += source_size;
     }
 
     if (m_convert_bitstream)
@@ -890,11 +1034,13 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       uint32_t size;
       uint8_t  nal_type;
       size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+      const uint32_t source_size = size;
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
-      if (nal_type == HEVC_NAL_UNSPEC62)
+      if (!SuppressOriginalDovi() && nal_type == HEVC_NAL_UNSPEC62)
       {
+        au_has_rpu = true;
         const uint8_t *nalu_62_data = buf;
 #ifdef HAVE_LIBDOVI
         const DoviData* rpu_data = processDoviRpu(buf, size);
@@ -913,7 +1059,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
           dovi_data_free(rpu_data);
 #endif
       }
-      else
+      else if (!SuppressOriginalDovi())
       {
         if (!m_convert_dovi)
           BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, HEVC_NAL_UNSPEC63);
@@ -922,7 +1068,26 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
         CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: EL nal_type: {}, size: {}",
           nal_type, size);
 
-      buf += size;
+      buf += source_size;
+    }
+
+    if (m_hdr10PlusConversionActive && have_hdr10plus_meta)
+    {
+      auto rpu = create_rpu_nalu_for_hdr10plus(
+          hdr10plus_meta, m_convert_Hdr10Plus_peak_brightness_source, m_hdrStaticMetadataInfo);
+      if (!rpu.empty())
+      {
+        BitstreamAllocAndCopy(&m_convertBuffer, &offset, rpu.data(), rpu.size(), HEVC_NAL_UNSPEC62);
+        m_lastHdr10PlusMeta = hdr10plus_meta;
+        m_lastHdr10PlusMetaValid = true;
+      }
+    }
+    else if (m_hdr10PlusConversionActive && m_lastHdr10PlusMetaValid && !au_has_rpu)
+    {
+      auto rpu = create_rpu_nalu_for_hdr10plus(
+          m_lastHdr10PlusMeta, m_convert_Hdr10Plus_peak_brightness_source, m_hdrStaticMetadataInfo);
+      if (!rpu.empty())
+        BitstreamAllocAndCopy(&m_convertBuffer, &offset, rpu.data(), rpu.size(), HEVC_NAL_UNSPEC62);
     }
 
     // append end of sequence if exist
@@ -934,6 +1099,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
 
     m_convertSize = offset;
     m_combine = true;
+    m_Hdr10PlusTested = true;
   }
 
   return true;
@@ -1343,6 +1509,89 @@ void CBitstreamConverter::ApplyContentLightLevel(const ContentLightLevel& metada
   }
 }
 
+bool CBitstreamConverter::ExtractHdr10PlusMetadata(const uint8_t* data,
+                                                   uint32_t size,
+                                                   Hdr10PlusMetadata& metadata)
+{
+  std::vector<uint8_t> clearBuf;
+  const auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(data, size, clearBuf);
+
+  if (m_convert_Hdr10Plus)
+  {
+    if (const auto mdcv = CHevcSei::ExtractMasteringDisplayColourVolume(messages, clearBuf))
+      ApplyMasteringDisplayColourVolume(mdcv.value());
+    if (const auto cll = CHevcSei::ExtractContentLightLevel(messages, clearBuf))
+      ApplyContentLightLevel(cll.value());
+  }
+
+  if (const auto hdr10plus = CHevcSei::ExtractHdr10Plus(messages, clearBuf))
+  {
+    metadata = hdr10plus.value();
+    m_IsHdr10Plus = true;
+    return true;
+  }
+
+  return false;
+}
+
+bool CBitstreamConverter::InspectHdr10PlusNalus(const uint8_t* data,
+                                                uint32_t size,
+                                                uint8_t lengthSize,
+                                                Hdr10PlusMetadata& metadata,
+                                                bool& hasMetadata)
+{
+  if (!data || lengthSize == 0)
+    return false;
+
+  const uint8_t* cursor = data;
+  const uint8_t* end = data + size;
+  while (cursor < end)
+  {
+    if (cursor + lengthSize > end)
+      return false;
+
+    uint32_t nalSize = 0;
+    for (uint8_t i = 0; i < lengthSize; ++i)
+      nalSize = (nalSize << 8) | cursor[i];
+    cursor += lengthSize;
+
+    if (nalSize == 0 || cursor + nalSize > end)
+      return false;
+
+    const uint8_t nalType = (cursor[0] >> 1) & 0x3f;
+    if (nalType == HEVC_NAL_SEI_PREFIX && nalSize >= 7)
+    {
+      Hdr10PlusMetadata currentMetadata{};
+      if (ExtractHdr10PlusMetadata(cursor, nalSize, currentMetadata))
+      {
+        metadata = currentMetadata;
+        hasMetadata = true;
+      }
+    }
+
+    cursor += nalSize;
+  }
+
+  return true;
+}
+
+void CBitstreamConverter::UpdateHdr10PlusPolicy(bool hasMetadata)
+{
+  if (!hasMetadata)
+    return;
+
+  if (m_convert_Hdr10Plus)
+    m_hdr10PlusConversionActive = true;
+  if (m_dual_priority_Hdr10Plus)
+    m_nativeHdr10PlusActive = true;
+}
+
+bool CBitstreamConverter::SuppressOriginalDovi() const
+{
+  return m_removeDovi || m_nativeHdr10PlusActive ||
+         (m_prefer_Hdr10Plus_conversion && m_hdr10PlusConversionActive);
+}
+
 bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
                                            int iSize,
                                            uint8_t** poutbuf,
@@ -1386,6 +1635,17 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
       break;
     default:
       return false;
+  }
+
+  // Inspect the complete access unit before writing any NALs. This makes the
+  // hybrid decision independent of whether the source places its DV RPU before
+  // or after the HDR10+ prefix SEI.
+  if (m_codec == AV_CODEC_ID_HEVC && (m_convert_Hdr10Plus || m_dual_priority_Hdr10Plus))
+  {
+    if (!InspectHdr10PlusNalus(pData, buf_size, m_sps_pps_context.length_size, hdr10plus_meta,
+                               have_hdr10plus_meta))
+      goto fail;
+    UpdateHdr10PlusPolicy(have_hdr10plus_meta);
   }
 
   do
@@ -1436,7 +1696,8 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
         m_sps_pps_context.idr_sps_pps_seen = 0;
       }
 
-      if (m_removeDovi && (unit_type == HEVC_NAL_UNSPEC62 || unit_type == HEVC_NAL_UNSPEC63))
+      if (SuppressOriginalDovi() &&
+          (unit_type == HEVC_NAL_UNSPEC62 || unit_type == HEVC_NAL_UNSPEC63))
         write_buf = false;
 
       // Try removing HDR10+ only if the NAL is big enough, optimization
@@ -1451,19 +1712,11 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
           // (mastering-display + content-light-level) that feeds the RPU, and
           // capture the HDR10+ dynamic metadata. Strip the HDR10+ SEI so it can't
           // coexist with the synthesized DV RPU emitted after the loop.
-          std::vector<uint8_t> clearBuf;
-          auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(buf, nal_size, clearBuf);
-
-          if (auto mdcv = CHevcSei::ExtractMasteringDisplayColourVolume(messages, clearBuf))
-            ApplyMasteringDisplayColourVolume(mdcv.value());
-          if (auto cll = CHevcSei::ExtractContentLightLevel(messages, clearBuf))
-            ApplyContentLightLevel(cll.value());
-
-          if (auto hdr10plus = CHevcSei::ExtractHdr10Plus(messages, clearBuf))
+          Hdr10PlusMetadata currentMetadata{};
+          if (ExtractHdr10PlusMetadata(buf, nal_size, currentMetadata))
           {
-            hdr10plus_meta = hdr10plus.value();
+            hdr10plus_meta = currentMetadata;
             have_hdr10plus_meta = true;
-            m_IsHdr10Plus = true;
 
             finalPrefixSeiNalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
             if (!finalPrefixSeiNalu.empty())
@@ -1479,16 +1732,21 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
         }
         else if (m_removeHdr10Plus)
         {
-          finalPrefixSeiNalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
+          const bool containsHdr10Plus = CHevcSei::ContainsHdr10Plus(buf, nal_size);
+          m_IsHdr10Plus = m_IsHdr10Plus || containsHdr10Plus;
+          if (containsHdr10Plus)
+          {
+            finalPrefixSeiNalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
 
-          if (!finalPrefixSeiNalu.empty())
-          {
-            buf_to_write = finalPrefixSeiNalu.data();
-            final_nal_size = finalPrefixSeiNalu.size();
-          }
-          else
-          {
-            write_buf = false;
+            if (!finalPrefixSeiNalu.empty())
+            {
+              buf_to_write = finalPrefixSeiNalu.data();
+              final_nal_size = finalPrefixSeiNalu.size();
+            }
+            else
+            {
+              write_buf = false;
+            }
           }
         }
       }
@@ -1539,7 +1797,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
   // scanned and the HDR10+ SEI stripped above, emit the synthesized DV RPU NALU
   // built from the captured HDR10+ dynamic metadata + accumulated static HDR
   // metadata. The RPU is appended last so it trails the slice data in the AU.
-  if (m_convert_Hdr10Plus && have_hdr10plus_meta)
+  if (m_hdr10PlusConversionActive && have_hdr10plus_meta)
   {
     auto rpu = create_rpu_nalu_for_hdr10plus(hdr10plus_meta,
                                              m_convert_Hdr10Plus_peak_brightness_source,
@@ -1555,7 +1813,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
   // HDR10+ SEIs can stop mid-stream (AMZN encodes drop them for end credits)
   // while the stream is already flagged DV: TV-led DV needs an RPU on every
   // frame or the TV drops out of DV, so hold the last converted metadata.
-  else if (m_convert_Hdr10Plus && m_lastHdr10PlusMetaValid && !au_has_rpu)
+  else if (m_hdr10PlusConversionActive && m_lastHdr10PlusMetaValid && !au_has_rpu)
   {
     auto rpu = create_rpu_nalu_for_hdr10plus(m_lastHdr10PlusMeta,
                                              m_convert_Hdr10Plus_peak_brightness_source,
