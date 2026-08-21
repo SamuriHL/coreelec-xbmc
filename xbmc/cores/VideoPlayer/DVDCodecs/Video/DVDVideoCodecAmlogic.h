@@ -130,9 +130,19 @@ protected:
   h264_sequence  *m_h264_sequence;
   double          m_h264_sequence_pts;
   bool            m_has_keyframe;
+  enum class HybridHdrPolicy
+  {
+    ORIGINAL_DOVI,
+    CONVERTED_HDR10PLUS,
+    NATIVE_HDR10PLUS,
+  };
+  HybridHdrPolicy m_hybridHdrPolicy{HybridHdrPolicy::ORIGINAL_DOVI};
   // HDR10+ -> DV 8.1 convert armed at Open; the DV engage decision is deferred to
   // AddData once the bitstream confirms HDR10+ (covers file sources too).
   bool            m_hdr10plusToDvCandidate = false;
+  // Native HDR10+ priority is likewise deferred so a DV-only stream never loses
+  // its RPU/FEL merely because the preference was enabled.
+  bool m_nativeHdr10PlusCandidate = false;
   // CMv4.0 append live-apply: false until the stream configures CMv4.0 at all
   // (non-DV / DV-disabled streams never re-push), plus the settings generation
   // this codec last consumed.

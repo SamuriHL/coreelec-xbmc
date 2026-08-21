@@ -23,6 +23,13 @@ class CDataCacheCore;
 
 using CreateProcessControl = CProcessInfo* (*)();
 
+enum class HDR10PlusPlaybackMode
+{
+  NONE,
+  CONVERTED_DOVI,
+  NATIVE,
+};
+
 class CProcessInfo
 {
 public:
@@ -60,6 +67,8 @@ public:
   bool GetDoviIsFEL();
   void SetIsHdr10Plus(bool isHdr10Plus);
   bool GetIsHdr10Plus();
+  void SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode mode);
+  HDR10PlusPlaybackMode GetHdr10PlusPlaybackMode();
   virtual EINTERLACEMETHOD GetFallbackDeintMethod();
   virtual void SetSwDeinterlacingMethods();
   void UpdateDeinterlacingMethods(std::list<EINTERLACEMETHOD> &methods);
@@ -163,6 +172,7 @@ protected:
   bool m_videoIsInterlaced;
   bool m_doviIsFEL;
   bool m_IsHdr10Plus;
+  HDR10PlusPlaybackMode m_hdr10PlusPlaybackMode{HDR10PlusPlaybackMode::NONE};
   std::list<EINTERLACEMETHOD> m_deintMethods;
   EINTERLACEMETHOD m_deintMethodDefault;
   mutable CCriticalSection m_videoCodecSection;

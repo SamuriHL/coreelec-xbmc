@@ -479,34 +479,63 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     const CHDRCapabilities caps = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
     const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
-    // HDR10+ -> Dolby Vision profile 8.1 conversion. When enabled on a DV display,
-    // CBitstreamConverter synthesizes a DV 8.1 RPU from the stream's HDR10+ dynamic
-    // metadata. HDR10+ can't be confirmed until the bitstream is parsed, so ARM the
-    // converter here for any HDR10-family source (files present as plain hdr10 at
-    // open; discs may already be STN-promoted to hdr10plus) and DEFER the DV-8.1
-    // hint synthesis / core engage to AddData, once GetIsHdrPlus() is known -- if no
-    // HDR10+ is actually found the stream just opens as HDR10 (no false DV).
+    // HDR10+ cannot be confirmed from the container hints, so both hybrid choices
+    // are armed here and committed in AddData only after the bitstream proves that
+    // HDR10+ metadata is present. A DV-only source therefore retains its RPU/FEL.
     m_hdr10plusToDvCandidate = false;
-    if (aml_support_dolby_vision() && aml_display_support_dv() &&
-        m_hints.dovi.dv_profile == 0 &&
-        (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
-         m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
-        dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT))
+    m_nativeHdr10PlusCandidate = false;
+    m_hybridHdrPolicy = HybridHdrPolicy::ORIGINAL_DOVI;
+    m_processInfo.SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode::NONE);
+
+    const bool dualPriorityHdr10Plus =
+        (dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1);
+    // Dual priority applies only when the source also carries Dolby Vision. Keep
+    // the saved conversion setting effective for HDR10+-only sources even while
+    // its control is hidden, matching CPM's behavior.
+    const bool convertHdr10Plus =
+        dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
+    const bool preferConvertedHdr10Plus =
+        !dualPriorityHdr10Plus && convertHdr10Plus &&
+        dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
+    const bool dvSource =
+        (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) && (m_hints.dovi.dv_profile != 0);
+    const bool hdr10FamilySource =
+        (m_hints.dovi.dv_profile == 0) && (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+                                           m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
+
+    if (aml_support_dolby_vision() && dvSource && dualPriorityHdr10Plus)
+    {
+      m_nativeHdr10PlusCandidate = true;
+      m_hybridHdrPolicy = HybridHdrPolicy::NATIVE_HDR10PLUS;
+      m_bitstream->SetDualPriorityHdr10Plus(true);
+      m_bitstream->SetRemoveHdr10Plus(false);
+      m_bitstream->SetRemoveDovi(false);
+      CLog::Log(LOGINFO,
+                "{}: dual DV/HDR10+ content - native HDR10+ priority armed, "
+                "confirming HDR10+ from bitstream",
+                __MODULE_NAME__);
+    }
+
+    if (aml_support_dolby_vision() && aml_display_support_dv() && convertHdr10Plus &&
+        (hdr10FamilySource || (dvSource && !dualPriorityHdr10Plus && preferConvertedHdr10Plus)))
     {
       m_hdr10plusToDvCandidate = true;
       m_bitstream->SetConvertHdr10Plus(true);
+      m_bitstream->SetPreferConvertHdr10Plus(dvSource && preferConvertedHdr10Plus);
       // Peak-brightness source is hardcoded to HistogramPlus: the percentile-
       // weighted metric is the only one that drives the rich per-scene avg_pq and
       // is the clear best choice, matching pannal/avdvplus. No user selection.
       m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(PeakBrightnessSource::HistogramPlus);
       m_bitstream->SetRemoveHdr10Plus(false);
       m_bitstream->SetRemoveDovi(false);
+      if (dvSource)
+        m_hybridHdrPolicy = HybridHdrPolicy::CONVERTED_HDR10PLUS;
       CLog::Log(LOGINFO, "{}: HDR10+ -> Dolby Vision profile 8.1 conversion armed "
                          "(peak brightness source histogram-plus) - confirming HDR10+ from bitstream",
                 __MODULE_NAME__);
     }
 
-    if (!m_hdr10plusToDvCandidate)
+    if (!m_hdr10plusToDvCandidate && !m_nativeHdr10PlusCandidate)
     {
       if (!caps.SupportsHDR10Plus())
       {
@@ -896,6 +925,38 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
+      m_processInfo.SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode::NONE);
+
+      // Native HDR10+ priority: keep HDR10+ metadata and open outside the DV
+      // path, but only after the converter has found real HDR10+ in this source.
+      if (m_nativeHdr10PlusCandidate && m_hybridHdrPolicy == HybridHdrPolicy::NATIVE_HDR10PLUS)
+      {
+        if (m_bitstream->GetNativeHdr10PlusActive())
+        {
+          m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+          m_videobuffer.hdrType = m_hints.hdrType;
+          m_hints.dovi = {};
+          doviIsFEL = false;
+          m_streamMeta.doviConfig.clear();
+          m_pendingMeta.doviConfig.clear();
+          m_processInfo.SetDoviIsFEL(false);
+          m_processInfo.SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode::NATIVE);
+          aml_dv_set_vs10_pending(aml_vs10_by_hdrtype(m_hints.hdrType, m_hints.bitdepth));
+          CLog::Log(LOGINFO,
+                    "CDVDVideoCodecAmlogic::{}: dual DV/HDR10+ content - "
+                    "native HDR10+ priority engaged",
+                    __FUNCTION__);
+        }
+        else
+        {
+          m_bitstream->SetDualPriorityHdr10Plus(false);
+          CLog::Log(LOGINFO,
+                    "CDVDVideoCodecAmlogic::{}: native HDR10+ priority armed "
+                    "but no HDR10+ metadata found - retaining original Dolby Vision",
+                    __FUNCTION__);
+        }
+        m_nativeHdr10PlusCandidate = false;
+      }
 
       // HDR10+ -> DV 8.1: the bitstream has now been parsed, so HDR10+ presence is
       // known. If confirmed, present the stream to the DV core as profile 8.1
@@ -904,7 +965,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // false DV declaration.
       if (m_hdr10plusToDvCandidate)
       {
-        if (IsHdr10Plus)
+        if (m_bitstream->GetHdr10PlusConversionActive())
         {
           m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
           m_videobuffer.hdrType = m_hints.hdrType;
@@ -916,28 +977,49 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           m_hints.dovi.el_present_flag = 0;
           m_hints.dovi.bl_present_flag = 1;
           m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+          doviIsFEL = false;
+          m_streamMeta.doviConfig = AMLSerializeDoviConfig(m_hints.dovi);
+          m_pendingMeta.doviConfig = m_streamMeta.doviConfig;
+          m_processInfo.SetDoviIsFEL(false);
+          m_processInfo.SetHdr10PlusPlaybackMode(HDR10PlusPlaybackMode::CONVERTED_DOVI);
           CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ -> Dolby Vision profile 8.1 conversion engaged", __FUNCTION__);
         }
         else
         {
           m_bitstream->SetConvertHdr10Plus(false);
+          if (m_hybridHdrPolicy == HybridHdrPolicy::CONVERTED_HDR10PLUS)
+          {
+            CLog::Log(LOGINFO,
+                      "CDVDVideoCodecAmlogic::{}: preferred HDR10+ conversion "
+                      "armed but no HDR10+ metadata found - retaining original Dolby Vision",
+                      __FUNCTION__);
+          }
           // Plain HDR10 (not HDR10+): VideoPlayer deferred the VS10/HDR2DV decision
           // to us (pending cleared, hint left native) so the HDR10+ converter got
           // first refusal. It isn't HDR10+, so honour the user's VS10 HDR10->DV (or
           // legacy HDR2DV) mapping now - re-fake to DV + restore the pending so
           // CAMLCodec::OpenDecoder runs the VS10 conversion, exactly as it would
           // have without the HDR10+ deferral.
-          unsigned int vs10Mode = aml_vs10_by_hdrtype(m_hints.hdrType, m_hints.bitdepth);
-          if (aml_convert_to_dv_by_vs_engine(m_hints.hdrType) ||
-              vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
-          {
-            aml_dv_set_vs10_pending(vs10Mode);
-            m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
-            m_videobuffer.hdrType = m_hints.hdrType;
-            CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: no HDR10+ metadata found - opening as HDR10 via VS10 HDR10->DV", __FUNCTION__);
-          }
           else
-            CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata found - opening as HDR10", __FUNCTION__);
+          {
+            unsigned int vs10Mode = aml_vs10_by_hdrtype(m_hints.hdrType, m_hints.bitdepth);
+            if (aml_convert_to_dv_by_vs_engine(m_hints.hdrType) ||
+                vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+            {
+              aml_dv_set_vs10_pending(vs10Mode);
+              m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+              m_videobuffer.hdrType = m_hints.hdrType;
+              CLog::Log(LOGINFO,
+                        "CDVDVideoCodecAmlogic::{}: no HDR10+ metadata found - opening as HDR10 "
+                        "via VS10 HDR10->DV",
+                        __FUNCTION__);
+            }
+            else
+              CLog::Log(LOGINFO,
+                        "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata "
+                        "found - opening as HDR10",
+                        __FUNCTION__);
+          }
         }
         m_hdr10plusToDvCandidate = false;
       }

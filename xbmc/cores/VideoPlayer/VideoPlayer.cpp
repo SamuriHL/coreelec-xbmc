@@ -7083,6 +7083,20 @@ void CVideoPlayer::GetVideoStreamInfo(int streamId, VideoStreamInfo& info) const
   info.flags = s.flags;
   info.hdrType = s.hdrType;
 
+  const HDR10PlusPlaybackMode hdr10PlusMode = m_processInfo->GetHdr10PlusPlaybackMode();
+  if (hdr10PlusMode == HDR10PlusPlaybackMode::CONVERTED_DOVI)
+  {
+    info.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+    info.hdrTypeAlt = StreamHdrType::HDR_TYPE_HDR10PLUS;
+    info.hdrDetail = "8.1";
+  }
+  else if (hdr10PlusMode == HDR10PlusPlaybackMode::NATIVE)
+  {
+    info.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+    info.hdrTypeAlt = StreamHdrType::HDR_TYPE_DOLBYVISION;
+    info.hdrDetail.clear();
+  }
+
   // handle fallback on broken Dolby Vision path
   if (info.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
@@ -7098,18 +7112,18 @@ void CVideoPlayer::GetVideoStreamInfo(int streamId, VideoStreamInfo& info) const
 
   if (info.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
-    if (info.hdrDetail.length() == 0)
+    if (hdr10PlusMode != HDR10PlusPlaybackMode::CONVERTED_DOVI && info.hdrDetail.length() == 0)
       info.hdrDetail =
           s.dovi.dv_profile == 0 ? "" : std::to_string(static_cast<int>(s.dovi.dv_profile));
     // distinguish HDR10 from HLG base
-    if (s.dovi.dv_profile == 8)
+    if (hdr10PlusMode != HDR10PlusPlaybackMode::CONVERTED_DOVI && s.dovi.dv_profile == 8)
     {
       info.hdrDetail += ".";
       info.hdrDetail += std::to_string(static_cast<int>(s.dovi.dv_bl_signal_compatibility_id));
       if (s.dovi.dv_bl_signal_compatibility_id == 4)
         info.hdrTypeAlt = StreamHdrType::HDR_TYPE_HLG;
     }
-    else if (s.dovi.dv_profile == 7)
+    else if (hdr10PlusMode != HDR10PlusPlaybackMode::CONVERTED_DOVI && s.dovi.dv_profile == 7)
     {
       info.hdrDetail += m_processInfo->GetDoviIsFEL() ? "FEL" : "MEL";
     }
