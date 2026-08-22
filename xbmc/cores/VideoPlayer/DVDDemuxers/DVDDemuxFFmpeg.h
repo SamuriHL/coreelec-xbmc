@@ -129,6 +129,7 @@ protected:
   void CreateStreams(unsigned int program = UINT_MAX);
   void DisposeStreams();
   void RemoveStream(CDemuxStream *stream);
+  void ClearDualLayerStreamFlags();
   void ParsePacket(AVPacket* pkt);
   void SaveProbedStreamParameters();
   void RestoreProbedStreamParameters();
