@@ -393,6 +393,7 @@ protected:
   //! GetStreamInfo). Owned, and only valid while m_clip refers to the same play item.
   struct clpi_cl* m_clipInfo = nullptr;
   uint32_t m_angle = 0;
+  uint32_t m_playItem{0}; /*!< index of the play item BD_EVENT_PLAYITEM last reported */
   /* atomics: m_menu is written on the player thread but read by GUI/app
    * threads (IsInMenu chain); m_menuPresented likewise; m_hasOverlay is
    * additionally WRITTEN from the BD-J JVM graphics thread (ARGB overlay
