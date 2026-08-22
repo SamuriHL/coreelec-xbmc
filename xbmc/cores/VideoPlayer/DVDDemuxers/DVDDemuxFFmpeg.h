@@ -125,7 +125,6 @@ protected:
 
   CDemuxStream* AddStream(int streamIdx);
   // AVStream index of the first video stream AddStream would ACCEPT, or -1.
-  int FirstVideoStreamIndex() const;
   void AddStream(int streamIdx, CDemuxStream* stream);
   void CreateStreams(unsigned int program = UINT_MAX);
   void DisposeStreams();
@@ -188,5 +187,4 @@ protected:
   // AVStream index of the Dolby Vision BASE layer, i.e. the first video stream
   // this demuxer would actually accept. -1 until a video stream is added.
   // Never assume it is 0: an audio-first mux puts the video at a higher index.
-  int m_dv_bl_stream_idx = -1;
 };
