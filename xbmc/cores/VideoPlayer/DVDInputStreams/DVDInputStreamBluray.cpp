@@ -1041,6 +1041,12 @@ void CDVDInputStreamBluray::ProcessEvent() {
       // FreeTitleInfo nulled m_clip and no PLAYITEM follows an angle re-announce
       // mid-playitem, so re-derive the graphics regime from the new title info.
       UpdatePqAuthoredGraphics();
+      // FreeTitleInfo also freed the clip info, and upstream only refills it on
+      // BD_EVENT_PLAYITEM - which is exactly the event that does not follow here.
+      // Without this, stream languages silently lose the clip fallback for the
+      // rest of the play item. The play items of the playlist and the clips of
+      // the title share an index, so the last reported one is still valid.
+      UpdateClipInfo(m_playItem);
       // same playlist, different angle: chapters/duration are unchanged in
       // practice - refresh the presented snapshot in place, no deferral
       m_titleUiPresented = BuildTitleUiSnapshot();
@@ -1127,6 +1133,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
     {
       m_clip = &m_titleInfo->clips[m_event.param];
+      m_playItem = m_event.param;
       UpdateClipInfo(m_event.param);
     }
     // Outside the braces on purpose: this must also run when FreeTitleInfo has
