@@ -1895,12 +1895,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           }
         }
 
-            CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
-            return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
-                   (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
-          });
-
-        if (it != m_streams.end())
+        if (m_dv_dual_stream)
         {
           // got video enhancement layer as second stream
           if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
@@ -1917,18 +1912,28 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
             // -> base-layer-only, no FEL. Both arrival orders need the same gate.
             if (aml_dv_source_engages_core())
             {
-              // force dovi side data to base layer stream
-              auto it = std::find_if(m_streams.begin(), m_streams.end(),
-                [](const std::pair<int, CDemuxStream*>& v)
+              // force dovi side data to base layer stream.
+              // hdr_type ALONE cannot identify the base layer on a second pass:
+              // the block below promotes the base layer to DOLBYVISION, so after
+              // one successful pairing no video stream is non-DV any more and a
+              // re-entry would conclude "no base layer" and tear a working
+              // arrangement down. The per-stream flags stay authoritative, so
+              // accept a stream already flagged as our base layer, and never
+              // accept one flagged as an enhancement layer.
+              for (auto* s : streams) {
+                if (s->type == StreamType::VIDEO)
                 {
-                  if (v.second->type != StreamType::VIDEO)
-                    return false;
-
-                  return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
-                });
-                
-              if (it != m_streams.end())
-                bl_video_stream = static_cast<CDemuxStreamVideo*>(it->second);
+                  auto* vs = static_cast<CDemuxStreamVideo*>(s);
+                  if (vs->isDualStream && vs->isELStream)
+                    continue; // that is an enhancement layer, not a base layer
+                  if (vs->isDualStream ||
+                      vs->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION)
+                  {
+                    bl_video_stream = vs;
+                    break;
+                  }
+                }
+              }
 
               // use dovi side data
               if (bl_video_stream)
@@ -1973,25 +1978,59 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           // got video base layer as second stream
           else
           {
+            CDemuxStream *el_stream = nullptr;
             CDemuxStreamVideo *el_video_stream = nullptr;
-            auto it = std::find_if(m_streams.begin(), m_streams.end(),
-              [](const std::pair<int, CDemuxStream*>& v)
+            // A pairing already has its base layer? Then this video stream is a
+            // THIRD one (BD picture-in-picture, a second video track), neither
+            // layer of the pair. Promoting it to DOLBYVISION and flagging it
+            // dual-layer would feed unpaired frames to the codec's BL/EL queue.
+            bool blEstablished = false;
+            for (auto* s : streams) {
+              if (s->type == StreamType::VIDEO)
               {
-                if (v.second->type != StreamType::VIDEO)
-                  return false;
+                auto* vs = static_cast<CDemuxStreamVideo*>(s);
+                if (vs->isDualStream && !vs->isELStream)
+                {
+                  blEstablished = true;
+                  break;
+                }
+              }
+            }
 
-                return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
-              });
+            // Same ambiguity as the base-layer search above, mirrored: a base
+            // layer promoted by an earlier pairing is DOLBYVISION-typed and sits
+            // at a LOWER index than its enhancement layer, so a plain hdr_type
+            // match would select the base layer and flag it isELStream - leaving
+            // both real layers tagged EL, no base layer to pair against, and the
+            // player skipping both. Skip streams already flagged as a base layer.
+            for (auto* s : streams) {
+              if (s->type == StreamType::VIDEO)
+              {
+                auto* vs = static_cast<CDemuxStreamVideo*>(s);
+                if (vs->isDualStream && !vs->isELStream)
+                  continue; // known base layer - cannot also be the EL
+                if (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+                {
+                  el_stream = s;
+                  el_video_stream = vs;
+                  break;
+                }
+              }
+            }
 
-              if (it != m_streams.end())
-                el_video_stream = static_cast<CDemuxStreamVideo*>(it->second);
-
+            if (blEstablished)
+            {
+              CLog::Log(LOGDEBUG,
+                        "CDVDDemuxFFmpeg::AddStream - dual layer already paired, leaving extra "
+                        "video stream {} out of the arrangement",
+                        streamIdx);
+            }
             // Gate on aml_dv_source_engages_core() (not aml_dolby_vision_enabled()):
             // a non-DV display still reconstructs BL+EL and VS10-tone-maps to
             // HDR10/SDR, so requiring a DV *display* here left the BL tagged HDR10
             // -> VS10 read the HDR10 setting (bypass) -> the DV core never engaged
             // -> base-layer-only, no FEL. Both arrival orders need the same gate.
-            if (aml_dv_source_engages_core() && el_video_stream)
+            else if (aml_dv_source_engages_core() && el_video_stream)
             {
               el_video_stream->isDualStream = true;
               el_video_stream->isELStream = true;
@@ -2005,7 +2044,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
             else if (el_video_stream)
             {
               CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding enhancement layer stream from dual layer stream because Dolby Vision is disabled");
-              RemoveStream(it->second);
+              RemoveStream(el_stream);
               m_dv_dual_stream = false;
               ClearDualLayerStreamFlags();
             }
@@ -2354,6 +2393,16 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::AddStream - discarding duplicate bluray stream {}",
                     stream->codecName);
 
+        if (stream->type == StreamType::VIDEO &&
+            static_cast<CDemuxStreamVideo*>(stream)->isDualStream)
+        {
+          // The Dolby Vision block above may already have paired this stream
+          // with a base layer that stays in m_streams. Discarding it here
+          // without tearing the arrangement down leaves that base layer tagged
+          // dual-layer, waiting for a partner that can no longer arrive.
+          m_dv_dual_stream = false;
+          ClearDualLayerStreamFlags();
+        }
         pStream->discard = AVDISCARD_ALL;
         delete stream;
         return nullptr;
