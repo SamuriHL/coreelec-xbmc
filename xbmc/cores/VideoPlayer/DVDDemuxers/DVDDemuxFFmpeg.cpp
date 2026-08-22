@@ -1766,6 +1766,26 @@ void CDVDDemuxFFmpeg::RemoveStream(CDemuxStream *stream)
   }
 }
 
+namespace
+{
+// Build the profile-7 dual-layer Dolby Vision configuration record by hand.
+// m2ts (the Blu-ray container) carries no AV_PKT_DATA_DOVI_CONF side data - the
+// record only exists in the MP4/MKV dvcC/dvvC box - so on disc there is nothing
+// to copy and the stream's record stays zero-initialised. Anything that reads it
+// then sees dv_profile 0 and el_present_flag false, i.e. "not dual layer".
+void AMLSetProfile7DoviRecord(AVDOVIDecoderConfigurationRecord& dovi)
+{
+  dovi.dv_version_major = 1;
+  dovi.dv_version_minor = 0;
+  dovi.dv_profile = 7;
+  dovi.dv_level = 6;
+  dovi.rpu_present_flag = 1;
+  dovi.el_present_flag = 1;
+  dovi.bl_present_flag = 1;
+  dovi.dv_bl_signal_compatibility_id = 6;
+}
+} // unnamed namespace
+
 CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 {
   AVStream* pStream = m_pFormatContext->streams[streamIdx];
@@ -1995,18 +2015,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
                 bl_video_stream->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
                 if (sideData && sideData->size)
                   bl_video_stream->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
-                // manual set dovi side data to P7
+                // manual set dovi side data to P7 (the m2ts case - no side data)
                 else
-                {
-                  bl_video_stream->dovi.dv_version_major = 1;
-                  bl_video_stream->dovi.dv_version_minor = 0;
-                  bl_video_stream->dovi.dv_profile = 7;
-                  bl_video_stream->dovi.dv_level = 6;
-                  bl_video_stream->dovi.rpu_present_flag = 1;
-                  bl_video_stream->dovi.el_present_flag = 1;
-                  bl_video_stream->dovi.bl_present_flag = 1;
-                  bl_video_stream->dovi.dv_bl_signal_compatibility_id = 6;
-                }
+                  AMLSetProfile7DoviRecord(bl_video_stream->dovi);
                 bl_video_stream->isDualStream = true;
                 st->isELStream = true;
                 st->isDualStream = true;
@@ -2089,10 +2100,27 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
               el_video_stream->isDualStream = true;
               el_video_stream->isELStream = true;
               st->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
-              st->dovi = el_video_stream->dovi;
+              // On m2ts the enhancement layer has no configuration record of its
+              // own to copy (no AV_PKT_DATA_DOVI_CONF in the container), so this
+              // copy would hand the base layer an empty record: dv_profile 0 and
+              // el_present_flag false. That silently costs FEL - the codec reads
+              // el_present_flag for m_dualLayer, and AMLCodec gates the m2ts
+              // stream-path/EOS handling on dv_profile 4 or 7. Reachable on any
+              // disc seek, which delivers the EL access unit before the BL IDR
+              // and so adds the base layer second. Synthesise instead of copying
+              // nothing - same record the enhancement-layer-second arm builds.
+              const bool haveElRecord = el_video_stream->dovi.dv_profile != 0;
+              if (haveElRecord)
+                st->dovi = el_video_stream->dovi;
+              else
+                AMLSetProfile7DoviRecord(st->dovi);
               st->isDualStream = true;
 
-              CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - Dolby Vision configuration record is copied from el stream id {} to bl stream id {}",
+              CLog::Log(LOGDEBUG,
+                        "DVDDemuxFFmpeg::AddStream - Dolby Vision configuration record is {} el "
+                        "stream id {} to bl stream id {}",
+                        haveElRecord ? "copied from" : "synthesised (profile 7, no record in "
+                                                       "container) for",
                         el_video_stream->uniqueId, streamIdx);
             }
             else if (el_video_stream)
