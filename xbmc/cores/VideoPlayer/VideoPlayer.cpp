@@ -1138,12 +1138,20 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
-    // choose video base layer as default if dual layer stream
-    if (m_pDemuxer)
+    // choose video base layer as default if dual layer stream.
+    // Only demuxer-sourced streams index m_streams: a DVD-nav VIDEO selection
+    // stream carries an ANGLE number in .id (CSelectionStreams::Update), which
+    // names an unrelated stream or none at all - so check the source, the
+    // pointer and the type before casting, or DVDs lose video or crash.
+    if (m_pDemuxer && STREAM_SOURCE_MASK(stream.source) == STREAM_SOURCE_DEMUX)
     {
-      CDemuxStreamVideo* vstream = static_cast<CDemuxStreamVideo*>(m_pDemuxer->GetStream(stream.demuxerId, stream.id));
-      if (vstream->isDualStream && vstream->isELStream)
-        continue;
+      const CDemuxStream* dstream = m_pDemuxer->GetStream(stream.demuxerId, stream.id);
+      if (dstream && dstream->type == StreamType::VIDEO)
+      {
+        const CDemuxStreamVideo* vstream = static_cast<const CDemuxStreamVideo*>(dstream);
+        if (vstream->isDualStream && vstream->isELStream)
+          continue;
+      }
     }
 
     if (OpenStream(m_CurrentVideo, stream.demuxerId, stream.id, stream.source, reset))

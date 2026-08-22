@@ -1679,6 +1679,25 @@ void CDVDDemuxFFmpeg::DisposeStreams()
   m_parsers.clear();
 }
 
+void CDVDDemuxFFmpeg::ClearDualLayerStreamFlags()
+{
+  // Under per-stream flags m_dv_dual_stream is no longer the kill switch it was:
+  // clearing it stops further DETECTION, but a base layer already marked
+  // isDualStream keeps tagging its packets, and CDVDVideoCodecAmlogic then holds
+  // every frame waiting for an enhancement-layer partner that can no longer
+  // arrive - no picture, and the queue grows until it is capped or Kodi is
+  // OOM-killed. Tear the arrangement down on both objects, not just the member.
+  for (const auto& [id, stream] : m_streams)
+  {
+    if (stream && stream->type == StreamType::VIDEO)
+    {
+      auto* vs = static_cast<CDemuxStreamVideo*>(stream);
+      vs->isDualStream = false;
+      vs->isELStream = false;
+    }
+  }
+}
+
 void CDVDDemuxFFmpeg::RemoveStream(CDemuxStream *stream)
 {
   std::map<int, CDemuxStream*>::iterator it;
@@ -1946,6 +1965,8 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
                 CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream from dual layer stream because base layer stream was not found");
               pStream->discard = AVDISCARD_ALL;
               delete stream;
+              m_dv_dual_stream = false;
+              ClearDualLayerStreamFlags();
               return nullptr;
             }
           }
@@ -1985,9 +2006,15 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
             {
               CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding enhancement layer stream from dual layer stream because Dolby Vision is disabled");
               RemoveStream(it->second);
+              m_dv_dual_stream = false;
+              ClearDualLayerStreamFlags();
             }
             else
+            {
               CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - Dolby Vision video enhancement layer stream was not found");
+              m_dv_dual_stream = false;
+              ClearDualLayerStreamFlags();
+            }
           }
         }
         else
