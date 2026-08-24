@@ -10,6 +10,7 @@
 
 #include "DiscDirectoryHelper.h"
 #include "FileItemList.h"
+#include "bluray/HDMVMenuNavigator.h"
 #include "bluray/M2TSParser.h"
 #include "bluray/PlaylistStructure.h"
 #include "threads/CriticalSection.h"
@@ -33,6 +34,10 @@ struct Disc
 
   std::optional<bool> menuSupport;
   std::optional<int> mainPlaylist;
+
+  //! What the disc's own HDMV menu states its episode playlists are; the scan
+  //! reads menu m2ts so it runs once per disc (invalid result cached too)
+  std::optional<XFILE::CHDMVMenuNavigator::MenuStatedEpisodes> menuStatedEpisodes;
 
   //! When this disc was last used, to decide which to drop when the cache is full. Mutable as
   //! recency is not part of what the cache holds, so reading a disc's information updates it too.
@@ -65,6 +70,8 @@ public:
                              const StreamMap& streams);
   void SetMenuSupport(const std::string& path, bool menuSupport);
   void SetMainPlaylist(const std::string& path, int mainPlaylist);
+  void SetMenuStatedEpisodes(const std::string& path,
+                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes);
 
   bool GetPlaylistInfo(const std::string& path,
                        unsigned int playlist,
@@ -90,6 +97,14 @@ public:
    \return true if the disc has been examined for a main playlist before
    */
   bool GetMainPlaylist(const std::string& path, int& mainPlaylist) const;
+
+  /*!
+   \brief Get what the disc's HDMV menu states its episode playlists are, if already scanned.
+   \param[out] episodes set only when true is returned; may be an invalid (empty) statement
+   \return true if the disc's menu has been scanned before
+   */
+  bool GetMenuStatedEpisodes(const std::string& path,
+                             CHDMVMenuNavigator::MenuStatedEpisodes& episodes) const;
 
   //! Drop everything held for a disc, as its information no longer describes what is in the drive
   void ClearDisc(const std::string& path);

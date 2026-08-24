@@ -7,10 +7,12 @@
  */
 #include "DiscDirectoryHelper.h"
 
+#include "BlurayDiscCache.h"
 #include "FileItem.h"
 #include "FileItemList.h"
 #include "ServiceBroker.h"
 #include "URL.h"
+#include "bluray/HDMVMenuNavigator.h"
 #include "dialogs/GUIDialogBusy.h"
 #include "dialogs/GUIDialogOK.h"
 #include "dialogs/GUIDialogSimpleMenu.h"
@@ -101,6 +103,7 @@ void CDiscDirectoryHelper::Reset()
   m_candidatePlaylists.clear();
   m_candidateSpecials.clear();
   m_nthLongestPlaylists.clear();
+  m_menuStatedEpisodePlaylists.clear();
 }
 
 CDiscDirectoryHelper::CDiscDirectoryHelper(StreamDetailsProvider getStreamDetails)
@@ -1011,6 +1014,42 @@ void CDiscDirectoryHelper::FindRelaxedPlayAllPlaylists(const PlaylistMap& playli
     CLog::LogF(LOGDEBUG, "No play all playlists found using the relaxed method");
 }
 
+bool CDiscDirectoryHelper::UseMenuStatedMethod(int episodeIndex, const PlaylistMap& playlists)
+{
+  // The disc's own menu is the authority on which playlist is which episode:
+  // when it stated exactly as many episode playlists as the library expects
+  // on this disc, pair them in menu order and skip the duration guessing.
+  // A count mismatch is a real signal (double-length pilot listed once, an
+  // episode reachable only via PLAY ALL) - then the heuristics know better.
+  if (m_menuStatedEpisodePlaylists.size() != m_numEpisodes || m_numEpisodes < 2)
+    return false;
+
+  const int episodeOffset{episodeIndex - static_cast<int>(m_numSpecials)};
+  for (unsigned int i = 0; i < m_numEpisodes; ++i)
+  {
+    if (m_allEpisodes != AllEpisodes::ALL &&
+        std::cmp_not_equal(i, episodeOffset)) // Specials before episodes in episodesOnDisc
+      continue;
+
+    const unsigned int playlist{m_menuStatedEpisodePlaylists[i]};
+    const auto it{playlists.find(playlist)};
+    if (it == playlists.end())
+      continue; // menu named a playlist the scan no longer sees - fall through
+    const PlaylistInformation& information{it->second};
+
+    m_candidatePlaylists.try_emplace(
+        playlist, CandidatePlaylistInformation{
+                      .playlist = playlist,
+                      .index = i + m_numSpecials,
+                      .duration = information.duration,
+                      .chapters = static_cast<unsigned int>(information.chapters.size()),
+                      .clips = information.clips,
+                      .languages = information.languages});
+    CLog::LogF(LOGDEBUG, "Candidate playlist {} (menu-stated episode {})", playlist, i + 1);
+  }
+  return !m_candidatePlaylists.empty();
+}
+
 void CDiscDirectoryHelper::UsePlayAllPlaylistMethod(int episodeIndex, const PlaylistMap& playlists)
 {
   if (m_playAllPlaylists.empty())
@@ -1853,7 +1892,9 @@ void CDiscDirectoryHelper::FindCandidatePlaylists(const Episodes& episodesOnDisc
   m_candidatePlaylists.clear();
   m_candidateSpecials.clear();
 
-  if (m_playAllPlaylists.size() == 1)
+  if (UseMenuStatedMethod(episodeIndex, playlists))
+    CLog::LogF(LOGDEBUG, "Using the episode playlists stated by the disc's own menu");
+  else if (m_playAllPlaylists.size() == 1)
     UsePlayAllPlaylistMethod(episodeIndex, playlists);
   else if (m_playAllPlaylistEpisodeMap.size() == 1)
     UseRelaxedPlayAllPlaylistMethod(episodeIndex, playlists);
@@ -2186,6 +2227,22 @@ bool CDiscDirectoryHelper::GetEpisodePlaylists(
   }
 
   InitialiseEpisodePlaylistSearch(episodeIndex, episodesOnDisc);
+
+  // Ask the disc's own HDMV menu which playlists are the episodes (scanned
+  // once per disc, cached - including a "stated nothing" answer). When the
+  // menu states a usable list it replaces the duration guessing below.
+  {
+    const std::string& discPath{url.GetHostName()};
+    CHDMVMenuNavigator::MenuStatedEpisodes menuStated;
+    if (!CServiceBroker::GetBlurayDiscCache()->GetMenuStatedEpisodes(discPath, menuStated))
+    {
+      menuStated = CHDMVMenuNavigator::GetMenuStatedEpisodes(url, playlists, m_minEpisodeDuration);
+      CServiceBroker::GetBlurayDiscCache()->SetMenuStatedEpisodes(discPath, menuStated);
+    }
+    if (menuStated.valid)
+      m_menuStatedEpisodePlaylists = menuStated.episodePlaylists;
+  }
+
   FindPlayAllPlaylists(clips, playlists, episodesOnDisc);
   FindGroups(playlists, episodesOnDisc);
   FindRelaxedPlayAllPlaylists(playlists); // Uses m_allGroups
