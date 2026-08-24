@@ -360,6 +360,7 @@ private:
                             const Episodes& episodesOnDisc);
   void FindGroups(const PlaylistMap& playlists, const Episodes& episodesOnDisc);
   void FindRelaxedPlayAllPlaylists(const PlaylistMap& playlists);
+  bool UseMenuStatedMethod(int episodeIndex, const PlaylistMap& playlists);
   void UsePlayAllPlaylistMethod(int episodeIndex, const PlaylistMap& playlists);
   void UseRelaxedPlayAllPlaylistMethod(int episodeIndex, const PlaylistMap& playlists);
   void UseLongOrCommonMethodForSingleEpisode(int episodeIndex, const PlaylistMap& playlists);
@@ -414,6 +415,10 @@ private:
   StreamDetailsProvider m_getStreamDetails;
 
   std::chrono::milliseconds m_minEpisodeDuration{0ms};
+
+  //! Episode playlists in the order the disc's own HDMV menu states them
+  //! (empty when the disc's menu could not be consulted or stated nothing)
+  std::vector<unsigned int> m_menuStatedEpisodePlaylists;
 
   AllEpisodes m_allEpisodes{AllEpisodes::SINGLE};
   IsSpecial m_isSpecial{IsSpecial::EPISODE};
