@@ -122,6 +122,14 @@ void CBlurayDiscCache::SetMainPlaylist(const std::string& path, int mainPlaylist
   FindOrCreate(path).mainPlaylist = mainPlaylist;
 }
 
+void CBlurayDiscCache::SetMenuStatedEpisodes(const std::string& path,
+                                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes)
+{
+  std::unique_lock lock(m_cs);
+
+  FindOrCreate(path).menuStatedEpisodes = episodes;
+}
+
 bool CBlurayDiscCache::GetPlaylistInfo(const std::string& path,
                                        unsigned int playlist,
                                        BlurayPlaylistInformation& playlistInfo) const
@@ -192,6 +200,19 @@ bool CBlurayDiscCache::GetMainPlaylist(const std::string& path, int& mainPlaylis
   if (const Disc * disc{Find(path)}; disc && disc->mainPlaylist)
   {
     mainPlaylist = *disc->mainPlaylist;
+    return true;
+  }
+  return false;
+}
+
+bool CBlurayDiscCache::GetMenuStatedEpisodes(const std::string& path,
+                                             CHDMVMenuNavigator::MenuStatedEpisodes& episodes) const
+{
+  std::unique_lock lock(m_cs);
+
+  if (const Disc * disc{Find(path)}; disc && disc->menuStatedEpisodes)
+  {
+    episodes = *disc->menuStatedEpisodes;
     return true;
   }
   return false;
