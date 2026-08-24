@@ -2339,6 +2339,22 @@ bool CDVDInputStreamBluray::IsInMenu()
   return false;
 }
 
+bool CDVDInputStreamBluray::TitleCarriesInteractiveComposition() const
+{
+  // libbluray fills ig_stream_count from the play item's STN table
+  // (bluray.c _fill_clip_info), so out-of-mux IG referenced through a
+  // sub-path counts too - the authoritative "does this playlist have a
+  // menu composition" answer, available as soon as the title info is.
+  if (!m_titleInfo)
+    return false;
+  for (uint32_t i = 0; i < m_titleInfo->clip_count; ++i)
+  {
+    if (m_titleInfo->clips[i].ig_stream_count > 0)
+      return true;
+  }
+  return false;
+}
+
 bool CDVDInputStreamBluray::IsMenuDomainVideo()
 {
   // "Menu-domain" = video that is incidental to navigation rather than
@@ -2378,6 +2394,27 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
   {
     domain = true;
     reason = "first-play/top-menu title";
+  }
+  else if (TitleCarriesInteractiveComposition() && !m_popupAvailable)
+  {
+    // The playlist's STN table names an IG stream (in-mux, or carried
+    // out-of-mux by a sub-path - TNG's menus are the latter) and the IG is
+    // not announced as pop-up: a short playlist authored with an always-on
+    // interactive composition IS a menu, whether or not the menu-flag
+    // event has arrived yet. The disc states this; nothing is guessed
+    // from flags or duration.
+    domain = true;
+    reason = "always-on IG in playlist STN";
+  }
+  else if (m_popupAvailable)
+  {
+    // ui_model = pop-up (BD_EVENT_POPUP - emitted only by the HDMV
+    // graphics controller): the segment is content CARRYING a pop-up
+    // menu, not a menu - even while the pop-up is open and the menu
+    // flag/overlay are up. Feature treatment, so opening a pop-up never
+    // routes the underlying content into menu-domain handling.
+    domain = false;
+    reason = "pop-up IG over content";
   }
   else
   {
