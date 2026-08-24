@@ -1,11 +1,13 @@
 if(TARGET ${APP_NAME_LC}::Bluray)
   set(SOURCES BlurayPlaylistHints.cpp
+              HDMVMenuNavigator.cpp
               M2TSParser.cpp
               MPLSParser.cpp
               ProjectParser.cpp
               StreamParser.cpp)
   set(HEADERS BitReader.h
               BlurayPlaylistHints.h
+              HDMVMenuNavigator.h
               M2TSParser.h
               MPLSParser.h
               PlaylistStructure.h
