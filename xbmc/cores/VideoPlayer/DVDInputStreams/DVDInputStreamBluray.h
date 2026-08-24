@@ -142,6 +142,10 @@ public:
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
   bool IsMenuDomainVideo();
+  // The current playlist's STN table names at least one IG stream. The STN
+  // covers out-of-mux IG carried by a sub-path (TNG's menus), which the
+  // clip files alone would miss.
+  bool TitleCarriesInteractiveComposition() const;
   /*! \brief True when the current playlist declares PQ-authored graphics, i.e.
    * its video stream is HDR10 or Dolby Vision in the MPLS STN table.
    *
