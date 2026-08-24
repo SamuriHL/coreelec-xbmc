@@ -2384,7 +2384,35 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
   bool domain;
   const char* reason;
   const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
-  if (m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION)
+  const bool featureLength =
+      m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION;
+  if (m_popupAvailable)
+  {
+    // ui_model = pop-up (BD_EVENT_POPUP - emitted only by the HDMV
+    // graphics controller): the segment is content CARRYING a pop-up
+    // menu, not a menu - even while the pop-up is open and the menu
+    // flag/overlay are up. Checked FIRST so opening a pop-up never routes
+    // the underlying content into menu-domain handling, regardless of
+    // duration or menu state.
+    domain = false;
+    reason = "pop-up IG over content";
+  }
+  else if (TitleCarriesInteractiveComposition() &&
+           (!featureLength || m_menu || m_hasOverlay))
+  {
+    // The playlist's STN table names an IG stream (in-mux, or carried
+    // out-of-mux by a sub-path - TNG's menus are the latter) and the IG
+    // is not announced as pop-up: an always-on interactive composition IS
+    // a menu, whether or not the menu-flag event has arrived yet. For a
+    // FEATURE-LENGTH playlist the menu flag/overlay must corroborate -
+    // menus are authored long (TNG's main menu is an 18.6-minute
+    // playlist, on-box 2026-08-24), but a movie whose pop-up IG has not
+    // been announced yet must not classify menu-domain at open on the STN
+    // entry alone.
+    domain = true;
+    reason = "always-on IG in playlist STN";
+  }
+  else if (featureLength)
   {
     domain = false;
     reason = "feature-length playlist";
@@ -2394,27 +2422,6 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
   {
     domain = true;
     reason = "first-play/top-menu title";
-  }
-  else if (TitleCarriesInteractiveComposition() && !m_popupAvailable)
-  {
-    // The playlist's STN table names an IG stream (in-mux, or carried
-    // out-of-mux by a sub-path - TNG's menus are the latter) and the IG is
-    // not announced as pop-up: a short playlist authored with an always-on
-    // interactive composition IS a menu, whether or not the menu-flag
-    // event has arrived yet. The disc states this; nothing is guessed
-    // from flags or duration.
-    domain = true;
-    reason = "always-on IG in playlist STN";
-  }
-  else if (m_popupAvailable)
-  {
-    // ui_model = pop-up (BD_EVENT_POPUP - emitted only by the HDMV
-    // graphics controller): the segment is content CARRYING a pop-up
-    // menu, not a menu - even while the pop-up is open and the menu
-    // flag/overlay are up. Feature treatment, so opening a pop-up never
-    // routes the underlying content into menu-domain handling.
-    domain = false;
-    reason = "pop-up IG over content";
   }
   else
   {
