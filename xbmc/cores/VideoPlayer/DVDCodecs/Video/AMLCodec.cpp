@@ -2240,7 +2240,23 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       // 5, which has no HDR10 base layer to fall back to (profile 7/8 get their
       // RPU stripped upstream and degrade to HDR10). Coerce native/bypass to a
       // display-compatible VS10 conversion: HDR10 if the panel takes PQ, else SDR.
-      if (!aml_display_support_dv() &&
+      //
+      // Unless the user has handed that job to CoreELEC's own path. Upstream
+      // 5591768488 sets dolby_vision_ll_policy = LL_YUV422 whenever the sink
+      // cannot take DV (written above), intending the core to map to the best
+      // format the display reports. Forcing an output mode here overrides that,
+      // so the two cannot be judged against each other while both run. With the
+      // setting on we leave the mode alone and let the LL policy drive; the core
+      // stays engaged either way, which is what makes the comparison possible on
+      // profile 7/8 as well as profile 5.
+      const bool stock_convert = CServiceBroker::GetSettingsComponent()->GetSettings()->
+        GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
+      if (!aml_display_support_dv() && stock_convert)
+      {
+        CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - non-DV display: leaving the "
+                  "conversion to CoreELEC (ll_policy), VS10 output mode not forced");
+      }
+      else if (!aml_display_support_dv() &&
           vs10_mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
           vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
         vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
@@ -2254,6 +2270,27 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
           aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
             GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
         dv_output_mode = vs10_mode;
+      }
+      else if (stock_convert && !aml_display_support_dv())
+      {
+        // CoreELEC's path drives the conversion from the LL policy written
+        // above, so put the core back to following the source rather than
+        // leaving whatever a previous stream (or the disc-session pre-engage)
+        // left in dolby_vision_policy - a stale FORCE_OUTPUT_MODE would keep
+        // forcing the previous mode and make the comparison meaningless.
+        CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FOLLOW_SOURCE);
+        // What the sink actually ends up receiving, for the GUI/OSD encoding
+        // gate: upstream maps to the best format the display reports, so PQ
+        // when the panel takes PQ and SDR otherwise. Reporting IPT_TUNNEL here
+        // would PQ-encode the OSD over an SDR output.
+        dv_output_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
+                                                      : DOLBY_VISION_OUTPUT_MODE_SDR10;
+        // Re-apply the DM target for the mode the sink actually receives. The
+        // earlier call saw BYPASS (nothing was forced) and zeroed it, which
+        // would leave the reference-black setting inert on this path only -
+        // anyone comparing the two conversions would then also be comparing
+        // "black target set" against "black target default" without knowing it.
+        aml_dv_apply_target_overrides(dv_output_mode);
       }
       else
         // Native DV output (tunnel left intact): the sink receives a PQ signal.
