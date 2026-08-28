@@ -628,6 +628,9 @@ void aml_dv_release_disc_engage()
              AMDV_FOLLOW_SOURCE);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode",
              (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
+  // s_dv_disc_engaged is already false, so this is the write the per-segment
+  // BYPASS calls deliberately skipped while the session was up.
+  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   CLog::Log(LOGINFO, "aml_dv_release_disc_engage: DV output released to native "
             "signalling (non-DV title / session end; re-engages on next DV segment)");
 }
@@ -684,21 +687,46 @@ unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
 
 void aml_dv_apply_target_overrides(unsigned int mode)
 {
-  // DM target overrides for VS10-CONVERTED output (samurihl common_drivers patch;
-  // params absent on a stock kernel -> no-op). Only meaningful when the DV core
-  // tone-maps to HDR10/SDR: the display-peak setting steers the target max
-  // (nits) and target.minlum the target min / reference black (0.0001-nit
-  // units). Zeroed (= Dolby built-ins) for bypass and native-DV output, where
-  // the sink does the mapping.
+  // DM target overrides (samurihl common_drivers patch; params absent on a stock
+  // kernel -> no-op). target.minlum steers the DM's target min / reference black
+  // in 0.0001-nit units; the display-peak setting steers the target max in nits.
+  //
+  // The reference black applies to NATIVE DV OUTPUT as well as to the VS10
+  // conversions. That was excluded originally on the reasoning that "the sink
+  // does the mapping" for a DV tunnel, which measurement disproves: with a DV
+  // title running to a DV display (fmt DOVI->DOVI, dolby_vision_mode=1) the
+  // kernel's own per-frame trace showed the target the DM was handed tracking
+  // the override exactly - t min-max went 1-40000000 at the default, then
+  // 12345-40000000 once amdv_target_min_override was poked. The box-side DM runs
+  // for tunnel output too, and it is handed a target; only Kodi writing 0 kept
+  // the setting inert there, which is what users reported as "the black level
+  // knob does nothing for DV".
+  //
+  // The target MAX stays HDR10-only. Its DV-output default measured 4000 nits,
+  // and pushing a typical panel figure onto that would clamp speculars the DM is
+  // currently rolling off - a separate decision from reference black, and not one
+  // this setting was scoped for. Bypass still zeroes both: nothing is mapping.
   CSysfsPath min_override{"/sys/module/aml_media/parameters/amdv_target_min_override"};
   CSysfsPath max_override{"/sys/module/aml_media/parameters/amdv_target_max_override"};
   if (!min_override.Exists() || !max_override.Exists())
     return;
 
+  // Hold the target across a latched disc session. Every segment boundary in a
+  // menu session runs CloseDecoder -> OpenDecoder, and CloseDecoder asks for
+  // BYPASS; now that the reference black also applies to DV output, honouring
+  // that would drop the DM target to the Dolby default in each inter-segment gap
+  // and restore it again - the same "set it once and keep it" principle the disc
+  // session exists to enforce for the DV signalling itself. The session end
+  // (aml_dv_release_disc_engage) clears the overrides instead.
+  if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_engaged())
+    return;
+
   int min_lum = 0, max_nits = 0;
   if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
       mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
-      mode == DOLBY_VISION_OUTPUT_MODE_SDR8)
+      mode == DOLBY_VISION_OUTPUT_MODE_SDR8 ||
+      mode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+      mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
   {
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     min_lum = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM);

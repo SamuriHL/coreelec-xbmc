@@ -25926,13 +25926,13 @@ msgstr ""
 #. Setting to override the Dolby Vision tone-mapping target minimum luminance (reference black)
 #: system/settings/settings.xml
 msgctxt "#60355"
-msgid "VS10 target minimum luminance (reference black)"
+msgid "Dolby Vision target minimum luminance (reference black)"
 msgstr ""
 
 #. Description of setting with label #60355
 #: system/settings/settings.xml
 msgctxt "#60356"
-msgid "Minimum luminance the Dolby Vision engine tone-maps to when VS10 converts to HDR10 / SDR, in units of 0.0001 nit (50 = 0.005 nit, the Dolby default). Lower it if near-black detail is being clipped (raised reference black) on VS10-processed output. 0 = keep the Dolby default. Requires the matching CoreELEC kernel; no effect otherwise."
+msgid "Minimum luminance the Dolby Vision engine tone-maps to, in units of 0.0001 nit (50 = 0.005 nit, the Dolby default). Applies to Dolby Vision output as well as to VS10 conversions to HDR10 / SDR - the display processing engine maps to this target in both cases. Lower it if near-black detail is being clipped (raised reference black), raise it if blacks look crushed. 0 = keep the Dolby default. Requires the matching CoreELEC kernel; no effect otherwise."
 msgstr ""
 
 #. Toast heading when a VS10 output mode is refused for software-decoded video
