@@ -689,7 +689,7 @@ bool CProcessInfo::IsSeeking()
 
 void CProcessInfo::SetStateRealtime(bool state)
 {
-  std::unique_lock lock(m_renderSection);
+  std::unique_lock lock(m_stateSection);
 
   m_realTimeStream = state;
 }
