@@ -368,6 +368,31 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 #define AMDV_FOLLOW_SOURCE      (unsigned int)(1)
 #define AMDV_FORCE_OUTPUT_MODE  (unsigned int)(2)
 
+bool aml_display_support_dv()
+{
+  // Upstream (7d666eb448) moved the display's Dolby Vision verdict off this free
+  // function and onto CAMLDisplay, and (7f2c51e677) dropped the static latch so it
+  // is re-read live on every call. Both are adopted; this forwarder exists so the
+  // fork's call sites - 13 of them across the demuxer, player, codec and Blu-ray
+  // input layers - keep a short call and do not each have to pull in the windowing
+  // header. Null-checked because it is reachable before the window system exists.
+  auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem || !winSystem->GetAmlDisplay())
+    return false;
+  return winSystem->GetAmlDisplay()->aml_display_support_dv();
+}
+
+bool aml_display_support_3d()
+{
+  // Same relocation as aml_display_support_dv() above (upstream 7d666eb448) - the
+  // fork still calls this from CDVDInputStreamBluray when deciding whether a disc's
+  // 3D playlists are usable on the connected display.
+  auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem || !winSystem->GetAmlDisplay())
+    return false;
+  return winSystem->GetAmlDisplay()->aml_display_support_3d();
+}
+
 bool aml_display_support_hdr_pq()
 {
   bool support = false;
