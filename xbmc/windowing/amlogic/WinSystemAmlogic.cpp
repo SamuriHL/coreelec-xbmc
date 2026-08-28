@@ -354,113 +354,41 @@ bool CWinSystemAmlogic::InitWindowSystem()
   }
 
   const bool box_supports_dv = aml_support_dolby_vision();
-  const bool display_supports_dv = aml_display_support_dv();
 
-  // The native Dolby Vision tunnel (TV-LED / Player-LED output, SDR->DV,
-  // HDR->DV) drives the sink over HDMI as a DV stream, so it needs BOTH a
-  // DV-capable SoC and a DV-capable display.
-  if (!box_supports_dv || !display_supports_dv)
+  // Setting VISIBILITY for everything Dolby Vision now lives in
+  // RefreshDisplayCapabilities(), which upstream re-runs on every display event -
+  // so a sink change re-evaluates the rows instead of leaving the boot-time
+  // verdict frozen for the session. What stays here is what must happen exactly
+  // once: value clamps keyed on SoC capability (which cannot change at runtime),
+  // and the option-filler / callback registrations.
+  // (the !aml_support_dolby_vision() block above already zeroes L5 for that case,
+  // which is the fallback while dolbyvision.l5.mode is hidden.)
+  if (box_supports_dv)
   {
-    auto setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE);
-    if (setting)
-    {
-      setting->SetVisible(false);
-      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
-      setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
-      setting->SetVisible(false);
-      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV, false);
-      setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
-      setting->SetVisible(false);
-      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV, false);
-    }
+    auto* dvMgr = CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager();
 
-    setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
-    if (setting)
-    {
-      setting->SetVisible(false);
-      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, AML_DV_TV_LED);
-    }
-  }
-  else
-  {
-    CServiceBroker::GetSettingsComponent()->GetSettings()->
-      GetSettingsManager()->RegisterSettingOptionsFiller("dv_led_modes", SettingOptionsComponentsFiller);
+    // Registered whenever the SoC can do DV, not only when the boot-time sink
+    // could: RefreshDisplayCapabilities() can re-show dv_led later on a sink
+    // change, and its spinner needs a filler to populate.
+    dvMgr->RegisterSettingOptionsFiller("dv_led_modes", SettingOptionsComponentsFiller);
 
-    int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
-    AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
-    AML_DISPLAY_DV_LED new_value = old_value;
-
-    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & LL_YCbCr_422_12BIT) != 0 ? AML_DV_PLAYER_LED : -1);
-
-    if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & DV_RGB_444_8BIT) != 0 ? AML_DV_TV_LED : -1);
-
-    if (new_value != old_value)
-      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
-  }
-
-  // The stock videoplayer.dovizerolevel5 boolean is superseded on Amlogic by the
-  // richer dolbyvision.l5.mode (Source/Zero/Auto-detect), so always hide it. When
-  // the SoC can't process DV at all, l5.mode is hidden too (below), so fall back
-  // to zeroing L5 as before.
-  if (auto zl5 = settings->GetSetting(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5))
-  {
-    zl5->SetVisible(false);
-    if (!box_supports_dv)
-      settings->SetBool(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5, true);
-  }
-
-  // The VS10 engine, VSVDB override, Smart CMv4.0 and L5 active-area all rewrite
-  // the RPU before output mapping, so they are useful whenever the SoC can
-  // process DV -- including on non-DV displays, where VS10 maps DV -> HDR10/SDR.
-  // Gate them on SoC capability alone, NOT on the display's DV support (the
-  // per-source fillers below self-limit which output options the sink can take).
-  if (!box_supports_dv)
-  {
-    for (const auto& dvId : {CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
-                             CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT})
-    {
-      auto setting = settings->GetSetting(dvId);
-      if (setting)
-        setting->SetVisible(false);
-    }
-  }
-  else
-  {
     // Dolby Vision VS10 engine per-source-type output-mode fillers.
-    auto* vs10Mgr = CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager();
-    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR8", VS10SdrFiller);
-    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR10", VS10SdrFiller);
-    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDR10", VS10Hdr10Filler);
-    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDRHLG", VS10HdrHlgFiller);
-    vs10Mgr->RegisterSettingOptionsFiller("DolbyVisionVS10DV", VS10DvFiller);
+    dvMgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR8", VS10SdrFiller);
+    dvMgr->RegisterSettingOptionsFiller("DolbyVisionVS10SDR10", VS10SdrFiller);
+    dvMgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDR10", VS10Hdr10Filler);
+    dvMgr->RegisterSettingOptionsFiller("DolbyVisionVS10HDRHLG", VS10HdrHlgFiller);
+    dvMgr->RegisterSettingOptionsFiller("DolbyVisionVS10DV", VS10DvFiller);
 
     // Live-apply the VSVDB max-luminance override when the shared display-peak
     // value or the force toggle changes during DV playback, and the CMv4.0
     // append mode / Smart threshold when those change (both used to be latched
     // at stream open, so changing them mid-playback appeared to do nothing).
-    vs10Mgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
-                                     CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD});
+    dvMgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD});
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -650,32 +578,90 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
 {
   m_amlDisplay->aml_refresh_display_caps();
 
-  // disabledolbyvision, sdr2dv and hdr2dv are chained by enable dependencies,
-  // keep them device-keyed so a disabled row always has its cause on screen
   const bool device_dv = aml_support_dolby_vision();
   const bool sink_dv = device_dv && m_amlDisplay->aml_display_support_dv();
 
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
+  // VISIBILITY ONLY below this point. This function runs on every display event,
+  // so it must be idempotent: forcing setting VALUES here would clobber the user's
+  // choices on each sink change (unplug to a non-DV panel and back, and an
+  // sdr2dv/hdr2dv the user had enabled would never come back). The one-time value
+  // clamps live in InitWindowSystem, keyed on SoC capability, which cannot change.
+
+  // The native Dolby Vision tunnel (TV-LED / Player-LED output, SDR->DV, HDR->DV)
+  // drives the sink over HDMI as a DV stream, so it needs BOTH a DV-capable SoC and
+  // a DV-capable display. Upstream keys these three on the SoC alone so a disabled
+  // row keeps its cause on screen; this build hides them, because on a non-DV sink
+  // the VS10 engine - not the DV tunnel - is what carries DV content, and leaving
+  // SDR->DV / HDR->DV offered there invites a setting that cannot do anything.
   auto setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE);
   if (setting)
-    setting->SetVisible(device_dv);
+    setting->SetVisible(sink_dv);
 
   setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
   if (setting)
-    setting->SetVisible(device_dv);
+    setting->SetVisible(sink_dv);
 
   setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
   if (setting)
-    setting->SetVisible(device_dv);
+    setting->SetVisible(sink_dv);
 
   setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
   if (setting)
     setting->SetVisible(sink_dv);
 
+  // The stock videoplayer.dovizerolevel5 boolean is superseded on Amlogic by the
+  // richer dolbyvision.l5.mode (Source/Zero/Auto-detect), so it is always hidden.
   setting = settings->GetSetting(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5);
   if (setting)
-    setting->SetVisible(sink_dv);
+    setting->SetVisible(false);
+
+  // The VS10 engine, VSVDB override, Smart CMv4.0, L5 active-area and HDR10+ ->
+  // DV conversion all rewrite the RPU before output mapping, so they are useful
+  // whenever the SoC can process DV -- including on non-DV displays, where VS10
+  // maps DV -> HDR10/SDR. Keyed on SoC capability alone, NOT on the sink (the
+  // per-source fillers self-limit which output options the display can take).
+  for (const auto& dvId : {CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT})
+  {
+    setting = settings->GetSetting(dvId);
+    if (setting)
+      setting->SetVisible(device_dv);
+  }
+
+  // Clamp the DV output mode to something this sink actually advertises. Sink
+  // dependent, so it re-runs on a display change rather than only at boot.
+  if (sink_dv)
+  {
+    const int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
+    const AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
+      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
+    AML_DISPLAY_DV_LED new_value = old_value;
+
+    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT))
+      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & LL_YCbCr_422_12BIT) != 0 ? AML_DV_PLAYER_LED : -1);
+
+    if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT))
+      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & DV_RGB_444_8BIT) != 0 ? AML_DV_TV_LED : -1);
+
+    if (new_value != old_value)
+      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
+  }
 
   if (IsHDRDisplay())
   {
