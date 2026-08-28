@@ -25946,3 +25946,13 @@ msgstr ""
 msgctxt "#60358"
 msgid "Software-decoded video has no hardware video layer for the Dolby Vision engine to process."
 msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60359"
+msgid "Let CoreELEC convert Dolby Vision for non-DV displays"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60360"
+msgid "A Dolby Vision title shown on a display that cannot accept Dolby Vision has to be converted. This build normally does that with its VS10 engine, forcing an explicit HDR10 output (SDR if the display takes neither). Turn this on to hand the conversion to CoreELEC's own path instead, which signals the Dolby Vision core in low-latency mode and lets it map to the best format the display reports. Affects displays without Dolby Vision only, and only while the Dolby Vision core is engaged for the title - with 'Dolby Vision source output' left at Bypass a profile 7 or 8 title still plays as ordinary HDR10 and this changes nothing. Off = VS10, this build's default. Offered so the two can be compared; which looks better is worth reporting."
+msgstr ""

@@ -637,7 +637,8 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
-                           CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT})
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT})
   {
     setting = settings->GetSetting(dvId);
     if (setting)
