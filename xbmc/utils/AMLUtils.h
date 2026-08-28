@@ -83,6 +83,8 @@ bool aml_dv_core_active();
 bool aml_dv_lldv_output_active();
 bool aml_dv_source_engages_core();
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+bool aml_display_support_dv();
+bool aml_display_support_3d();
 bool aml_display_support_hdr_pq();
 bool aml_display_support_hdr_hlg();
 bool aml_display_support_hdr10plus();
