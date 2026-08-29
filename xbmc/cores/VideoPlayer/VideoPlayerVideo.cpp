@@ -182,15 +182,18 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
     m_bFpsInvalid = false;
 
-    if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 25.0f, 0.01f))
+    if (hint.interlaced)
     {
-      m_fFrameRate = 50.0;
-      m_processInfo.SetVideoInterlaced(true);
-    }
-    if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 29.97f, 0.01f))
-    {
-      m_fFrameRate = 60000.0 / 1001.0;
-      m_processInfo.SetVideoInterlaced(true);
+      if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 25.0f, 0.01f))
+      {
+        m_fFrameRate = 50.0;
+        m_processInfo.SetVideoInterlaced(true);
+      }
+      if (MathUtils::FloatEquals(static_cast<float>(m_fFrameRate), 29.97f, 0.01f))
+      {
+        m_fFrameRate = 60000.0 / 1001.0;
+        m_processInfo.SetVideoInterlaced(true);
+      }
     }
     m_retryProgressive = 0;
     m_processInfo.SetVideoFps(static_cast<float>(m_fFrameRate));
