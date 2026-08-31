@@ -120,6 +120,8 @@ unsigned int aml_dv_get_vs10_pending();
 // SDR) rather than the source hdrType. BYPASS = DV core not forcing an output.
 void aml_dv_set_output_mode(unsigned int mode);
 unsigned int aml_dv_get_output_mode();
+bool aml_dv_wire_format_mismatch();
+bool aml_dv_wire_format_is_lldv();
 // Disc-session DV latch: active while a Blu-ray whose content includes Dolby
 // Vision plays in navigation (menu) mode on a DV-capable display. Menu-domain
 // segments without their own DV stream (FirstPlay bumpers, menu video loops)
