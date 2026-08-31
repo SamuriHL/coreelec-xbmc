@@ -2608,12 +2608,27 @@ void CAMLCodec::CloseDecoder()
   // disable Dolby Vision driver
   if (dv_enabled)
   {
-    // the transition needs a few display frames before the core powers down
+    // The transition needs a few display frames before the core powers down.
+    //
+    // Upstream wrote this bound as milliseconds(m_decoder_timeout), but that
+    // variable is m_videoDecoderTimeout and means SECONDS everywhere else -
+    // the dv_video_on loop directly below uses seconds() on the same value,
+    // and OpenDecoder logs it as "decoder timeout: 5s". So the bound came out
+    // as 5ms, shorter than the single usleep(10000) inside the loop: the wait
+    // never happened. Bound it explicitly instead of reusing a variable that
+    // means something else; ~5 frames at 24fps is the "few display frames"
+    // the transition actually needs.
+    //
+    // Skipped while a disc session is live: the session latch deliberately
+    // holds the DV core engaged across menu<->title segment swaps (that is
+    // what stops the sink re-locking on every segment), so the status never
+    // reaches 0 there and waiting would only add the full bound to each swap.
+    constexpr auto DV_TEARDOWN_SETTLE = std::chrono::milliseconds(200);
     CSysfsPath dolby_vision_status{"/sys/module/aml_media/parameters/dolby_vision_status"};
-    if (dolby_vision_status.Exists())
+    if (dolby_vision_status.Exists() && !aml_dv_disc_session())
     {
       std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-      while (dolby_vision_status.Get<int>().value() != 0 && (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+      while (dolby_vision_status.Get<int>().value() != 0 && (std::chrono::system_clock::now() - now) < DV_TEARDOWN_SETTLE)
         usleep(10000); // wait 10ms
     }
 
