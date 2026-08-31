@@ -2642,11 +2642,19 @@ void CAMLCodec::CloseDecoder()
   // disable Dolby Vision driver
   if (dv_enabled)
   {
-    // the transition needs a few display frames before the core powers down
+    // The transition needs a few display frames before the core powers down.
+    //
+    // Skipped while a disc session is live: the session latch deliberately
+    // holds the DV core engaged across menu<->title segment swaps (that is
+    // what stops the sink re-locking on every segment), so the status never
+    // reaches 0 there and waiting would only burn the full bound on each swap.
     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-    while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
-           (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
-      usleep(10000); // wait 10ms
+    if (!aml_dv_disc_session())
+    {
+      while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
+             (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+        usleep(10000); // wait 10ms
+    }
 
     while (AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
            (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
