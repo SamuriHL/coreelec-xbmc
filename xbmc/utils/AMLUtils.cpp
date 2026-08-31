@@ -524,6 +524,56 @@ static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPAS
 void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
+// True when the DV output we are about to present needs a wire format the HDMI
+// link is not currently carrying.
+//
+// The DRM mode string carries resolution and refresh rate only - never colour
+// space or bit depth. Those are chosen by the kernel's
+// meson_hdmitx_decide_color_attr(), which runs only when a DRM commit actually
+// happens. Our modeset gate skips the commit whenever the mode string is
+// unchanged (the BD-J black fix), so a DV stream starting at the refresh rate
+// the GUI already uses never gets its wire format decided: the link stays on the
+// GUI's 422,12bit while hdmitx sets the AVI InfoFrame to RGB DV-Std. The sink
+// then receives a Dolby VSIF over a 12-bit 422 link and shows black, with decode
+// and the DV core both perfectly healthy (measured on an AM9 Pro 2026-08-30 -
+// deterministic from a cold boot, since the GUI comes up 422,12bit).
+//
+// TV-led DV tunnels as RGB/444 8-bit; LLDV (player-led) as YUV422 12-bit. Report
+// a mismatch so the caller forces the commit that re-decides the attr. This can
+// only fire on a DV engage whose wire is actually wrong - not on a menu segment
+// swap, where the disc-session latch holds DV engaged and the wire already
+// correct, so the mode-string skip keeps working exactly as designed.
+// True when the DV output is low-latency (player-led), which tunnels as YUV422
+// 12-bit; TV-led (standard) DV tunnels as YUV444/RGB 8-bit.
+bool aml_dv_wire_format_is_lldv()
+{
+  return CServiceBroker::GetSettingsComponent()->GetSettings()->
+    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+}
+
+bool aml_dv_wire_format_mismatch()
+{
+  const unsigned int mode = aml_dv_get_output_mode();
+  if (mode != DOLBY_VISION_OUTPUT_MODE_IPT && mode != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+    return false;
+
+  CSysfsPath config{"/sys/class/amhdmitx/amhdmitx0/config"};
+  if (!config.Exists())
+    return false;
+
+  const std::string cfg = config.Get<std::string>().value();
+  const bool player_led = (CServiceBroker::GetSettingsComponent()->GetSettings()->
+    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED);
+
+  const bool wire_ok = player_led ? (cfg.find("Colour depth: 12-bit") != std::string::npos)
+                                  : (cfg.find("Colour depth: 8-bit") != std::string::npos);
+  if (!wire_ok)
+    CLog::Log(LOGINFO, "aml_dv_wire_format_mismatch: DV output mode {} needs a {} link, "
+              "current wire is not - forcing the modeset that re-decides it",
+              mode, player_led ? "YUV422 12-bit" : "RGB/444 8-bit");
+  return !wire_ok;
+}
+
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static bool s_dv_disc_session = false;
