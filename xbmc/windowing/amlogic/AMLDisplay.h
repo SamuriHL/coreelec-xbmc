@@ -112,6 +112,7 @@ private:
     unsigned int height, std::string framebuffer_name, bool blank);
   int aml_get_drmDevice();
   int get_drmProp(unsigned int id, std::string name, unsigned int obj_type);
+  void apply_dv_wire_format();
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
