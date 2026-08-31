@@ -122,6 +122,7 @@ private:
                   unsigned int obj_type,
                   void* data = nullptr,
                   int* data_len = nullptr);
+  void apply_dv_wire_format();
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);

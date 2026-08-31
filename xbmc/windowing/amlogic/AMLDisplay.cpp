@@ -571,6 +571,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
     if (_force_mode_switch)
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 
+    apply_dv_wire_format();
+
     aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
 
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - finished set drmDevice mode", __FUNCTION__);
@@ -653,6 +655,46 @@ int CAMLDRMUtils::get_drmProp(
 
   drmModeFreeObjectProperties(props);
   return ret;
+}
+
+// Put the HDMI wire into the format the Dolby Vision tunnel needs.
+//
+// The DRM mode string carries resolution and refresh rate only. Colour space and
+// bit depth are decided by the kernel's meson_hdmitx_decide_color_attr(), which
+// is reached from atomic_mode_set - and that only runs when DRM sees a genuine
+// mode change. A DV stream starting at the refresh rate the GUI already uses
+// commits an identical mode blob, so atomic_mode_set never runs: atomic_check
+// computes the right attr, validates it, and throws it away. The link keeps the
+// GUI's 422,12bit while hdmitx sets the AVI InfoFrame to RGB DV-Std, so the sink
+// gets a Dolby VSIF over a 12-bit 422 link and shows black - decode and DV core
+// both perfectly healthy. Deterministic from a cold boot, where the GUI comes up
+// 422,12bit (measured on an AM9 Pro 2026-08-30).
+//
+// Rather than force a modeset for it - which is exactly the re-clock the BD-J
+// black fix exists to prevent - use the connector properties the kernel provides
+// for this: writing color_depth sets its color_force flag, so the attr we ask for
+// is applied verbatim, and UPDATE makes it take effect without a mode change.
+// TV-led DV tunnels as YUV444 8-bit, LLDV as YUV422 12-bit.
+void CAMLDRMUtils::apply_dv_wire_format()
+{
+  if (!aml_dv_wire_format_mismatch())
+    return;
+
+  // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
+  constexpr unsigned int HDMI_CS_YUV422 = 1;
+  constexpr unsigned int HDMI_CS_YUV444 = 2;
+
+  const bool player_led = aml_dv_wire_format_is_lldv();
+  const unsigned int cs = player_led ? HDMI_CS_YUV422 : HDMI_CS_YUV444;
+  const unsigned int bd = player_led ? 12 : 8;
+
+  CLog::Log(LOGINFO, "CAMLDRMUtils::{} - DV output needs a {} link, applying it via "
+            "the connector colour properties", __FUNCTION__,
+            player_led ? "YUV422 12-bit" : "YUV444 8-bit");
+
+  set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, NULL);
+  set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, NULL);
+  set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
