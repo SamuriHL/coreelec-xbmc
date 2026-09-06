@@ -70,8 +70,20 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
 {
   int64_t current = m_videoRefClock->GetTime(interpolated);
 
-  std::unique_lock lock(m_systemsection);
-  absolute = SystemToAbsolute(current);
+  {
+    std::unique_lock lock(m_systemsection);
+    absolute = SystemToAbsolute(current);
+  }
+
+  // m_systemsection covers the absolute-clock conversion only. m_systemAdjust,
+  // m_lastSystemTime, m_speedAdjust and everything SystemToPlaying() reads are
+  // playing-clock state that every other accessor in this file guards with
+  // m_critSection - including the single-argument GetClock() directly above,
+  // which runs these same three lines under it. Holding only m_systemsection
+  // here left this overload racing ErrorAdjust(), Discontinuity(), SetSpeed()
+  // and its own sibling overload. The two locks are taken in sequence, never
+  // nested, so this introduces no ordering constraint.
+  std::unique_lock lock(m_critSection);
 
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
@@ -275,7 +287,14 @@ int CDVDClock::UpdateFramerate(double fps, double* interval /*= NULL*/)
   if(fps == 0.0)
     return -1;
 
-  m_frameTime = 1/fps * DVD_TIME_BASE;
+  {
+    // SetVsyncAdjust() and ErrorAdjust() both read m_frameTime under
+    // m_critSection and divide by it; this write held no lock at all. Scoped so
+    // it is released before m_speedsection is taken below - the two are never
+    // held together anywhere in this file and this keeps it that way.
+    std::unique_lock lock(m_critSection);
+    m_frameTime = 1/fps * DVD_TIME_BASE;
+  }
 
   //check if the videoreferenceclock is running, will return -1 if not
   double rate = m_videoRefClock->GetRefreshRate(interval);
