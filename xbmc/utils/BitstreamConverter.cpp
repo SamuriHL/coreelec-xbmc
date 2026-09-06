@@ -824,6 +824,18 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
   return false;
 }
 
+namespace
+{
+// hvcC/avcC length prefixes are lengthSizeMinusOne+1 bytes, not always 4.
+uint32_t ReadNalLength(const uint8_t* buf, unsigned int lengthSize)
+{
+  uint32_t size = 0;
+  for (unsigned int i = 0; i < lengthSize; i++)
+    size = (size << 8) | buf[i];
+  return size;
+}
+} // unnamed namespace
+
 bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pData_el, int iSize_el)
 {
   if (m_convertBuffer)
@@ -856,15 +868,22 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     else
       buf = pData_bl;
 
+    // avc_parse_nal_units() always emits a 4 byte big-endian length (avio_wb32), so
+    // the 4 below is right for that path. The m_convert_bitstream path walks the
+    // packet as it arrived, where the prefix is whatever hvcC/avcC declared and only
+    // happens to be 4 bytes on nearly every real stream.
+    const unsigned int nalLengthSize =
+        m_convert_bitstream ? m_sps_pps_context.length_size : 4;
+
     // process bl frame data
     start = buf;
     end = buf + bl_frame_nal_buf_size;
-    while (end - buf > 4)
+    while (end - buf > static_cast<ptrdiff_t>(nalLengthSize))
     {
       uint32_t size;
       uint8_t  nal_type;
-      size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
-      buf += 4;
+      size = std::min<uint32_t>(ReadNalLength(buf, nalLengthSize), end - buf - nalLengthSize);
+      buf += nalLengthSize;
       nal_type = (buf[0] >> 1) & 0x3f;
 
       if (nal_type != AVC_NAL_END_SEQUENCE)
@@ -885,12 +904,12 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
 
     // process el frame data
     end = buf + el_frame_nal_buf_size;
-    while (end - buf > 4)
+    while (end - buf > static_cast<ptrdiff_t>(nalLengthSize))
     {
       uint32_t size;
       uint8_t  nal_type;
-      size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
-      buf += 4;
+      size = std::min<uint32_t>(ReadNalLength(buf, nalLengthSize), end - buf - nalLengthSize);
+      buf += nalLengthSize;
       nal_type = (buf[0] >> 1) & 0x3f;
 
       if (nal_type == HEVC_NAL_UNSPEC62)
