@@ -116,6 +116,28 @@ bool IsDefaultCalibration(const RESOLUTION_INFO& info)
 }
 } // unnamed namespace
 
+// resolution.ini is the KERNEL BOOT mode hint, so it has to carry the resolution the
+// GUI should come up in - never the transient mode an adjust-refresh playback switched
+// us to. Persisting the latter is self-reinforcing: boot at the movie's 24Hz, RES_DESKTOP
+// then resolves from the live kernel mode, and the desktop is stuck at 24Hz from then on.
+//
+// The `save` flag cannot discriminate, because the settings page and playback BOTH reach
+// SetCurrentResolution() with save=false. videoscreen.screenmode can: the settings page
+// writes it before we get here (OnSettingChanged, SETTING_VIDEOSCREEN_SCREENMODE), and
+// playback never touches it. So resolve the hint from that setting rather than from
+// whatever mode we happen to be switching into.
+static RESOLUTION_INFO boot_hint_resolution(const CDisplaySettings& displaySettings)
+{
+  RESOLUTION res = displaySettings.GetDisplayResolution();
+  if (res <= RES_INVALID || res == RES_WINDOW)
+    res = RES_DESKTOP;
+
+  // Before the resolution list is populated this is empty, and write_resolution_ini()
+  // declines to write an empty strId - which is what we want that early, rather than a
+  // guess.
+  return displaySettings.GetResolutionInfo(res);
+}
+
 static bool write_resolution_ini(RESOLUTION_INFO res)
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -428,8 +450,7 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     settingId == CSettings::SETTING_COREELEC_AMLOGIC_FORCE_CS ||
     settingId == CSettings::SETTING_COREELEC_AMLOGIC_LIMIT_CD)
   {
-    const RESOLUTION_INFO res_info = GetResolutionInfo(GetCurrentResolution());
-    write_resolution_ini(res_info);
+    write_resolution_ini(boot_hint_resolution(*this));
 
     if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING)
     {
@@ -537,9 +558,8 @@ void CDisplaySettings::SetCurrentResolution(RESOLUTION resolution, bool save /* 
   {
 
     m_currentResolution = resolution;
-    const RESOLUTION_INFO res_info = GetResolutionInfo(m_currentResolution);
     SetChanged();
-    write_resolution_ini(res_info);
+    write_resolution_ini(boot_hint_resolution(*this));
   }
 }
 
