@@ -26,6 +26,7 @@ set(SOURCES AudioSinkAE.cpp
             VideoReferenceClock.cpp)
 
 set(HEADERS AudioSinkAE.h
+            BDStageTrace.h
             DVDClock.h
             DVDDemuxSPU.h
             DVDFileInfo.h
