@@ -8,11 +8,51 @@
 
 #include "AEPackIEC61937.h"
 
+#include "utils/log.h"
+
+#include <atomic>
 #include <cassert>
 #include <string.h>
 
 #define IEC61937_PREAMBLE1  0xF872
 #define IEC61937_PREAMBLE2  0x4E1F
+
+namespace
+{
+/*!
+ * \brief Reject a frame that cannot be carried by the burst it is packed into.
+ *
+ * The packers copy `size` bytes to packet->m_data and zero-fill the remainder as
+ * (burst - IEC61937_DATA_OFFSET - size). That length is unsigned, so an oversized
+ * frame does not merely overshoot: it wraps to about 4GB. Frame sizes come from a
+ * stream parser, so a corrupt or misparsed header can produce one.
+ *
+ * Two bounds are needed. The payload capacity is the burst MINUS the preamble, not
+ * the whole burst - an assert on the burst alone still admits the final
+ * IEC61937_DATA_OFFSET bytes, which are exactly the ones that overrun. And the
+ * burst itself must fit the destination: DTS-HD subtype 5 (period 16384) asks for
+ * 65536 bytes against a MAX_IEC61937_PACKET (61440) byte buffer, which overruns for
+ * any frame size at all.
+ *
+ * Returning 0 is the "could not pack this" signal PackDTS() already gives callers
+ * for an unsuitable stream.
+ */
+bool BurstPayloadFits(unsigned int size, unsigned int burst, const char* fn)
+{
+  if (burst <= MAX_IEC61937_PACKET && size <= burst - IEC61937_DATA_OFFSET)
+    return true;
+
+  // A broken stream repeats the same size every frame, so report each distinct
+  // pairing once rather than once per burst - this runs on the audio thread.
+  static std::atomic<uint64_t> lastReported{0};
+  const uint64_t seen = (static_cast<uint64_t>(burst) << 32) | size;
+  if (lastReported.exchange(seen) != seen)
+    CLog::Log(LOGERROR, "CAEPackIEC61937::{}: {} byte frame does not fit a {} byte burst, dropping",
+              fn, size, burst);
+
+  return false;
+}
+} // namespace
 
 inline void SwapEndian(uint16_t *dst, uint16_t *src, unsigned int size)
 {
@@ -22,7 +62,9 @@ inline void SwapEndian(uint16_t *dst, uint16_t *src, unsigned int size)
 
 int CAEPackIEC61937::PackAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 {
-  assert(size <= OUT_FRAMESTOBYTES(AC3_FRAME_SIZE));
+  if (!BurstPayloadFits(size, OUT_FRAMESTOBYTES(AC3_FRAME_SIZE), "PackAC3"))
+    return 0;
+
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
 
   packet->m_preamble1 = IEC61937_PREAMBLE1;
@@ -49,7 +91,9 @@ int CAEPackIEC61937::PackAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 
 int CAEPackIEC61937::PackEAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 {
-  assert(size <= OUT_FRAMESTOBYTES(EAC3_FRAME_SIZE));
+  if (!BurstPayloadFits(size, OUT_FRAMESTOBYTES(EAC3_FRAME_SIZE), "PackEAC3"))
+    return 0;
+
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
 
   packet->m_preamble1 = IEC61937_PREAMBLE1;
@@ -91,7 +135,9 @@ int CAEPackIEC61937::PackTrueHD(const uint8_t* data, unsigned int size, uint8_t*
   if (size == 0)
     return OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE);
 
-  assert(size <= OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE));
+  if (!BurstPayloadFits(size, OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE), "PackTrueHD"))
+    return 0;
+
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
   packet->m_preamble1 = IEC61937_PREAMBLE1;
   packet->m_preamble2 = IEC61937_PREAMBLE2;
@@ -128,6 +174,10 @@ int CAEPackIEC61937::PackDTSHD(uint8_t *data, unsigned int size, uint8_t *dest, 
       return 0;
   }
 
+  const unsigned int burstsize = period << 2;
+  if (!BurstPayloadFits(size, burstsize, "PackDTSHD"))
+    return 0;
+
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
   packet->m_preamble1 = IEC61937_PREAMBLE1;
   packet->m_preamble2 = IEC61937_PREAMBLE2;
@@ -147,7 +197,6 @@ int CAEPackIEC61937::PackDTSHD(uint8_t *data, unsigned int size, uint8_t *dest, 
   SwapEndian((uint16_t*)packet->m_data, (uint16_t*)data, size >> 1);
 #endif
 
-  unsigned int burstsize = period << 2;
   memset(packet->m_data + size, 0, burstsize - IEC61937_DATA_OFFSET - size);
   return burstsize;
 }
