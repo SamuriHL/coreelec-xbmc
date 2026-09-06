@@ -304,6 +304,23 @@ public:
    * Set the playspeed, if demuxer can handle different
    * speeds of playback
    */
+  /*!
+   * \brief Stop feeding the decoder: the source has been judged unusable.
+   * Reads return EOF from here on, so playback unwinds normally instead of hanging.
+   */
+  virtual void MarkBroken() {}
+
+  /*!
+   * \brief Bytes pulled from the input stream so far, or -1 if not tracked.
+   * Lets a caller distinguish "reading but producing nothing decodable" (a broken
+   * file) from "not reading at all" (slow or stalled I/O).
+   */
+  virtual int64_t GetSourceReadBytes() { return -1; }
+
+  // A source that has been scanned this far without yielding a usable packet is
+  // not merely slow.
+  static constexpr int64_t BROKEN_SOURCE_MIN_SCAN_BYTES = 16LL * 1024 * 1024;
+
   virtual void SetSpeed(int iSpeed) {}
 
   /*
