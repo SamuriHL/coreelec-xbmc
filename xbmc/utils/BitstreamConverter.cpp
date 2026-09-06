@@ -1397,6 +1397,13 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
       nal_size = (nal_size << 8) | buf[i];
 
     buf += m_sps_pps_context.length_size;
+
+    // Bound the unit before reading its header byte: a length prefix that ends
+    // the buffer leaves buf == buf_end here, and the dereference below is then
+    // one byte past it.
+    if (buf + nal_size > buf_end || nal_size <= 0)
+      goto fail;
+
     if (m_codec == AV_CODEC_ID_H264)
     {
       unit_type = *buf & 0x1f;
@@ -1405,9 +1412,6 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData,
     {
       unit_type = (*buf >> 1) & 0x3f;
     }
-
-    if (buf + nal_size > buf_end || nal_size <= 0)
-      goto fail;
 
     // Don't add sps/pps if the unit already contain them
     if (m_sps_pps_context.first_idr && (unit_type == nal_sps || unit_type == nal_pps))
