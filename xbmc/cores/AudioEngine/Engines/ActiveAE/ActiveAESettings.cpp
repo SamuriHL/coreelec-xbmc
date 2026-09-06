@@ -65,7 +65,12 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
 
 CActiveAESettings::~CActiveAESettings()
 {
-  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  // the settings component can already be gone at shutdown
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  if (!settingsComponent)
+    return;
+
+  const std::shared_ptr<CSettings> settings = settingsComponent->GetSettings();
 
   std::unique_lock lock(m_cs);
   settings->GetSettingsManager()->UnregisterSettingOptionsFiller("aequalitylevels");
