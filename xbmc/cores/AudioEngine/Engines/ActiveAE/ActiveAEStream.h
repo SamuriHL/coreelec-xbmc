@@ -198,13 +198,20 @@ protected:
   float m_streamRgain;
   float m_streamAmplify;
   double m_streamResampleRatio;
-  int m_streamResampleMode;
+  // Written by SetResampleMode() on the caller's thread, read by the engine thread
+  // in CActiveAE::RunStages(). See m_lastPts below for why these carry their own
+  // synchronisation rather than m_streamLock.
+  std::atomic<int> m_streamResampleMode{0};
   unsigned int m_streamSpace;
   bool m_streamDraining;
   bool m_streamDrained;
   bool m_streamFading;
   int m_streamFreeBuffers;
-  bool m_streamIsBuffering;
+  // Set by the engine thread when a stream starts buffering and cleared by it again
+  // in the serve loop, where two of the reads sit in a hot path (one is a while
+  // condition) that a lock would distort; IsBuffering() reads it from the caller's
+  // thread. The engine's existing m_streamLock use around the clear is left alone.
+  std::atomic<bool> m_streamIsBuffering{false};
   bool m_streamIsFlushed;
   IAEStream *m_streamSlave;
   CCriticalSection m_streamLock;
