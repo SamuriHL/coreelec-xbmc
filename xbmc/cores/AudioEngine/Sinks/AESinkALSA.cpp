@@ -569,7 +569,15 @@ void CAESinkALSA::GetAESParams(const AEAudioFormat& format, std::string& params)
   else
     params += ",AES2=0x00";                                              // 2-channel (stereo)
 
-  if (m_passthrough && format.m_channelLayout.Count() == 8) params += ",AES3=0x09";
+  // For RAW, format.m_channelLayout is still the stream's logical layout here -
+  // Initialize() does not replace it with the wire layout until much later - so a
+  // 5.1 TrueHD would count 6 and miss the HBR case entirely. The number of channels
+  // actually on the wire is what the channel status has to describe.
+  const unsigned int aesChannels = (format.m_dataFormat == AE_FMT_RAW)
+                                       ? GetChannelLayoutRaw(format).Count()
+                                       : format.m_channelLayout.Count();
+
+  if (m_passthrough && aesChannels == 8) params += ",AES3=0x09";
   else if (format.m_sampleRate == 192000) params += ",AES3=0x0e";
   else if (format.m_sampleRate == 176400) params += ",AES3=0x0c";
   else if (format.m_sampleRate ==  96000) params += ",AES3=0x0a";
