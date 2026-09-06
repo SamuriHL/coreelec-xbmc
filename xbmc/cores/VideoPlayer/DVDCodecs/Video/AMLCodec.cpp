@@ -2900,7 +2900,12 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   am_private->am_pkt.pts_checkedin = 0;
 
   // handle pts
-  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE)
+  // avpts/avdts are uint64_t and UINT64_0 is the "no timestamp" sentinel, so a
+  // NEGATIVE pts must take this branch too: converting it saturates to 0, which
+  // reads downstream as a valid timestamp of zero rather than as absent, and
+  // that zero gets checked in to the ptsserver. Containers do present negative
+  // timestamps (edit lists, a negative first pts).
+  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
     am_private->am_pkt.avpts = UINT64_0;
   else
   {
@@ -2909,7 +2914,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   }
 
   // handle dts
-  if (dts == DVD_NOPTS_VALUE)
+  if (dts == DVD_NOPTS_VALUE || dts < 0)
     am_private->am_pkt.avdts = am_private->am_pkt.avpts;
   else
   {
