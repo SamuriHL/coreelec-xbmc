@@ -1608,7 +1608,10 @@ double CDVDDemuxFFmpeg::SelectAspect(AVStream* st, bool& forced)
     double dar = av_q2d(st->sample_aspect_ratio);
     // for stereo modes, use codec aspect ratio
     AVDictionaryEntry* entry = av_dict_get(st->metadata, "stereo_mode", NULL, 0);
-    if (entry)
+    // A zero width would make the left_right divisor below 0.0 and hand back an
+    // infinite aspect; codecpar dimensions are not guaranteed populated here, which
+    // is why the caller checks height before using this result.
+    if (entry && st->codecpar->width > 0 && st->codecpar->height > 0)
     {
       if (strcmp(entry->value, "left_right") == 0 || strcmp(entry->value, "right_left") == 0)
         dar /= ((st->codecpar->width <= 1920.0 ? (st->codecpar->width * 2) : st->codecpar->width) / 1920.0);
