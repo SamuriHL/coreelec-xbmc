@@ -1228,6 +1228,31 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
         m_convert_bitstream ? m_sps_pps_context.length_size : 4;
 
     // process bl frame data
+    //
+    // A profile-7 FEL menu still is a single tiny IDR, well under the kernel
+    // parser's 16K fetch quantum, so the access unit never reaches the decoder
+    // and playback parks (see the idle-input branch in CAMLCodec::GetPicture).
+    // Record the requirement rather than padding inline: filler data belongs
+    // with the trailing NAL units of an access unit, so it is emitted once,
+    // after the last BL NAL and ahead of the RPU/EL run - never between two
+    // slice segments of the same picture. One filler per AU, whatever the
+    // slice count.
+    //
+    // The size test is on the WHOLE access unit, not on the IRAP NAL. Avatar:
+    // Fire and Ash codes its pictures as eight slice segments, and the first
+    // segment of a CRA picture is routinely 261 bytes while the picture as a
+    // whole is ~110 KB. A per-NAL test fires on those - 268 times in a four
+    // second window during ordinary playback - and pads access units that were
+    // never short. What actually strands a unit is the total falling below one
+    // parser fetch, so that is what is measured.
+    //
+    // m_doviIsFEL is only ever set for a profile 4/7 RPU carrying a FEL
+    // enhancement layer, so it is the whole gate - no separate profile test.
+    // It is latched from the first RPU this converter parses, so the very
+    // first access unit of a stream is never padded; stills are mid-title.
+    const bool felPadding = m_doviIsFEL;
+    bool sawIrap = false;
+
     start = buf;
     end = buf + bl_frame_nal_buf_size;
     while (end - buf > static_cast<ptrdiff_t>(nalLengthSize))
@@ -1248,7 +1273,19 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
         nal_type, size);
 
+      if (size > 0 && IsIDR(nal_type))
+        sawIrap = true;
+
       buf += size;
+    }
+
+    if (felPadding && sawIrap && offset > 0 && offset < DV_FEL_TINY_AU_THRESHOLD)
+    {
+      CLog::Log(LOGDEBUG, LOGVIDEO,
+                "CBitstreamConverter::Convert: tiny FEL IRAP access unit ({} bytes) - appending "
+                "{} bytes of filler so it clears the parser fetch quantum",
+                offset, DV_FEL_IDR_FILLER_PAYLOAD);
+      AppendHEVCFillerNAL(&m_convertBuffer, &offset, DV_FEL_IDR_FILLER_PAYLOAD);
     }
 
     if (m_convert_bitstream)
@@ -2043,6 +2080,58 @@ void CBitstreamConverter::BitstreamAllocAndCopy(uint8_t** poutbuf,
     (*poutbuf + offset)[1] = 0;
     (*poutbuf + offset)[2] = 1;
   }
+}
+
+// Append an HEVC filler-data NAL (FD_NUT, type 38) carrying payload_size bytes.
+//
+// Why: the kernel vh265 parser only fetches once it holds a whole quantum (16K),
+// so an access unit smaller than that is never handed to the decoder at all. A
+// profile-7 FEL menu still is one tiny IDR - measured at ~585 bytes on Halo S2D1
+// - and simply parks forever. Filler data is the standard way to bulk an AU out:
+// it is a legal HEVC NAL that every conformant decoder discards.
+//
+// filler_data_rbsp() is ff_byte (0xFF) repeated, then rbsp_trailing_bits() = a
+// stop bit plus zero padding to a byte boundary = 0x80. The payload contains no
+// zero bytes, so no start-code emulation is possible and no emulation-prevention
+// bytes are needed.
+//
+// Unlike the donor this increments *poutbuf_size only after the realloc has
+// succeeded; growing the size past the real allocation on failure would leave
+// the caller writing into a buffer that never grew.
+void CBitstreamConverter::AppendHEVCFillerNAL(uint8_t** poutbuf,
+                                              uint32_t* poutbuf_size,
+                                              uint32_t payload_size)
+{
+  if (payload_size == 0)
+    return;
+
+  const uint32_t offset = *poutbuf_size;
+  const uint8_t nal_header_size = offset ? 3 : 4;
+
+  void* tmp = av_realloc(*poutbuf, offset + nal_header_size + 2 + payload_size);
+  if (!tmp)
+    return;
+  *poutbuf = static_cast<uint8_t*>(tmp);
+  *poutbuf_size = offset + nal_header_size + 2 + payload_size;
+
+  uint8_t* p = *poutbuf + offset;
+  if (nal_header_size == 4)
+  {
+    p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 1;
+  }
+  else
+  {
+    p[0] = 0; p[1] = 0; p[2] = 1;
+  }
+
+  // nal_unit_header: forbidden_zero=0, type=FD_NUT, layer_id=0, tid_plus1=1
+  p[nal_header_size] = static_cast<uint8_t>(HEVC_NAL_FD_NUT << 1);
+  p[nal_header_size + 1] = 0x01;
+
+  uint8_t* payload = p + nal_header_size + 2;
+  if (payload_size > 1)
+    memset(payload, 0xFF, payload_size - 1);
+  payload[payload_size - 1] = 0x80;
 }
 
 int CBitstreamConverter::avc_parse_nal_units(AVIOContext* pb, const uint8_t* buf_in, int size)
