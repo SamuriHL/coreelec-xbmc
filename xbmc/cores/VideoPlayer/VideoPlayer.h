@@ -687,6 +687,12 @@ protected:
 
   bool m_HasVideo;
   bool m_HasAudio;
+
+  // Broken-source detection (coreelec.detectbrokenfiles). Player thread only.
+  std::chrono::steady_clock::time_point m_brokenFileStallStart{};
+  int64_t m_brokenFileStallBytes{-1};
+  bool m_brokenFileNotified{false};
+  bool m_brokenFileStallStarveLogged{false};
   // BD menu->title jump: the discard path keeps the stream players and their
   // decoders alive (flush instead of close); these one-shot flags let
   // OpenAudio/VideoStream reattach the running decoder when the new stream's

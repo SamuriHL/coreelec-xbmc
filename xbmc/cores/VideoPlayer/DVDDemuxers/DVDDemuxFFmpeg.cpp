@@ -181,12 +181,25 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   if (interrupt_cb(h))
     return AVERROR_EXIT;
 
-  std::shared_ptr<CDVDInputStream> pInputStream = static_cast<CDVDDemuxFFmpeg*>(h)->m_pInput;
+  CDVDDemuxFFmpeg* demuxer = static_cast<CDVDDemuxFFmpeg*>(h);
+
+  // Once the source has been judged broken, report EOF so ffmpeg and the player
+  // unwind normally rather than being fed more of it.
+  if (demuxer->m_brokenFileDetected)
+    return AVERROR_EOF;
+
+  std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
   int len = pInputStream->Read(buf, size);
   if (len == 0)
     return AVERROR_EOF;
-  else
-    return len;
+  if (len > 0)
+    demuxer->m_sourceReadBytes += len;
+  return len;
+}
+
+void CDVDDemuxFFmpeg::MarkBroken()
+{
+  m_brokenFileDetected = true;
 }
 /*
 static int dvd_file_write(URLContext* h, uint8_t* buf, int size)
@@ -290,6 +303,9 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
 
   // try to abort after 30 seconds
   m_timeout.Set(30s);
+
+  m_brokenFileDetected = false;
+  m_sourceReadBytes = 0;
 
   CURL url = m_pInput->GetURL();
   if (m_pInput->IsStreamType(DVDSTREAM_TYPE_FFMPEG))
@@ -1095,6 +1111,10 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
   // would consider this the end of stream and stop.
   bool bReturnEmpty = false;
   bool corruptDropped = false;
+
+  if (m_brokenFileDetected)
+    return nullptr;
+
   {
     std::unique_lock lock(m_critSection); // open lock scope
     if (m_pFormatContext)
@@ -1436,7 +1456,40 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
   int ret;
   {
     std::unique_lock lock(m_critSection);
+
+    // A seek into a corrupt or truncated file can have ffmpeg scanning forever
+    // looking for a usable point. Bound it, but only when the user has opted in.
+    const bool detectBroken = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        CSettings::SETTING_COREELEC_DETECT_BROKEN_FILES);
+    const int64_t seekReadBytesStart = m_sourceReadBytes;
+    if (detectBroken)
+      m_timeout.Set(15s);
+
     ret = av_seek_frame(m_pFormatContext, m_seekStream, seek_pts, backwards ? AVSEEK_FLAG_BACKWARD : 0);
+
+    if (detectBroken)
+    {
+      m_timeout.SetInfinite();
+
+      if (ret == AVERROR_EXIT)
+      {
+        // How far it got is the discriminator. Having chewed through megabytes
+        // without finding a seek point means the content is unusable; having read
+        // nothing means the source is slow or asleep, which is not our business.
+        if (m_sourceReadBytes - seekReadBytesStart >= BROKEN_SOURCE_MIN_SCAN_BYTES)
+        {
+          CLog::Log(LOGERROR, "CDVDDemuxFFmpeg::SeekTime - seek scanned {} MiB in 15s without "
+                              "completing; treating the source as broken",
+                    (m_sourceReadBytes - seekReadBytesStart) / (1024 * 1024));
+          m_brokenFileDetected = true;
+        }
+        else
+        {
+          CLog::Log(LOGWARNING, "CDVDDemuxFFmpeg::SeekTime - seek did not complete within 15s but "
+                                "made no read progress; treating as stalled I/O, not a broken file");
+        }
+      }
+    }
 
     if (ret < 0)
     {

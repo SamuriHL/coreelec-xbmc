@@ -47,6 +47,7 @@
 #include "interfaces/AnnouncementManager.h"
 #include "jobs/JobQueue.h"
 #include "messaging/ApplicationMessenger.h"
+#include "dialogs/GUIDialogKaiToast.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "settings/AdvancedSettings.h"
@@ -2828,6 +2829,62 @@ void CVideoPlayer::HandlePlaySpeed()
         }
       }
     }
+  }
+
+  // A source that keeps feeding the demuxer while neither stream can make
+  // anything of it is broken, not slow. Reads advancing is the discriminator: if
+  // they are not, this is stalled I/O (a sleeping disk, a network share hiccup)
+  // and none of our business. Opt-in, and never in a menu or on still images,
+  // where a long stall is entirely normal.
+  const bool brokenFileGate =
+      m_pDemuxer && m_pInputStream && !m_pInputStream->IsRealtime() &&
+      m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall &&
+      m_caching == CACHESTATE_DONE && m_CurrentAudio.inited && m_CurrentVideo.inited &&
+      m_VideoPlayerAudio->IsStalled() && m_VideoPlayerVideo->IsStalled() &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_DETECT_BROKEN_FILES);
+
+  if (brokenFileGate)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_brokenFileStallStart == std::chrono::steady_clock::time_point{})
+    {
+      m_brokenFileStallStart = now;
+      m_brokenFileStallBytes = m_pDemuxer->GetSourceReadBytes();
+    }
+    else if (now - m_brokenFileStallStart >= std::chrono::seconds(5))
+    {
+      const int64_t readBytes = m_pDemuxer->GetSourceReadBytes();
+      if (readBytes >= 0 && m_brokenFileStallBytes >= 0 &&
+          readBytes - m_brokenFileStallBytes >= CDVDDemux::BROKEN_SOURCE_MIN_SCAN_BYTES)
+      {
+        if (!m_brokenFileNotified)
+        {
+          m_brokenFileNotified = true;
+          CLog::Log(LOGERROR, "CVideoPlayer::HandlePlaySpeed - audio and video both stalled for 5s "
+                              "while the demuxer read {} MiB; treating the source as broken and "
+                              "stopping playback",
+                    (readBytes - m_brokenFileStallBytes) / (1024 * 1024));
+          const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+          CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning, strings.Get(60363),
+                                                strings.Get(60364), TOAST_DISPLAY_TIME * 2);
+        }
+        m_pDemuxer->MarkBroken();
+      }
+      else if (!m_brokenFileStallStarveLogged)
+      {
+        m_brokenFileStallStarveLogged = true;
+        CLog::Log(LOGWARNING, "CVideoPlayer::HandlePlaySpeed - audio and video stalled for 5s with "
+                              "no demuxer read progress; treating as I/O starvation, not a broken "
+                              "file");
+      }
+    }
+  }
+  else
+  {
+    m_brokenFileStallStart = {};
+    m_brokenFileStallBytes = -1;
+    m_brokenFileStallStarveLogged = false;
   }
 
   // sync streams to clock
