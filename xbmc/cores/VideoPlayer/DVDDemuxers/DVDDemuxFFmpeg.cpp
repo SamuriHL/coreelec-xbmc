@@ -32,6 +32,7 @@
 #include "settings/SettingsComponent.h"
 #include "threads/SystemClock.h"
 #include "utils/AMLUtils.h"
+#include "utils/BitstreamConverter.h"
 #include "utils/FontUtils.h"
 #include "utils/LanguageTag.h"
 #include "utils/StreamUtils.h"
@@ -3121,6 +3122,30 @@ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
     hdrType = StreamHdrType::HDR_TYPE_HDR10;
   else if (pStream->codecpar->color_trc == AVCOL_TRC_ARIB_STD_B67) // HLG
     hdrType = StreamHdrType::HDR_TYPE_HLG;
+  // Some HEVC MKVs declare BT.2020-10 in the container while the elementary
+  // stream's own VUI says ARIB STD-B67. codecpar carries the container value, so
+  // the stream would play with the wrong EOTF. Only break the tie for the exact
+  // shape that mismatch takes: HEVC, BT.2020 primaries, and no mastering-display
+  // metadata (which would make it HDR10 below). The parser fails closed, so a
+  // stream it cannot read keeps the container's classification.
+  else if (pStream->codecpar->codec_id == AV_CODEC_ID_HEVC &&
+           pStream->codecpar->color_trc == AVCOL_TRC_BT2020_10 &&
+           pStream->codecpar->color_primaries == AVCOL_PRI_BT2020 &&
+           !av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                                    pStream->codecpar->nb_coded_side_data,
+                                    AV_PKT_DATA_MASTERING_DISPLAY_METADATA) &&
+           pStream->codecpar->extradata && pStream->codecpar->extradata_size > 0)
+  {
+    const std::optional<uint8_t> vuiTransfer = CBitstreamConverter::hevc_extract_sps_vui_transfer(
+        pStream->codecpar->extradata, pStream->codecpar->extradata_size);
+    if (vuiTransfer && *vuiTransfer == AVCOL_TRC_ARIB_STD_B67)
+    {
+      hdrType = StreamHdrType::HDR_TYPE_HLG;
+      CLog::Log(LOGINFO,
+                "CDVDDemuxFFmpeg::DetermineHdrType - container declares BT.2020-10 but the HEVC "
+                "SPS VUI declares ARIB STD-B67; classifying stream as HLG");
+    }
+  }
   // file could be SMPTE2086 which FFmpeg currently returns as unknown
   // so use the presence of static metadata to detect it
   else if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
