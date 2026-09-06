@@ -1561,6 +1561,11 @@ void CLinuxRendererGLES::RenderFromFBO()
 
   glBindTexture(GL_TEXTURE_2D, 0);
   VerifyGLState();
+
+  // The FBO texture has now been drawn to the screen and RenderToFBO() rewrites
+  // the whole surface before the next RenderFromFBO(), so its contents need not
+  // survive. Saves the tiler a full-surface write-back per frame.
+  m_fbo.fbo.Invalidate();
 }
 
 //********************************************************************************************************/
