@@ -1544,6 +1544,8 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
 static int wvc1_write_header(am_private_t *para, am_packet_t *pkt)
 {
     CLog::Log(LOGDEBUG, "wvc1_write_header");
+    if (para->extradata.GetSize() < 2)
+        return PLAYER_EMPTY_P;
     memcpy(pkt->hdr->data, para->extradata.GetData() + 1, para->extradata.GetSize() - 1);
     pkt->hdr->size = para->extradata.GetSize() - 1;
     if (1) {
@@ -2830,7 +2832,12 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   am_private->am_pkt.pts_checkedin = 0;
 
   // handle pts
-  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE)
+  // avpts/avdts are uint64_t and UINT64_0 is the "no timestamp" sentinel, so a
+  // NEGATIVE pts must take this branch too: converting it saturates to 0, which
+  // reads downstream as a valid timestamp of zero rather than as absent, and
+  // that zero gets checked in to the ptsserver. Containers do present negative
+  // timestamps (edit lists, a negative first pts).
+  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
     am_private->am_pkt.avpts = UINT64_0;
   else
   {
@@ -2839,7 +2846,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   }
 
   // handle dts
-  if (dts == DVD_NOPTS_VALUE)
+  if (dts == DVD_NOPTS_VALUE || dts < 0)
     am_private->am_pkt.avdts = am_private->am_pkt.avpts;
   else
   {
@@ -3052,7 +3059,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
     m_tp_last_frame = std::chrono::steady_clock::now();
 
-    if (m_last_pts == DVD_NOPTS_VALUE)
+    // m_cur_pts/m_last_pts are uint64_t: a pts that does not advance (a
+    // reordered or repeated AU, or a discontinuity) would wrap the subtraction
+    // to ~1.8e19 instead of yielding a negative, handing the renderer a frame
+    // duration of some 585 thousand years. Fall back to the nominal rate.
+    if (m_last_pts == DVD_NOPTS_VALUE || m_cur_pts <= m_last_pts)
       pVideoPicture->iDuration = static_cast<double>(am_private->video_rate * DVD_TIME_BASE) / UNIT_FREQ;
     else
       pVideoPicture->iDuration = static_cast<double>(m_cur_pts - m_last_pts);
