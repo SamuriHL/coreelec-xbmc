@@ -8,6 +8,8 @@
 
 #include "DVDInputStreamBluray.h"
 
+#include "cores/VideoPlayer/BDStageTrace.h"
+
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDInputStreamFile.h"
@@ -1085,6 +1087,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
   }
   case BD_EVENT_PLAYLIST:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
+    BDSTAGE::Playlist(static_cast<int>(m_event.param), m_menu);
     UpdateLibblurayDebugMask();
     if (m_event.param == m_playlist && m_titleInfo)
     {
