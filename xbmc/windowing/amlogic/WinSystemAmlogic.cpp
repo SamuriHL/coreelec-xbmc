@@ -98,18 +98,20 @@ void CWinSystemAmlogic::SettingOptionsComponentsFiller(const SettingConstPtr& se
       list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(14427),
                         AML_DV_PLAYER_LED);
 
-    AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
-    AML_DISPLAY_DV_LED new_value = old_value;
+    // Kept as int: AML_DISPLAY_DV_LED only has the values 0 and 1, so a -1
+    // sentinel is outside the enum's range and casting to it is undefined. When
+    // the sink advertises neither mode there is no valid choice to move to, and
+    // the option list above is empty anyway, so leave the value alone.
+    const int old_value = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
+    int new_value = old_value;
 
-    if (old_value == AML_DV_TV_LED && !dv_cap.SupportsDVTVLED())
-      new_value = static_cast<AML_DISPLAY_DV_LED>(dv_cap.SupportsDVPlayerLED() ? AML_DV_PLAYER_LED : -1);
+    if (old_value == AML_DV_TV_LED && !dv_cap.SupportsDVTVLED() && dv_cap.SupportsDVPlayerLED())
+      new_value = AML_DV_PLAYER_LED;
+    else if (old_value == AML_DV_PLAYER_LED && !dv_cap.SupportsDVPlayerLED() &&
+             dv_cap.SupportsDVTVLED())
+      new_value = AML_DV_TV_LED;
 
-    if (old_value == AML_DV_PLAYER_LED && !dv_cap.SupportsDVPlayerLED())
-      new_value = static_cast<AML_DISPLAY_DV_LED>(dv_cap.SupportsDVTVLED()? AML_DV_TV_LED : -1);
-
-    if (new_value != -1)
-      current = new_value;
+    current = new_value;
   }
 }
 
@@ -650,15 +652,22 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
   if (sink_dv)
   {
     const int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
-    const AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
-    AML_DISPLAY_DV_LED new_value = old_value;
+    const int old_value = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
+    int new_value = old_value;
 
-    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & LL_YCbCr_422_12BIT) != 0 ? AML_DV_PLAYER_LED : -1);
-
-    if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & DV_RGB_444_8BIT) != 0 ? AML_DV_TV_LED : -1);
+    // Only ever move BETWEEN the two real modes. A sink that advertises neither
+    // has nothing to switch to: the previous -1 sentinel was outside
+    // AML_DISPLAY_DV_LED's range, and because dv_led_modes is an options FILLER
+    // rather than a static list, CSettingInt::CheckValidity() does not validate
+    // it - so the -1 was stored and persisted as a spinner value no option
+    // matches. Every consumer tests `== AML_DV_PLAYER_LED`, so leaving the value
+    // untouched behaves identically for the DV pipeline.
+    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT) &&
+        (dv_cap & LL_YCbCr_422_12BIT))
+      new_value = AML_DV_PLAYER_LED;
+    else if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT) &&
+             (dv_cap & DV_RGB_444_8BIT))
+      new_value = AML_DV_TV_LED;
 
     if (new_value != old_value)
       settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
