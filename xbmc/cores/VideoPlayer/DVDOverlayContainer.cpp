@@ -147,6 +147,7 @@ void CDVDOverlayContainer::Clear()
 
 size_t CDVDOverlayContainer::GetSize()
 {
+  std::unique_lock lock(*this);
   return m_overlays.size();
 }
 
