@@ -50,6 +50,12 @@ public:
   // Cleanup
   void Cleanup();
 
+  // Tell a tile-based GPU the colour attachment's contents are no longer needed,
+  // so it can skip writing them back to memory. Call only after the FBO texture
+  // has been consumed for this frame and before it is fully re-rendered for the
+  // next; the contents are undefined afterwards.
+  void Invalidate() const;
+
   // Set texture filtering
   void SetFiltering(GLenum target, GLenum mode);
 
