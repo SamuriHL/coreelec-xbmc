@@ -288,7 +288,8 @@ double CAudioSinkAE::GetPlayingPts()
 
   double now = m_pClock->GetAbsoluteClock();
   double diff = now - m_timeOfPts;
-  double cache = GetCacheTime();
+  // GetCacheTime() is seconds, everything else here is DVD_TIME_BASE ticks
+  double cache = GetCacheTime() * DVD_TIME_BASE;
   double played = 0.0;
 
   if (diff < cache)
