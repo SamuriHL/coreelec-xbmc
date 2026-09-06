@@ -24,6 +24,6 @@ public:
   virtual void RefreshChanged() {}
 
 protected:
-  float m_fps;
+  float m_fps{0.0f};
   CVideoReferenceClock* m_refClock;
 };
