@@ -266,6 +266,8 @@ protected:
   };
   CClockSync m_clockSync;
 
-  std::chrono::time_point<std::chrono::system_clock> m_videostarted;
+  // steady_clock: differenced only to bound the wait for the video layer to
+  // start, so a wall-clock step must not be able to expire it early.
+  std::chrono::time_point<std::chrono::steady_clock> m_videostarted;
   bool m_displayReset = false;
 };
