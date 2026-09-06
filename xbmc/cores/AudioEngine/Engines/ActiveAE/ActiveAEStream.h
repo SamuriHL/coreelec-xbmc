@@ -213,9 +213,13 @@ protected:
   CSampleBuffer *m_currentBuffer;
   std::unique_ptr<CSoundPacket> m_remapBuffer;
   std::unique_ptr<IAEResample> m_remapper;
-  double m_lastPts;
-  double m_lastPtsJump;
-  std::chrono::milliseconds m_errorInterval{1000};
+  // Written by the producer thread in AddData() and re-initialised by the engine
+  // thread on flush (CActiveAE::FlushStream); m_errorInterval is additionally read
+  // by the engine thread through GetErrorInterval(). Nothing here is under
+  // m_streamLock, so these have to carry their own synchronisation.
+  std::atomic<double> m_lastPts{0.0};
+  std::atomic<double> m_lastPtsJump{0.0};
+  std::atomic<std::chrono::milliseconds> m_errorInterval{std::chrono::milliseconds(1000)};
 
   // only accessed by engine
   std::unique_ptr<CActiveAEBufferPool> m_inputBuffers;
