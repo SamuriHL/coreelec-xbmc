@@ -581,6 +581,11 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
     if (sfreq == 0 || sfreq >= DTS_SFREQ_COUNT)
       continue;
 
+    // AMODE is six bits, but only its first 16 values have a channel assignment;
+    // the rest are user-defined and would index past DTSChannels
+    if (amode >= sizeof(DTSChannels))
+      continue;
+
     // make sure the framesize is sane
     if (m_fsize < 96 || m_fsize > 16384)
       continue;
