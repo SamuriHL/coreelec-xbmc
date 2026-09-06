@@ -76,6 +76,8 @@ AEDeviceType CActiveAESink::GetDeviceType(const std::string &device)
 {
   const AESinkDevice dev = CAESinkFactory::ParseDevice(device);
 
+  std::unique_lock lock(m_sinkInfoLock);
+
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
     for (AEDeviceInfoList::iterator itt2 = itt->m_deviceInfoList.begin(); itt2 != itt->m_deviceInfoList.end(); ++itt2)
@@ -90,6 +92,8 @@ AEDeviceType CActiveAESink::GetDeviceType(const std::string &device)
 
 bool CActiveAESink::HasPassthroughDevice()
 {
+  std::unique_lock lock(m_sinkInfoLock);
+
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
     for (AEDeviceInfoList::iterator itt2 = itt->m_deviceInfoList.begin(); itt2 != itt->m_deviceInfoList.end(); ++itt2)
@@ -105,6 +109,8 @@ bool CActiveAESink::HasPassthroughDevice()
 bool CActiveAESink::SupportsFormat(const std::string &device, AEAudioFormat &format)
 {
   const AESinkDevice dev = CAESinkFactory::ParseDevice(device);
+
+  std::unique_lock lock(m_sinkInfoLock);
 
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
@@ -184,6 +190,8 @@ bool CActiveAESink::NeedIECPacking()
 {
   const AESinkDevice dev = CAESinkFactory::ParseDevice(m_device);
 
+  std::unique_lock lock(m_sinkInfoLock);
+
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
     if (dev.driver == itt->m_sinkName)
@@ -205,6 +213,8 @@ bool CActiveAESink::DeviceExist(std::string driver, const std::string& device)
 {
   if (driver.empty() && m_sink)
     driver = m_sink->GetName();
+
+  std::unique_lock lock(m_sinkInfoLock);
 
   for (const auto& itt : m_sinkInfoList)
   {
@@ -706,41 +716,59 @@ void CActiveAESink::OnExit()
 
 void CActiveAESink::EnumerateSinkList(bool force, std::string driver)
 {
-  if (!m_sinkInfoList.empty() && !force)
-    return;
+  std::vector<AE::AESinkInfo> tmpList;
+  {
+    std::unique_lock lock(m_sinkInfoLock);
+    if (!m_sinkInfoList.empty() && !force)
+      return;
+
+    tmpList = m_sinkInfoList;
+  }
 
   if (!CAESinkFactory::HasSinks())
     return;
 
-  std::vector<AE::AESinkInfo> tmpList(m_sinkInfoList);
-
-  unsigned int c_retry = 4;
-  m_sinkInfoList.clear();
+  // Enumerate into a local list rather than into m_sinkInfoList. Probing can spend
+  // seconds here - up to four retries with a 1.5s sleep between them - and the old
+  // code cleared the published list before that, so a reader on another thread saw
+  // either an empty list or one being reallocated under its iterators. The lock is
+  // deliberately not held across any of this; the finished list is swapped in below.
+  std::vector<AE::AESinkInfo> newList;
 
   if (!driver.empty())
   {
     for (auto const& info : tmpList)
     {
       if (info.m_sinkName != driver)
-        m_sinkInfoList.push_back(info);
+        newList.push_back(info);
     }
   }
 
-  CAESinkFactory::EnumerateEx(m_sinkInfoList, false, driver);
-  while (m_sinkInfoList.empty() && c_retry > 0)
+  unsigned int c_retry = 4;
+  CAESinkFactory::EnumerateEx(newList, false, driver);
+  while (newList.empty() && c_retry > 0)
   {
     CLog::Log(LOGINFO, "No Devices found - retry: {}", c_retry);
     CThread::Sleep(1500ms);
     c_retry--;
     // retry the enumeration
-    CAESinkFactory::EnumerateEx(m_sinkInfoList, true, driver);
+    CAESinkFactory::EnumerateEx(newList, true, driver);
   }
-  CLog::Log(LOGINFO, "Found {} Lists of Devices", m_sinkInfoList.size());
+
+  const size_t found = newList.size();
+  {
+    std::unique_lock lock(m_sinkInfoLock);
+    m_sinkInfoList = std::move(newList);
+  }
+
+  CLog::Log(LOGINFO, "Found {} Lists of Devices", found);
   PrintSinks(driver);
 }
 
 void CActiveAESink::PrintSinks(std::string& driver)
 {
+  std::unique_lock lock(m_sinkInfoLock);
+
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
     if (!driver.empty() && itt->m_sinkName != driver)
@@ -762,6 +790,8 @@ void CActiveAESink::PrintSinks(std::string& driver)
 
 std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool passthrough) const
 {
+  std::unique_lock lock(m_sinkInfoLock);
+
   if (m_sinkInfoList.empty())
     return {};
 
@@ -911,7 +941,10 @@ std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool p
 
 void CActiveAESink::EnumerateOutputDevices(AEDeviceList &devices, bool passthrough)
 {
+  // Not locked across this: it does the slow device probing and takes the lock itself.
   EnumerateSinkList(false, "");
+
+  std::unique_lock lock(m_sinkInfoLock);
 
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
@@ -951,6 +984,9 @@ void CActiveAESink::EnumerateOutputDevices(AEDeviceList &devices, bool passthrou
 void CActiveAESink::GetDeviceFriendlyName(const std::string& device)
 {
   m_deviceFriendlyName = "Device not found";
+
+  std::unique_lock lock(m_sinkInfoLock);
+
   /* Match the device and find its friendly name */
   for (auto itt = m_sinkInfoList.begin(); itt != m_sinkInfoList.end(); ++itt)
   {
@@ -1008,11 +1044,24 @@ void CActiveAESink::OpenSink()
   CLog::Log(LOGDEBUG, "CActiveAESink::OpenSink - trying to open device {}", device);
   m_sink = CAESinkFactory::Create(device, m_sinkFormat);
 
-  // try first device in out list
-  if (!m_sink && !m_sinkInfoList.empty())
+  // Snapshot the fallback device under the lock and release it: opening a sink below
+  // is slow, and the settings GUI reads this list from its own thread.
+  std::string firstDriver;
+  std::string firstName;
   {
-    dev.driver = m_sinkInfoList.front().m_sinkName;
-    dev.name = m_sinkInfoList.front().m_deviceInfoList.front().m_deviceName;
+    std::unique_lock lock(m_sinkInfoLock);
+    if (!m_sinkInfoList.empty() && !m_sinkInfoList.front().m_deviceInfoList.empty())
+    {
+      firstDriver = m_sinkInfoList.front().m_sinkName;
+      firstName = m_sinkInfoList.front().m_deviceInfoList.front().m_deviceName;
+    }
+  }
+
+  // try first device in out list
+  if (!m_sink && !firstName.empty())
+  {
+    dev.driver = firstDriver;
+    dev.name = firstName;
     GetDeviceFriendlyName(dev.name);
     device = dev.driver.empty() ? dev.name : dev.driver + ":" + dev.name;
     m_sinkFormat = m_requestedFormat;

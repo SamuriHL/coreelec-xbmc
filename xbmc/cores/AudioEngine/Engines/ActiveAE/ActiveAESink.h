@@ -12,6 +12,7 @@
 #include "cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Interfaces/AESink.h"
+#include "threads/CriticalSection.h"
 #include "threads/Event.h"
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
@@ -20,6 +21,7 @@
 #include "utils/StringUtils.h"
 
 #include <memory>
+#include <mutex>
 #include <utility>
 
 class CAEBitstreamPacker;
@@ -151,6 +153,11 @@ protected:
 
   std::string m_deviceFriendlyName;
   std::string m_device;
+  // Guards m_sinkInfoList only. EnumerateSinkList() rebuilds the list on the sink
+  // thread while readers reach it straight from other threads - the settings GUI
+  // calls EnumerateOutputDevices() with no message hop - so the vector must never
+  // be enumerated while it is being rewritten. Never held across sink probing.
+  mutable CCriticalSection m_sinkInfoLock;
   std::vector<AE::AESinkInfo> m_sinkInfoList;
   std::unique_ptr<IAESink> m_sink;
   AEAudioFormat m_sinkFormat, m_requestedFormat;
