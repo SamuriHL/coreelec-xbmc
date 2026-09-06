@@ -12,6 +12,8 @@
 
 #include <stdint.h>
 
+#include <optional>
+
 extern "C"
 {
 #include <libavutil/avutil.h>
@@ -137,6 +139,12 @@ enum DOVIL5Mode : int
 class CBitstreamConverter
 {
 public:
+  // Reads transfer_characteristics out of the HEVC SPS VUI in `extradata`.
+  // nullopt when there is no SPS, no VUI, or the bitstream runs short - the
+  // caller then keeps whatever the container declared.
+  static std::optional<uint8_t> hevc_extract_sps_vui_transfer(const uint8_t* extradata,
+                                                              size_t size);
+
   CBitstreamConverter();
   ~CBitstreamConverter();
 

@@ -225,6 +225,358 @@ static int nal_bs_read_ue(nal_bitstream* bs)
   return ((1 << i) - 1 + nal_bs_read(bs, i));
 }
 
+// Defined below with the other bitstream primitives; needed here first.
+static int nal_bs_read_se(nal_bitstream* bs);
+
+// ---------------------------------------------------------------------------
+// HEVC SPS parsing, only to recover the VUI transfer characteristic.
+//
+// Some HEVC MKVs declare BT.2020-10 in the container while the elementary
+// stream's own VUI says ARIB STD-B67 (HLG). The container value wins in
+// ffmpeg's codecpar, so the stream is played with the wrong EOTF.
+// CDVDDemuxFFmpeg::DetermineHdrType() consults this to break that tie.
+//
+// Everything here is read-only and fails closed: any short read, unexpected
+// value or missing VUI returns nullopt and leaves the caller on the container's
+// classification.
+// ---------------------------------------------------------------------------
+static const uint8_t* hevc_find_sps_nal(const uint8_t* extradata, size_t size,
+                                        size_t& sps_nal_size)
+{
+  if (!extradata || size < 8) return nullptr;
+
+  if (extradata[0] == 0x01)
+  {
+    if (size < 23) return nullptr;
+    size_t pos = 22;
+    uint8_t num_arrays = extradata[pos++];
+
+    for (uint8_t i = 0; i < num_arrays; i++)
+    {
+      if (pos + 3 > size) return nullptr;
+      uint8_t nal_type = extradata[pos++] & 0x3F;
+      uint16_t num_nalus = (extradata[pos] << 8) | extradata[pos + 1];
+      pos += 2;
+
+      for (uint16_t j = 0; j < num_nalus; j++)
+      {
+        if (pos + 2 > size) return nullptr;
+        uint16_t nal_size = (extradata[pos] << 8) | extradata[pos + 1];
+        pos += 2;
+        if (pos + nal_size > size) return nullptr;
+
+        if (nal_type == HEVC_NAL_SPS)
+        {
+          sps_nal_size = nal_size;
+          return extradata + pos;
+        }
+        pos += nal_size;
+      }
+    }
+    return nullptr;
+  }
+
+  for (size_t pos = 0; pos + 4 < size; pos++)
+  {
+    size_t header_len = 0;
+    if (extradata[pos] == 0 && extradata[pos + 1] == 0 &&
+        extradata[pos + 2] == 0 && extradata[pos + 3] == 1)
+      header_len = 4;
+    else if (extradata[pos] == 0 && extradata[pos + 1] == 0 && extradata[pos + 2] == 1)
+      header_len = 3;
+
+    if (header_len == 0) continue;
+
+    size_t nal_start = pos + header_len;
+    if (nal_start + 2 > size) return nullptr;
+
+    uint8_t nal_type = (extradata[nal_start] >> 1) & 0x3F;
+    if (nal_type != HEVC_NAL_SPS) continue;
+
+    size_t end = size;
+    for (size_t s = nal_start + 2; s + 2 < size; s++)
+    {
+      if (extradata[s] == 0 && extradata[s + 1] == 0 && extradata[s + 2] == 1)
+      {
+        end = s;
+        break;
+      }
+      if (s + 3 < size && extradata[s] == 0 && extradata[s + 1] == 0 &&
+          extradata[s + 2] == 0 && extradata[s + 3] == 1)
+      {
+        end = s;
+        break;
+      }
+    }
+
+    sps_nal_size = end - nal_start;
+    return extradata + nal_start;
+  }
+
+  return nullptr;
+}
+
+
+static bool hevc_skip_profile_tier_level(nal_bitstream& bs, int max_sub_layers_minus1)
+{
+  nal_bs_read(&bs, 2);
+  nal_bs_read(&bs, 1);
+  nal_bs_read(&bs, 5);
+  nal_bs_read(&bs, 32);
+  nal_bs_read(&bs, 16);
+  nal_bs_read(&bs, 16);
+  nal_bs_read(&bs, 16);
+  nal_bs_read(&bs, 8);
+
+  std::vector<bool> sub_layer_profile_present(max_sub_layers_minus1, false);
+  std::vector<bool> sub_layer_level_present(max_sub_layers_minus1, false);
+  for (int i = 0; i < max_sub_layers_minus1; i++)
+  {
+    sub_layer_profile_present[i] = (nal_bs_read(&bs, 1) != 0);
+    sub_layer_level_present[i] = (nal_bs_read(&bs, 1) != 0);
+  }
+
+  if (max_sub_layers_minus1 > 0)
+  {
+    for (int i = max_sub_layers_minus1; i < 8; i++)
+      nal_bs_read(&bs, 2);
+  }
+
+  for (int i = 0; i < max_sub_layers_minus1; i++)
+  {
+    if (sub_layer_profile_present[i])
+    {
+      nal_bs_read(&bs, 2);
+      nal_bs_read(&bs, 1);
+      nal_bs_read(&bs, 5);
+      nal_bs_read(&bs, 32);
+      nal_bs_read(&bs, 16);
+      nal_bs_read(&bs, 16);
+      nal_bs_read(&bs, 16);
+    }
+    if (sub_layer_level_present[i])
+      nal_bs_read(&bs, 8);
+  }
+
+  return !nal_bs_eos(&bs);
+}
+
+static void hevc_skip_scaling_list_data(nal_bitstream& bs)
+{
+  for (int sizeId = 0; sizeId < 4; sizeId++)
+  {
+    int step = (sizeId == 3) ? 3 : 1;
+    for (int matrixId = 0; matrixId < 6; matrixId += step)
+    {
+      int scaling_list_pred_mode_flag = nal_bs_read(&bs, 1);
+      if (!scaling_list_pred_mode_flag)
+      {
+        nal_bs_read_ue(&bs);
+      }
+      else
+      {
+        int coefNum = std::min(64, 1 << (4 + (sizeId << 1)));
+        if (sizeId > 1)
+          nal_bs_read_se(&bs);
+        for (int i = 0; i < coefNum; i++)
+          nal_bs_read_se(&bs);
+      }
+    }
+  }
+}
+
+static bool hevc_parse_st_ref_pic_set(nal_bitstream& bs, int stRpsIdx,
+                                      int num_short_term_ref_pic_sets,
+                                      std::vector<int>& numDeltaPocs)
+{
+  bool inter_pred_flag = false;
+  if (stRpsIdx != 0)
+    inter_pred_flag = (nal_bs_read(&bs, 1) != 0);
+
+  if (inter_pred_flag)
+  {
+    int delta_idx_minus1 = 0;
+    if (stRpsIdx == num_short_term_ref_pic_sets)
+      delta_idx_minus1 = nal_bs_read_ue(&bs);
+    nal_bs_read(&bs, 1);
+    nal_bs_read_ue(&bs);
+
+    int refRpsIdx = stRpsIdx - (delta_idx_minus1 + 1);
+    if (refRpsIdx < 0 || refRpsIdx >= static_cast<int>(numDeltaPocs.size()))
+      return false;
+    int refNumDeltaPocs = numDeltaPocs[refRpsIdx];
+
+    int numDelta = 0;
+    for (int j = 0; j <= refNumDeltaPocs; j++)
+    {
+      int used_by_curr_pic_flag = nal_bs_read(&bs, 1);
+      int use_delta_flag = 1;
+      if (!used_by_curr_pic_flag)
+        use_delta_flag = nal_bs_read(&bs, 1);
+      if (used_by_curr_pic_flag || use_delta_flag)
+        numDelta++;
+    }
+    numDeltaPocs[stRpsIdx] = numDelta;
+  }
+  else
+  {
+    int num_negative_pics = nal_bs_read_ue(&bs);
+    int num_positive_pics = nal_bs_read_ue(&bs);
+
+    if (num_negative_pics < 0 || num_negative_pics > 64 ||
+        num_positive_pics < 0 || num_positive_pics > 64)
+      return false;
+
+    for (int i = 0; i < num_negative_pics; i++)
+    {
+      nal_bs_read_ue(&bs);
+      nal_bs_read(&bs, 1);
+    }
+    for (int i = 0; i < num_positive_pics; i++)
+    {
+      nal_bs_read_ue(&bs);
+      nal_bs_read(&bs, 1);
+    }
+    numDeltaPocs[stRpsIdx] = num_negative_pics + num_positive_pics;
+  }
+
+  return !nal_bs_eos(&bs);
+}
+
+
+std::optional<uint8_t> CBitstreamConverter::hevc_extract_sps_vui_transfer(
+    const uint8_t* extradata, size_t size)
+{
+  size_t sps_nal_size = 0;
+  const uint8_t* sps_nal = hevc_find_sps_nal(extradata, size, sps_nal_size);
+  if (!sps_nal || sps_nal_size < 3) return std::nullopt;
+
+  nal_bitstream bs;
+  nal_bs_init(&bs, sps_nal + 2, sps_nal_size - 2);
+
+  nal_bs_read(&bs, 4);
+  int max_sub_layers_minus1 = nal_bs_read(&bs, 3);
+  nal_bs_read(&bs, 1);
+
+  if (!hevc_skip_profile_tier_level(bs, max_sub_layers_minus1))
+    return std::nullopt;
+
+  nal_bs_read_ue(&bs);
+
+  int chroma_format_idc = nal_bs_read_ue(&bs);
+  if (chroma_format_idc == 3)
+    nal_bs_read(&bs, 1);
+
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+
+  if (nal_bs_read(&bs, 1))
+  {
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+  }
+
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+  int log2_max_pic_order_cnt_lsb_minus4 = nal_bs_read_ue(&bs);
+
+  int sps_sub_layer_ordering_info_present_flag = nal_bs_read(&bs, 1);
+  int start_layer = sps_sub_layer_ordering_info_present_flag ? 0 : max_sub_layers_minus1;
+  for (int i = start_layer; i <= max_sub_layers_minus1; i++)
+  {
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+  }
+
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+  nal_bs_read_ue(&bs);
+
+  int scaling_list_enabled_flag = nal_bs_read(&bs, 1);
+  if (scaling_list_enabled_flag)
+  {
+    int sps_scaling_list_data_present_flag = nal_bs_read(&bs, 1);
+    if (sps_scaling_list_data_present_flag)
+      hevc_skip_scaling_list_data(bs);
+  }
+
+  nal_bs_read(&bs, 1);
+  nal_bs_read(&bs, 1);
+  int pcm_enabled_flag = nal_bs_read(&bs, 1);
+  if (pcm_enabled_flag)
+  {
+    nal_bs_read(&bs, 4);
+    nal_bs_read(&bs, 4);
+    nal_bs_read_ue(&bs);
+    nal_bs_read_ue(&bs);
+    nal_bs_read(&bs, 1);
+  }
+
+  int num_short_term_ref_pic_sets = nal_bs_read_ue(&bs);
+  if (num_short_term_ref_pic_sets < 0 || num_short_term_ref_pic_sets > 64)
+    return std::nullopt;
+
+  std::vector<int> numDeltaPocs(num_short_term_ref_pic_sets, 0);
+  for (int i = 0; i < num_short_term_ref_pic_sets; i++)
+  {
+    if (!hevc_parse_st_ref_pic_set(bs, i, num_short_term_ref_pic_sets, numDeltaPocs))
+      return std::nullopt;
+  }
+
+  if (nal_bs_read(&bs, 1))
+  {
+    int num_long_term_ref_pics_sps = nal_bs_read_ue(&bs);
+    if (num_long_term_ref_pics_sps < 0 || num_long_term_ref_pics_sps > 32)
+      return std::nullopt;
+    int poc_bits = log2_max_pic_order_cnt_lsb_minus4 + 4;
+    if (poc_bits < 4 || poc_bits > 16) return std::nullopt;
+    for (int i = 0; i < num_long_term_ref_pics_sps; i++)
+    {
+      nal_bs_read(&bs, poc_bits);
+      nal_bs_read(&bs, 1);
+    }
+  }
+
+  nal_bs_read(&bs, 1);
+  nal_bs_read(&bs, 1);
+
+  int vui_parameters_present_flag = nal_bs_read(&bs, 1);
+  if (!vui_parameters_present_flag) return std::nullopt;
+
+  if (nal_bs_read(&bs, 1))
+  {
+    int aspect_ratio_idc = nal_bs_read(&bs, 8);
+    if (aspect_ratio_idc == 255)
+    {
+      nal_bs_read(&bs, 16);
+      nal_bs_read(&bs, 16);
+    }
+  }
+
+  if (nal_bs_read(&bs, 1))
+    nal_bs_read(&bs, 1);
+
+  if (nal_bs_read(&bs, 1))
+  {
+    nal_bs_read(&bs, 3);
+    nal_bs_read(&bs, 1);
+    if (nal_bs_read(&bs, 1))
+    {
+      nal_bs_read(&bs, 8);
+      uint8_t transfer = static_cast<uint8_t>(nal_bs_read(&bs, 8));
+      return transfer;
+    }
+  }
+
+  return std::nullopt;
+}
+
 // read signed Exp-Golomb code
 static int nal_bs_read_se(nal_bitstream *bs)
 {
