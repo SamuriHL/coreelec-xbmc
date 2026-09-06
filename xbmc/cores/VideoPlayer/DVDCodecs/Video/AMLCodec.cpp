@@ -23,6 +23,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "utils/BitstreamConverter.h"
 #include "utils/log.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -2018,6 +2019,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
+  // Mirror of CBitstreamConverter's tiny-IDR padding gate; see m_felIdrPadding.
+  m_felIdrPadding = doviIsFEL;
   m_park_last_data_len = -1;
   m_sessionGen++;
 
@@ -3039,6 +3042,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   const int prev_data_len = m_park_last_data_len;
   m_park_last_data_len = data_len;
 
+  // Ceiling below which a stable, non-advancing buffer counts as idle input
+  // rather than a decoder stall. A padded FEL access unit is intentionally
+  // larger than the 16K parser quantum this is derived from, so admit one
+  // pad's worth on top: otherwise a still the padding fails to un-wedge stops
+  // matching the idle branch and falls through to the flush - exactly the
+  // outcome the park exists to prevent. Costs nothing when padding is off.
+  const int idleInputLimit =
+      m_drain ? 65536
+              : (16384 + (m_felIdrPadding
+                              ? static_cast<int>(CBitstreamConverter::DV_FEL_IDR_FILLER_PAYLOAD)
+                              : 0));
+
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
@@ -3096,7 +3111,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     return CDVDVideoCodec::VC_NONE;
   else if (ret == EAGAIN &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||
-            (data_len < (m_drain ? 65536 : 16384) && data_len == prev_data_len)))
+            (data_len < idleInputLimit && data_len == prev_data_len)))
   {
     // Idle input, not a decoder stall - park the stall clock instead of
     // letting the timeout below flush a healthy session (the flush discards
