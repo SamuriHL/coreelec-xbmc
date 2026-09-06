@@ -8,6 +8,8 @@
 
 #include "VideoPlayer.h"
 
+#include "cores/VideoPlayer/BDStageTrace.h"
+
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDDemuxers/DVDDemux.h"
 #include "DVDDemuxers/DVDDemuxCC.h"
@@ -844,6 +846,8 @@ CVideoPlayer::~CVideoPlayer()
 bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options)
 {
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
+
+  BDSTAGE::Play();
 
   // Stash the path for the Amlogic DV L5 active-area detector, which runs on the
   // codec thread where g_application.CurrentFile() is not yet set.

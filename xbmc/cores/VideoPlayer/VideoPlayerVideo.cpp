@@ -8,6 +8,8 @@
 
 #include "VideoPlayerVideo.h"
 
+#include "cores/VideoPlayer/BDStageTrace.h"
+
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
 #include "DVDCodecs/Overlay/DVDOverlay.h"
@@ -1083,6 +1085,11 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
+  // Only once we are actually due and have a buffer: that is the first frame the
+  // viewer sees for this segment.
+  if (timeToDisplay.count() <= 0 && buffer >= 0)
+    BDSTAGE::PictureShown();
+
   if (buffer < 0)
   {
     // The render buffer pool can fill up in trick-play FF, with more new pictures decoded than
