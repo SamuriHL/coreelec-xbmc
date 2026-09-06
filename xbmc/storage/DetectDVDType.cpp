@@ -110,51 +110,65 @@ void CDetectDVDMedia::UpdateDvdrom()
 
       case DriveState::OPEN:
       {
-        // Send Message to GUI that disc been ejected
-        SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
-                          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(502));
-        CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_REMOVED_MEDIA);
-        CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
-        // Clear all stored info
-        Clear();
-        // Update drive state
-        waitLock.unlock();
-        m_DriveState = DriveState::OPEN;
+        // Only announce the transition, the way CLOSED_MEDIA_PRESENT below already does.
+        if (m_DriveState != DriveState::OPEN || m_bStartup)
+        {
+          // Send Message to GUI that disc been ejected
+          SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
+                            CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(502));
+          CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_REMOVED_MEDIA);
+          CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
+          // Clear all stored info
+          Clear();
+          // Update drive state
+          waitLock.unlock();
+          m_DriveState = DriveState::OPEN;
+        }
         return;
       }
       break;
       case DriveState::NOT_READY:
       {
-        // Drive is not ready (closing, opening)
-        SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
-                          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(503));
-        m_DriveState = DriveState::NOT_READY;
-        // DVD-ROM in undefined state
-        // Better delete old CD Information
-        if (m_pCdInfo != nullptr)
+        // PollDriveState() does not edge-detect this one: it is what the posix handler
+        // reports whenever cdio_open() fails, so a drive that disappears (a USB drive
+        // dropping off its hub) lands here on every 2s poll for as long as it is gone.
+        // Without this guard that reposts the source update to the GUI forever.
+        if (m_DriveState != DriveState::NOT_READY || m_bStartup)
         {
-          delete m_pCdInfo;
-          m_pCdInfo = nullptr;
+          // Drive is not ready (closing, opening)
+          SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
+                            CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(503));
+          m_DriveState = DriveState::NOT_READY;
+          // DVD-ROM in undefined state
+          // Better delete old CD Information
+          if (m_pCdInfo != nullptr)
+          {
+            delete m_pCdInfo;
+            m_pCdInfo = nullptr;
+          }
+          waitLock.unlock();
+          CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_UPDATE_SOURCES);
+          CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
+          // Do we really need sleep here? This will fix: [ 1530771 ] "Open tray" problem
+          // CThread::Sleep(6000ms);
         }
-        waitLock.unlock();
-        CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_UPDATE_SOURCES);
-        CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
-        // Do we really need sleep here? This will fix: [ 1530771 ] "Open tray" problem
-        // CThread::Sleep(6000ms);
         return;
       }
       break;
 
       case DriveState::CLOSED_NO_MEDIA:
       {
-        // Nothing in there...
-        SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
-                          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(504));
-        m_DriveState = DriveState::CLOSED_NO_MEDIA;
-        // Send Message to GUI that disc has changed
-        CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_UPDATE_SOURCES);
-        waitLock.unlock();
-        CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
+        if (m_DriveState != DriveState::CLOSED_NO_MEDIA || m_bStartup)
+        {
+          // Nothing in there...
+          SetNewDVDShareUrl(CServiceBroker::GetMediaManager().TranslateDevicePath(m_diskPath), false,
+                            CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(504));
+          m_DriveState = DriveState::CLOSED_NO_MEDIA;
+          // Send Message to GUI that disc has changed
+          CGUIMessage msg(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_UPDATE_SOURCES);
+          waitLock.unlock();
+          CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
+        }
         return;
       }
       break;
