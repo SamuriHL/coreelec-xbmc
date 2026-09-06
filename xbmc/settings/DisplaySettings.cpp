@@ -913,7 +913,11 @@ void CDisplaySettings::SettingOptionsRefreshRatesFiller(const SettingConstPtr& s
     list.emplace_back(StringUtils::Format("{:.2f}", refreshrate.RefreshRate), screenmode);
   }
 
-  if (!match)
+  // DefaultRefreshRate() indexes rates[0] unconditionally (WinSystem.cpp:237), so an
+  // empty list - the display no longer reporting the mode we are asking about - reads
+  // off the end of the vector. Leave `current` alone in that case; there is nothing
+  // sensible to fall back to.
+  if (!match && !refreshrates.empty())
     current = GetStringFromResolution(res, CServiceBroker::GetWinSystem()->DefaultRefreshRate(refreshrates).RefreshRate);
 }
 
