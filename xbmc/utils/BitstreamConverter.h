@@ -211,6 +211,17 @@ public:
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
   bool GetIsHdrPlus() const { return m_IsHdr10Plus; }
 
+  // Profile-7 FEL tiny-IDR padding (see AppendHEVCFillerNAL). Public because
+  // CAMLCodec has to widen its idle-input wedge detector by exactly this much:
+  // a padded access unit is deliberately larger than the parser fetch quantum,
+  // which is also the threshold that decides a short buffer is idle rather
+  // than stalled.
+  // The kernel vh265 parser fetch quantum: an access unit smaller than this
+  // is never handed to the decoder, so this - not any single NAL's size - is
+  // what decides whether a unit needs padding.
+  static constexpr uint32_t DV_FEL_TINY_AU_THRESHOLD = 16384;
+  static constexpr uint32_t DV_FEL_IDR_FILLER_PAYLOAD = 32 * 1024;
+
   static bool mpeg2_sequence_header(const uint8_t* data,
                                     const uint32_t size,
                                     mpeg2_sequence* sequence);
@@ -225,6 +236,9 @@ protected:
   // bitstream to bytestream (Annex B) conversion support.
   bool IsIDR(uint8_t unit_type);
   bool IsSlice(uint8_t unit_type);
+  static void AppendHEVCFillerNAL(uint8_t** poutbuf,
+                                  uint32_t* poutbuf_size,
+                                  uint32_t payload_size);
   bool BitstreamConvertInitAVC(void* in_extradata, int in_extrasize);
   bool BitstreamConvertInitHEVC(void* in_extradata, int in_extrasize);
   bool BitstreamConvertInitVVC(void* in_extradata, int in_extrasize);
