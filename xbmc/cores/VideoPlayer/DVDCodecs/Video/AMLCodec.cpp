@@ -2039,7 +2039,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_hints = hints;
   m_state = 0;
   m_hints.pClock = hints.pClock;
-  m_tp_last_frame = std::chrono::system_clock::now();
+  m_tp_last_frame = std::chrono::steady_clock::now();
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
@@ -2648,16 +2648,16 @@ void CAMLCodec::CloseDecoder()
     // holds the DV core engaged across menu<->title segment swaps (that is
     // what stops the sink re-locking on every segment), so the status never
     // reaches 0 there and waiting would only burn the full bound on each swap.
-    std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
+    std::chrono::time_point<std::chrono::steady_clock> now(std::chrono::steady_clock::now());
     if (!aml_dv_disc_session())
     {
       while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
-             (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+             (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
         usleep(10000); // wait 10ms
     }
 
     while (AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
-           (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+           (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
       usleep(10000); // wait 10ms
 
     if (dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE)
@@ -2936,14 +2936,14 @@ int CAMLCodec::PollFrame()
     return 0;
 
   struct pollfd codec_poll_fd[1];
-  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
+  std::chrono::time_point<std::chrono::steady_clock> now(std::chrono::steady_clock::now());
 
   codec_poll_fd[0].fd = m_pollDevice;
   codec_poll_fd[0].events = POLLOUT;
 
   poll(codec_poll_fd, 1, 50);
   g_aml_sync_event.Set();
-  int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - now).count();
+  int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count();
   CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
   return 1;
 }
@@ -3039,7 +3039,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   int ret = EAGAIN;
   int data_len, free_len, size;
   float buffer_level = GetBufferLevel(0, data_len, free_len, size);
-  std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
+  std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()
     - m_tp_last_frame).count());
   bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
   // progress term for the parked stall clock below: a CHANGING data_len with
@@ -3070,7 +3070,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
-    m_tp_last_frame = std::chrono::system_clock::now();
+    m_tp_last_frame = std::chrono::steady_clock::now();
 
     if (m_last_pts == DVD_NOPTS_VALUE)
       pVideoPicture->iDuration = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
@@ -3126,7 +3126,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     // consume-without-output wedge (eaten-GOP class) keeps data_len
     // CHANGING call-to-call, failing the prev_data_len equality - either
     // way the stall clock keeps running and times out.
-    m_tp_last_frame = std::chrono::system_clock::now();
+    m_tp_last_frame = std::chrono::steady_clock::now();
     return CDVDVideoCodec::VC_BUFFER;
   }
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
@@ -3137,7 +3137,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
               elapsed_since_last_frame.count(), ret, strerror(ret), data_len, free_len,
               buffer_level, m_minimum_buffer_level, m_buffer_level_ready, m_drain, m_speed,
               streambuffer);
-    m_tp_last_frame = std::chrono::system_clock::now();
+    m_tp_last_frame = std::chrono::steady_clock::now();
     return CDVDVideoCodec::VC_FLUSHED;
   }
 
@@ -3167,7 +3167,7 @@ void CAMLCodec::SetSpeed(int speed)
     case DVD_PLAYSPEED_NORMAL:
       //m_dll->codec_resume(&am_private->vcodec);
       m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
-      m_tp_last_frame = std::chrono::system_clock::now();
+      m_tp_last_frame = std::chrono::steady_clock::now();
       break;
     default:
       //m_dll->codec_resume(&am_private->vcodec);
