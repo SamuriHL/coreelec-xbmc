@@ -272,7 +272,7 @@ bool CRenderManager::Configure()
       m_free.push_back(i);
 
     m_bRenderGUI = true;
-    m_videostarted = std::chrono::system_clock::now();
+    m_videostarted = std::chrono::steady_clock::now();
     m_bTriggerUpdateResolution = true;
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
@@ -889,7 +889,7 @@ void CRenderManager::UpdateResolution()
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
     {
-      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - m_videostarted);
+      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_videostarted);
 
       if (m_amdv_wait_delay == -1)
         return;
@@ -946,7 +946,7 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
     m_picture.iHeight = height;
     m_picture.stereoMode = stereomode;
   }
-  m_videostarted = std::chrono::system_clock::now();
+  m_videostarted = std::chrono::steady_clock::now();
   m_bTriggerUpdateResolution = true;
 }
 
