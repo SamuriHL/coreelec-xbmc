@@ -8,6 +8,8 @@
 
 
 #include "AMLCodec.h"
+
+#include "cores/VideoPlayer/BDStageTrace.h"
 #include "DynamicDll.h"
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
@@ -2051,6 +2053,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
+  BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
   m_zoom = -1.0f;
@@ -3139,6 +3142,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
     m_tp_last_frame = std::chrono::steady_clock::now();
+    BDSTAGE::PictureEmitted();
 
     if (m_last_pts == DVD_NOPTS_VALUE)
       pVideoPicture->iDuration = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
