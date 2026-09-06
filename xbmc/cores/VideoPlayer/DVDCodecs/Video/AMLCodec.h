@@ -147,7 +147,10 @@ private:
   static double m_ttd;
   CProcessInfo &m_processInfo;
   int m_decoder_timeout;
-  std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
+  // steady_clock, not system_clock: this is only ever differenced against
+  // itself to time the decoder-stall timeout, which a wall-clock step would
+  // trip (or suppress) with no decoder involvement at all.
+  std::chrono::time_point<std::chrono::steady_clock> m_tp_last_frame;
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;
