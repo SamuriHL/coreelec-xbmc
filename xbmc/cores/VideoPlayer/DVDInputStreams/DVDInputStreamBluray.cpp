@@ -2237,6 +2237,8 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
   if(m_bd == nullptr || !m_navmode)
     return;
 
+  BDSTAGE::UserInput();
+
   int ret = bd_user_input(m_bd, -1, vk);
   if (ret < 0)
   {
