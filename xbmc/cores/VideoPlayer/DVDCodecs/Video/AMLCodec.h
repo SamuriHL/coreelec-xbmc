@@ -163,4 +163,9 @@ private:
   // rips - both are fed in short segments that can EOS below any fill
   // threshold, wedging the gate in a starve/reopen loop.
   bool            m_skipBufferFillGate = false;
+  // Profile-7 FEL: CBitstreamConverter pads a tiny IDR access unit with filler
+  // data so it clears the parser's fetch quantum. That deliberately pushes a
+  // parked still ABOVE the idle-input threshold below, which would turn a
+  // benign park into a decoder flush - so the threshold moves with the pad.
+  bool            m_felIdrPadding = false;
 };
