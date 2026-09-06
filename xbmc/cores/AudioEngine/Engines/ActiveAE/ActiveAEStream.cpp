@@ -275,7 +275,9 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
           if (m_lastPtsJump != 0)
           {
             auto diff = std::chrono::milliseconds(static_cast<int>(pts - m_lastPtsJump));
-            if (diff > m_errorInterval)
+            // load() is required, not stylistic: duration's comparison operators are
+            // templates, so they never apply std::atomic's conversion operator.
+            if (diff > m_errorInterval.load())
             {
               diff += 1s;
               diff = std::min(diff, 6000ms);
