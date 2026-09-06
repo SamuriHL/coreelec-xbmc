@@ -12,6 +12,7 @@
 #include "DemuxStreamSSIF.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
+#include <atomic>
 #include <map>
 #include <memory>
 #include <vector>
@@ -91,6 +92,8 @@ public:
   bool Reset() override ;
   void Flush() override;
   void Abort() override;
+  void MarkBroken() override;
+  int64_t GetSourceReadBytes() override { return m_sourceReadBytes; }
   void SetSpeed(int iSpeed) override;
   std::string GetFileName() override;
 
@@ -117,6 +120,12 @@ public:
 
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
+
+  // Touched from the ffmpeg read callback (a free function) as well as the demux
+  // and player threads, so they sit with m_pInput rather than behind protected,
+  // and they are atomics.
+  std::atomic<bool> m_brokenFileDetected{false};
+  std::atomic<int64_t> m_sourceReadBytes{0};
 
 protected:
   friend class CDemuxStreamAudioFFmpeg;

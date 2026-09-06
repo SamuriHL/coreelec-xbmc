@@ -25956,3 +25956,25 @@ msgstr ""
 msgctxt "#60360"
 msgid "A Dolby Vision title shown on a display that cannot accept Dolby Vision has to be converted. This build normally does that with its VS10 engine, forcing an explicit HDR10 output (SDR if the display takes neither). Turn this on to hand the conversion to CoreELEC's own path instead, which signals the Dolby Vision core in low-latency mode and lets it map to the best format the display reports. Affects displays without Dolby Vision only, and only while the Dolby Vision core is engaged for the title - with 'Dolby Vision source output' left at Bypass a profile 7 or 8 title still plays as ordinary HDR10 and this changes nothing. Off = VS10, this build's default. Offered so the two can be compared; which looks better is worth reporting."
 msgstr ""
+
+#empty string with id 60361
+#: system/settings/settings.xml
+msgctxt "#60361"
+msgid "Stop playback on a broken or truncated file"
+msgstr ""
+
+#. Setting help for stopping playback on a broken source
+#: system/settings/settings.xml
+msgctxt "#60362"
+msgid "Stops playback and warns when a source stalls with no prospect of recovering - typical of corrupt, partially-downloaded or still-growing files. A seek that scans a large amount of the file without completing, or audio and video both stalling for more than five seconds during normal playback, is treated as a broken source. A stall where nothing is being read at all is treated as slow or sleeping storage instead and is left alone. Disabled by default."
+msgstr ""
+
+#. Notification heading shown when a broken source stops playback
+msgctxt "#60363"
+msgid "Broken or truncated file"
+msgstr ""
+
+#. Notification body shown when a broken source stops playback
+msgctxt "#60364"
+msgid "Playback stopped - the source stalled or a seek did not complete"
+msgstr ""
