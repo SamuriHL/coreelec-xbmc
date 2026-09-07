@@ -1148,7 +1148,27 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   // open video stream
   valid   = false;
 
-  PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
+  // A file offering two full video streams of different HDR formats gets the
+  // one the user's preference selects, unless they have already picked a stream
+  // for this item by hand - that choice outranks a format preference.
+  int videoStreamPref = m_processInfo->GetVideoSettings().m_VideoStream;
+  const int preferredVideoId = m_pDemuxer ? m_pDemuxer->GetPreferredVideoStream() : -1;
+  if (videoStreamPref < 0 && preferredVideoId >= 0)
+  {
+    for (const auto& s : m_SelectionStreams.Get(StreamType::VIDEO))
+    {
+      // Qualified by source: a DVD's nav streams are numbered 1..angles and can
+      // land on the same value as a demuxer uniqueId.
+      if (s.id == preferredVideoId && STREAM_SOURCE_MASK(s.source) == STREAM_SOURCE_DEMUX &&
+          s.demuxerId == m_pDemuxer->GetDemuxerId())
+      {
+        videoStreamPref = s.type_index;
+        break;
+      }
+    }
+  }
+
+  PredicateVideoFilter vf(videoStreamPref);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
     // choose video base layer as default if dual layer stream
