@@ -168,6 +168,15 @@ private:
   // parked still ABOVE the idle-input threshold below, which would turn a
   // benign park into a decoder flush - so the threshold moves with the pad.
   bool            m_felIdrPadding = false;
+
+  // Input-side write-failure recovery. A codec write that keeps failing used to
+  // be reported to the player as a consumed packet, so the picture simply
+  // stopped with nothing in the log; these track how long it has been failing
+  // so it can be reset periodically and finally given up on.
+  bool m_wrFailActive = false;
+  std::chrono::time_point<std::chrono::steady_clock> m_tpWrFailStart;
+  std::chrono::time_point<std::chrono::steady_clock> m_tpWrFailLastReset;
+  std::chrono::time_point<std::chrono::steady_clock> m_tpWrFailLastWarn;
   // The idle-input park deliberately returns VC_BUFFER forever rather than
   // flushing a healthy session. That silence is right for playback and wrong
   // for diagnosis: a park that never ends looks exactly like a frozen picture
