@@ -330,6 +330,12 @@ bool CWinSystemAmlogic::InitWindowSystem()
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
+  // Before anything touches the display: undo a DV core left engaged by a
+  // previous run that died before its disc-session teardown. Nothing else can -
+  // the kernel's own self-heal hooks enable_amdv(0), which a stale session never
+  // reaches.
+  aml_dv_recover_stale_disc_session();
+
   RefreshDisplayCapabilities();
 
   if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
