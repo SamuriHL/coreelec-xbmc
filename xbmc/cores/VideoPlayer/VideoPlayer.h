@@ -432,6 +432,17 @@ protected:
   void AdaptForcedSubtitles();
   bool CloseStream(CCurrentStream& current, bool bWaitForBuffers);
 
+  /*!
+   * \brief Reopen a stream whose player thread has exited, or drop it.
+   *
+   * A dead player still reports IsInited(), so the demuxer keeps filling a
+   * queue nothing drains until the read gate stops playback entirely.
+   */
+  void CheckStreamPlayerAlive(CCurrentStream& current,
+                              IDVDStreamPlayer* player,
+                              int& restarts,
+                              const char* name);
+
   bool CheckIsCurrent(const CCurrentStream& current, CDemuxStream* stream, DemuxPacket* pkg);
   void ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket);
@@ -685,6 +696,8 @@ protected:
   // own queue is full - the shape a dead player thread leaves behind.
   bool m_syncStuckArmed = false;
   XbmcThreads::EndTime<> m_syncStuckTimer;
+  int m_audioPlayerRestarts = 0;
+  int m_videoPlayerRestarts = 0;
 
   CEdl m_Edl;
   bool m_SkipCommercials;
