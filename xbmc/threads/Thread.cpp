@@ -21,6 +21,7 @@
 #include <iostream>
 #include <mutex>
 #include <stdlib.h>
+#include <string>
 
 #include <fmt/format.h>
 #if FMT_VERSION >= 90000
@@ -117,6 +118,10 @@ void CThread::Create(bool bAutoDelete)
     std::unique_lock blockLambdaTillDone(m_CriticalSection);
     m_thread = new std::thread([](CThread* pThread, std::promise<bool> promise)
     {
+      // Kept outside the try: an autodeleting thread frees pThread inside it, so
+      // the catch handlers below cannot go back to the object for its name.
+      std::string threadName;
+
       try
       {
 
@@ -142,6 +147,7 @@ void CThread::Create(bool bAutoDelete)
 
         pThread->m_impl = IThreadImpl::CreateThreadImpl(pThread->m_thread->native_handle());
         pThread->m_impl->SetThreadInfo(pThread->m_ThreadName);
+        threadName = pThread->m_ThreadName;
 
         CLog::Log(LOGDEBUG, "Thread {} start, auto delete: {}", pThread->m_ThreadName,
                   (pThread->m_bAutoDelete ? "true" : "false"));
@@ -161,13 +167,18 @@ void CThread::Create(bool bAutoDelete)
           CLog::Log(LOGDEBUG, "Thread {} {} terminating", pThread->m_ThreadName,
                     std::this_thread::get_id());
       }
+      // A thread dying on an exception is a fault, not a detail: nothing
+      // restarts it, and callers that depend on it simply wait forever. At
+      // LOGDEBUG this was invisible in a normal log and easy to scroll past in
+      // a debug one - a CVideoPlayerAudio death logged only here cost 22s of
+      // frozen playback with no other trace.
       catch (const std::exception& e)
       {
-        CLog::Log(LOGDEBUG, "Thread Terminating with Exception: {}", e.what());
+        CLog::Log(LOGERROR, "Thread {} terminating with exception: {}", threadName, e.what());
       }
       catch (...)
       {
-        CLog::Log(LOGDEBUG,"Thread Terminating with Exception");
+        CLog::Log(LOGERROR, "Thread {} terminating with unknown exception", threadName);
       }
 
       promise.set_value(true);
