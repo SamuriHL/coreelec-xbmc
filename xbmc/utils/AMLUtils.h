@@ -145,6 +145,9 @@ void aml_dv_pre_engage_disc_session();
 void aml_dv_release_disc_engage();
 // Whether the disc-session DV output engage is currently applied.
 bool aml_dv_disc_engaged();
+// Clear a DV core left engaged by a previous run that died before its teardown
+// (crash, OOM, the JVM SIGABRT after BD-J). Call once at window-system init.
+void aml_dv_recover_stale_disc_session();
 unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
