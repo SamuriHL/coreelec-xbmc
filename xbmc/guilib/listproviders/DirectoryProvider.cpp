@@ -50,6 +50,31 @@
 #include <mutex>
 #include <utility>
 
+// LOCK ORDER RULE FOR THIS FILE
+//
+// Never acquire the GfxContext lock while holding m_section.
+//
+// The GUI thread takes them in the order GfxContext -> m_section:
+// CGUIWindowManager::PreviousWindow() locks the GfxContext (guilib/GUIWindowManager.cpp)
+// and holds it across the window close animation, ActivateWindow() and AllocResources(),
+// which reaches CGUIBaseContainer::UpdateListProvider() -> Fetch() -> m_section.
+//
+// So any thread that takes the two in the opposite order deadlocks the whole GUI. Two
+// ways into the GfxContext from here, both of which used to run under m_section:
+//   * destroying or freeing a CGUIStaticItem - ~CGUIListItem -> CGUIListItemLayout::
+//     FreeResources -> CGUITexture::FreeResources -> CGUITextureManager::ReleaseTexture,
+//     which locks the GfxContext (guilib/TextureManager.cpp);
+//   * evaluating a CGUIInfoLabel/InfoBool - CGUIInfoManager -> GUIINFO::GetWindow ->
+//     CGUIWindowManager::GetWindow, which locks the GfxContext.
+// Both are reachable off the GUI thread: OnJobComplete() runs on a CJobManager worker and
+// OnTimeout() on the CTimer thread. Observed as a permanent GUI hang on stopping playback
+// (main thread in PreviousWindow -> Fetch, job worker in OnJobComplete -> ReleaseTexture).
+//
+// Therefore: evaluate info labels before taking m_section, and hand items that are about
+// to die to a local that outlives the lock scope. The info-label members (m_url, m_target,
+// m_sortMethod, m_sortOrder, m_limit, m_browse) are written only by the constructors, so
+// reading them without the lock is safe.
+
 using namespace XFILE;
 using namespace KODI;
 using namespace KODI::MESSAGING;
@@ -423,6 +448,10 @@ std::unique_ptr<IListProvider> CDirectoryProvider::Clone()
 
 void CDirectoryProvider::StartDirectoryJob()
 {
+  // Evaluated before m_section is taken - see the lock order rule at the top of this file.
+  // Callers must not hold m_section: this runs on the job worker and on the timer thread.
+  const std::string target{m_target.GetLabel(GetParentId(), false)};
+
   std::unique_lock lock(m_section);
   m_jobPending = false;
   m_lastJobStartedAt = std::chrono::system_clock::now();
@@ -430,8 +459,8 @@ void CDirectoryProvider::StartDirectoryJob()
 
   CLog::Log(LOGDEBUG, "CDirectoryProvider[{}]: refreshing...", m_currentUrl);
   m_jobID = CServiceBroker::GetJobManager()->AddJob(
-      new CDirectoryJob(m_currentUrl, m_target.GetLabel(GetParentId(), false), m_currentSort,
-                        m_currentLimit, m_currentBrowse, GetParentId()),
+      new CDirectoryJob(m_currentUrl, target, m_currentSort, m_currentLimit, m_currentBrowse,
+                        GetParentId()),
       this);
 }
 
@@ -448,60 +477,79 @@ bool CDirectoryProvider::Update(bool forceRefresh)
   fireJob |= UpdateBrowse();
   fireJob &= !m_currentUrl.empty();
 
-  std::unique_lock lock(m_section);
-  if (m_updateState == UpdateState::INVALIDATED)
-    fireJob = true;
-  else if (m_updateState == UpdateState::DONE)
-    changed = true;
+  bool startJob = false;
+  // Snapshot taken under m_section; visibility is evaluated after it is released, because
+  // InfoBool::Get() reaches the GfxContext - see the lock order rule at the top of this file.
+  std::vector<CGUIStaticItemPtr> items;
 
-  m_updateState = UpdateState::OK;
-
-  if (fireJob)
   {
-    if (m_jobID)
+    std::unique_lock lock(m_section);
+    if (m_updateState == UpdateState::INVALIDATED)
+      fireJob = true;
+    else if (m_updateState == UpdateState::DONE)
+      changed = true;
+
+    m_updateState = UpdateState::OK;
+
+    if (fireJob)
     {
-      // Ignore update request for now.
-      // We will start another update job once the currently running has finished.
-      m_jobPending = true;
-      changed = false;
-    }
-    else
-    {
-      if (m_jobPending)
+      if (m_jobID)
       {
-        // Ignore the update request.
-        // We already have scheduled another update job.
+        // Ignore update request for now.
+        // We will start another update job once the currently running has finished.
+        m_jobPending = true;
         changed = false;
       }
       else
       {
-        // Start a new update job.
-        StartDirectoryJob();
+        if (m_jobPending)
+        {
+          // Ignore the update request.
+          // We already have scheduled another update job.
+          changed = false;
+        }
+        else
+        {
+          // Start a new update job, once m_section is released.
+          startJob = true;
+        }
       }
     }
+
+    if (!changed)
+      items = m_items;
   }
 
-  if (!changed)
-  {
-    for (const auto& i : m_items)
-      changed |= i->UpdateVisibility(GetParentId());
-  }
+  if (startJob)
+    StartDirectoryJob();
+
+  for (const auto& i : items)
+    changed |= i->UpdateVisibility(GetParentId());
+
   return changed; //! @todo Also returned changed if properties are changed (if so, need to update scroll to letter).
 }
 
 void CDirectoryProvider::Fetch(std::vector<std::shared_ptr<CGUIListItem>>& items)
 {
-  std::unique_lock lock(m_section);
-  items.clear();
-  for (const auto& i : m_items)
+  std::vector<std::shared_ptr<CGUIListItem>> fetched;
   {
-    if (i->IsVisible())
-      items.push_back(i);
+    std::unique_lock lock(m_section);
+    for (const auto& i : m_items)
+    {
+      if (i->IsVisible())
+        fetched.push_back(i);
+    }
   }
+  // swap rather than clear-and-fill under the lock: the caller's previous items may hold the
+  // last reference, and destroying them reaches the texture manager - see the lock order rule
+  // at the top of this file. The old contents die with `fetched`, after m_section is released.
+  items.swap(fetched);
 }
 
 void CDirectoryProvider::Reset()
 {
+  // Destroyed after m_section is released - see the lock order rule at the top of this file.
+  std::vector<CGUIStaticItemPtr> oldItems;
   {
     std::unique_lock lock(m_section);
     if (m_jobID)
@@ -510,7 +558,7 @@ void CDirectoryProvider::Reset()
     m_jobPending = false;
     m_lastJobStartedAt = {};
     m_nextJobTimer.Stop();
-    m_items.clear();
+    oldItems.swap(m_items);
     m_currentTarget.clear();
     m_currentUrl.clear();
     m_itemTypes.clear();
@@ -521,6 +569,8 @@ void CDirectoryProvider::Reset()
     m_updateState = UpdateState::OK;
   }
 
+  oldItems.clear(); // GUI teardown, outside m_section
+
   {
     std::unique_lock subscriptionLock(m_subscriptionSection);
     m_subscriber.reset();
@@ -529,70 +579,94 @@ void CDirectoryProvider::Reset()
 
 void CDirectoryProvider::FreeResources(bool immediately)
 {
-  std::unique_lock lock(m_section);
-  for (const auto& item : m_items)
+  std::vector<CGUIStaticItemPtr> items;
+  {
+    std::unique_lock lock(m_section);
+    items = m_items;
+  }
+  // FreeMemory() reaches CGUITextureManager::ReleaseTexture and therefore the GfxContext -
+  // see the lock order rule at the top of this file.
+  for (const auto& item : items)
     item->FreeMemory(immediately);
 }
 
 void CDirectoryProvider::OnJobComplete(unsigned int jobID, bool success, CJob* job)
 {
-  std::unique_lock lock(m_section);
-  if (success)
+  // This runs on a CJobManager worker. Neither the destruction of the previous items nor the
+  // follow-up StartDirectoryJob() may happen under m_section, because both reach the
+  // GfxContext - see the lock order rule at the top of this file. Deferring them here is what
+  // stops this callback deadlocking against the GUI thread in CGUIWindowManager::PreviousWindow.
+  std::vector<CGUIStaticItemPtr> oldItems;
+  bool startJobNow{false};
+  std::chrono::milliseconds startJobDelay{0};
+
   {
-    if (job->GetPendingCallbackCount() > 1)
+    std::unique_lock lock(m_section);
+    if (success)
     {
-      // Deep copy items since other callbacks will also receive this job's results,
-      // and each container needs independent visibility state and layout
-      const auto& sourceItems = static_cast<CDirectoryJob*>(job)->GetItems();
-      m_items.clear();
-      m_items.reserve(sourceItems.size());
-      for (const auto& item : sourceItems)
-        m_items.emplace_back(std::make_shared<CGUIStaticItem>(*item));
-    }
-    else
-    {
-      m_items = static_cast<CDirectoryJob*>(job)->GetItems();
-    }
+      oldItems.swap(m_items); // hand the outgoing items to the local, destroyed after unlock
 
-    m_currentTarget = static_cast<CDirectoryJob*>(job)->GetTarget();
-    static_cast<CDirectoryJob*>(job)->GetItemTypes(m_itemTypes);
-    if (m_updateState == UpdateState::OK)
-      m_updateState = UpdateState::DONE;
+      if (job->GetPendingCallbackCount() > 1)
+      {
+        // Deep copy items since other callbacks will also receive this job's results,
+        // and each container needs independent visibility state and layout
+        const auto& sourceItems = static_cast<CDirectoryJob*>(job)->GetItems();
+        m_items.reserve(sourceItems.size());
+        for (const auto& item : sourceItems)
+          m_items.emplace_back(std::make_shared<CGUIStaticItem>(*item));
+      }
+      else
+      {
+        m_items = static_cast<CDirectoryJob*>(job)->GetItems();
+      }
+
+      m_currentTarget = static_cast<CDirectoryJob*>(job)->GetTarget();
+      static_cast<CDirectoryJob*>(job)->GetItemTypes(m_itemTypes);
+      if (m_updateState == UpdateState::OK)
+        m_updateState = UpdateState::DONE;
+    }
+    m_jobID = 0;
+
+    if (m_jobPending)
+    {
+      // Handle delayed update request(s).
+
+      using namespace std::chrono_literals;
+      static constexpr auto JOB_RATE_LIMIT = 1s;
+      const auto now{std::chrono::system_clock::now()};
+      const auto nextJobAllowedAt{m_lastJobStartedAt + JOB_RATE_LIMIT};
+
+      if (now >= nextJobAllowedAt)
+        // Finished job ended after job schedule timeslice was over. Start a new update job now.
+        startJobNow = true;
+      else
+        // Finished job ended before the timeslice was over. Start a new update job delayed.
+        startJobDelay =
+            std::chrono::duration_cast<std::chrono::milliseconds>(nextJobAllowedAt - now);
+    }
   }
-  m_jobID = 0;
 
-  if (m_jobPending)
-  {
-    // Handle delayed update request(s).
+  // The provider state above is fully published before either of these runs.
+  oldItems.clear(); // GUI teardown, outside m_section
 
-    using namespace std::chrono_literals;
-    static constexpr auto JOB_RATE_LIMIT = 1s;
-    const auto now{std::chrono::system_clock::now()};
-    const auto nextJobAllowedAt{m_lastJobStartedAt + JOB_RATE_LIMIT};
-
-    if (now >= nextJobAllowedAt)
-    {
-      // Finished job ended after job schedule timeslice was over. Start a new update job now.
-      StartDirectoryJob();
-    }
-    else
-    {
-      // Finished job ended before job schedule timeslice was over. Start a new update job delayed.
-      m_nextJobTimer.Start(
-          std::chrono::duration_cast<std::chrono::milliseconds>(nextJobAllowedAt - now));
-    }
-  }
+  if (startJobNow)
+    StartDirectoryJob();
+  else if (startJobDelay.count() > 0)
+    m_nextJobTimer.Start(startJobDelay);
 }
 
 void CDirectoryProvider::OnTimeout()
 {
-  std::unique_lock lock(m_section);
-
-  if (m_jobPending)
+  bool startJob{false};
   {
-    // Start a new update job.
-    StartDirectoryJob();
+    std::unique_lock lock(m_section);
+    startJob = m_jobPending;
   }
+
+  // Outside m_section - this runs on the timer thread and StartDirectoryJob() reaches the
+  // GfxContext; see the lock order rule at the top of this file.
+  if (startJob)
+    StartDirectoryJob();
 }
 
 bool CDirectoryProvider::OnEventPublished(Topic topic /*= Topic::UNSPECIFIED*/)
@@ -625,9 +699,12 @@ std::string CDirectoryProvider::GetTarget(const CFileItem& item) const
 {
   std::string target = item.GetProperty("node.target").asString();
 
-  std::unique_lock lock(m_section);
   if (target.empty())
+  {
+    std::unique_lock lock(m_section);
     target = m_currentTarget;
+  }
+  // Evaluated outside m_section - see the lock order rule at the top of this file.
   if (target.empty())
     target = m_target.GetLabel(GetParentId(), false);
 
@@ -741,10 +818,10 @@ bool CDirectoryProvider::IsUpdating() const
 
 bool CDirectoryProvider::UpdateURL()
 {
-  std::string value;
+  // Evaluated before m_section is taken - see the lock order rule at the top of this file.
+  const std::string value{m_url.GetLabel(GetParentId(), false)};
   {
     std::unique_lock lock(m_section);
-    value = m_url.GetLabel(GetParentId(), false);
     if (value == m_currentUrl)
       return false;
 
@@ -758,8 +835,10 @@ bool CDirectoryProvider::UpdateURL()
 
 bool CDirectoryProvider::UpdateLimit()
 {
+  // Evaluated before m_section is taken - see the lock order rule at the top of this file.
+  const unsigned int value = m_limit.GetIntValue(GetParentId());
+
   std::unique_lock lock(m_section);
-  unsigned int value = m_limit.GetIntValue(GetParentId());
   if (value == m_currentLimit)
     return false;
 
@@ -769,8 +848,10 @@ bool CDirectoryProvider::UpdateLimit()
 
 bool CDirectoryProvider::UpdateBrowse()
 {
-  std::unique_lock lock(m_section);
+  // Evaluated before m_section is taken - see the lock order rule at the top of this file.
   const std::string stringValue{m_browse.GetLabel(GetParentId(), false)};
+
+  std::unique_lock lock(m_section);
   BrowseMode value{m_currentBrowse};
   if (StringUtils::EqualsNoCase(stringValue, "always"))
     value = BrowseMode::ALWAYS;
@@ -788,12 +869,13 @@ bool CDirectoryProvider::UpdateBrowse()
 
 bool CDirectoryProvider::UpdateSort()
 {
-  std::unique_lock lock(m_section);
+  // Evaluated before m_section is taken - see the lock order rule at the top of this file.
   SortBy sortMethod(SortUtils::SortMethodFromString(m_sortMethod.GetLabel(GetParentId(), false)));
   SortOrder sortOrder(SortUtils::SortOrderFromString(m_sortOrder.GetLabel(GetParentId(), false)));
   if (sortOrder == SortOrder::NONE)
     sortOrder = SortOrder::ASCENDING;
 
+  std::unique_lock lock(m_section);
   if (sortMethod == m_currentSort.sortBy && sortOrder == m_currentSort.sortOrder)
     return false;
 
