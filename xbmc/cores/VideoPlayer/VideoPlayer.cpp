@@ -106,6 +106,11 @@ bool IsKnownLanguage(const CLanguageTag& language)
 // rather than slowness. Comfortably longer than any legitimate handshake, and
 // short enough that a viewer sees a hiccup instead of a freeze.
 constexpr auto SYNC_STUCK_TIMEOUT = std::chrono::milliseconds(3000);
+
+// Reopen attempts allowed per playback for a stream player whose thread has
+// exited. Past this the stream is dropped: something is repeatably wrong, and
+// playing on without it beats an endless open/die cycle.
+constexpr int MAX_PLAYER_RESTARTS = 3;
 } // unnamed namespace
 
 class PredicateSubtitleFilter
@@ -962,6 +967,8 @@ void CVideoPlayer::OnStartup()
   m_CurrentTeletext.Clear();
   m_CurrentRadioRDS.Clear();
   m_CurrentAudioID3.Clear();
+  m_audioPlayerRestarts = 0;
+  m_videoPlayerRestarts = 0;
 
   UTILS::FONT::ClearTemporaryFonts();
 }
@@ -2214,6 +2221,13 @@ void CVideoPlayer::Process()
 
     // make sure we run subtitle process here
     m_VideoPlayerSubtitle->Process(m_clock.GetClock() + m_State.time_offset - m_VideoPlayerVideo->GetSubtitleDelay(), m_State.time_offset);
+
+    // Must precede the read gate below: that gate is what a dead player turns
+    // into a deadlock.
+    CheckStreamPlayerAlive(m_CurrentAudio, m_VideoPlayerAudio.get(), m_audioPlayerRestarts,
+                           "audio");
+    CheckStreamPlayerAlive(m_CurrentVideo, m_VideoPlayerVideo.get(), m_videoPlayerRestarts,
+                           "video");
 
     // tell demuxer if we want to fill buffers
     if (m_demuxerSpeed != DVD_PLAYSPEED_PAUSE)
@@ -5555,6 +5569,41 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
   current.Clear();
   return true;
+}
+
+void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
+                                         IDVDStreamPlayer* player,
+                                         int& restarts,
+                                         const char* name)
+{
+  if (current.id < 0 || player == nullptr || !player->IsInited() || player->IsPlayerRunning())
+    return;
+
+  // CloseStream clears current, so the identity has to be taken first.
+  const int64_t demuxerId = current.demuxerId;
+  const int id = current.id;
+  const int source = current.source;
+
+  if (restarts >= MAX_PLAYER_RESTARTS)
+  {
+    CLog::Log(LOGERROR,
+              "CVideoPlayer::CheckStreamPlayerAlive - {} player thread exited {} times, dropping "
+              "the stream and continuing without it",
+              name, restarts);
+    CloseStream(current, false);
+    return;
+  }
+
+  ++restarts;
+  CLog::Log(LOGERROR,
+            "CVideoPlayer::CheckStreamPlayerAlive - {} player thread has exited while its stream "
+            "is open, reopening ({} of {})",
+            name, restarts, MAX_PLAYER_RESTARTS);
+
+  CloseStream(current, false);
+  if (!OpenStream(current, demuxerId, id, source, true))
+    CLog::Log(LOGERROR, "CVideoPlayer::CheckStreamPlayerAlive - reopening {} failed, continuing "
+                        "without it", name);
 }
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)

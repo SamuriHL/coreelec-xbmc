@@ -59,6 +59,7 @@ public:
   bool AcceptsData() const override;
   bool HasData() const override;
   bool IsInited() const override;
+  bool IsPlayerRunning() const override { return CThread::IsRunning(); }
   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override;
   void FlushMessages() override;
 
