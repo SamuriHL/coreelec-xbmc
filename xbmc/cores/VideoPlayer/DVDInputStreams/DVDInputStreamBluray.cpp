@@ -10,6 +10,7 @@
 
 #include "cores/VideoPlayer/BDStageTrace.h"
 
+#include "BlurayIsoCache.h"
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDInputStreamFile.h"
@@ -25,6 +26,7 @@
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
+#include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
@@ -771,6 +773,12 @@ bool CDVDInputStreamBluray::Open()
 void CDVDInputStreamBluray::Close()
 {
   aml_dv_set_disc_session(false);
+  // Before bd_close(): it can still issue read_blocks(), which must find the
+  // cache gone and go straight to the file rather than race the worker.
+  if (m_isoCacheFallbacks > 0)
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Close - {} ISO cache fallback reads",
+              m_isoCacheFallbacks.load());
+  StopIsoCache();
   FreeMenuSounds();
   CloseMVCDemux();
   FreeTitleInfo();
@@ -987,6 +995,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
   /* playback control */
 
   case BD_EVENT_SEEK:
+    // A jump breaks the sequential run the ISO read-ahead is keyed on.
+    ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
@@ -1062,6 +1072,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_TITLE:
+    // A jump breaks the sequential run the ISO read-ahead is keyed on.
+    ResetIsoCacheAccessPattern();
   {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
     UpdateLibblurayDebugMask();
@@ -1086,6 +1098,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    // A jump breaks the sequential run the ISO read-ahead is keyed on.
+    ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
     BDSTAGE::Playlist(static_cast<int>(m_event.param), m_menu);
     UpdateLibblurayDebugMask();
@@ -1132,6 +1146,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_PLAYITEM:
+    // A jump breaks the sequential run the ISO read-ahead is keyed on.
+    ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
     {
@@ -1395,6 +1411,36 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 
 int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
 {
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    cache = m_isoCache;
+  }
+
+  if (cache)
+  {
+    const int result = cache->ReadBlocks(buf, lba, num_blocks);
+    if (result >= 0)
+      return result;
+
+    // Fail-open: a page the cache could not fill is read directly, so a cache
+    // fault degrades throughput instead of breaking playback. Logged for the
+    // first few and then at powers of two - a steady stream of these means
+    // the image itself is unreadable, not the cache.
+    ++m_isoCacheFallbacks;
+    const unsigned int fallbacks = m_isoCacheFallbacks.load();
+    if (fallbacks <= 3 || (fallbacks & (fallbacks - 1)) == 0)
+      CLog::Log(LOGDEBUG,
+                "CDVDInputStreamBluray::ReadBlocks - cached read failed at lba {} blocks {}, "
+                "falling back to a direct read ({})",
+                lba, num_blocks, fallbacks);
+  }
+
+  return ReadBlocksDirect(buf, lba, num_blocks);
+}
+
+int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks)
+{
   CDVDInputStreamFile* lpstream = m_pstream.get();
   if (!lpstream)
     return -1;
@@ -1408,6 +1454,38 @@ int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
       result = lpstream->Read(buf, static_cast<int>(size)) / 2048;
   }
   return result;
+}
+
+int64_t CDVDInputStreamBluray::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
+{
+  CDVDInputStreamFile* lpstream = m_pstream.get();
+  if (!lpstream || !buffer || size == 0 || offset < 0)
+    return -1;
+
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return -1;
+
+  // Shares m_readBlocksLock with ReadBlocksDirect: the prefetch worker and the
+  // player both seek this one handle, so the pair must stay serialised.
+  std::unique_lock lock(m_readBlocksLock);
+
+  if (lpstream->Seek(offset, SEEK_SET) < 0)
+    return -1;
+
+  size_t totalRead = 0;
+  while (totalRead < size)
+  {
+    if (m_isoCacheAborting)
+      return -1;
+    const int chunk = lpstream->Read(buffer + totalRead, static_cast<int>(size - totalRead));
+    if (chunk < 0)
+      return -1;
+    if (chunk == 0)
+      break;
+    totalRead += static_cast<size_t>(chunk);
+  }
+
+  return totalRead > 0 ? static_cast<int64_t>(totalRead) : -1;
 }
 
 static uint8_t  clamp(double v)
@@ -2877,6 +2955,9 @@ void CDVDInputStreamBluray::ApplyAudioCapability()
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
 {
+  StopIsoCache();
+  m_isoCacheFallbacks = 0;
+
   m_pstream = std::make_unique<CDVDInputStreamFile>(
       item, XFILE::READ_TRUNCATED | XFILE::READ_BITRATE | XFILE::READ_NO_CACHE);
 
@@ -2887,7 +2968,63 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
     return false;
   }
 
+  // READ_NO_CACHE above is deliberate (libbluray does its own seeking), but it
+  // leaves nothing between the demuxer and the link. Put the read-ahead cache
+  // there for the NAS case; a local image barely notices it.
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  const int64_t sourceLength = m_pstream->GetLength();
+  if (advanced->m_blurayIsoCacheEnabled && sourceLength > 0)
+  {
+    CBlurayIsoCache::Config config;
+    config.pageSize = advanced->m_blurayIsoCachePageSize;
+    config.maxBytes = advanced->m_blurayIsoCacheMaxBytes;
+    config.forwardPrefetchPages = advanced->m_blurayIsoCacheForwardPrefetchPages;
+
+    auto cache = std::make_shared<CBlurayIsoCache>(
+        sourceLength,
+        [this](int64_t offset, uint8_t* buffer, size_t size)
+        { return ReadRaw(offset, buffer, size); },
+        config);
+    cache->Start();
+
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    m_isoCache = std::move(cache);
+  }
+  else
+  {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OpenStream - ISO cache not used (enabled {}, "
+                        "source length {})",
+              advanced->m_blurayIsoCacheEnabled, sourceLength);
+  }
+
   return true;
+}
+
+void CDVDInputStreamBluray::StopIsoCache()
+{
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    cache = std::move(m_isoCache);
+    m_isoCache.reset();
+  }
+
+  if (!cache)
+    return;
+
+  // Joins the prefetch worker, so nothing is touching m_pstream after this.
+  // The abort flag bounds that join: a read already inside ReadRaw gives up at
+  // its next chunk rather than making a stop wait out the link.
+  m_isoCacheAborting = true;
+  cache->Stop();
+  m_isoCacheAborting = false;
+}
+
+void CDVDInputStreamBluray::ResetIsoCacheAccessPattern()
+{
+  std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+  if (m_isoCache)
+    m_isoCache->ResetAccessPattern();
 }
 
 bool CDVDInputStreamBluray::GetState(std::string& xmlstate)
