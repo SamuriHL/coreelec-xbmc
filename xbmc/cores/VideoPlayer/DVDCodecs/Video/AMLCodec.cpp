@@ -2051,6 +2051,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_skipBufferFillGate = false;
   // Mirror of CBitstreamConverter's tiny-IDR padding gate; see m_felIdrPadding.
   m_felIdrPadding = doviIsFEL;
+  m_park_start = {};
+  m_park_reported = false;
   m_park_last_data_len = -1;
   m_sessionGen++;
 
@@ -3118,6 +3120,14 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: index: {:d}, pts: {:.3f}, dur:{:.3f}ms elf:{:d}ms",
       m_bufferIndex, pVideoPicture->pts / DVD_TIME_BASE, pVideoPicture->iDuration / 1000, elapsed_since_last_frame.count());
 
+    if (m_park_reported)
+      CLog::Log(LOGINFO, "CAMLCodec::GetPicture: idle input ended after {}ms - decoding again",
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - m_park_start)
+                    .count());
+    m_park_start = {};
+    m_park_reported = false;
+
     pVideoPicture->stereoMode = m_hints.stereo_mode;
     if (pVideoPicture->stereoMode == "block_lr" && m_processInfo.GetVideoSettings().m_StereoInvert)
       pVideoPicture->stereoMode = "block_rl";
@@ -3156,6 +3166,24 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     // consume-without-output wedge (eaten-GOP class) keeps data_len
     // CHANGING call-to-call, failing the prev_data_len equality - either
     // way the stall clock keeps running and times out.
+    // Parking is normal and usually brief. One that outlasts a second is worth
+    // a line: from outside this function it is indistinguishable from a freeze,
+    // and the whole point of the branch is that the stall clock stops running.
+    const auto parkNow = std::chrono::steady_clock::now();
+    if (m_park_start.time_since_epoch().count() == 0)
+      m_park_start = parkNow;
+    else if (!m_park_reported && (parkNow - m_park_start) > std::chrono::seconds(1))
+    {
+      m_park_reported = true;
+      CLog::Log(LOGWARNING,
+                "CAMLCodec::GetPicture: idle input for {}ms - decoder has nothing to decode from "
+                "[data_len:{} limit:{} lvl:{:.1f}% ready:{} drain:{} speed:{}]. Not a decoder "
+                "stall; the stall clock is parked while this holds.",
+                std::chrono::duration_cast<std::chrono::milliseconds>(parkNow - m_park_start)
+                    .count(),
+                data_len, idleInputLimit, buffer_level, m_buffer_level_ready, m_drain, m_speed);
+    }
+
     m_tp_last_frame = std::chrono::steady_clock::now();
     return CDVDVideoCodec::VC_BUFFER;
   }
