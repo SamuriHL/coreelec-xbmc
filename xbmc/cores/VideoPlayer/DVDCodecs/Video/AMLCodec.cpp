@@ -2049,6 +2049,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
+  // Cleared for a fresh decoder only. Deliberately NOT cleared in Reset(): the
+  // recovery below calls Reset() itself, and clearing there would restart the
+  // give-up deadline on every attempt so it could never expire.
+  m_wrFailActive = false;
   // Mirror of CBitstreamConverter's tiny-IDR padding gate; see m_felIdrPadding.
   m_felIdrPadding = doviIsFEL;
   m_park_start = {};
@@ -2948,11 +2952,15 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   // will get set to zero once everything is consumed.
   // PLAYER_SUCCESS means all is ok, not all bytes were written.
   int loop = 0;
+  bool write_failed = false;
   while (am_private->am_pkt.isvalid && loop < 100)
   {
     // abort on any errors.
     if (write_av_packet(am_private, &am_private->am_pkt) != PLAYER_SUCCESS)
+    {
+      write_failed = true;
       break;
+    }
 
     if (am_private->am_pkt.isvalid)
       CLog::Log(LOGDEBUG, "CAMLCodec::{} Decode: write_av_packet looping", __FUNCTION__);
@@ -2964,6 +2972,56 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     Reset();
     return false;
   }
+
+  // A write that actually failed used to break out of the loop above and fall
+  // through to `return true` - which tells the player the packet was consumed,
+  // so it is never resubmitted and the picture just stops with nothing logged.
+  // Our other stall recovery is all output-side (the GetPicture timeout), so an
+  // input-side wedge had no cover at all.
+  //
+  // false means "retry this packet" (CVideoPlayerVideo sends it back), so the
+  // failure must be bounded or the player would spin on it forever: reset the
+  // decoder every 250ms while it persists, and after 2s give the packet up so
+  // playback can move past it rather than hanging.
+  if (write_failed)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (!m_wrFailActive)
+    {
+      m_wrFailActive = true;
+      m_tpWrFailStart = now;
+      m_tpWrFailLastReset = now;
+      m_tpWrFailLastWarn = now;
+    }
+    else if (now - m_tpWrFailStart > std::chrono::milliseconds(2000))
+    {
+      CLog::Log(LOGERROR,
+                "CAMLCodec::{}: codec write still failing after {}ms - dropping packet pts:{:.3f}",
+                __FUNCTION__,
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - m_tpWrFailStart)
+                    .count(),
+                pts / DVD_TIME_BASE);
+      m_wrFailActive = false;
+      return true;
+    }
+    else if (now - m_tpWrFailLastReset > std::chrono::milliseconds(250))
+    {
+      if (now - m_tpWrFailLastWarn > std::chrono::milliseconds(1000))
+      {
+        m_tpWrFailLastWarn = now;
+        CLog::Log(LOGWARNING, "CAMLCodec::{}: codec write failing for {}ms - resetting decoder",
+                  __FUNCTION__,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(now - m_tpWrFailStart)
+                      .count());
+      }
+      Reset();
+      m_tpWrFailLastReset = std::chrono::steady_clock::now();
+    }
+
+    usleep(RW_WAIT_TIME);
+    return false;
+  }
+  m_wrFailActive = false;
   if (iSize > 50000)
     usleep(2000); // wait 2ms to process larger packets
 
