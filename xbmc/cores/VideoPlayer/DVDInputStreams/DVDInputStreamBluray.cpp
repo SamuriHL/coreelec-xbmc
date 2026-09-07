@@ -435,6 +435,27 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filena
 }
 
 
+namespace
+{
+// amhdmitx0/support_3d is read-only sysfs, so a 3D-capable display cannot be
+// simulated on the box. This is the diagnostic override behind
+// <blurayforce3ddisplaycap>, used to test whether a BD 3D title's Xlet is
+// parked waiting on 3D output rather than on the still it sits in.
+bool EffectiveDisplaySupports3D()
+{
+  if (aml_display_support_3d())
+    return true;
+  const auto settings = CServiceBroker::GetSettingsComponent();
+  if (settings && settings->GetAdvancedSettings()->m_blurayForce3DDisplayCap)
+  {
+    CLog::Log(LOGWARNING, "CDVDInputStreamBluray: blurayforce3ddisplaycap is set - reporting 3D "
+                          "display capability the connected display does NOT have");
+    return true;
+  }
+  return false;
+}
+} // unnamed namespace
+
 bool CDVDInputStreamBluray::Open()
 {
   if(m_player == nullptr)
@@ -629,7 +650,7 @@ bool CDVDInputStreamBluray::Open()
   // the display-derived value SetupPlayerSettings wrote.
   if (disc_info->content_exist_3D)
   {
-    const bool display3d = aml_display_support_3d();
+    const bool display3d = EffectiveDisplaySupports3D();
     const uint32_t displayCap =
         display3d ? (BLURAY_DCAP_1080p_720p_3D | BLURAY_DCAP_720p_50Hz_3D |
                      BLURAY_DCAP_NO_3D_CLASSES_REQUIRED | BLURAY_DCAP_INTERLACED_3D)
@@ -2804,7 +2825,7 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   // A 3D disc therefore receives no 3D PSR setup from libbluray at all, so
   // Open() installs the profile-5 persona itself once bd_get_disc_info() has
   // reported content_exist_3D.
-  const bool display3d = aml_display_support_3d();
+  const bool display3d = EffectiveDisplaySupports3D();
   const uint32_t threeDCap = display3d ? 0xffffffff : 0;
   CLog::Log(LOGINFO,
             "CDVDInputStreamBluray: 3D capability PSR24 0x{:08x} (display 3D: {})",
