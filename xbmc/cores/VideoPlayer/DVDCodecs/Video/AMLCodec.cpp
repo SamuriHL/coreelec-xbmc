@@ -2595,26 +2595,7 @@ void CAMLCodec::CloseDecoder()
   }
 
   // disable Dolby Vision VS-Engine for non DV media
-  //
-  // NOT while the disc session holds DV engaged. This one write is what costs a
-  // sink re-lock per segment: dolby_vision_mode = BYPASS arms the bypass branch
-  // of amdolby_vision_process_v2_stb(), which five vsyncs later runs
-  // send_hdmi_pkt(..., FORMAT_SDR) and enable_amdv(0) - and enable_amdv(0) is
-  // where kernel patch 0005 clears the session VSIF hold and emits the very
-  // DOVI->SDR transition patch 0002 had been swallowing. Nothing re-arms the
-  // hold afterwards (pre_engage only runs when the engage was released), so one
-  // BYPASS write here drops DV signalling for the REST of the session: measured
-  // 16 "Dolby VSIF, switching signal to SDR" in a single Avatar session, each a
-  // multi-second re-lock. On a 5-second chooser menu that is the whole segment.
-  //
-  // Skipping it is what the surrounding code already assumes: the settle wait
-  // below skips on the same grounds ("the session latch deliberately holds the
-  // DV core engaged across menu<->title segment swaps"), and
-  // aml_dv_apply_target_overrides() on the very next line self-guards its own
-  // BYPASS on exactly this condition. The real teardown still happens -
-  // aml_dv_release_disc_engage() clears s_dv_disc_engaged first and then writes
-  // BYPASS, FOLLOW_SOURCE and hold='N' itself, in that order.
-  if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged())
+  if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE)
     AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
@@ -2669,14 +2650,9 @@ void CAMLCodec::CloseDecoder()
         usleep(10000); // wait 10ms
     }
 
-    // Same reasoning as the dv_mode write above, plus one of its own: native-DV
-    // OpenDecoder never writes dv_policy back, so a per-segment FOLLOW_SOURCE
-    // here is not restored - the session would spend the rest of its life under
-    // the wrong policy, which is how a DOVI source ends up resolving through the
-    // policy path instead of staying pinned to the engaged output mode.
-    if (dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged())
+    if (dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE)
       AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FOLLOW_SOURCE);
-    else if (dolby_vision_policy != AMDV_FORCE_OUTPUT_MODE)
+    else
       AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 1);
 
     // stop injecting a custom VSVDB so the desktop/other apps see the real
