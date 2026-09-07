@@ -203,13 +203,16 @@ void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
 {
   // DBG_HDMV traces the HDMV VM instruction stream (MovieObject + decrypted
   // IG button commands) - essential for diagnosing capability-PSR behavior
-  // against real discs. Only enabled while debug logging is live: with the
-  // mask bit set libbluray formats every VM instruction just for the
-  // log-level filter to drop it. Re-evaluated at segment boundaries so a
-  // mid-session ToggleDebug takes effect without a disc reopen.
+  // against real discs. DBG_BDJ is its BD-J counterpart: without it a BD-J
+  // title's Xlet is invisible in the log except for what the disc's own Java
+  // prints, so a disc that parks looks indistinguishable from one whose Xlet
+  // has died. Only enabled while debug logging is live: with the mask bits set
+  // libbluray formats every trace line just for the log-level filter to drop
+  // it. Re-evaluated at segment boundaries so a mid-session ToggleDebug takes
+  // effect without a disc reopen.
   uint32_t debugMask = DBG_CRIT | DBG_BLURAY | DBG_NAV;
   if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
-    debugMask |= DBG_HDMV;
+    debugMask |= DBG_HDMV | DBG_BDJ;
   bd_set_debug_mask(debugMask);
 }
 
