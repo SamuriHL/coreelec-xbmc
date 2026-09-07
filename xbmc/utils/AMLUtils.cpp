@@ -644,6 +644,14 @@ void aml_set_disc_mode_hold(bool hold)
 }
 bool aml_disc_mode_hold() { return s_disc_mode_hold.load(); }
 
+// Has this disc session established a resolution from the disc's own content yet?
+// Cleared at player teardown, set by the first held segment that picks one. atomic
+// for the same reason as s_disc_mode_hold: written on the player thread, read
+// wherever the resolution is chosen (render thread).
+static std::atomic<bool> s_disc_mode_anchored{false};
+bool aml_disc_mode_anchored() { return s_disc_mode_anchored.load(); }
+void aml_set_disc_mode_anchored(bool anchored) { s_disc_mode_anchored = anchored; }
+
 void aml_dv_pre_engage_disc_session()
 {
   // Mirrors the DV-enable writes CAMLCodec::OpenDecoder performs per stream

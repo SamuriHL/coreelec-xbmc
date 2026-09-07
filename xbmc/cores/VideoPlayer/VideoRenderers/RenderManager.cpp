@@ -33,6 +33,8 @@
 static inline void aml_dv_set_subtitles_visible(bool) {}
 static inline bool aml_video_started() { return true; }
 static inline bool aml_disc_mode_hold() { return false; }
+static inline bool aml_disc_mode_anchored() { return true; }
+static inline void aml_set_disc_mode_anchored(bool) {}
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -57,10 +59,47 @@ namespace
 // content fps is unknown, or when no same-resolution mode matches the content
 // rate (refresh whitelist) - so the hold can never itself cause a resolution
 // re-clock, the strict-sink protection it exists for.
-RESOLUTION ChooseHeldResolution(float fps, RESOLUTION incumbent, bool is3D)
+RESOLUTION ChooseHeldResolution(float fps, RESOLUTION incumbent, bool is3D, int width, int height)
 {
   if (fps <= 0.0f)
     return incumbent;
+
+  // ANCHOR THE SESSION ON THE DISC, NOT ON THE GUI.
+  //
+  // At the first video segment the "incumbent" is still the GUI's own mode, which
+  // carries no information about the disc. Holding against it pins every
+  // menu-domain segment to a resolution the disc may not use at all, and defers the
+  // disc's real resolution switch to the first segment the hold is off for - the
+  // feature - where it re-clocks HDMI on top of playback that has already started.
+  // Measured on Superman UHD: all four segments are 3840x2160, yet the session was
+  // held at 1920x1080 for 31.8s and then took a 1080p24 -> 2160p24 modeset 1.5s
+  // into the movie, stalling video for 1.4s (the decoder stops being handed buffers
+  // across a modeset) while audio ran on - the user sees a late picture over
+  // running sound. And because the held mode still adopts the content REFRESH, the
+  // hold had already spent a 1080p60 -> 1080p24 re-clock at the menu: it ADDED a
+  // re-lock rather than saving one, which is the opposite of its purpose.
+  //
+  // So let the first segment choose from its own content and anchor there; every
+  // later held segment holds against that. On a disc whose segments share a
+  // resolution - the normal case - the session then costs exactly one re-clock,
+  // taken on the first bumper where nothing is playing yet, and the feature's mode
+  // string is unchanged so it takes no modeset at all.
+  //
+  // Deliberately NOT re-evaluated per segment: that would restore the per-segment
+  // resolution thrash the hold exists to prevent. Anchor once, then hold.
+  if (!aml_disc_mode_anchored())
+  {
+    if (width <= 0 || height <= 0)
+      return incumbent; // dimensions not known yet - do not anchor on a guess
+    aml_set_disc_mode_anchored(true);
+    const RESOLUTION anchored = CResolutionUtils::ChooseBestResolution(fps, width, height, is3D);
+    CLog::Log(LOGINFO, "ChooseHeldResolution - disc session mode hold: anchoring the session on "
+                       "the first segment's own resolution ({}x{})", width, height);
+    return anchored;
+  }
+
+  CLog::Log(LOGDEBUG, "ChooseHeldResolution - disc session mode hold: incumbent resolution at "
+                      "content refresh");
   auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   const RESOLUTION_INFO cur = gfx.GetResInfo(incumbent);
   const RESOLUTION best =
@@ -674,9 +713,8 @@ RESOLUTION CRenderManager::GetResolution()
     // takes its one correct resolution switch when the hold is off for it.
     if (aml_disc_mode_hold())
     {
-      res = ChooseHeldResolution(m_fps, res, !m_picture.stereoMode.empty());
-      CLog::Log(LOGDEBUG, "CRenderManager::GetResolution - disc session mode hold: "
-                          "incumbent resolution at content refresh");
+      res = ChooseHeldResolution(m_fps, res, !m_picture.stereoMode.empty(), m_picture.iWidth,
+                                 m_picture.iHeight);
     }
     else
       res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
@@ -918,12 +956,9 @@ void CRenderManager::UpdateResolution()
               aml_disc_mode_hold()
                   ? ChooseHeldResolution(
                         m_fps, CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(),
-                        !m_picture.stereoMode.empty())
+                        !m_picture.stereoMode.empty(), m_picture.iWidth, m_picture.iHeight)
                   : CResolutionUtils::ChooseBestResolution(
                         m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
-          if (aml_disc_mode_hold())
-            CLog::Log(LOGDEBUG, "CRenderManager::UpdateResolution - disc session mode hold: "
-                                "incumbent resolution at content refresh");
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
