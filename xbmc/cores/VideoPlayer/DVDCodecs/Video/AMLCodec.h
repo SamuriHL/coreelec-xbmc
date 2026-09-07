@@ -164,6 +164,11 @@ private:
   // rips - both are fed in short segments that can EOS below any fill
   // threshold, wedging the gate in a starve/reopen loop.
   bool            m_skipBufferFillGate = false;
+  // Once the decoder has been given data but the fill gate has still not opened
+  // and no frame has come out for a while, dequeue anyway - a short segment can
+  // decode a picture and never reach the gate, stranding it in the v4l queue.
+  bool            m_starve_bypass = false;
+  bool            m_no_data_since_reset = true;
   // Profile-7 FEL: CBitstreamConverter pads a tiny IDR access unit with filler
   // data so it clears the parser's fetch quantum. That deliberately pushes a
   // parked still ABOVE the idle-input threshold below, which would turn a
