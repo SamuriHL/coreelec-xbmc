@@ -95,6 +95,29 @@ CLog::CLog()
   // register the default logger with spdlog
   spdlog::set_default_logger(m_defaultLogger);
 
+  // Create every component logger up front, on this thread, before any other
+  // exists.
+  //
+  // GetLogger(const std::string&) is an unsynchronised check-then-act: it calls
+  // spdlog::get and, on nullptr, CreateLogger. Two threads first touching the
+  // same component logger can both see nullptr, and the loser's
+  // spdlog::initialize_logger throws spdlog_ex ("logger with name '...' already
+  // exists"). That exception unwinds out of whichever thread lost and is only
+  // logged by CThread's handler, so the thread simply disappears.
+  //
+  // Observed 2026-09-06: CVideoPlayerAudio::Process died nine milliseconds after
+  // starting, losing the race for "audio" against the player thread's first
+  // component-logged line. Nothing restarts that thread, so the audio queue
+  // filled, VideoPlayer stopped reading the demuxer, video never left
+  // SYNC_WAITSYNC, and a Blu-ray froze for twenty seconds with no error logged.
+  //
+  // componentMap is a compile-time constant set, so pre-creating it here closes
+  // the race for good without putting a lock on the logging hot path. Only
+  // reachable when component logging is enabled - which is exactly when someone
+  // is trying to diagnose something.
+  for (const auto& component : componentMap)
+    CreateLogger(component.second.name);
+
   // set the formatting pattern globally
   spdlog::set_pattern(LogPattern);
 
@@ -107,6 +130,9 @@ CLog::CLog()
 
 CLog::~CLog()
 {
+  for (const auto& component : componentMap)
+    spdlog::drop(component.second.name);
+
   spdlog::drop("general");
 }
 
@@ -274,7 +300,23 @@ Logger CLog::GetLogger(const std::string& loggerName)
 {
   auto logger = spdlog::get(loggerName);
   if (logger == nullptr)
-    logger = CreateLogger(loggerName);
+  {
+    // Component loggers are pre-created in the constructor and never land here.
+    // Loggers named at runtime - per-addon, UPnP, the web server - still can,
+    // and two threads can reach this for the same name at once. The loser's
+    // initialize_logger throws, and letting that escape a worker thread kills
+    // it silently; take whichever registration won instead.
+    try
+    {
+      logger = CreateLogger(loggerName);
+    }
+    catch (const spdlog::spdlog_ex&)
+    {
+      logger = spdlog::get(loggerName);
+      if (logger == nullptr)
+        return m_defaultLogger;
+    }
+  }
 
   return logger;
 }
