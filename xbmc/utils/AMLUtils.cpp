@@ -588,7 +588,10 @@ bool aml_dv_wire_format_mismatch()
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static bool s_dv_disc_session = false;
-static bool s_dv_disc_engaged = false;
+// atomic: written on the CVideoPlayer thread, read from CAMLCodec::Open/CloseDecoder
+// on the CVideoPlayerVideo thread (the in-playback codec-reopen path). Every
+// session guard keys on this read.
+static std::atomic<bool> s_dv_disc_engaged = false;
 void aml_dv_set_disc_session(bool active)
 {
   const bool wasActive = s_dv_disc_session;
@@ -673,6 +676,105 @@ void aml_dv_pre_engage_disc_session()
             "({} led)", playerLed ? "player" : "TV");
 }
 
+// The ordered DV teardown. Shared by the disc-session release and by the
+// stale-session recovery at startup, because getting this order wrong is what
+// leaves a sink latched in DV over SDR pixels with no way back but a reboot.
+static void dv_teardown_to_bypass()
+{
+  // 1. Drop the hold first, so the DOVI->SDR transition is allowed to be emitted
+  //    rather than swallowed by patch 0002.
+  CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
+  if (hold.Exists())
+    hold.Set('N');
+
+  // 2. The core must be enabled for any of the rest to take: set_amdv_mode()
+  //    returns early on !dolby_vision_enable, and amdolby_vision_proc() - which
+  //    drives the whole transition - is gated on is_amdv_enable(). Idempotent
+  //    when it is already up, which is the normal case here.
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'Y');
+
+  // 3. FORCE, *before* the mode write and not after. set_amdv_mode() does not
+  //    use the value passed to it: it hands the mode to amdv_policy_process(),
+  //    which under AMDV_FOLLOW_SOURCE re-derives it from the current source
+  //    format - still DOVI here - and hands back IPT_TUNNEL, so a BYPASS written
+  //    under follow-source changes nothing at all. Only the FORCE branch honours
+  //    the requested mode.
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy",
+             AMDV_FORCE_OUTPUT_MODE);
+  CSysfsPath("/sys/class/amdolby_vision/dv_mode",
+             (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
+
+  // 4. Let the transition actually happen before pulling the core out from under
+  //    it. The kernel's bypass branch needs MAX_TRANSITION_DELAY vsyncs before it
+  //    emits send_hdmi_pkt(FORMAT_SDR) and calls enable_amdv(0) - and
+  //    enable_amdv(0) is what runs patch 0005's hold clear and powers the core
+  //    down. Disabling immediately stops amdolby_vision_proc() being called at
+  //    all, so none of that ever runs: the VSIF stays latched and only a reboot
+  //    clears it. Six vsyncs at 23.976 is 250ms, and a 24p title has just closed,
+  //    so the bound has to clear that with room.
+  CSysfsPath dv_status{"/sys/module/aml_media/parameters/dolby_vision_status"};
+  if (!dv_status.Exists())
+  {
+    // Without the status we cannot tell whether the transition completed, and
+    // the step below disables the core regardless - say so rather than fail mute.
+    CLog::Log(LOGWARNING, "aml_dv_release_disc_engage: no dolby_vision_status - "
+                          "cannot confirm the SDR transition before disabling DV");
+  }
+  else
+  {
+    // value_or(-1), NOT (0): a failed read must keep us waiting, because 0 is
+    // "the teardown finished" and falling through on a read error lands on
+    // exactly the branch that strands the VSIF.
+    const auto start = std::chrono::steady_clock::now();
+    while (dv_status.Get<int>().value_or(-1) != 0 &&
+           (std::chrono::steady_clock::now() - start) < std::chrono::milliseconds(400))
+      usleep(10000);
+    if (dv_status.Get<int>().value_or(-1) != 0)
+      CLog::Log(LOGWARNING, "aml_dv_release_disc_engage: DV core still busy after "
+                            "400ms - the SDR transition may not have been emitted, "
+                            "sink could stay DV-latched");
+  }
+
+  // 5. Only now hand the policy back and take the core down.
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy",
+             AMDV_FOLLOW_SOURCE);
+  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'N');
+
+}
+
+
+// Recover a disc session that never got its teardown - a Kodi crash, an OOM
+// kill, or the JVM SIGABRT this box is known to hit on shutdown after BD-J.
+//
+// While the session holds DV engaged, CloseDecoder skips its own teardown, so
+// aml_dv_release_disc_engage() is the ONLY path that reaches enable_amdv(0) -
+// which is also the only thing that runs the kernel's own vsif-hold self-heal
+// (patch 0005). If the process dies before it runs, the hold stays set, the mode
+// stays at IPT_TUNNEL and the sink stays DV-latched over SDR/GUI pixels: black
+// or corrupt on everything, surviving a Kodi restart and an HDMI power cycle.
+// Before this ran at every segment close, so the window was small; now it is the
+// whole session, and the kernel watchdog it replaced has no trigger left.
+//
+// So do it here instead: on every startup, clear a stale hold and, if the core
+// is still parked on a DV output mode, run the same ordered teardown.
+void aml_dv_recover_stale_disc_session()
+{
+  CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
+  CSysfsPath mode{"/sys/module/aml_media/parameters/dolby_vision_mode"};
+  const bool heldOver = hold.Exists() && hold.Get<std::string>().value_or("N").rfind("Y", 0) == 0;
+  const int curMode = mode.Exists() ? mode.Get<int>().value_or(DOLBY_VISION_OUTPUT_MODE_BYPASS)
+                                    : DOLBY_VISION_OUTPUT_MODE_BYPASS;
+
+  if (!heldOver && curMode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    return;
+
+  CLog::Log(LOGWARNING, "aml_dv_recover_stale_disc_session: previous run left the DV "
+                        "core engaged (vsif_hold={}, mode={}) - tearing it down",
+            heldOver ? "Y" : "N", curMode);
+  dv_teardown_to_bypass();
+  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+}
+
 void aml_dv_release_disc_engage()
 {
   if (!s_dv_disc_engaged)
@@ -682,13 +784,12 @@ void aml_dv_release_disc_engage()
   // what the session VSIF hold prevents: without releasing, the sink stays in
   // DV mode against a native HDR10/SDR decode and shows black (observed with
   // the S&M UHD HDR Benchmark's HDR10 titles on an otherwise-DV disc).
-  CSysfsPath hold{"/sys/module/aml_media/parameters/dolby_vision_vsif_hold"};
-  if (hold.Exists())
-    hold.Set('N');
-  CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy",
-             AMDV_FOLLOW_SOURCE);
-  CSysfsPath("/sys/class/amdolby_vision/dv_mode",
-             (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
+  // ORDER HERE IS LOAD-BEARING. This is now the ONLY teardown for a disc
+  // session - CloseDecoder skips its own while the session holds DV engaged -
+  // and each step below gates the next. Getting it wrong leaves the sink latched
+  // in DV over SDR/GUI pixels, which no amount of restarting Kodi recovers.
+  //
+  dv_teardown_to_bypass();
   // s_dv_disc_engaged is already false, so this is the write the per-segment
   // BYPASS calls deliberately skipped while the session was up.
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
@@ -696,7 +797,7 @@ void aml_dv_release_disc_engage()
             "signalling (non-DV title / session end; re-engages on next DV segment)");
 }
 
-bool aml_dv_disc_engaged() { return s_dv_disc_engaged; }
+bool aml_dv_disc_engaged() { return s_dv_disc_engaged.load(); }
 
 unsigned int aml_vs10_by_setting(const std::string& setting)
 {
@@ -823,6 +924,16 @@ void aml_dv_apply_target_overrides(unsigned int mode)
 
 void aml_dv_set_vs10_mode(unsigned int mode)
 {
+  // A BYPASS here drives the same kernel path CloseDecoder's per-segment write
+  // does: six vsyncs later enable_amdv(0) runs, patch 0005 clears the session
+  // VSIF hold, and DV signalling drops for the rest of the disc while Kodi still
+  // believes the session holds it. Reachable live from ACTION_VS10_ORIGINAL.
+  if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_engaged())
+  {
+    CLog::Log(LOGDEBUG, "aml_dv_set_vs10_mode: BYPASS suppressed - disc session "
+                        "holds DV engaged");
+    return;
+  }
   CSysfsPath dolby_vision_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
   CSysfsPath dolby_vision_policy{"/sys/module/aml_media/parameters/dolby_vision_policy"};
   bool dv_enabled(dolby_vision_enable.Exists() &&
