@@ -441,6 +441,7 @@ protected:
   void CheckStreamPlayerAlive(CCurrentStream& current,
                               IDVDStreamPlayer* player,
                               int& restarts,
+                              int& deadPolls,
                               const char* name);
 
   bool CheckIsCurrent(const CCurrentStream& current, CDemuxStream* stream, DemuxPacket* pkg);
@@ -698,6 +699,13 @@ protected:
   XbmcThreads::EndTime<> m_syncStuckTimer;
   int m_audioPlayerRestarts = 0;
   int m_videoPlayerRestarts = 0;
+  // consecutive polls that saw the player dead - a deliberate self-stop is
+  // withdrawn within one pass, a real death is not
+  int m_audioPlayerDeadPolls = 0;
+  int m_videoPlayerDeadPolls = 0;
+  // set only while CheckStreamPlayerAlive reopens, so OpenStream does not read
+  // the cleared stream id as a first open and re-arm the display mode switch
+  bool m_restartingStreamPlayer = false;
 
   CEdl m_Edl;
   bool m_SkipCommercials;
