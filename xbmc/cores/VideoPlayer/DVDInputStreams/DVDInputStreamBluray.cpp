@@ -603,6 +603,48 @@ bool CDVDInputStreamBluray::Open()
   // after our write). Re-apply the real values now that detection has run.
   ApplyUHDCapabilities();
 
+  // A 3D disc needs the 3D player persona and libbluray cannot install it for
+  // us. bluray.c calls psr_init_3D(regs, ..., force=0) when it detects a BD 3D
+  // index, but register.c refuses a non-forced 3D init once
+  // PSR_PROFILE_VERSION >= 0x0300 - and SetupPlayerSettings declares profile 6
+  // v3.1 (0x0310) before the disc is opened, so the init never runs:
+  //   "psr_init_3D() failed: profile version already set to >= 0x0300"
+  // The cost is not limited to the 3D registers. BD-J derives its whole
+  // profile persona from PSR31 (Libbluray.java): profile 6 skips the `if (!p6)`
+  // branch, so bluray.profile.1 and bluray.profile.2 are never set at all and
+  // an Xlet authored before UHD reads null for every profile property it knows
+  // about. PSR31 also selects the HAVi screen-device configurations -
+  // HGraphicsDevice/HVideoDevice/HBackgroundDevice build UHD templates instead
+  // of the S3D ones a 3D Xlet asks for.
+  // Declare profile 5 v2.4 for a 3D disc: it is what libbluray's own
+  // psr_init_3D would have written, and what a dual-capable player reports for
+  // a 3D title. UHD discs are unaffected - psr_init_UHD is called with force=1.
+  //
+  // The display's inability to show 3D belongs in the display registers, not
+  // in the profile, so PSR21/PSR23 stay keyed on the real sink. That is the
+  // deliberate difference from psr_init_3D, which asserts every
+  // BLURAY_DCAP_*_3D bit unconditionally and would tell a 2D panel it can do
+  // 3D. PSR22 (3D_STATUS) is a status register rather than a setting and its 0
+  // default already states "not currently outputting 3D". PSR24 (3D_CAP) keeps
+  // the display-derived value SetupPlayerSettings wrote.
+  if (disc_info->content_exist_3D)
+  {
+    const bool display3d = aml_display_support_3d();
+    const uint32_t displayCap =
+        display3d ? (BLURAY_DCAP_1080p_720p_3D | BLURAY_DCAP_720p_50Hz_3D |
+                     BLURAY_DCAP_NO_3D_CLASSES_REQUIRED | BLURAY_DCAP_INTERLACED_3D)
+                  : 0;
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray: 3D disc - declaring player profile 5 v2.4, "
+              "PSR21 {}, PSR23 0x{:08x} (display 3D: {})",
+              display3d ? "PREFER_3D" : "PREFER_2D", displayCap, display3d);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE,
+                          BLURAY_PLAYER_PROFILE_5_v2_4);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_OUTPUT_PREFER,
+                          display3d ? BLURAY_OUTPUT_PREFER_3D : BLURAY_OUTPUT_PREFER_2D);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISPLAY_CAP, displayCap);
+  }
+
   if (disc_info->bluray_detected)
   {
 #if (BLURAY_VERSION > BLURAY_VERSION_CODE(1,0,0))
@@ -2759,8 +2801,9 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   // non-forced init once PSR_PROFILE_VERSION >= 0x0300 - and this player
   // declares profile 6 v3.1 (0x0310) below - so the value written here
   // survives 3D-disc detection too. Only psr_init_UHD is called forced.
-  // Corollary for the open 3D/MVC work: 3D discs never receive libbluray's
-  // coordinated 3D-profile PSR setup on this build.
+  // A 3D disc therefore receives no 3D PSR setup from libbluray at all, so
+  // Open() installs the profile-5 persona itself once bd_get_disc_info() has
+  // reported content_exist_3D.
   const bool display3d = aml_display_support_3d();
   const uint32_t threeDCap = display3d ? 0xffffffff : 0;
   CLog::Log(LOGINFO,
