@@ -1975,6 +1975,8 @@ void CVideoPlayer::Prepare()
   m_menuDomainClampSeconds = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoMenuDomainQueueTimeSize);
   aml_set_disc_mode_hold(false);
+  // New session: the next held segment re-anchors from its own content.
+  aml_set_disc_mode_anchored(false);
 
   IPlayerCallback *cb = &m_callback;
   CFileItem fileItem = m_item;
@@ -3736,6 +3738,7 @@ void CVideoPlayer::OnExit()
   m_pCCDemuxer.reset();
   m_pInputBluray.reset();
   aml_set_disc_mode_hold(false);
+  aml_set_disc_mode_anchored(false);
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
