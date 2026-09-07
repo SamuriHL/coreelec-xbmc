@@ -55,6 +55,18 @@ public:
   virtual bool AcceptsData() const = 0;
   virtual bool IsStalled() const = 0;
 
+  /*!
+   * \brief Whether the player's own worker thread is still running.
+   *
+   * A player whose thread has exited keeps reporting IsInited(), so the
+   * demuxer goes on feeding a queue that nothing drains and the player
+   * deadlocks with no error anywhere. CVideoPlayer polls this to notice.
+   *
+   * Defaults to true for implementations that run no thread of their own -
+   * they can never be dead in this sense.
+   */
+  virtual bool IsPlayerRunning() const { return true; }
+
   enum ESyncState
   {
     SYNC_STARTING,
