@@ -3140,9 +3140,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     // data (VC-1/MVC starve class) exceeds the size threshold, and a
     // consume-without-output wedge (eaten-GOP class) keeps data_len
     // CHANGING call-to-call, failing the prev_data_len equality - either
-    // way this branch declines them. Note the full-buffer class then lands on
-    // the VC_NONE branch below, which returns before the timeout test, so it
-    // is NOT covered by m_decoder_timeout - a separate gap, not fixed here.
+    // way this branch declines them, and the VC_NONE branch below now hands the
+    // full-buffer class to m_decoder_timeout rather than holding it forever.
     // Parking is normal and usually brief. One that outlasts a second is worth
     // a line: from outside this function it is indistinguishable from a freeze,
     // and the whole point of the branch is that the stall clock stops running.
@@ -3174,7 +3173,19 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // on a 1ms priority-only wait with nothing in the log. An idle still satisfies
   // both this condition and the park above (drain latched by the "Stillframe
   // detected" block, tail below one parser fetch quantum), so the park has to win.
-  else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
+  // ...but VC_NONE must not be unconditional. This branch is exactly the wedge
+  // shape - the decoder HAS input (a full buffer, or a drain with a ready one)
+  // and is producing nothing - and it returns before the timeout test below, so
+  // m_tp_last_frame kept running while nothing ever read it. The VC-1/MVC
+  // starve class therefore had no safety net at all: it sat here forever. Hand
+  // it to the flush once decodertimeout expires, the same bound every other
+  // path in this function uses. Paused is exempt unconditionally: there the
+  // decoder is meant to produce nothing, and a flush would discard the held
+  // frame (which wedges Dolby Vision dual-layer decode outright).
+  else if (((m_drain && m_buffer_level_ready) ||
+            (buffer_level > (streambuffer ? 100.0f : 10.0f))) &&
+           (m_speed == DVD_PLAYSPEED_PAUSE ||
+            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout)))
     return CDVDVideoCodec::VC_NONE;
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
