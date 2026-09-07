@@ -393,6 +393,14 @@ public:
   virtual void SetVideoResolution(unsigned int width, unsigned int height) {}
 
   /*
+   * When a file carries two independent full video streams of different HDR
+   * formats, the uniqueId of the one the user's preference selects; -1 when
+   * there is no such choice to make. Not a dual-layer BL/EL pair - that is one
+   * picture in two streams, not an alternative.
+   */
+  virtual int GetPreferredVideoStream() const { return -1; }
+
+  /*
   * return the id of the demuxer
   */
   int64_t GetDemuxerId() const { return m_demuxerId; }

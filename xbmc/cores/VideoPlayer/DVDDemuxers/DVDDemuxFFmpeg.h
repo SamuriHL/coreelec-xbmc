@@ -115,6 +115,7 @@ public:
   void GetChapterName(std::string& strChapterName, int chapterIdx=-1) override;
   std::chrono::milliseconds GetChapterPos(int chapterIdx = -1) override;
   std::string GetStreamCodecName(int iStreamId) override;
+  int GetPreferredVideoStream() const override { return m_dv_preferred_video_stream; }
 
   bool Aborted();
 
@@ -138,6 +139,7 @@ protected:
   void DisposeStreams();
   void RemoveStream(CDemuxStream *stream);
   void ClearDualLayerStreamFlags();
+  void ComputePreferredVideoStream();
   void ParsePacket(AVPacket* pkt);
   TRANSPORT_STREAM_STATE TransportStreamAudioState();
   TRANSPORT_STREAM_STATE TransportStreamVideoState();
@@ -193,4 +195,7 @@ protected:
   double m_startTime = 0;
   std::vector<ChapterFFmpeg> m_chapters;
   bool m_dv_dual_stream = false;
+  // uniqueId of the video stream the user's HDR-format preference selects when
+  // a file offers a real choice between two full video streams; -1 otherwise.
+  int m_dv_preferred_video_stream = -1;
 };
