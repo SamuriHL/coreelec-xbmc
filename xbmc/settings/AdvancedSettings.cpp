@@ -237,6 +237,7 @@ void CAdvancedSettings::Initialize()
   m_videoDiscSessionConformNonDV = false;
 
   m_blurayIsoCacheEnabled = true;
+  m_blurayForce3DDisplayCap = false;
   m_blurayIsoCachePageSize = 256 * 1024;
   m_blurayIsoCacheMaxBytes = 64 * 1024 * 1024;
   m_blurayIsoCacheForwardPrefetchPages = 128;
@@ -906,6 +907,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetUInt(pElement, "forwardprefetchpages", m_blurayIsoCacheForwardPrefetchPages, 0,
                       1024);
   }
+
+  XMLUtils::GetBoolean(pRootElement, "blurayforce3ddisplaycap", m_blurayForce3DDisplayCap);
 
   pElement = pRootElement->FirstChildElement("musiclibrary");
   if (pElement)

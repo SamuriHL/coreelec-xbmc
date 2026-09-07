@@ -228,6 +228,16 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     unsigned int m_blurayIsoCachePageSize;
     unsigned int m_blurayIsoCacheMaxBytes;
     unsigned int m_blurayIsoCacheForwardPrefetchPages;
+
+    // DIAGNOSTIC. Report the 3D player/display capability PSRs to a 3D disc as
+    // if the connected display were 3D capable, overriding
+    // amhdmitx0/support_3d (read-only sysfs, so it cannot be faked on the box).
+    // A BD 3D title's Xlet can park between a 2D still and its 3D feature
+    // waiting on 3D output the player never brings up; this makes that a
+    // config toggle instead of a rebuild. Output on a 2D panel is NOT expected
+    // to be watchable - this exists to see whether the disc's app advances.
+    // <blurayforce3ddisplaycap>true</...>
+    bool m_blurayForce3DDisplayCap;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
     int  m_videoFpsDetect;
