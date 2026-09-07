@@ -168,6 +168,12 @@ void aml_display_vsvdb_invalidate();
 // sinks re-train on every re-clock; see AMLUtils.cpp)
 void aml_set_disc_mode_hold(bool hold);
 bool aml_disc_mode_hold();
+
+// Disc-session resolution anchor. False until the first video segment of a disc
+// session has chosen a resolution from its own content; the mode hold consults it
+// so it never anchors the session to the GUI's mode. Reset at player teardown.
+bool aml_disc_mode_anchored();
+void aml_set_disc_mode_anchored(bool anchored);
 // Display's GENUINE VSVDB v2 max luminance in nits (0 = unavailable/not v2).
 // Injection-aware: reads the cached panel block, not dv_cap (which reports
 // the injected block while an override is live).
