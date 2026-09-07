@@ -165,6 +165,13 @@ public:
   virtual void Reset() = 0;
 
   /**
+   * Abandon any decode work already in flight, because a flush is coming and
+   * whatever is being written is about to be discarded anyway. Advisory: a
+   * codec that cannot interrupt itself does nothing, and Reset() must clear it.
+   */
+  virtual void Abort() {}
+
+  /**
    * GetPicture controls decoding. Player calls it on every cycle
    * it can signal a picture, request a buffer, or return none, if nothing applies
    * the data is valid until the next GetPicture return VC_PICTURE

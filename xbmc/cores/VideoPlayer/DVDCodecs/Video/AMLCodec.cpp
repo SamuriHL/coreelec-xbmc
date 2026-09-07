@@ -2049,9 +2049,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
-  // Cleared for a fresh decoder only. Deliberately NOT cleared in Reset(): the
-  // recovery below calls Reset() itself, and clearing there would restart the
-  // give-up deadline on every attempt so it could never expire.
+  m_abort = false;
+  // Must NOT also be cleared in Reset(): the write-failure recovery calls
+  // Reset() itself, so clearing there would restart the give-up deadline on
+  // every attempt and it could never expire.
   m_wrFailActive = false;
   // Mirror of CBitstreamConverter's tiny-IDR padding gate; see m_felIdrPadding.
   m_felIdrPadding = doviIsFEL;
@@ -2760,8 +2761,15 @@ void CAMLCodec::CloseAmlVideo()
     SetVfmMap("default", m_defaultVfmMap);
 }
 
+void CAMLCodec::Abort()
+{
+  m_abort = true;
+}
+
 void CAMLCodec::Reset()
 {
+  m_abort = false;
+
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
   if (!m_opened)
@@ -2955,6 +2963,14 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   bool write_failed = false;
   while (am_private->am_pkt.isvalid && loop < 100)
   {
+    // The packet is about to be discarded by the flush that set this, so stop
+    // retrying. Not a write failure: no recovery is owed.
+    if (m_abort)
+    {
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::{}: write loop aborted by flush", __FUNCTION__);
+      return false;
+    }
+
     // abort on any errors.
     if (write_av_packet(am_private, &am_private->am_pkt) != PLAYER_SUCCESS)
     {
@@ -2973,16 +2989,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     return false;
   }
 
-  // A write that actually failed used to break out of the loop above and fall
-  // through to `return true` - which tells the player the packet was consumed,
-  // so it is never resubmitted and the picture just stops with nothing logged.
-  // Our other stall recovery is all output-side (the GetPicture timeout), so an
-  // input-side wedge had no cover at all.
-  //
-  // false means "retry this packet" (CVideoPlayerVideo sends it back), so the
-  // failure must be bounded or the player would spin on it forever: reset the
-  // decoder every 250ms while it persists, and after 2s give the packet up so
-  // playback can move past it rather than hanging.
+  // false means "retry this packet" (CVideoPlayerVideo sends it back), so a
+  // persistent failure has to be bounded or the video thread spins on it: reset
+  // the decoder every 250ms, and give the packet up after 2s.
   if (write_failed)
   {
     const auto now = std::chrono::steady_clock::now();
@@ -3197,6 +3206,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // before.
   if (((m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain) && (ret = DequeueBuffer()) == 0)
   {
+
     pVideoPicture->iFlags = 0;
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
