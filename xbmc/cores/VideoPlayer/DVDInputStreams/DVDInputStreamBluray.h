@@ -20,6 +20,7 @@
 #include <chrono>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <queue>
@@ -52,6 +53,7 @@ extern "C"
 #define HDMV_PID_IG_FIRST         0x1400
 #define HDMV_PID_IG_LAST          0x141f
 
+class CBlurayIsoCache;
 class CDVDOverlayImage;
 class IVideoPlayer;
 class CDVDDemux;
@@ -92,6 +94,10 @@ public:
   void Close() override;
   int Read(uint8_t* buf, int buf_size) override;
   int ReadBlocks(uint8_t* buf, int lba, int num_blocks);
+  // Uncached Seek+Read on the image handle. Also the cache's fill callback,
+  // so it must stay safe to call from the prefetch worker.
+  int ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks);
+  int64_t ReadRaw(int64_t offset, uint8_t* buffer, size_t size);
   int64_t Seek(int64_t offset, int whence) override;
   void Abort() override;
   bool IsEOF() override;
@@ -608,6 +614,20 @@ protected:
 
     /* used during bd_open_stream read block*/
     CCriticalSection m_readBlocksLock;
+
+    // Tears the read-ahead cache down and joins its worker. Safe to call when
+    // no cache is running.
+    void StopIsoCache();
+    void ResetIsoCacheAccessPattern();
+
+    /* read-ahead page cache in front of m_pstream (ISO playback only) */
+    std::mutex m_isoCacheMutex;
+    std::shared_ptr<CBlurayIsoCache> m_isoCache;
+    std::atomic<unsigned int> m_isoCacheFallbacks{0};
+    // Set while the cache is being torn down, so a prefetch read already in
+    // flight gives up instead of holding Close() for the length of an NFS
+    // timeout on a share that has gone away.
+    std::atomic<bool> m_isoCacheAborting{false};
 
     std::chrono::steady_clock::time_point m_startWatchTime{};
     std::vector<PlaylistInformation> m_playedPlaylists;
