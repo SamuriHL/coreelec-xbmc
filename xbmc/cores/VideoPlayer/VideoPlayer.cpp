@@ -1679,6 +1679,13 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
 
 void CVideoPlayer::BdSegmentTransition()
 {
+  // A Blu-ray stays inside one Process() for the whole disc, so a budget only
+  // reset in OnStartup() is a per-DISC quota: three player deaths spread over a
+  // two-hour title would silently drop the stream for the rest of it. A segment
+  // swap is a clean boundary - a player that survived one is not the failure
+  // this bound exists to stop.
+  m_audioPlayerRestarts = 0;
+  m_videoPlayerRestarts = 0;
   const EBdTransition transition = ClassifyBdTransition();
 
   SetCaching(CACHESTATE_DONE);
@@ -2225,9 +2232,9 @@ void CVideoPlayer::Process()
     // Must precede the read gate below: that gate is what a dead player turns
     // into a deadlock.
     CheckStreamPlayerAlive(m_CurrentAudio, m_VideoPlayerAudio.get(), m_audioPlayerRestarts,
-                           "audio");
+                           m_audioPlayerDeadPolls, "audio");
     CheckStreamPlayerAlive(m_CurrentVideo, m_VideoPlayerVideo.get(), m_videoPlayerRestarts,
-                           "video");
+                           m_videoPlayerDeadPolls, "video");
 
     // tell demuxer if we want to fill buffers
     if (m_demuxerSpeed != DVD_PLAYSPEED_PAUSE)
@@ -5359,7 +5366,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     return false;
 
   // set desired refresh rate
-  if (m_CurrentVideo.id < 0 && m_playerOptions.fullscreen &&
+  if (m_CurrentVideo.id < 0 && !m_restartingStreamPlayer && m_playerOptions.fullscreen &&
       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot() && hint.fpsrate != 0 &&
       hint.fpsscale != 0)
   {
@@ -5604,10 +5611,32 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
                                          IDVDStreamPlayer* player,
                                          int& restarts,
+                                         int& deadPolls,
                                          const char* name)
 {
   if (current.id < 0 || player == nullptr || !player->IsInited() || player->IsPlayerRunning())
+  {
+    deadPolls = 0;
     return;
+  }
+
+  // A player can also stop ITSELF on purpose: CVideoPlayerVideo answers a codec
+  // change it cannot satisfy with PLAYER_ABORT + StopThread() on its own thread,
+  // which leaves exactly the shape this function looks for - thread gone, queue
+  // still inited. Restarting that races the abort it just asked for.
+  //
+  // m_bAbortRequest catches it once HandleMessages has drained the message, but
+  // the post can land after that ran this iteration, so also require the state
+  // to survive one more pass. A genuinely dead thread stays dead; a deliberate
+  // stop has its PLAYER_ABORT handled in between.
+  if (m_bAbortRequest)
+  {
+    deadPolls = 0;
+    return;
+  }
+  if (++deadPolls < 2)
+    return;
+  deadPolls = 0;
 
   // CloseStream clears current, so the identity has to be taken first.
   const int64_t demuxerId = current.demuxerId;
@@ -5631,9 +5660,36 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
             name, restarts, MAX_PLAYER_RESTARTS);
 
   CloseStream(current, false);
-  if (!OpenStream(current, demuxerId, id, source, true))
+
+  // CloseStream cleared current.id, and OpenStream reads `m_CurrentVideo.id < 0`
+  // as "first open of this stream" - which is what arms TriggerUpdateResolution.
+  // Left alone, recovering a dead video thread would take a full HDMI re-clock
+  // with it, mid-title, up to MAX_PLAYER_RESTARTS times. On this chain that is
+  // seconds of black and a DV re-engage; the disc-session mode hold exists
+  // precisely to avoid per-segment re-clocks, so a restart must not cause one.
+  m_restartingStreamPlayer = true;
+  const bool opened = OpenStream(current, demuxerId, id, source, true);
+  m_restartingStreamPlayer = false;
+
+  if (!opened)
+  {
     CLog::Log(LOGERROR, "CVideoPlayer::CheckStreamPlayerAlive - reopening {} failed, continuing "
                         "without it", name);
+    return;
+  }
+
+  // The reopened player starts at SYNC_STARTING with an empty queue while the
+  // demuxer sits wherever playback had reached, so its first packet is roughly a
+  // queue-depth ahead of what is on screen. Every other close/reopen pair in
+  // Process() answers that with an accurate seek; without one the survivor eats
+  // a multi-second jump against the master clock. Same message, same flags.
+  CDVDMsgPlayerSeek::CMode mode;
+  mode.time = (int)GetUpdatedTime();
+  mode.backward = true;
+  mode.accurate = true;
+  mode.trickplay = true;
+  mode.sync = true;
+  m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
 }
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
