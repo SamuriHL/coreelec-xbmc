@@ -1117,6 +1117,12 @@ void CDVDVideoCodecAmlogic::PopPackageFront()
   m_packages.pop_front();
 }
 
+void CDVDVideoCodecAmlogic::Abort()
+{
+  if (m_Codec)
+    m_Codec->Abort();
+}
+
 void CDVDVideoCodecAmlogic::Reset(void)
 {
   m_Codec->Reset();
