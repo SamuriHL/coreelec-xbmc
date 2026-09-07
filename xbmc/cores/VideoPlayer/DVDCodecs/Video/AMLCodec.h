@@ -67,6 +67,7 @@ public:
   bool          OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualStream = false);
   bool          Enable_vadj1();
   void          CloseDecoder();
+  void          Abort();
   void          Reset();
 
   bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
@@ -169,10 +170,12 @@ private:
   // benign park into a decoder flush - so the threshold moves with the pad.
   bool            m_felIdrPadding = false;
 
-  // Input-side write-failure recovery. A codec write that keeps failing used to
-  // be reported to the player as a consumed packet, so the picture simply
-  // stopped with nothing in the log; these track how long it has been failing
-  // so it can be reset periodically and finally given up on.
+  // Set by a flush so a write loop in progress gives up. Written from the
+  // player thread, read by the video thread.
+  std::atomic_bool m_abort{false};
+
+  // How long a codec write has been failing, so it can be reset periodically
+  // and the packet finally given up on.
   bool m_wrFailActive = false;
   std::chrono::time_point<std::chrono::steady_clock> m_tpWrFailStart;
   std::chrono::time_point<std::chrono::steady_clock> m_tpWrFailLastReset;

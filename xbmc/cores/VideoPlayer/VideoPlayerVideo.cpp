@@ -927,6 +927,12 @@ void CVideoPlayerVideo::Flush(bool sync)
   /* flush using message as this gets called from VideoPlayer thread */
   /* and any demux packet that has been taken out of queue need to */
   /* be disposed of before we flush */
+  // Before the message, which queues behind whatever the video thread is already
+  // doing - a hardware decoder can be deep into retrying a write of a packet
+  // this flush will discard.
+  if (m_pVideoCodec)
+    m_pVideoCodec->Abort();
+
   SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
   m_bAbortOutput = true;
 }
