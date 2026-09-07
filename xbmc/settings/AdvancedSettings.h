@@ -213,6 +213,21 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     // re-lock slowly may prefer ON.
     // <video><discsessionconformnondv>true</...>
     bool m_videoDiscSessionConformNonDV;
+    // Read-ahead page cache in front of an ISO opened for Blu-ray playback.
+    // Kodi opens the image READ_NO_CACHE, so without this there is no buffer
+    // at all between libbluray and the link - fine locally, but a network
+    // share (a NAS ISO over WiFi) then feels every throughput dip directly.
+    //
+    // The buffer that absorbs a dip is forwardprefetchpages * pagesize, NOT
+    // maxbytes: maxbytes only bounds how many already-read pages are retained,
+    // and sequential playback never reads those again. Defaults are a 32 MiB
+    // read-ahead (128 x 256 KiB) inside a 64 MiB cache - about 2 s at UHD BD
+    // peak rate, and longer at a typical one.
+    // <blurayisocache><enabled>false</...> restores the direct path.
+    bool m_blurayIsoCacheEnabled;
+    unsigned int m_blurayIsoCachePageSize;
+    unsigned int m_blurayIsoCacheMaxBytes;
+    unsigned int m_blurayIsoCacheForwardPrefetchPages;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
     int  m_videoFpsDetect;
