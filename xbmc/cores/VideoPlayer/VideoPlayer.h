@@ -684,6 +684,10 @@ protected:
   // (post-flush demux gap on disc transitions) - see HandlePlaySpeed
   bool m_syncStartDeferred = false;
   XbmcThreads::EndTime<> m_syncStartDeferTimer;
+  // Watchdog for a stream player that never reaches SYNC_WAITSYNC while its
+  // own queue is full - the shape a dead player thread leaves behind.
+  bool m_syncStuckArmed = false;
+  XbmcThreads::EndTime<> m_syncStuckTimer;
 
   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
 
