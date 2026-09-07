@@ -25978,3 +25978,33 @@ msgstr ""
 msgctxt "#60364"
 msgid "Playback stopped - the source stalled or a seek did not complete"
 msgstr ""
+
+#. Label of the setting choosing which HDR format to open when a file offers both
+msgctxt "#60365"
+msgid "Preferred format when a file carries two video streams"
+msgstr ""
+
+#. Help of the setting choosing which HDR format to open when a file offers both
+msgctxt "#60366"
+msgid "Some releases carry the same picture twice - once as Dolby Vision and once as HDR10+ - as two separate video streams. This chooses which of them plays. It has no effect on ordinary files, on a Dolby Vision profile 7 disc (where the two streams are one picture, not a choice), or when you have already picked a video stream for an item by hand."
+msgstr ""
+
+#. Option: prefer the Dolby Vision stream
+msgctxt "#60367"
+msgid "Dolby Vision"
+msgstr ""
+
+#. Option: prefer the HDR10+ stream
+msgctxt "#60368"
+msgid "HDR10+"
+msgstr ""
+
+#. Label of the setting enabling the HDR10+ decode probe during library scans
+msgctxt "#60369"
+msgid "Detect HDR10+ in HDR10 files"
+msgstr ""
+
+#. Help of the setting enabling the HDR10+ decode probe during library scans
+msgctxt "#60370"
+msgid "Decodes a frame of every HDR10 file added to the library to find out whether it also carries HDR10+ dynamic metadata. Accurate, but it makes scanning a large HDR library noticeably slower. Turn this off to scan faster, at the cost of HDR10+ files being listed as plain HDR10. Dolby Vision files are always examined, as the profile cannot be determined any other way."
+msgstr ""

@@ -20,6 +20,7 @@
 #include "playlists/PlayListFileItemClassify.h"
 #include "pvr/utils/PVRStreamUtils.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MemUtils.h"
 #include "utils/URIUtils.h"
@@ -586,9 +587,23 @@ bool CDVDFileInfo::DemuxerToStreamDetails(const std::shared_ptr<CDVDInputStream>
         }
       }
       // look for DV EL type and/or hdr10+
+      //
+      // The probe decodes a frame, which is the expensive part of scanning an
+      // HDR library. For a Dolby Vision source it is the only way to learn the
+      // profile, so it always runs; for a plain HDR10 source it is only looking
+      // for HDR10+ metadata that may not be there, and the user can decline it.
+      const auto probeAllowed = [&vstream]()
+      {
+        if (vstream->hdr_type != StreamHdrType::HDR_TYPE_HDR10)
+          return true; // Dolby Vision: the profile cannot be read any other way
+        const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+        const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+        return settings && settings->GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTHDR10PLUS);
+      };
+
       if (vstream->hdr_type != StreamHdrType::HDR_TYPE_NONE &&
           vstream->hdr_type != StreamHdrType::HDR_TYPE_HLG && vstream->dovi.dv_profile != 5 &&
-          vstream->dovi.dv_profile <= 10 && p->m_strHdrTypeAlt != "hlg")
+          vstream->dovi.dv_profile <= 10 && p->m_strHdrTypeAlt != "hlg" && probeAllowed())
       {
         if (!GetDetailsFromFrame(vstream, pDemux, *p))
           CLog::LogF(LOGERROR, "Failed to get HDR details from frame");

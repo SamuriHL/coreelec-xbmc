@@ -158,6 +158,7 @@ public:
   static constexpr auto SETTING_MYVIDEOS_EXTRACTCHAPTERTHUMBS = "myvideos.extractchapterthumbs";
   static constexpr auto SETTING_MYVIDEOS_REPLACELABELS = "myvideos.replacelabels";
   static constexpr auto SETTING_MYVIDEOS_EXTRACTTHUMB = "myvideos.extractthumb";
+  static constexpr auto SETTING_MYVIDEOS_EXTRACTHDR10PLUS = "myvideos.extracthdr10plus";
   static constexpr auto SETTING_MYVIDEOS_STACKVIDEOS = "myvideos.stackvideos";
   static constexpr auto SETTING_LOCALE_SUBTITLELANGUAGE = "locale.subtitlelanguage";
   static constexpr auto SETTING_SUBTITLES_HIDESAMEAUDIOLANGUAGE = "subtitles.hidesameaudiolanguage";
@@ -493,6 +494,7 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_MODE = "coreelec.amlogic.dolbyvision.l5.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK = "coreelec.amlogic.dolbyvision.l5.osd.unmask";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT = "coreelec.amlogic.dolbyvision.hdr10plus.convert";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY = "coreelec.amlogic.dolbyvision.dual.priority";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT = "coreelec.amlogic.dolbyvision.nondv.stockconvert";
   static constexpr auto SETTING_COREELEC_DETECT_BROKEN_FILES = "coreelec.detectbrokenfiles";
   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";

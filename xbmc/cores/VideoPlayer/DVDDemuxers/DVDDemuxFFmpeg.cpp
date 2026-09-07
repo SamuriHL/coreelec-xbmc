@@ -272,6 +272,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   // next non-DV title fall into the discard branch in AddStream and lose its
   // only video stream - playback with no video at all.
   m_dv_dual_stream = false;
+  m_dv_preferred_video_stream = -1;
 
   const AVIOInterruptCB int_cb = { interrupt_cb, this };
 
@@ -1779,6 +1780,103 @@ void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
     for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
       addStreamKeepingChanges(static_cast<int>(i));
   }
+
+  ComputePreferredVideoStream();
+}
+
+void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
+{
+  m_dv_preferred_video_stream = -1;
+
+  // A profile-7 dual-layer title is one picture carried in two streams, not two
+  // versions of the picture to choose between - never override the pairing.
+  if (m_dv_dual_stream || !m_pFormatContext)
+    return;
+
+  // With the Dolby Vision core out of the picture there is no format to prefer:
+  // leave the container's own choice alone rather than acting on a setting the
+  // GUI hides in that state.
+  if (!aml_dv_source_engages_core())
+    return;
+
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+  if (!settings)
+    return;
+
+  const bool preferHdr10Plus =
+      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1;
+
+  // What the preference actually asks for. "Prefer HDR10+" means an HDR10 or
+  // HDR10+ picture - NOT merely "not Dolby Vision", which would also match an
+  // SDR track or a Blu-ray picture-in-picture stream.
+  const auto isPreferredFormat = [&preferHdr10Plus](const CDemuxStreamVideo* stream)
+  {
+    if (preferHdr10Plus)
+      return stream->hdr_type == StreamHdrType::HDR_TYPE_HDR10 ||
+             stream->hdr_type == StreamHdrType::HDR_TYPE_HDR10PLUS;
+    return stream->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
+  };
+
+  // Second choice, consulted only when nothing carries the preferred format: a
+  // cross-compatible Dolby Vision stream (bl_signal_compatibility_id > 0) has a
+  // standard HDR10 base layer, so it can stand in for HDR10+. A profile 5
+  // stream cannot - its base layer is not a viewable HDR10 picture.
+  const auto isAcceptableFallback = [&preferHdr10Plus](const CDemuxStreamVideo* stream)
+  {
+    return preferHdr10Plus && stream->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+           stream->dovi.dv_bl_signal_compatibility_id > 0;
+  };
+
+  int videoStreams = 0;
+  int firstMatch = -1;
+  int firstFallback = -1;
+  int defaultPick = -1;
+  int firstVideo = -1;
+
+  for (const auto& [streamIdx, stream] : m_streams)
+  {
+    // Cover art never reaches m_streams (AddStream discards attached pictures),
+    // so every video stream here is a real one.
+    if (!stream || stream->type != StreamType::VIDEO)
+      continue;
+
+    const auto* video = static_cast<const CDemuxStreamVideo*>(stream);
+
+    ++videoStreams;
+    if (firstVideo < 0)
+      firstVideo = video->uniqueId;
+    if (defaultPick < 0 && (video->flags & StreamFlags::FLAG_DEFAULT))
+      defaultPick = video->uniqueId;
+
+    if (firstMatch < 0 && isPreferredFormat(video))
+      firstMatch = video->uniqueId;
+    else if (firstFallback < 0 && isAcceptableFallback(video))
+      firstFallback = video->uniqueId;
+  }
+
+  // One video stream is not a choice.
+  if (videoStreams < 2)
+    return;
+
+  const int wanted = firstMatch >= 0 ? firstMatch : firstFallback;
+  if (wanted < 0)
+    return;
+
+  // Only override what the player would otherwise open: the first stream
+  // flagged default, or the first stream when none is. Testing the flag on the
+  // matched stream alone gets this wrong whenever two streams carry it.
+  const int wouldOpen = defaultPick >= 0 ? defaultPick : firstVideo;
+  if (wanted == wouldOpen)
+    return;
+
+  m_dv_preferred_video_stream = wanted;
+  CLog::Log(LOGDEBUG, LOGVIDEO,
+            "CDVDDemuxFFmpeg::ComputePreferredVideoStream: {} video streams - preferring stream {} "
+            "over {} for the configured HDR format ({}{})",
+            videoStreams, m_dv_preferred_video_stream, wouldOpen,
+            preferHdr10Plus ? "HDR10+" : "Dolby Vision",
+            firstMatch < 0 ? ", cross-compatible fallback" : "");
 }
 
 void CDVDDemuxFFmpeg::DisposeStreams()
