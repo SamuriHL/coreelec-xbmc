@@ -100,6 +100,12 @@ bool IsKnownLanguage(const CLanguageTag& language)
 {
   return !language.IsUndetermined();
 }
+
+// How long one stream player may sit at the sync handshake with a full queue
+// while its partner never arrives, before the wait is treated as a deadlock
+// rather than slowness. Comfortably longer than any legitimate handshake, and
+// short enough that a viewer sees a hiccup instead of a freeze.
+constexpr auto SYNC_STUCK_TIMEOUT = std::chrono::milliseconds(3000);
 } // unnamed namespace
 
 class PredicateSubtitleFilter
@@ -2881,6 +2887,17 @@ void CVideoPlayer::HandlePlaySpeed()
     if (m_pInputStream->IsRealtime())
       threshold = 40;
 
+    // Video is at the handshake, audio's queue is full, and audio has not
+    // arrived - the shape a stream player leaves when it has stopped running.
+    // Evaluated here, and disarmed on every path that is not it, so the timer
+    // below can never be left armed from an earlier, unrelated stall.
+    const bool syncStuck = m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 &&
+                           !m_VideoPlayerAudio->AcceptsData() &&
+                           m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC &&
+                           m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_WAITSYNC;
+    if (!syncStuck)
+      m_syncStuckArmed = false;
+
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentVideo.packets == 0 && m_CurrentAudio.packets > threshold) ||
                  (!m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10);
@@ -3029,8 +3046,44 @@ void CVideoPlayer::HandlePlaySpeed()
         m_VideoPlayerAudio->AcceptsData();
         CLog::Log(LOGWARNING, "VideoPlayer::Sync - stream player video does not start, flushing buffers");
         FlushBuffers(DVD_NOPTS_VALUE, true, true);
+        m_syncStuckArmed = false;
+      }
+      // 2. one player has arrived at the handshake and the other never will.
+      //    Case 1 only covers video still SYNC_STARTING; once video has reached
+      //    SYNC_WAITSYNC there was no bound at all, and the wait is indefinite:
+      //    an audio queue that is full and never drains also stops the demuxer
+      //    (see the !AcceptsData gate in Process), so nothing else can break the
+      //    deadlock either. Observed 2026-09-06 when CVideoPlayerAudio's thread
+      //    died at startup and playback froze for 22s with nothing logged.
+      //
+      //    Unlike case 1 this state IS reachable transiently, so it is timed
+      //    rather than acted on immediately.
+      else if (syncStuck)
+      {
+        if (!m_syncStuckArmed)
+        {
+          m_syncStuckArmed = true;
+          m_syncStuckTimer.Set(SYNC_STUCK_TIMEOUT);
+        }
+        else if (m_syncStuckTimer.IsTimePast())
+        {
+          // Loud: the partner is not merely slow, it has stopped participating.
+          CLog::Log(LOGERROR,
+                    "VideoPlayer::Sync - audio has not reached sync within {}ms while its queue "
+                    "is full (level {}%, syncState {}) - flushing. If this repeats, the audio "
+                    "player thread is not running.",
+                    SYNC_STUCK_TIMEOUT.count(), m_VideoPlayerAudio->GetLevel(),
+                    static_cast<int>(m_CurrentAudio.syncState));
+          m_syncStuckArmed = false;
+          FlushBuffers(DVD_NOPTS_VALUE, true, true);
+        }
       }
     }
+  }
+  else
+  {
+    // Neither player is at the handshake, so nothing can be stuck at it.
+    m_syncStuckArmed = false;
   }
 
   // handle ff/rw
