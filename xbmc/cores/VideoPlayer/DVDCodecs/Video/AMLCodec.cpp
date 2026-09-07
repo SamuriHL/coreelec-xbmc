@@ -2050,6 +2050,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_buffer_level_ready = false;
   m_skipBufferFillGate = false;
   m_abort = false;
+  m_starve_bypass = false;
+  m_no_data_since_reset = true;
   // Must NOT also be cleared in Reset(): the write-failure recovery calls
   // Reset() itself, so clearing there would restart the give-up deadline on
   // every attempt and it could never expire.
@@ -2816,6 +2818,8 @@ void CAMLCodec::Reset()
   m_last_pts = DVD_NOPTS_VALUE;
   m_state = 0;
   m_buffer_level_ready = false;
+  m_starve_bypass = false;
+  m_no_data_since_reset = true;
 
   SetSpeed(m_speed);
 
@@ -2824,6 +2828,9 @@ void CAMLCodec::Reset()
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
+  if (iSize > 0)
+    m_no_data_since_reset = false;
+
   int data_len, free_len, size;
   int chunk_size = calc_chunk_size(iSize);
   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len, size);
@@ -3204,8 +3211,33 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // with EAGAIN and the EOF/stall handling below - including the parked
   // stall clock for the can't-decode still tail - proceeds exactly as
   // before.
-  if (((m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain) && (ret = DequeueBuffer()) == 0)
+  const bool level_gate_open =
+      (m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain;
+
+  // A segment can decode a picture without ever crossing the fill threshold and
+  // without draining - a short single-stream clip, or a menu segment. The gate
+  // then never opens, so the picture is never dequeued and sits in the v4l
+  // queue while the plane stays black. Probe below the gate once the decoder
+  // has actually been fed and has produced nothing for longer than a few frame
+  // periods, and latch it for the rest of the segment once it pays off.
+  const int frame_ms = std::max(
+      1, static_cast<int>((am_private->video_rate * 1000 + UNIT_FREQ - 1) / UNIT_FREQ));
+  const auto starve_probe_delay =
+      std::max(std::chrono::milliseconds(100), std::chrono::milliseconds(frame_ms * 4));
+  const bool starve_probe = !level_gate_open && !m_no_data_since_reset &&
+                            (m_starve_bypass || elapsed_since_last_frame > starve_probe_delay);
+
+  if ((level_gate_open || starve_probe) && (ret = DequeueBuffer()) == 0)
   {
+    if (starve_probe && !m_starve_bypass)
+    {
+      m_starve_bypass = true;
+      CLog::Log(LOGDEBUG, LOGVIDEO,
+                "CAMLCodec::GetPicture: starve probe dequeued a picture below the fill gate "
+                "[sbuf:{} lvl:{:.1f}% min:{:.1f}% idle:{}ms delay:{}ms]",
+                streambuffer, buffer_level, m_minimum_buffer_level,
+                elapsed_since_last_frame.count(), static_cast<int>(starve_probe_delay.count()));
+    }
 
     pVideoPicture->iFlags = 0;
 
