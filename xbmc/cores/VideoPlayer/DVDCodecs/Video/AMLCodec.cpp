@@ -3142,8 +3142,6 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // (PLAYER_STARTED for SYNC_STARTING waits on it - review finding F6)
   else if (m_drain && data_len == 0)
     return CDVDVideoCodec::VC_EOF;
-  else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
-    return CDVDVideoCodec::VC_NONE;
   else if (ret == EAGAIN &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||
             (data_len < idleInputLimit && data_len == prev_data_len)))
@@ -3155,8 +3153,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     // - no drain: the demuxer stopped delivering (still / stream gap) and
     //   the buffer holds less than one parser fetch quantum (vh265
     //   need_size is 16K) - nothing to decode from.
-    // - drain: the still-entry VIDEO_DRAIN latches DVD_CODEC_CTRL_DRAIN
-    //   (only a next packet clears it, and stills have none) while the
+    // - drain: the "Stillframe detected" block itself latches
+    //   DVD_CODEC_CTRL_DRAIN (CVideoPlayerVideo::Process; on a hardware
+    //   decoder its squeeze loop breaks after one pass) and only a next
+    //   packet clears it, which a still never delivers - while the
     //   segment tail (~30K observed) sits below the parser's fetch
     //   threshold and can never decode. The still exits via
     //   BD_EVENT_STILL -> codec change, not via this drain completing; a
@@ -3165,7 +3165,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     // data (VC-1/MVC starve class) exceeds the size threshold, and a
     // consume-without-output wedge (eaten-GOP class) keeps data_len
     // CHANGING call-to-call, failing the prev_data_len equality - either
-    // way the stall clock keeps running and times out.
+    // way this branch declines them. Note the full-buffer class then lands on
+    // the VC_NONE branch below, which returns before the timeout test, so it
+    // is NOT covered by m_decoder_timeout - a separate gap, not fixed here.
     // Parking is normal and usually brief. One that outlasts a second is worth
     // a line: from outside this function it is indistinguishable from a freeze,
     // and the whole point of the branch is that the stall clock stops running.
@@ -3187,6 +3189,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     m_tp_last_frame = std::chrono::steady_clock::now();
     return CDVDVideoCodec::VC_BUFFER;
   }
+  // Ordered AFTER the idle-input park on purpose. VC_NONE is "nothing to report,
+  // poll me again", and CVideoPlayerVideo::ProcessDecoderOutput has no branch for
+  // it, so it falls through to that function's trailing `return true` - which the
+  // Process() loop reads as progress and answers with `onlyPrioMsgs = true;
+  // continue`, skipping the still pump that re-outputs the held picture. That pump
+  // is the ONLY caller of ProcessOverlays, so a BD-J menu stops compositing: the
+  // highlight never moves however many keys the viewer presses, and the loop spins
+  // on a 1ms priority-only wait with nothing in the log. An idle still satisfies
+  // both this condition and the park above (drain latched by the "Stillframe
+  // detected" block, tail below one parser fetch quantum), so the park has to win.
+  else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
+    return CDVDVideoCodec::VC_NONE;
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR,
