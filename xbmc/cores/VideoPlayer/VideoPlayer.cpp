@@ -1346,6 +1346,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 
     if(packet)
     {
+      packet->demuxDts = packet->dts;
       UpdateCorrection(packet, m_offset_pts);
       if(packet->iStreamId < 0)
         return true;
@@ -1390,6 +1391,12 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
       return true;
     }
 
+    // Capture the demuxer's own dts before any correction touches it. The BL/EL
+    // pairing in the Amlogic codec needs a timeline that is identical for both
+    // layers of a frame; dts is not, because the enhancement layer bypasses
+    // CheckContinuity and so misses the correction the base layer receives at a
+    // seamless playitem boundary.
+    packet->demuxDts = packet->dts;
     UpdateCorrection(packet, m_offset_pts);
 
     if(packet->iStreamId < 0)
