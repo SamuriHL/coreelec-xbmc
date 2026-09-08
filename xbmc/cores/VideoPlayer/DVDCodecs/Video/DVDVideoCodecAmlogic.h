@@ -30,7 +30,10 @@ class CBitstreamConverter;
 class CDVDVideoCodecAmlogic;
 
 // data, size, isELPackage, dts
-typedef std::tuple<uint8_t*, uint32_t, bool, double, double> DLDemuxPacket;
+// data, size, isEL, dts, pts, demuxDts. dts/pts are the player timeline and are
+// what the merged access unit is fed on; demuxDts is the demuxer's untouched
+// dts and is the only field the BL/EL pairing may compare.
+typedef std::tuple<uint8_t*, uint32_t, bool, double, double, double> DLDemuxPacket;
 
 class CAMLVideoBuffer : public CVideoBuffer
 {
