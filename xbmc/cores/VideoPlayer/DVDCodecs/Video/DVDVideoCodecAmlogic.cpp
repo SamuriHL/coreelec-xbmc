@@ -48,6 +48,14 @@ namespace
 // to let neighbouring frames pair.
 constexpr double DL_PAIR_DTS_TOLERANCE = 10000.0;
 
+// How far ahead of an incoming packet a QUEUED packet of the other layer may be
+// and still plausibly be waiting for its partner. Legitimate BL/EL arrival skew
+// is a demuxer interleave artefact measured in frames; a queued packet seconds
+// ahead is not waiting, it is left over from the clip that just ended, whose raw
+// timeline restarts backwards at a seamless branch (60.0s on M3GAN 2.0
+// 00801.mpls). Comfortably above any real skew, far below any real restart.
+constexpr double DL_STALE_QUEUE_LEAD = 2.0 * DVD_TIME_BASE;
+
 // Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
 // bypass default. Delegates to AMLUtils' injection-aware parser (the local
 // duplicate read dv_cap directly, which reports the INJECTED block while a
@@ -715,6 +723,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   {
     m_lastTimelineRestartSeq = packet.timelineRestartSeq;
     m_pendingTimelineRestart = true;
+    CLog::Log(LOGINFO, "{}::{} - timeline restart #{} reached the decoder",
+              __MODULE_NAME__, __FUNCTION__, packet.timelineRestartSeq);
 
     // Drop any OUTGOING clip packet still waiting for a partner. The pairing
     // key is the demuxer's dts, which is monotonic within a clip but restarts
@@ -885,6 +895,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           }
           if (dtsKnown && demuxDtsBackup > pairDts + DL_PAIR_DTS_TOLERANCE)
           {
+            // Seconds ahead is not a pairing wait, it is the clip that ended.
+            // The restart purge cannot catch all of these on its own: it runs
+            // when the stamped base-layer packet arrives, and an outgoing
+            // enhancement layer can still be delivered AFTER that. Measured on
+            // M3GAN 2.0 00801.mpls - purge drops outgoing BL 659.893, then EL
+            // 659.893 arrives one packet later, parks at the head of the queue
+            // and blocks every incoming BL from then on: 5753 base-layer frames
+            // discarded and video never recovers. Evict here too, where any
+            // straggler must eventually present itself.
+            if (demuxDtsBackup > pairDts + DL_STALE_QUEUE_LEAD)
+            {
+              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping stale queued {} package with demux dts: {:.3f} ({:.3f}s ahead of incoming {} - previous clip)", __FUNCTION__,
+                isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE,
+                (demuxDtsBackup - pairDts)/DVD_TIME_BASE, packet.isELPackage ? "EL" : "BL");
+              PopPackageFront();
+              continue;
+            }
             CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with demux dts: {:.3f} (queued {} demux dts: {:.3f})", __FUNCTION__,
               packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE,
               isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE);
