@@ -198,6 +198,7 @@ public:
   static constexpr auto SETTING_DVDS_AUTOMENU = "dvds.automenu";
   static constexpr auto SETTING_DISC_PLAYBACK = "disc.playback";
   static constexpr auto SETTING_BLURAY_PLAYERREGION = "bluray.playerregion";
+  static constexpr auto SETTING_BLURAY_SIMULATE3DDISPLAY = "bluray.simulate3ddisplay";
   static constexpr auto SETTING_ACCESSIBILITY_AUDIOVISUAL = "accessibility.audiovisual";
   static constexpr auto SETTING_ACCESSIBILITY_AUDIOHEARING = "accessibility.audiohearing";
   static constexpr auto SETTING_ACCESSIBILITY_SUBHEARING = "accessibility.subhearing";

@@ -26008,3 +26008,13 @@ msgstr ""
 msgctxt "#60370"
 msgid "Decodes a frame of every HDR10 file added to the library to find out whether it also carries HDR10+ dynamic metadata. Accurate, but it makes scanning a large HDR library noticeably slower. Turn this off to scan faster, at the cost of HDR10+ files being listed as plain HDR10. Dolby Vision files are always examined, as the profile cannot be determined any other way."
 msgstr ""
+
+#. Label of the setting that reports 3D display capability to a Blu-ray 3D disc
+msgctxt "#60371"
+msgid "Simulate 3D display"
+msgstr ""
+
+#. Help of the setting that reports 3D display capability to a Blu-ray 3D disc
+msgctxt "#60372"
+msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether or not it can. Many 3D discs ask before deciding what to play, and some refuse to start at all on a display that answers no - the disc's app parks the title on a single still frame and nothing further happens, with no menu, no picture and no sound. Turning this on lets those discs run their normal path; the film then plays in ordinary 2D, because only the base view of a 3D title is presented. Also useful when the display really can show 3D but its capability is lost on the way to the player, through an AV receiver or scaler that rewrites EDID. Affects Blu-ray 3D discs only and changes nothing for any other disc."
+msgstr ""

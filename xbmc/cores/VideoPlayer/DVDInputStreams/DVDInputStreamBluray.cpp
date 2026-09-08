@@ -437,19 +437,33 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filena
 
 namespace
 {
-// amhdmitx0/support_3d is read-only sysfs, so a 3D-capable display cannot be
-// simulated on the box. This is the diagnostic override behind
-// <blurayforce3ddisplaycap>, used to test whether a BD 3D title's Xlet is
-// parked waiting on 3D output rather than on the still it sits in.
+// Whether to report 3D display capability (PSR23) and a 3D output preference
+// (PSR21) to a BD 3D disc. Normally that is the sink's own answer, read from
+// amhdmitx0/support_3d, but "Simulate 3D display" overrides it.
+//
+// Many BD 3D discs branch on those registers, and some refuse a display that
+// answers no: Frozen 3D routes the title to playlist 90 - one PlayItem, one
+// frame, still_mode 0x02 infinite - which terminates with no path forward, so
+// the disc sits on a black screen with no menu, picture or sound. Answering
+// yes lets it run its normal route and the film plays as ordinary 2D, since
+// only the base view is presented. Declaring the player's own 3D capability
+// (PSR24) is NOT sufficient - measured: PSR24 0xffffffff with PSR21 PREFER_2D
+// and PSR23 0 still parks on playlist 90.
+//
+// The setting also covers a display that genuinely does 3D but whose
+// capability is lost in transit - an AV receiver or scaler rewriting EDID -
+// where support_3d reads 0 with no way to correct it, the sysfs node being
+// read-only.
 bool EffectiveDisplaySupports3D()
 {
   if (aml_display_support_3d())
     return true;
   const auto settings = CServiceBroker::GetSettingsComponent();
-  if (settings && settings->GetAdvancedSettings()->m_blurayForce3DDisplayCap)
+  if (settings && settings->GetSettings() &&
+      settings->GetSettings()->GetBool(CSettings::SETTING_BLURAY_SIMULATE3DDISPLAY))
   {
-    CLog::Log(LOGWARNING, "CDVDInputStreamBluray: blurayforce3ddisplaycap is set - reporting 3D "
-                          "display capability the connected display does NOT have");
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray: \"Simulate 3D display\" is on - reporting 3D "
+                       "display capability the connected display does not report");
     return true;
   }
   return false;
