@@ -941,6 +941,7 @@ void CBitstreamConverter::Close()
 
 bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
 {
+
   if (m_convertBuffer)
   {
     av_free(m_convertBuffer);
@@ -1278,8 +1279,6 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
 
       buf += size;
     }
-
-    m_lastAuIsIrap = sawIrap;
 
     if (felPadding && sawIrap && offset > 0 && offset < DV_FEL_TINY_AU_THRESHOLD)
     {

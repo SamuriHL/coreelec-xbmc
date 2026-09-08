@@ -167,14 +167,10 @@ private:
   CAMLFrameMetadataSequencer m_metadataSequencer;
   size_t m_packagesBytes = 0;
   bool m_packagesOverflowLogged = false;
-  // Most recent IRAP access unit (converted, i.e. merged BL+EL including any
-  // FEL filler) so a seamless boundary can restore it after flushing.
-  std::vector<uint8_t> m_lastIrapAu;
-  double m_lastIrapDts = 0.0;
-  double m_lastIrapPts = 0.0;
-  bool m_lastIrapValid = false;
-  uint64_t m_lastIrapFedAu = 0;
-  uint64_t m_auFedCount = 0;
+  // A timeline restart was stamped on an incoming packet; flush the decoder
+  // before the next access unit reaches it.
+  bool m_pendingTimelineRestart = false;
+  int m_speed = DVD_PLAYSPEED_NORMAL;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
 };
