@@ -1006,6 +1006,19 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       pData = m_bitstream->GetConvertBuffer();
       iSize = m_bitstream->GetConvertSize();
       doviIsFEL = m_bitstream->GetDoviIsFEL();
+      // The converter may only recognise a full enhancement layer partway into a
+      // title - a decoder opened mid-GOP sees no residual in its first RPU - so
+      // the copy CAMLCodec took at OpenDecoder can go stale. Push the change
+      // across rather than let the two padding gates disagree.
+      if (doviIsFEL != m_felIdrPaddingPushed)
+      {
+        m_felIdrPaddingPushed = doviIsFEL;
+        if (m_Codec)
+          m_Codec->SetFelIdrPadding(doviIsFEL);
+        CLog::Log(LOGINFO,
+                  "{}::{} - enhancement layer now reported as {} - tiny-IDR padding gate updated",
+                  __MODULE_NAME__, __FUNCTION__, doviIsFEL ? "FEL" : "MEL");
+      }
       IsHdr10Plus = m_bitstream->GetIsHdrPlus();
       if (IsHdr10Plus && m_stripHdr10Plus &&
           std::find(m_streamMeta.flags.begin(), m_streamMeta.flags.end(), "hdr10plus-removed") ==
