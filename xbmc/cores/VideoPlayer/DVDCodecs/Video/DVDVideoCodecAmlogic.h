@@ -168,8 +168,11 @@ private:
   size_t m_packagesBytes = 0;
   bool m_packagesOverflowLogged = false;
   // A timeline restart was stamped on an incoming packet; flush the decoder
-  // before the next access unit reaches it.
+  // before the next access unit reaches it. The sequence number is what makes
+  // it once-per-jump: the same packet is re-delivered on retries and on the
+  // VC_FLUSHED replay.
   bool m_pendingTimelineRestart = false;
+  uint32_t m_lastTimelineRestartSeq = 0;
   int m_speed = DVD_PLAYSPEED_NORMAL;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
