@@ -1269,15 +1269,42 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       buf += nalLengthSize;
       nal_type = (buf[0] >> 1) & 0x3f;
 
-      if (nal_type != AVC_NAL_END_SEQUENCE)
+      // End of sequence, per codec. AVC_NAL_END_SEQUENCE is 10; HEVC's is 36
+      // (HEVC_NAL_EOS_NUT). This test compared an HEVC nal_type against the AVC
+      // constant, so it has never once matched on this path and the relocation
+      // below has never run for HEVC - the EOS was emitted inline, at the head
+      // of the access unit, immediately before the incoming sequence's VPS/SPS/
+      // PPS and IDR.
+      //
+      // That is the access unit a Blu-ray seamless playitem branch delivers, and
+      // it is what the decoder chokes on. EOS is the ONLY property separating the
+      // three access units that lose frames from the seven same-sized tiny IRAPs
+      // in the same title that play clean: nal_type 36 appears at the three
+      // branches and nowhere else in the feature, on both layers. The measured
+      // cost is 883ms / 1166ms / 613ms of video per branch, which matches this
+      // file's own note in AMLCodec.cpp (~2320) that the EOS closing every m2ts
+      // segment costs "~1s of dropped frames per playitem boundary". That note
+      // says the stream-based path "discards it and keeps decoding"; it does not,
+      // because of the constant above.
+      //
+      // Drop it rather than relocate it. The relocation appends to the very end
+      // of the merged unit, which on a dual-layer stream would place it AFTER the
+      // RPU the Dolby Vision core keys on - an unknown we have no way to validate
+      // from source. Dropping is safe on its own terms: the IDR_N_LP that follows
+      // starts a new coded video sequence regardless, so nothing downstream needs
+      // the EOS to know the sequence ended. AVC keeps its existing relocation.
+      const bool isEndOfSequence = (m_codec == AV_CODEC_ID_HEVC)
+                                       ? (nal_type == HEVC_NAL_EOS_NUT)
+                                       : (nal_type == AVC_NAL_END_SEQUENCE);
+      if (!isEndOfSequence)
         BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
-      else
+      else if (m_codec != AV_CODEC_ID_HEVC)
       {
         buf_eos = buf;
         size_eos = size;
       }
-      CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
-        nal_type, size);
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}{}",
+        nal_type, size, isEndOfSequence && m_codec == AV_CODEC_ID_HEVC ? " (EOS dropped)" : "");
 
       if (size > 0 && IsIDR(nal_type))
         sawIrap = true;
@@ -1329,6 +1356,15 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
         if (rpu_data)
           dovi_data_free(rpu_data);
 #endif
+      }
+      else if (nal_type == HEVC_NAL_EOS_NUT)
+      {
+        // Same end-of-sequence, on the enhancement layer. It arrives on both
+        // layers at a branch and is re-wrapped as UNSPEC63 here, so it has to be
+        // dropped on both or the merged unit still carries one.
+        CLog::Log(LOGDEBUG, LOGVIDEO,
+                  "CBitstreamConverter::Convert: EL nal_type: {}, size: {} (EOS dropped)",
+                  nal_type, size);
       }
       else
       {
