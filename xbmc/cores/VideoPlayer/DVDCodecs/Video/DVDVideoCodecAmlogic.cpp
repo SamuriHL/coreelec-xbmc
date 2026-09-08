@@ -692,23 +692,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   // transport re-delivers the identical packet - on every AddData retry
   // (measured ~12x per access unit while the decoder buffer sits at 93-97%) and
   // on the 30-packet VC_FLUSHED/VC_REOPEN replay - so acting on a flag would
-  // re-flush the decoder on each one. Latching here rather than at the feed
-  // also lets the flag survive the BL/EL pairing wait, since the stamp rides
-  // the base layer and the merged access unit is only fed once its EL lands.
-  if (packet.timelineRestartSeq != 0 && packet.timelineRestartSeq != m_lastTimelineRestartSeq)
+  // re-flush the decoder on each one. Comparing against the highest sequence
+  // seen makes the jump, not the delivery, the thing acted on. Latching here
+  // rather than at the feed also lets it survive the BL/EL pairing wait, since
+  // the stamp rides the base layer and the merged access unit is only fed once
+  // its enhancement layer lands.
+  if (packet.timelineRestartSeq > m_lastTimelineRestartSeq)
   {
     m_lastTimelineRestartSeq = packet.timelineRestartSeq;
     m_pendingTimelineRestart = true;
-
-    // Drop the outgoing clip's unpaired half now. CheckContinuity strips the
-    // timestamps off the packet that opens an unconfirmed jump, and the pairing
-    // guards below are skipped when either dts is unknown - so this boundary
-    // packet would otherwise blind-pair with the trailing enhancement layer of
-    // the clip that just ended, shifting the merge phase for the rest of the
-    // session.
-    while (!m_packages.empty())
-      PopPackageFront();
-    m_packagesOverflowLogged = false;
   }
 
   uint8_t *pData(packet.pData);
@@ -1024,10 +1016,10 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   // apply: MEL menu loops cross their boundaries cleanly today, and a
   // codec_reset there costs a full buffer refill because m_skipBufferFillGate
   // is only set for a dual-layer stream.
-  if (m_pendingTimelineRestart)
+  if (m_pendingTimelineRestart && pData)
   {
     m_pendingTimelineRestart = false;
-    if (m_speed == DVD_PLAYSPEED_NORMAL && m_bitstream && m_bitstream->GetDoviIsFEL())
+    if (m_bitstream && m_bitstream->GetDoviIsFEL())
     {
       CLog::Log(LOGINFO, "{}::{} - timeline restart - flushing the decoder ahead of the incoming "
                          "clip's first access unit",
@@ -1165,16 +1157,15 @@ void CDVDVideoCodecAmlogic::Reset(void)
 
 void CDVDVideoCodecAmlogic::ResetSegmentState(void)
 {
-  // Seamless Blu-ray playitem boundary. Drop the state belonging to the clip
-  // that ended: a BL package still waiting for an EL the outgoing clip never
-  // delivered, which would otherwise pair against the incoming segment's first
-  // frames, and the DV metadata sequencer's position.
-  while (!m_packages.empty())
-  {
-    PopPackageFront();
-  }
-  m_packagesOverflowLogged = false;
-
+  // Seamless Blu-ray playitem boundary: drop the DV metadata sequencer's
+  // position in the clip that ended.
+  //
+  // m_packages is deliberately NOT cleared. This message is one ordered message
+  // behind the packet that opens the restart, so by the time it runs the queue
+  // already holds the incoming clip's own base or enhancement layer waiting for
+  // its partner - the layers alternate which arrives first, so this is about
+  // half of all boundaries. Clearing here freed the incoming keyframe and left
+  // the next access unit to pair blind, which is the stall this exists to stop.
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
 
@@ -1345,7 +1336,6 @@ int CDVDVideoCodecAmlogic::GetDataLevel() const
 
 void CDVDVideoCodecAmlogic::SetSpeed(int iSpeed)
 {
-  m_speed = iSpeed;
 
   if (m_Codec)
     m_Codec->SetSpeed(iSpeed);
