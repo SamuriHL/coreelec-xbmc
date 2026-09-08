@@ -786,13 +786,32 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
           packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
 
-        // Pair BL and EL strictly by dts: both layers of a frame carry the
-        // same dts. A packet whose partner never arrives (windowed playitem
-        // entries and seeks legitimately deliver an EL access unit ahead of
-        // the first BL, and can orphan packets of either layer) must be
-        // dropped, not paired with a neighbour - one blind mispair shifts
-        // the merge phase for the rest of the session.
+        // Pair BL and EL strictly by the DEMUXER's dts: both layers of a frame
+        // carry the same one. Never compare packet.dts here - that is the
+        // player's timeline, and the two layers do not share it. CheckContinuity
+        // blanks the base layer's timestamps while a discontinuity is
+        // unconfirmed and then shifts it by the new correction, but the
+        // enhancement layer never enters CheckContinuity at all (ProcessPacket
+        // routes it straight to the video player). At a seamless playitem
+        // boundary that left every EL read inside the ~136ms confirmation window
+        // stamped on the OUTGOING clip's timeline while the BL had already moved
+        // to the incoming one, so the two layers of the same frame compared ~59s
+        // apart and 20 consecutive BL frames were dropped to burn through the
+        // stale EL queue - a 0.8s hole in the video at every branch.
+        //
+        // A packet whose partner never arrives (windowed playitem entries and
+        // seeks legitimately deliver an EL access unit ahead of the first BL,
+        // and can orphan packets of either layer) must be dropped, not paired
+        // with a neighbour - one blind mispair shifts the merge phase for the
+        // rest of the session.
         constexpr double dtsTolerance = 10000.0; // DVD_TIME units; frame is ~41708
+
+        // Fall back to the player dts only for a packet that never passed
+        // through CVideoPlayer::ReadPacket and so carries no demuxDts; every
+        // packet on the disc/file path does.
+        const double pairDts =
+            packet.demuxDts != DVD_NOPTS_VALUE ? packet.demuxDts : packet.dts;
+
         while (!dual_layer_converted && !m_packages.empty())
         {
           // convert bl and el package to single package
@@ -802,24 +821,26 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           bool isELPackageBackup = std::get<2>(dual_layer_packet);
           double dtsBackup = std::get<3>(dual_layer_packet);
           double ptsBackup = std::get<4>(dual_layer_packet);
+          double demuxDtsBackup = std::get<5>(dual_layer_packet);
 
           if (isELPackageBackup == packet.isELPackage)
             break; // same layer: queue behind it, keep arrival order
 
-          const bool dtsKnown = dtsBackup != DVD_NOPTS_VALUE && packet.dts != DVD_NOPTS_VALUE;
-          if (dtsKnown && dtsBackup < packet.dts - dtsTolerance)
+          const bool dtsKnown =
+              demuxDtsBackup != DVD_NOPTS_VALUE && pairDts != DVD_NOPTS_VALUE;
+          if (dtsKnown && demuxDtsBackup < pairDts - dtsTolerance)
           {
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with dts: {:.3f} (incoming {} dts: {:.3f})", __FUNCTION__,
-              isELPackageBackup ? "EL" : "BL", dtsBackup/DVD_TIME_BASE,
-              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE);
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with demux dts: {:.3f} (incoming {} demux dts: {:.3f})", __FUNCTION__,
+              isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE,
+              packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE);
             PopPackageFront();
             continue;
           }
-          if (dtsKnown && dtsBackup > packet.dts + dtsTolerance)
+          if (dtsKnown && demuxDtsBackup > pairDts + dtsTolerance)
           {
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with dts: {:.3f} (queued {} dts: {:.3f})", __FUNCTION__,
-              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE,
-              isELPackageBackup ? "EL" : "BL", dtsBackup/DVD_TIME_BASE);
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with demux dts: {:.3f} (queued {} demux dts: {:.3f})", __FUNCTION__,
+              packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE,
+              isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE);
             return true;
           }
 
@@ -884,8 +905,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.push_back(
-              std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts, packet.pts));
+          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts,
+                                              packet.pts, pairDts));
           m_packagesBytes += iSize;
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
