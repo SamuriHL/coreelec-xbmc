@@ -703,7 +703,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   // rather than at the feed also lets it survive the BL/EL pairing wait, since
   // the stamp rides the base layer and the merged access unit is only fed once
   // its enhancement layer lands.
-  if (packet.timelineRestartSeq > m_lastTimelineRestartSeq)
+  // Seed from the first packet seen. CVideoPlayer's counter is never reset, so a
+  // codec created mid-title starts at 0 and would read the first packet's live
+  // sequence number as a restart that already happened.
+  if (!m_timelineRestartSeqSeeded)
+  {
+    m_timelineRestartSeqSeeded = true;
+    m_lastTimelineRestartSeq = packet.timelineRestartSeq;
+  }
+  else if (packet.timelineRestartSeq > m_lastTimelineRestartSeq)
   {
     m_lastTimelineRestartSeq = packet.timelineRestartSeq;
     m_pendingTimelineRestart = true;
@@ -718,17 +726,22 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     // layer until playback caught back up to it. This is the one moment we can
     // still tell the two clips apart, so resolve it here.
     //
-    // Only packets ahead of the incoming access unit are dropped, never the
-    // queue wholesale: an enhancement layer legitimately arrives before the
-    // first base layer of a clip (windowed playitem entries and seeks both do
-    // it), and that one is already on the incoming timeline and must be kept
-    // so the clip's first frame can still be reconstructed.
+    // The margin has to be the RESTART's size, not the pairing tolerance. The
+    // enhancement layer runs AHEAD of the base layer in arrival order - up to 21
+    // packets at this very seam - so a clip's early EL, the one that legitimately
+    // precedes its first BL, also has a demux dts greater than the restart
+    // packet's. Against a quarter-frame tolerance every one of those would be
+    // dropped, which is the incoming keyframe's own partner and exactly the
+    // blind-pairing corruption this is meant to prevent. CheckContinuity only
+    // calls a backward jump a restart when it exceeds 1000ms (VideoPlayer.cpp,
+    // "resync backward"), so a straggler from the outgoing clip is at least that
+    // far ahead and anything nearer belongs to the incoming clip and is kept.
     const double restartDts =
         packet.demuxDts != DVD_NOPTS_VALUE ? packet.demuxDts : packet.dts;
     while (restartDts != DVD_NOPTS_VALUE && !m_packages.empty())
     {
       const double queuedDts = std::get<5>(m_packages.front());
-      if (queuedDts == DVD_NOPTS_VALUE || queuedDts <= restartDts + DL_PAIR_DTS_TOLERANCE)
+      if (queuedDts == DVD_NOPTS_VALUE || queuedDts <= restartDts + DVD_MSEC_TO_TIME(1000))
         break;
       CLog::Log(LOGDEBUG, LOGVIDEO,
                 "CDVDVideoCodecAmlogic::{}: timeline restart - dropping outgoing clip's {} "
@@ -1076,37 +1089,35 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
     }
   }
-  // NO decoder reset here. A seamless Blu-ray branch is authored to start on an
-  // IRAP, and that IRAP is what resets decoder references - the stream does the
-  // job, so a codec_reset only destroys work.
+  // No decoder reset when the incoming clip starts on an IRAP - which a seamless
+  // Blu-ray branch is authored to do, and which is what resets decoder references.
+  // The reset is not free there: the decoder still holds ~2s of the OUTGOING
+  // clip's frames, already delivered and still owed to the viewer, so resetting
+  // guarantees a freeze of exactly that length. Measured on M3GAN 2.0 00801.mpls
+  // (profile-7 FEL) at the first branch: the original GENERAL_RESET, which landed
+  // AFTER the incoming keyframe, cost 2.573s / 2.651s of video output.
   //
-  // What it destroys is not spare: at the boundary the decoder still holds ~2s
-  // of the OUTGOING clip's frames, already delivered and still owed to the
-  // viewer. Resetting there guarantees a freeze of exactly that length, which
-  // is what the original GENERAL_RESET at this seam measured (2.573s / 2.651s
-  // video output gaps). Running the same reset one packet EARLIER, ahead of the
-  // incoming keyframe, was worse still: the hardware then took the keyframe and
-  // ~100 following access units and never dequeued another frame - video did
-  // not come back at all, and audio stalled 22s later once the read loop, which
-  // will not read any stream while the video queue is full, had drained its
-  // read-ahead.
+  // Reset only when the boundary access unit carries no IRAP, which is the
+  // narrower gate fe013d3743 prescribed for itself and did not build ("the answer
+  // is a narrower gate - reset only when no IRAP was seen at the boundary - not
+  // the unconditional reset"). On this disc the condition is false, so the reset
+  // does not run; on a disc that really does branch mid-GOP the old behaviour is
+  // still there rather than a log line and corrupt video with no recovery path.
   //
-  // The reset's stated justification does not survive checking either: it named
-  // "Spears & Munsil demos" as its FEL content while being gated on
-  // GetDoviIsFEL(), and that disc is MEL - so it never fired on the disc it was
-  // written for, and there is no record of it being validated on one where it
-  // does. Log the authoring assumption instead of resetting on it, so a disc
-  // that really does branch without an IRAP shows up as a line in a log rather
-  // than as a guess.
+  // "Unknown" is not "no IRAP": only the dual-layer conversion classifies the
+  // access unit, so an unclassified one must not trigger a reset.
   if (m_pendingTimelineRestart && pData)
   {
     m_pendingTimelineRestart = false;
-    if (m_bitstream && m_bitstream->GetDoviIsFEL() && !m_bitstream->GetLastAuIsIrap())
+    bool irapKnown = false;
+    const bool sawIrap = m_bitstream ? m_bitstream->GetLastAuIsIrap(irapKnown) : false;
+    if (m_bitstream && m_bitstream->GetDoviIsFEL() && irapKnown && !sawIrap)
     {
       CLog::Log(LOGINFO,
                 "{}::{} - timeline restart - incoming clip's first access unit carries no IRAP; "
-                "decoder references will resync at the next keyframe",
+                "resetting the decoder so its references do not survive the branch",
                 __MODULE_NAME__, __FUNCTION__);
+      m_Codec->Reset();
     }
   }
 
