@@ -2879,14 +2879,23 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
       const int threshold = m_smart_display_nits * (100 + m_smart_threshold_pct) / 100;
       const bool bypass = !level2IsEmpty && hasData && (contentNits > threshold);
       effectiveMode = bypass ? CMV40_NONE : CMV40_ALWAYS;
-      // component-gated: this fires per FRAME (24-60 lines/s with plain debug
-      // logging - enough to distort on-box diagnosis); the state-change INFO
-      // lines below carry the decision history
-      CLog::Log(LOGDEBUG, LOGVIDEO,
-                "CBitstreamConverter::processDoviRpu - Smart CMv4.0 frame: content {}nits "
-                "display {}nits threshold {}nits ({}%) -> {}",
-                contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
-                bypass ? "bypass" : "append");
+      // Log only when the inputs or the decision actually move. This used to
+      // fire per FRAME: 24-60 lines/s on the video thread, which buries every
+      // other event in the log and perturbs the very timing an on-box
+      // diagnosis is trying to measure. The state-change INFO lines below
+      // carry the decision history; this one carries the numbers behind it.
+      if (contentNits != m_smart_last_logged_content ||
+          threshold != m_smart_last_logged_threshold || bypass != m_smart_last_logged_bypass)
+      {
+        m_smart_last_logged_content = contentNits;
+        m_smart_last_logged_threshold = threshold;
+        m_smart_last_logged_bypass = bypass;
+        CLog::Log(LOGDEBUG, LOGVIDEO,
+                  "CBitstreamConverter::processDoviRpu - Smart CMv4.0 frame: content {}nits "
+                  "display {}nits threshold {}nits ({}%) -> {}",
+                  contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
+                  bypass ? "bypass" : "append");
+      }
       if (effectiveMode != m_smart_last_effective)
       {
         if (level2IsEmpty)
