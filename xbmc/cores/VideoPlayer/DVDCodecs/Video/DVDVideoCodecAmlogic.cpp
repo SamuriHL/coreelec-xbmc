@@ -704,6 +704,16 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   int data_added = false;
   bool dual_layer_converted = false;
 
+  // Timestamps of the merged access unit. Always the BASE LAYER's: only the BL
+  // passes through CheckContinuity, so at a timeline restart the EL still
+  // carries the correction that was current when it was read - measured 60s
+  // stale at a seam, which put the incoming keyframe that far behind the clock
+  // and starved the renderer for five seconds. Taking the layer the player
+  // actually corrected keeps the merged unit on the player's timeline, NOPTS
+  // included when that is what the player decided.
+  double mergedDts = packet.dts;
+  double mergedPts = packet.pts;
+
   if (pData)
   {
     // named by how the EL arrives; a track pair can open with solo packets, so
@@ -785,6 +795,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           uint32_t iSizeBackup = std::get<1>(dual_layer_packet);
           bool isELPackageBackup = std::get<2>(dual_layer_packet);
           double dtsBackup = std::get<3>(dual_layer_packet);
+          double ptsBackup = std::get<4>(dual_layer_packet);
 
           if (isELPackageBackup == packet.isELPackage)
             break; // same layer: queue behind it, keep arrival order
@@ -813,6 +824,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup);
             if (dual_layer_converted)
             {
+              // incoming packet is the BL
+              mergedDts = packet.dts;
+              mergedPts = packet.pts;
               m_pendingMeta = m_streamMeta;
               AMLLatchHevcDoviRpu(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
               AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
@@ -825,6 +839,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize);
             if (dual_layer_converted)
             {
+              // queued packet is the BL
+              mergedDts = dtsBackup;
+              mergedPts = ptsBackup;
               m_pendingMeta = m_streamMeta;
               AMLLatchHevcDoviRpu(packet.pData, packet.iSize, m_nalLengthSize, m_pendingMeta);
               AMLLatchHevcSei(pDataBackup, iSizeBackup, m_nalLengthSize, m_pendingMeta);
@@ -861,7 +878,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts));
+          m_packages.push_back(
+              std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts, packet.pts));
           m_packagesBytes += iSize;
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
@@ -1022,7 +1040,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+  data_added = m_Codec->AddData(pData, iSize, mergedDts,
+                                m_hints.ptsinvalid ? DVD_NOPTS_VALUE : mergedPts);
 
   if (data_added && packet.pData)
   {
