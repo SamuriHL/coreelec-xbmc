@@ -1983,6 +1983,7 @@ void CVideoPlayer::Prepare()
   m_bdStreamReuseVideo = false;
   m_bdStreamReuseAudio = false;
   m_menuWrapVideoGap = 0.0;
+  m_timelineRestartStamped = false;
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
@@ -3377,13 +3378,16 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     //
     // Only the first packet of a jump is stamped: the unconfirmed branch
     // re-enters this block for every packet until another stream confirms.
+    // Enhancement-layer packets never reach here - ProcessPacket routes them
+    // straight to the video player - so the stamp always rides the base layer.
     if (current.type == StreamType::VIDEO && !m_timelineRestartStamped)
     {
-      pPacket->timelineRestart = true;
+      pPacket->timelineRestartSeq = ++m_timelineRestartSeq;
       m_timelineRestartStamped = true;
-      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - timeline restart stamped on video "
-                          "packet (correction {:f})",
-                correction);
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer::CheckContinuity - timeline restart #{} stamped on video packet "
+                "(correction {:f})",
+                m_timelineRestartSeq, correction);
     }
 
     // DEMUX truth, not the presented IsInMenu(): this correction operates on
@@ -5735,8 +5739,12 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_CurrentTeletext.inited = false;
     m_CurrentRadioRDS.inited  = false;
 
-    // a video wrap-gap recorded before the flush belongs to a dead timeline
+    // a video wrap-gap recorded before the flush belongs to a dead timeline,
+    // and so does a half-open timeline-restart stamp: the jump it was tracking
+    // will never be confirmed now, and leaving the latch set would suppress the
+    // stamp on the next genuine boundary
     m_menuWrapVideoGap = 0.0;
+    m_timelineRestartStamped = false;
   }
 
   // stamps taken before the flush reference a dead timeline: snap the
