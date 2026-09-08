@@ -1704,7 +1704,7 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
   return EBdTransition::DRAIN;
 }
 
-void CVideoPlayer::BdSegmentTransition()
+void CVideoPlayer::BdSegmentTransition(bool glided)
 {
   // A Blu-ray stays inside one Process() for the whole disc, so a budget only
   // reset in OnStartup() is a per-DISC quota: three player deaths spread over a
@@ -1733,18 +1733,25 @@ void CVideoPlayer::BdSegmentTransition()
     // path a CE21 player takes for these boundaries, proven stable there.
     CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
 
-    // Clean the byte seam. Non-seamless-authored playitem chains
-    // (connection_condition 1 - TNG stubs, menu loops) may truncate the
-    // outgoing clip's last PES mid-body; feeding that tail into the TS
-    // parser's reassembly emits "[mpegts] Packet corrupt" and decoder
-    // reference errors at every glued boundary (defect C). Flushing here is
-    // synchronous with the read position (this thread is the demux consumer
-    // and libbluray held delivery at the boundary), so it drops exactly the
-    // partial tail: per-PID PES reassembly resets and parsing resyncs at the
-    // new clip's first payload-unit-start. Streams, decoders and queued
-    // packets are untouched - this is the light counterpart of the
-    // DEMUXER_RESET the non-seamless classes perform via CloseDemuxer.
-    m_pDemuxer->Flush();
+    // Clean the byte seam - but ONLY when we held it. Non-seamless-authored
+    // playitem chains (connection_condition 1 - TNG stubs, menu loops) may
+    // truncate the outgoing clip's last PES mid-body; feeding that tail into
+    // the TS parser's reassembly emits "[mpegts] Packet corrupt" and decoder
+    // reference errors at every glued boundary (defect C). When delivery was
+    // held at the boundary the flush is synchronous with the read position
+    // and drops exactly that partial tail.
+    //
+    // On the glide path there is no such moment. Reading never stopped, so by
+    // the time this runs the demuxer is part way through the INCOMING clip's
+    // first access unit, and Flush() would destroy it: avformat_flush closes
+    // the codec parser and avio_flush moves the read position, which makes
+    // mpegts reset every PES buffer to MPEGTS_SKIP. That is the same
+    // amputation the glide exists to prevent, arriving by a different route.
+    // Nothing needs dropping there either - an uninterrupted read never
+    // produces a truncated tail in the first place, because mpegts only
+    // flushes a partial PES when it is handed an error.
+    if (!glided)
+      m_pDemuxer->Flush();
 
     // Dolby Vision FEL content (real enhancement layer, e.g. Spears & Munsil
     // demos) carries per-segment BL/EL pairing and DV metadata state across the
@@ -2308,6 +2315,26 @@ void CVideoPlayer::Process()
         m_pDemuxer->SetSpeed(m_playSpeed);
       m_demuxerSpeed = m_playSpeed;
     }
+
+#if defined(HAVE_LIBBLURAY)
+    // Seamless playitem seams no longer stop the read (see
+    // CDVDInputStreamBluray::SetSeamlessGlideAllowed): the boundary arrives
+    // here as a flag rather than as a NULL packet, so that libavformat never
+    // sees an i/o error mid-picture and the incoming clip's first access unit
+    // survives intact. Publish the player's half of the glide test first -
+    // the video stream has to be open and in sync, or the transition would be
+    // classified as something other than SEAMLESS and we must not have
+    // committed to the incoming clip's bytes.
+    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    {
+      bluray->SetSeamlessGlideAllowed(m_CurrentVideo.id >= 0 &&
+                                      m_CurrentVideo.syncState ==
+                                          IDVDStreamPlayer::SYNC_INSYNC);
+      if (bluray->TakePendingSeamlessTransition())
+        BdSegmentTransition(true);
+    }
+#endif
 
     DemuxPacket* pPacket = NULL;
     CDemuxStream *pStream = NULL;
