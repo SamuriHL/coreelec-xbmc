@@ -321,6 +321,15 @@ public:
     return pending;
   }
 
+  /* Drop an armed-but-uncollected glide. The player collects the flag on the
+   * iteration AFTER the one that armed it, and a lot can happen in between: a
+   * seek or a flush from HandleMessages(), or a second boundary in the same
+   * read burst that takes the hold path and runs the transition itself. A
+   * stale flag then fires BdSegmentTransition on a pipeline that has already
+   * moved on - which, being out of sync by then, classifies as DRAIN and
+   * tears down what was just rebuilt. */
+  void CancelPendingSeamlessTransition() { m_pendingSeamlessTransition = false; }
+
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
    * the JVM's signal handlers) is understood */
