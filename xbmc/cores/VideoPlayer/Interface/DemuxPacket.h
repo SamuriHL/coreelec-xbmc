@@ -40,6 +40,7 @@ extern "C"
       duration = 0;
       dispTime = 0;
       recoveryPoint = false;
+      timelineRestart = false;
 
       subtitlePlane = 0;
 
@@ -51,6 +52,10 @@ extern "C"
 
     //! @brief Empty packet replacing input the demuxer read and dropped.
     bool m_inputDropped{false};
+    //! @brief First packet of a timeline restart (e.g. a Blu-ray seamless
+    //! playitem boundary). Stamped by CheckContinuity, which detects the jump
+    //! before it rewrites the timestamps that would otherwise reveal it.
+    bool timelineRestart;
     //! @brief Indicate package is from a Dolby Vision dual stream source.
     bool isDualStream;
     //! @brief Indicate package is from a Dolby Vision enhancement layer.
