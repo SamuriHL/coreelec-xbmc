@@ -1733,22 +1733,18 @@ void CVideoPlayer::BdSegmentTransition()
     // path a CE21 player takes for these boundaries, proven stable there.
     CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
 
-    // NO demuxer flush here. It was added to drop the outgoing clip's
-    // truncated PES tail on non-seamless-authored chains (connection_condition
-    // 1 - TNG stubs, menu loops; defect C), on the assumption that the tail
-    // was all the parser held. It is not: the hold at the seam arrives after
-    // libbluray has already delivered the head of the INCOMING clip, so the
-    // parser is holding that clip's first access unit - its IRAP. Flushing
-    // destroys the parser (avformat_flush closes it) and resets the mpegts
-    // PID state, so the IRAP is discarded and the branch resumes on a
-    // reference the decoder never received. Together with the eof-flush that
-    // used to emit the front half of that same IRAP as a packet (fixed in
-    // dvd_file_read), this is the freeze and the macroblock garbage at every
-    // playitem branch. Nothing needs dropping now: dvd_file_read answers the
-    // hold with EAGAIN instead of EOF, so no fragment is ever emitted, and
-    // the access unit completes from the incoming clip's own bytes. A tail
-    // that really is truncated still ends up flagged corrupt and is dropped
-    // one packet at a time by the backstop in CDVDDemuxFFmpeg::ReadInternal.
+    // Clean the byte seam. Non-seamless-authored playitem chains
+    // (connection_condition 1 - TNG stubs, menu loops) may truncate the
+    // outgoing clip's last PES mid-body; feeding that tail into the TS
+    // parser's reassembly emits "[mpegts] Packet corrupt" and decoder
+    // reference errors at every glued boundary (defect C). Flushing here is
+    // synchronous with the read position (this thread is the demux consumer
+    // and libbluray held delivery at the boundary), so it drops exactly the
+    // partial tail: per-PID PES reassembly resets and parsing resyncs at the
+    // new clip's first payload-unit-start. Streams, decoders and queued
+    // packets are untouched - this is the light counterpart of the
+    // DEMUXER_RESET the non-seamless classes perform via CloseDemuxer.
+    m_pDemuxer->Flush();
 
     // Dolby Vision FEL content (real enhancement layer, e.g. Spears & Munsil
     // demos) carries per-segment BL/EL pairing and DV metadata state across the
