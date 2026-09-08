@@ -165,6 +165,14 @@ public:
   virtual void Reset() = 0;
 
   /**
+   * Drop state that belongs to the segment that just ended, without tearing
+   * down the decode session. Called at a seamless stream boundary, where the
+   * stream itself supplies an IRAP and a full Reset() would throw that IRAP
+   * away. Defaults to Reset() so codecs that draw no distinction are unchanged.
+   */
+  virtual void ResetSegmentState() { Reset(); }
+
+  /**
    * Abandon any decode work already in flight, because a flush is coming and
    * whatever is being written is about to be discarded anyway. Advisory: a
    * codec that cannot interrupt itself does nothing, and Reset() must clear it.
