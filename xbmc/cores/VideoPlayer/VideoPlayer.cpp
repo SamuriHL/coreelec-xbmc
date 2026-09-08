@@ -1747,9 +1747,16 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // the codec parser and avio_flush moves the read position, which makes
     // mpegts reset every PES buffer to MPEGTS_SKIP. That is the same
     // amputation the glide exists to prevent, arriving by a different route.
-    // Nothing needs dropping there either - an uninterrupted read never
-    // produces a truncated tail in the first place, because mpegts only
-    // flushes a partial PES when it is handed an error.
+    //
+    // A truncated outgoing tail is still possible on the glide path - mpegts
+    // terminates the old PES at the incoming clip's first payload-unit-start
+    // whether or not it was ever handed an error - so the glide is gated to
+    // connection_condition 5/6 (see ClipConnectionIsSeamless), where the
+    // authoring forbids one. cc=1 chains keep the hold and keep the flush.
+    // The AV_PKT_FLAG_CORRUPT backstop in CDVDDemuxFFmpeg::ReadInternal
+    // covers what slips past either way; it is what actually caught all 13
+    // truncated tails in the counter-test capture, the flush having run only
+    // after the packet was already delivered.
     if (!glided)
       m_pDemuxer->Flush();
 
@@ -2325,14 +2332,22 @@ void CVideoPlayer::Process()
     // the video stream has to be open and in sync, or the transition would be
     // classified as something other than SEAMLESS and we must not have
     // committed to the incoming clip's bytes.
-    if (std::shared_ptr<CDVDInputStreamBluray> bluray =
-            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    if (m_pInputBluray)
     {
-      bluray->SetSeamlessGlideAllowed(m_CurrentVideo.id >= 0 &&
-                                      m_CurrentVideo.syncState ==
-                                          IDVDStreamPlayer::SYNC_INSYNC);
-      if (bluray->TakePendingSeamlessTransition())
+      m_pInputBluray->SetSeamlessGlideAllowed(m_CurrentVideo.id >= 0 &&
+                                              m_CurrentVideo.syncState ==
+                                                  IDVDStreamPlayer::SYNC_INSYNC);
+      if (m_pInputBluray->TakePendingSeamlessTransition())
+      {
+        // Re-classified here, one iteration after the glide armed it: if the
+        // pipeline changed underneath us (player death, a menu crossing, the
+        // user pressing Menu) this is no longer a SEAMLESS transition and
+        // BdSegmentTransition closes the demuxer. Never fall through to
+        // ReadPacket after that - the NULL packet it returns would reach
+        // NextStream() and run the whole transition a second time.
         BdSegmentTransition(true);
+        continue;
+      }
     }
 #endif
 
@@ -5827,6 +5842,16 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 
   // a defer window from before the flush belongs to a dead sync attempt
   m_syncStartDeferred = false;
+
+#if defined(HAVE_LIBBLURAY)
+  // So does an armed-but-uncollected seamless glide. HandleMessages() runs
+  // between the iteration that arms one and the iteration that collects it,
+  // so a seek can land in that window; the flag would then fire a transition
+  // against the freshly re-sought pipeline, undo its re-cache and - being out
+  // of sync at that moment - classify as DRAIN and tear it down again.
+  if (m_pInputBluray)
+    m_pInputBluray->CancelPendingSeamlessTransition();
+#endif
 
   if (sync)
   {
