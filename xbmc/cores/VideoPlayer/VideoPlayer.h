@@ -528,7 +528,10 @@ protected:
     DRAIN, // default: render out the old streams, then close
   };
   EBdTransition ClassifyBdTransition() const;
-  void BdSegmentTransition();
+  /* @param glided true when the seam was crossed without holding the read
+   *        (CDVDInputStreamBluray's seamless glide), so the demuxer is part
+   *        way through the incoming clip and must not be flushed. */
+  void BdSegmentTransition(bool glided = false);
 
   bool IsValidStream(const CCurrentStream& stream);
   bool IsBetterStream(const CCurrentStream& current, CDemuxStream* stream);
