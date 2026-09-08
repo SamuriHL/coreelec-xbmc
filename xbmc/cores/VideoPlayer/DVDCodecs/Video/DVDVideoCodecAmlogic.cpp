@@ -42,9 +42,6 @@ extern "C"
 
 namespace
 {
-// How many access units an armed seamless-boundary reset waits for an IRAP
-// before flushing anyway. The incoming clip's IRAP normally arrives in the
-// first access unit or two; this only bounds a boundary that carries none.
 // Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
 // bypass default. Delegates to AMLUtils' injection-aware parser (the local
 // duplicate read dv_cap directly, which reports the INJECTED block while a
@@ -691,12 +688,28 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   DrainMetadataToClock();
 
-  // Latch on arrival: this packet may be the half of a BL/EL pair that has to
-  // wait for its partner, and several packets of a jump can carry the flag if
-  // the correction was not confirmed on the first. The flush happens once,
-  // immediately before the next access unit actually reaches the decoder.
-  if (packet.timelineRestart)
+  // Latch on arrival, once per JUMP rather than once per delivery. The
+  // transport re-delivers the identical packet - on every AddData retry
+  // (measured ~12x per access unit while the decoder buffer sits at 93-97%) and
+  // on the 30-packet VC_FLUSHED/VC_REOPEN replay - so acting on a flag would
+  // re-flush the decoder on each one. Latching here rather than at the feed
+  // also lets the flag survive the BL/EL pairing wait, since the stamp rides
+  // the base layer and the merged access unit is only fed once its EL lands.
+  if (packet.timelineRestartSeq != 0 && packet.timelineRestartSeq != m_lastTimelineRestartSeq)
+  {
+    m_lastTimelineRestartSeq = packet.timelineRestartSeq;
     m_pendingTimelineRestart = true;
+
+    // Drop the outgoing clip's unpaired half now. CheckContinuity strips the
+    // timestamps off the packet that opens an unconfirmed jump, and the pairing
+    // guards below are skipped when either dts is unknown - so this boundary
+    // packet would otherwise blind-pair with the trailing enhancement layer of
+    // the clip that just ended, shifting the merge phase for the rest of the
+    // session.
+    while (!m_packages.empty())
+      PopPackageFront();
+    m_packagesOverflowLogged = false;
+  }
 
   uint8_t *pData(packet.pData);
   uint32_t iSize(packet.iSize);
@@ -1003,16 +1016,24 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   // keyframe. The seam is identified by CheckContinuity and carried on the
   // packet, because nothing downstream can see it: the timestamps are rewritten
   // by then, and BD_EVENT_PLAYITEM arrives after this keyframe has already been
-  // dispatched. The flag is latched on arrival rather than acted on
-  // immediately, so it survives the BL/EL pairing wait - either layer may carry
-  // it, and the merged access unit is only fed once its partner lands.
-  if (m_pendingTimelineRestart && m_speed == DVD_PLAYSPEED_NORMAL)
+  // dispatched.
+  //
+  // Consumed unconditionally, acted on only for FEL at normal speed. Leaving it
+  // pending through a trick-play boundary would fire the flush at resume, on
+  // arbitrary mid-GOP data. The FEL gate is the one BdSegmentTransition used to
+  // apply: MEL menu loops cross their boundaries cleanly today, and a
+  // codec_reset there costs a full buffer refill because m_skipBufferFillGate
+  // is only set for a dual-layer stream.
+  if (m_pendingTimelineRestart)
   {
-    CLog::Log(LOGINFO, "{}::{} - timeline restart - flushing the decoder ahead of the incoming "
-                       "clip's first access unit",
-              __MODULE_NAME__, __FUNCTION__);
-    m_Codec->Reset();
     m_pendingTimelineRestart = false;
+    if (m_speed == DVD_PLAYSPEED_NORMAL && m_bitstream && m_bitstream->GetDoviIsFEL())
+    {
+      CLog::Log(LOGINFO, "{}::{} - timeline restart - flushing the decoder ahead of the incoming "
+                         "clip's first access unit",
+                __MODULE_NAME__, __FUNCTION__);
+      m_Codec->Reset();
+    }
   }
 
   data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
