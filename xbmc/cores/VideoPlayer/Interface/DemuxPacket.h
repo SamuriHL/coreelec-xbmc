@@ -41,6 +41,7 @@ extern "C"
       dispTime = 0;
       recoveryPoint = false;
       timelineRestartSeq = 0;
+      demuxDts = DVD_NOPTS_VALUE;
 
       subtitlePlane = 0;
 
@@ -52,6 +53,15 @@ extern "C"
 
     //! @brief Empty packet replacing input the demuxer read and dropped.
     bool m_inputDropped{false};
+    //! @brief The demuxer's own dts, captured once at read time and never
+    //! rewritten afterwards. dts/pts are the PLAYER's timeline: CheckContinuity
+    //! shifts them by m_offset_pts at a discontinuity and blanks them to
+    //! DVD_NOPTS_VALUE while a jump is unconfirmed. Neither is safe for
+    //! associating packets that belong to the same coded frame, because those
+    //! rewrites are applied per-stream and a Dolby Vision enhancement layer
+    //! does not pass through CheckContinuity at all. Consumers that must match
+    //! two streams frame-for-frame compare this instead.
+    double demuxDts;
     //! @brief Non-zero on the first packet of a timeline restart (e.g. a
     //! Blu-ray seamless playitem boundary), carrying a per-jump sequence
     //! number. Stamped by CheckContinuity, which detects the jump before it
