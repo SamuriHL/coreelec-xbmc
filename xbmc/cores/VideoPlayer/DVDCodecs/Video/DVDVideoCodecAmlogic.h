@@ -21,6 +21,8 @@
 #include <vector>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <vector>
 
 class CAMLCodec;
 struct mpeg2_sequence;
@@ -171,8 +173,14 @@ private:
   CAMLFrameMetadataSequencer m_metadataSequencer;
   size_t m_packagesBytes = 0;
   bool m_packagesOverflowLogged = false;
-  bool m_segmentResetPending = false;
-  int m_segmentResetWait = 0;
+  // Most recent IRAP access unit (converted, i.e. merged BL+EL including any
+  // FEL filler) so a seamless boundary can restore it after flushing.
+  std::vector<uint8_t> m_lastIrapAu;
+  double m_lastIrapDts = 0.0;
+  double m_lastIrapPts = 0.0;
+  bool m_lastIrapValid = false;
+  uint64_t m_lastIrapFedAu = 0;
+  uint64_t m_auFedCount = 0;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
 };
