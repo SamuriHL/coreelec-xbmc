@@ -734,6 +734,8 @@ protected:
   // only one stream can be made exactly continuous across the wrap; preferring
   // the video gap makes the wrap visually gapless and leaves audio a small
   // residual its sync skew absorbs. Player thread only.
+  // one stamp per timeline jump; see CheckContinuity
+  bool m_timelineRestartStamped = false;
   double m_menuWrapVideoGap = 0.0;
 
   bool m_updateStreamDetails{false};
