@@ -960,7 +960,6 @@ void CBitstreamConverter::Close()
 
 bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
 {
-
   if (m_convertBuffer)
   {
     av_free(m_convertBuffer);
