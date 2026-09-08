@@ -1076,28 +1076,37 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
     }
   }
-
-  // Flush between the outgoing clip's reference state and the incoming
-  // keyframe. The seam is identified by CheckContinuity and carried on the
-  // packet, because nothing downstream can see it: the timestamps are rewritten
-  // by then, and BD_EVENT_PLAYITEM arrives after this keyframe has already been
-  // dispatched.
+  // NO decoder reset here. A seamless Blu-ray branch is authored to start on an
+  // IRAP, and that IRAP is what resets decoder references - the stream does the
+  // job, so a codec_reset only destroys work.
   //
-  // Consumed unconditionally, acted on only for FEL at normal speed. Leaving it
-  // pending through a trick-play boundary would fire the flush at resume, on
-  // arbitrary mid-GOP data. The FEL gate is the one BdSegmentTransition used to
-  // apply: MEL menu loops cross their boundaries cleanly today, and a
-  // codec_reset there costs a full buffer refill because m_skipBufferFillGate
-  // is only set for a dual-layer stream.
+  // What it destroys is not spare: at the boundary the decoder still holds ~2s
+  // of the OUTGOING clip's frames, already delivered and still owed to the
+  // viewer. Resetting there guarantees a freeze of exactly that length, which
+  // is what the original GENERAL_RESET at this seam measured (2.573s / 2.651s
+  // video output gaps). Running the same reset one packet EARLIER, ahead of the
+  // incoming keyframe, was worse still: the hardware then took the keyframe and
+  // ~100 following access units and never dequeued another frame - video did
+  // not come back at all, and audio stalled 22s later once the read loop, which
+  // will not read any stream while the video queue is full, had drained its
+  // read-ahead.
+  //
+  // The reset's stated justification does not survive checking either: it named
+  // "Spears & Munsil demos" as its FEL content while being gated on
+  // GetDoviIsFEL(), and that disc is MEL - so it never fired on the disc it was
+  // written for, and there is no record of it being validated on one where it
+  // does. Log the authoring assumption instead of resetting on it, so a disc
+  // that really does branch without an IRAP shows up as a line in a log rather
+  // than as a guess.
   if (m_pendingTimelineRestart && pData)
   {
     m_pendingTimelineRestart = false;
-    if (m_bitstream && m_bitstream->GetDoviIsFEL())
+    if (m_bitstream && m_bitstream->GetDoviIsFEL() && !m_bitstream->GetLastAuIsIrap())
     {
-      CLog::Log(LOGINFO, "{}::{} - timeline restart - flushing the decoder ahead of the incoming "
-                         "clip's first access unit",
+      CLog::Log(LOGINFO,
+                "{}::{} - timeline restart - incoming clip's first access unit carries no IRAP; "
+                "decoder references will resync at the next keyframe",
                 __MODULE_NAME__, __FUNCTION__);
-      m_Codec->Reset();
     }
   }
 
