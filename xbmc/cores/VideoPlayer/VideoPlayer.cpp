@@ -3352,6 +3352,26 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     double that_dts =
         current.type == StreamType::AUDIO ? m_CurrentVideo.lastdts : m_CurrentAudio.lastdts;
 
+    // Stamp the packet that OPENS the jump. A Blu-ray seamless playitem
+    // boundary restarts the clip timeline, and both branches below erase the
+    // evidence: the confirmed branch rewrites dts/pts through UpdateCorrection,
+    // the unconfirmed one replaces them with DVD_NOPTS_VALUE. The decoder needs
+    // to know, because HEVC reference state carries across the seam, and it
+    // cannot be told out of band - BD_EVENT_PLAYITEM is raised only after this
+    // packet has already been dispatched. Stamping here rides the flag through
+    // on the packet itself, ahead of the keyframe it belongs to.
+    //
+    // Only the first packet of a jump is stamped: the unconfirmed branch
+    // re-enters this block for every packet until another stream confirms.
+    if (current.type == StreamType::VIDEO && !m_timelineRestartStamped)
+    {
+      pPacket->timelineRestart = true;
+      m_timelineRestartStamped = true;
+      CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - timeline restart stamped on video "
+                          "packet (correction {:f})",
+                correction);
+    }
+
     // DEMUX truth, not the presented IsInMenu(): this correction operates on
     // packets at demux time - a wrap occurring inside the presented-state
     // deferral window (BD-J popup path) would silently miss the video-gap
@@ -3407,6 +3427,9 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
   }
   else
   {
+    if (current.type == StreamType::VIDEO)
+      m_timelineRestartStamped = false;
+
     if (current.avsync == CCurrentStream::AV_SYNC_CHECK)
       current.avsync = CCurrentStream::AV_SYNC_CONT;
   }
