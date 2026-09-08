@@ -160,6 +160,9 @@ public:
   int GetExtraSize() const;
   void ResetStartDecode();
   bool CanStartDecode() const;
+  /*! \brief Whether the access unit converted by the last Convert() call opened
+      with an IRAP. Only maintained on the dual-layer (BL+EL) path. */
+  bool GetLastAuIsIrap() const { return m_lastAuIsIrap; }
   void SetConvertDovi(bool value) { m_convert_dovi = value; }
   // Real DV RPU stream (profile 5/7/8): run processDoviRpu on the already-
   // annex-b single-stream path too (TS/M2TS input), so L5 active-area and
@@ -289,6 +292,7 @@ protected:
   bool m_convert_bytestream;
   AVCodecID m_codec;
   bool m_start_decode;
+  bool m_lastAuIsIrap{false};
   bool m_convert_dovi;
   bool m_process_dovi_rpu{false};
   bool m_removeDovi;

@@ -42,6 +42,11 @@ extern "C"
 
 namespace
 {
+// How many access units an armed seamless-boundary reset waits for an IRAP
+// before flushing anyway. The incoming clip's IRAP normally arrives in the
+// first access unit or two; this only bounds a boundary that carries none.
+constexpr int SEGMENT_RESET_MAX_AU_WAIT = 32;
+
 // Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
 // bypass default. Delegates to AMLUtils' injection-aware parser (the local
 // duplicate read dv_cap directly, which reports the INJECTED block while a
@@ -989,6 +994,26 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
+  // Flush the decoder across a seamless boundary at the moment the incoming
+  // clip's IRAP is in hand, so the reset lands between the old clip's
+  // references and the keyframe that replaces them. Resetting when the
+  // boundary message arrived would discard that IRAP; not resetting at all
+  // lets the old references corrupt the incoming frames. The bound covers a
+  // boundary whose first access units carry no IRAP.
+  if (m_segmentResetPending)
+  {
+    const bool irap = m_bitstream && m_bitstream->GetLastAuIsIrap();
+    if (irap || ++m_segmentResetWait > SEGMENT_RESET_MAX_AU_WAIT)
+    {
+      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: seamless boundary - decoder reset {}",
+                __FUNCTION__,
+                irap ? "at the incoming IRAP" : "without an IRAP (wait bound reached)");
+      m_Codec->Reset();
+      m_segmentResetPending = false;
+      m_segmentResetWait = 0;
+    }
+  }
+
   data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
 
   if (data_added && packet.pData)
@@ -1116,17 +1141,20 @@ void CDVDVideoCodecAmlogic::Reset(void)
 
 void CDVDVideoCodecAmlogic::ResetSegmentState(void)
 {
-  // Seamless Blu-ray playitem boundary. The incoming clip opens with its own
-  // IRAP, so the stream itself breaks the reference chain and the hardware
-  // decoder needs no codec_reset to resync across the seam. Drop only the state
-  // that belongs to the clip that ended: a BL package still waiting for an EL
-  // the outgoing clip never delivered, which would otherwise pair against the
-  // incoming segment's first frames, and the DV metadata sequencer's position.
+  // Seamless Blu-ray playitem boundary. Drop the state belonging to the clip
+  // that ended: a BL package still waiting for an EL the outgoing clip never
+  // delivered, which would otherwise pair against the incoming segment's first
+  // frames, and the DV metadata sequencer's position.
   //
-  // m_Codec->Reset() and m_has_keyframe are deliberately left alone - a
-  // codec_reset here would discard the boundary IRAP that AddData has already
-  // fed, and re-arming the keyframe wait would then stall decode until the next
-  // one, a full GOP away.
+  // The decoder does need flushing - HEVC reference state carries across the
+  // seam and corrupts the incoming frames - but not here. This message is
+  // dequeued AFTER AddData has already converted and fed the incoming clip's
+  // IRAP, so a codec_reset at this point destroys that IRAP and stalls decode
+  // until the next one, a GOP away. Arm it instead and let AddData run it
+  // immediately before the IRAP.
+  m_segmentResetPending = true;
+  m_segmentResetWait = 0;
+
   while (!m_packages.empty())
   {
     PopPackageFront();
