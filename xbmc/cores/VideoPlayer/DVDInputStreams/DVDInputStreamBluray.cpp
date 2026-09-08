@@ -1013,6 +1013,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
   case BD_EVENT_TITLE:
   case BD_EVENT_PLAYLIST_STOP:
     m_seamlessHold = false;
+    // whatever voids the hold voids an armed-but-uncollected glide with it
+    CancelPendingSeamlessTransition();
     break;
   case BD_EVENT_ANGLE:
     // menu-loop wraps re-announce the current angle alongside the PLAYLIST
@@ -1383,6 +1385,22 @@ void CDVDInputStreamBluray::DisableExtention()
   m_bMVCPlayback = false;
 }
 
+/* MPLS connection_condition: 5 and 6 are the seamless-authored connections,
+ * where the outgoing clip's last PES is complete and the incoming clip starts
+ * at an aligned unit. 1 is the non-seamless glue used by menu stubs and
+ * chapter chains, and it explicitly permits the outgoing clip's last PES to be
+ * truncated mid-body (defect C). Only the first may be glided: gliding keeps
+ * the transport stream running across the seam, which is what stops the
+ * incoming clip's first access unit being amputated, but it also means nobody
+ * flushes a truncated tail. libbluray classifies CONNECT_SEAMLESS from this
+ * same field and queues BD_EVENT_DISCONTINUITY for everything else - but that
+ * event sits BEHIND BD_EVENT_PLAYITEM in the queue, so it arrives after the
+ * decision has to be made. Hence libbluray-06, which exposes the field. */
+static bool ClipConnectionIsSeamless(const BLURAY_CLIP_INFO* clip)
+{
+  return clip && (clip->connection_condition == 5 || clip->connection_condition == 6);
+}
+
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
   int result = 0;
@@ -1437,9 +1455,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // change must never be glued into live decoders - compare the two
             // clips' stream attributes and fall back to the full reopen path
             // on any mismatch (review finding A10)
+            const BLURAY_CLIP_INFO* next = nullptr;
             if (m_seamlessHold && m_titleInfo)
             {
-              const BLURAY_CLIP_INFO* next = nullptr;
               if (m_event.event == BD_EVENT_PLAYITEM &&
                   m_event.param < m_titleInfo->clip_count)
                 next = &m_titleInfo->clips[m_event.param];
@@ -1466,8 +1484,13 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             // is not lost: it falls through to ProcessEvent() below exactly
             // as a non-held event does, and the player collects the
             // transition from TakePendingSeamlessTransition().
-            if (m_seamlessHold && m_seamlessGlideAllowed && !ShouldDiscardStreamQueue())
+            if (m_seamlessHold && m_seamlessGlideAllowed &&
+                ClipConnectionIsSeamless(next) && !ShouldDiscardStreamQueue())
             {
+              CLog::Log(LOGDEBUG,
+                        "CDVDInputStreamBluray - gliding seamless seam at "
+                        "playitem {} (connection_condition {})",
+                        m_event.param, next->connection_condition);
               m_pendingSeamlessTransition = true;
               break;
             }
@@ -2359,6 +2382,13 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 {
   if(!m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
     return NEXTSTREAM_NONE;
+
+  // Any boundary that reaches here took the HOLD path, and the transition the
+  // player is about to run covers it. An earlier glide that the player has not
+  // collected yet is superseded - leaving it armed would fire a second,
+  // spurious transition one iteration later, on a pipeline this one has just
+  // rebuilt.
+  CancelPendingSeamlessTransition();
 
   /* process any current event */
   ProcessEvent();
