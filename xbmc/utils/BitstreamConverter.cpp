@@ -941,6 +941,12 @@ void CBitstreamConverter::Close()
 
 bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
 {
+  // Single-layer conversion does not classify the access unit, so any previous
+  // dual-layer verdict is stale from here on. Say "unknown" rather than let a
+  // caller act on it: a DV stream whose core goes inactive mid-title falls to
+  // this overload while GetDoviIsFEL() stays true.
+  m_lastAuIrapKnown = false;
+
   if (m_convertBuffer)
   {
     av_free(m_convertBuffer);
@@ -1280,6 +1286,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     }
 
     m_lastAuIsIrap = sawIrap;
+    m_lastAuIrapKnown = true;
 
     if (felPadding && sawIrap && offset > 0 && offset < DV_FEL_TINY_AU_THRESHOLD)
     {

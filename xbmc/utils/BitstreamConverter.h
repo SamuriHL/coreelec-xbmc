@@ -209,11 +209,16 @@ public:
   void SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
   void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
-  //! @brief True if the access unit just converted contained an IRAP (IDR/CRA/BLA).
-  //! A seamless Blu-ray branch is authored to start on one, which is what makes a
-  //! decoder reset at the boundary unnecessary; a disc that does not is worth
-  //! knowing about rather than guessing at.
-  bool GetLastAuIsIrap() const { return m_lastAuIsIrap; }
+  //! @brief Whether the access unit just converted contained an IRAP (IDR/CRA/BLA).
+  //! A seamless Blu-ray branch is authored to start on one, and that IRAP is what
+  //! resets decoder references. Only the dual-layer overload classifies the unit,
+  //! so `known` is false after a single-layer conversion; a caller must treat
+  //! unknown as "do not act", never as "no IRAP".
+  bool GetLastAuIsIrap(bool& known) const
+  {
+    known = m_lastAuIrapKnown;
+    return m_lastAuIsIrap;
+  }
   bool GetIsHdrPlus() const { return m_IsHdr10Plus; }
 
   // Profile-7 FEL tiny-IDR padding (see AppendHEVCFillerNAL). Public because
@@ -321,6 +326,7 @@ protected:
   DOVICMv40AppendResult m_cmv40_last_append_result{CMV40_APPEND_ADDED};
   bool m_doviIsFEL{false};
   bool m_lastAuIsIrap = false;
+  bool m_lastAuIrapKnown = false;
   bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
   bool m_Hdr10PlusTested{false};
