@@ -3341,6 +3341,28 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
   if( mindts == DVD_NOPTS_VALUE || maxdts == DVD_NOPTS_VALUE )
     return false;
 
+  // How far the timeline may step BACKWARDS before it counts as a restart.
+  //
+  // Stock uses a flat 1000ms, which a Blu-ray seamless playitem boundary walks
+  // straight under. Measured at M3GAN 2.0 00801.mpls's branches: video steps
+  // back 117ms and 388ms, audio 158ms and 429ms - all classified as a harmless
+  // "wrapback" below, which only logs, so NO correction is applied to either
+  // stream. The incoming clip's timestamps then overlap the outgoing clip's,
+  // and both renderers discard what falls behind what they have already
+  // presented: the decoder emitted nothing between pts 774.132 and 775.016 and
+  // held one picture for 883ms (the freeze at every branch), while the audio
+  // clock walked far enough to trip a jitter correction and an ActiveAE resync
+  // that skipped thousands of frames (the dropout a few seconds later).
+  //
+  // dts is DECODE order and is monotonic within a clip by construction, so a
+  // backward step of more than a couple of frames is a clip change, not
+  // timestamp jitter. Only lower the floor for a Blu-ray, where that holds and
+  // where the boundary is real; everything else keeps the stock threshold.
+  double backwardRestartFloor = DVD_MSEC_TO_TIME(1000);
+  if (m_pInputBluray && current.dur > 0.0)
+    backwardRestartFloor = std::min(backwardRestartFloor, std::max(current.dur * 2.0,
+                                                                   DVD_MSEC_TO_TIME(60)));
+
   double correction = 0.0;
   bool backwardRestart = false;
   if( pPacket->dts > maxdts + DVD_MSEC_TO_TIME(1000))
@@ -3352,7 +3374,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
   }
 
   /* if it's large scale jump, correct for it after having confirmed the jump */
-  if (pPacket->dts + DVD_MSEC_TO_TIME(1000) < current.dts_end())
+  if (pPacket->dts + backwardRestartFloor < current.dts_end())
   {
     CLog::Log(
         LOGDEBUG,
