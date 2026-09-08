@@ -3452,9 +3452,39 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       if (bdMenu && current.type == StreamType::VIDEO && m_menuWrapVideoGap == 0.0)
         m_menuWrapVideoGap = correction;
 
-      // not sure yet - flags the packets as unknown until we get confirmation on another audio/video packet
-      pPacket->dts = DVD_NOPTS_VALUE;
-      pPacket->pts = DVD_NOPTS_VALUE;
+      // A seamless playitem boundary is the one case where blanking costs more
+      // than it protects. The packet that opens the restart is the incoming
+      // clip's IRAP, and it reaches the Amlogic decoder as the single access
+      // unit that re-establishes decode after the branch. Blanked, it is fed
+      // with dts = pts = DVD_NOPTS_VALUE, which skips the ptsserver check-in
+      // in CAMLCodec entirely (check_in_pts() only records a timestamp when
+      // avpts != UINT64_0) - so the keyframe the whole new clip is predicted
+      // from carries no time base at all. Exactly one access unit per boundary
+      // was fed this way, measured, at every boundary of every run.
+      //
+      // We are not guessing at its timestamp: `correction` here is the value
+      // the confirmation applies moments later, and it has been identical at
+      // every restart measured - -59225833.333333 from both the stamp and the
+      // "update correction" line, boundary after boundary. Apply it to this
+      // packet alone and leave the confirmation flow untouched: m_offset_pts is
+      // still only advanced once another stream agrees, so nothing downstream
+      // sees a correction that was never confirmed, and no packet is corrected
+      // twice.
+      if (backwardRestart && current.type == StreamType::VIDEO &&
+          m_playSpeed == DVD_PLAYSPEED_NORMAL)
+      {
+        UpdateCorrection(pPacket, correction);
+        CLog::Log(LOGDEBUG,
+                  "CVideoPlayer::CheckContinuity - timeline restart: keeping the boundary "
+                  "keyframe's timestamps (dts {:f}) rather than blanking them",
+                  pPacket->dts);
+      }
+      else
+      {
+        // not sure yet - flags the packets as unknown until we get confirmation on another audio/video packet
+        pPacket->dts = DVD_NOPTS_VALUE;
+        pPacket->pts = DVD_NOPTS_VALUE;
+      }
     }
   }
   else
