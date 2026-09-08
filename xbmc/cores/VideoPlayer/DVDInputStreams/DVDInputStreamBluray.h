@@ -287,6 +287,40 @@ public:
    * angle), so playlist changes and seeks still take the full reopen. */
   bool IsSeamlessStreamChange() const { return m_seamlessHold; }
 
+  /* Seamless-seam GLIDE.
+   *
+   * The old boundary handshake was: latch HOLD_HELD, return 0 bytes from
+   * Read() until the player notices the NULL packet and runs
+   * NextStream()/BdSegmentTransition(). That 0 reaches libavformat as an i/o
+   * error, and mpegts_read_packet() answers ANY error by emitting the
+   * half-assembled PES it is holding and putting that PID into MPEGTS_SKIP -
+   * which throws away the rest of the picture until the next
+   * payload_unit_start. At a seam the PES in flight is the INCOMING clip's
+   * first access unit, so the decoder was handed an IRAP fragment (2702 bytes
+   * of a ~500 kB picture on M3GAN 2.0, with an enhancement layer carrying no
+   * slice at all) and never received the picture it was cut from. That is the
+   * freeze and the macroblock garbage at every playitem branch.
+   *
+   * A seamless connection is a continuous transport stream by definition, so
+   * the cure is to stop interrupting it: glide past the seam without holding,
+   * let libbluray keep delivering, and hand the player the transition through
+   * TakePendingSeamlessTransition() instead of through a NULL packet.
+   * libavformat then never sees an error and the access unit completes.
+   *
+   * Gliding is only correct when the player will classify the transition
+   * SEAMLESS - it commits us to the incoming clip's bytes - so the player
+   * publishes its half of that test (video stream open and in sync) through
+   * SetSeamlessGlideAllowed(); the menu-crossing half is ShouldDiscardStreamQueue(),
+   * which this class can answer itself. Anything else still takes the hold. */
+  void SetSeamlessGlideAllowed(bool allowed) { m_seamlessGlideAllowed = allowed; }
+
+  bool TakePendingSeamlessTransition()
+  {
+    const bool pending = m_pendingSeamlessTransition;
+    m_pendingSeamlessTransition = false;
+    return pending;
+  }
+
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
    * the JVM's signal handlers) is understood */
@@ -420,6 +454,8 @@ protected:
   std::chrono::milliseconds ChapterPosDemux(int ch) const;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
+  bool m_seamlessGlideAllowed = false;
+  bool m_pendingSeamlessTransition = false;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
    * ended and the disc returned to menu" (drain it). Player thread only.
