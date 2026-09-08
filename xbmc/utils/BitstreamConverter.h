@@ -306,6 +306,9 @@ protected:
   int m_smart_display_nits{0};
   int m_smart_threshold_pct{20};
   DOVICMv40Mode m_smart_last_effective{CMV40_SMART};
+  int m_smart_last_logged_content{-1};
+  int m_smart_last_logged_threshold{-1};
+  bool m_smart_last_logged_bypass{false};
   bool m_cmv40_native_logged{false};
   // append-outcome logging: emit on the first attempt and whenever the outcome
   // changes, so a healthy stream costs one line but a failure cannot hide
