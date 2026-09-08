@@ -1740,17 +1740,17 @@ void CVideoPlayer::BdSegmentTransition()
     m_pDemuxer->Flush();
 
     // Dolby Vision FEL content (real enhancement layer, e.g. Spears & Munsil
-    // demos) carries HEVC decoder reference state across the clip boundary
-    // and glitches for ~2s until the next keyframe resyncs it. Soft-reset
-    // the video decoder at the boundary: GENERAL_RESET runs
-    // CAMLCodec::Reset() (a codec_reset that clears references + the BL/EL
-    // merge queue) WITHOUT CloseDecoder, so the DV tunnel stays latched - no
-    // re-latch toast/black. Gated to FEL so MEL menu loops (HALO), which
-    // cross boundaries cleanly, keep their untouched seamless smoothness.
+    // demos) carries per-segment BL/EL pairing and DV metadata state across the
+    // clip boundary and glitches until it resyncs. Drop that state, and only
+    // that state: GENERAL_RESET would additionally codec_reset the decoder,
+    // which discards the boundary IRAP the demuxer has already fed, and force
+    // SYNC_STARTING + ShowVideo(false) on a stream that never stopped. Gated to
+    // FEL so MEL menu loops (HALO), which cross boundaries cleanly, keep their
+    // untouched seamless smoothness.
     if (m_processInfo && m_processInfo->GetDoviIsFEL())
     {
-      CLog::Log(LOGINFO, "VideoPlayer: seamless boundary - FEL soft decoder reset");
-      m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET));
+      CLog::Log(LOGINFO, "VideoPlayer: seamless boundary - FEL segment state reset");
+      m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_SEGMENT_RESET));
     }
     return;
   }

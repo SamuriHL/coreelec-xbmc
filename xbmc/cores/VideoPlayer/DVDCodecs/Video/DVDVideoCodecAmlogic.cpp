@@ -1108,6 +1108,29 @@ void CDVDVideoCodecAmlogic::Reset(void)
   // timeout escalation in GetPicture(). It clears on VC_PICTURE and Reopen().
 }
 
+void CDVDVideoCodecAmlogic::ResetSegmentState(void)
+{
+  // Seamless Blu-ray playitem boundary. The incoming clip opens with its own
+  // IRAP, so the stream itself breaks the reference chain and the hardware
+  // decoder needs no codec_reset to resync across the seam. Drop only the state
+  // that belongs to the clip that ended: a BL package still waiting for an EL
+  // the outgoing clip never delivered, which would otherwise pair against the
+  // incoming segment's first frames, and the DV metadata sequencer's position.
+  //
+  // m_Codec->Reset() and m_has_keyframe are deliberately left alone - a
+  // codec_reset here would discard the boundary IRAP that AddData has already
+  // fed, and re-arming the keyframe wait would then stall decode until the next
+  // one, a full GOP away.
+  while (!m_packages.empty())
+  {
+    PopPackageFront();
+  }
+  m_packagesOverflowLogged = false;
+
+  m_metadataSequencer.Reset();
+  m_pendingMeta = m_streamMeta;
+}
+
 void CDVDVideoCodecAmlogic::Reopen(void)
 {
   // A flush-only Reset() cannot recover a wedged decode session: a Dolby
