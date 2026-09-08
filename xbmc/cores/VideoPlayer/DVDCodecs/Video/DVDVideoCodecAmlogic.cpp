@@ -42,6 +42,12 @@ extern "C"
 
 namespace
 {
+// BL/EL pairing slack on the demuxer dts, in DVD_TIME units. One frame at
+// 23.976fps is ~41708, so this is a quarter frame - wide enough to absorb the
+// sub-millisecond rounding between the two layers' timestamps, far too narrow
+// to let neighbouring frames pair.
+constexpr double DL_PAIR_DTS_TOLERANCE = 10000.0;
+
 // Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
 // bypass default. Delegates to AMLUtils' injection-aware parser (the local
 // duplicate read dv_cap directly, which reports the INJECTED block while a
@@ -695,6 +701,36 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   {
     m_lastTimelineRestartSeq = packet.timelineRestartSeq;
     m_pendingTimelineRestart = true;
+
+    // Drop any OUTGOING clip packet still waiting for a partner. The pairing
+    // key is the demuxer's dts, which is monotonic within a clip but restarts
+    // backwards here - that restart is the entire reason the player carries
+    // m_offset_pts. A straggler from the clip that just ended would therefore
+    // compare as ~59s in the future (M3GAN 2.0 00801.mpls) for as long as it
+    // sat at the head of the queue, and the "queued is ahead, so drop the
+    // incoming packet" branch below would discard EVERY packet of the opposite
+    // layer until playback caught back up to it. This is the one moment we can
+    // still tell the two clips apart, so resolve it here.
+    //
+    // Only packets ahead of the incoming access unit are dropped, never the
+    // queue wholesale: an enhancement layer legitimately arrives before the
+    // first base layer of a clip (windowed playitem entries and seeks both do
+    // it), and that one is already on the incoming timeline and must be kept
+    // so the clip's first frame can still be reconstructed.
+    const double restartDts =
+        packet.demuxDts != DVD_NOPTS_VALUE ? packet.demuxDts : packet.dts;
+    while (restartDts != DVD_NOPTS_VALUE && !m_packages.empty())
+    {
+      const double queuedDts = std::get<5>(m_packages.front());
+      if (queuedDts == DVD_NOPTS_VALUE || queuedDts <= restartDts + DL_PAIR_DTS_TOLERANCE)
+        break;
+      CLog::Log(LOGDEBUG, LOGVIDEO,
+                "CDVDVideoCodecAmlogic::{}: timeline restart - dropping outgoing clip's {} "
+                "package with demux dts: {:.3f} (incoming demux dts: {:.3f})",
+                __FUNCTION__, std::get<2>(m_packages.front()) ? "EL" : "BL",
+                queuedDts / DVD_TIME_BASE, restartDts / DVD_TIME_BASE);
+      PopPackageFront();
+    }
   }
 
   uint8_t *pData(packet.pData);
@@ -798,8 +834,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         // and can orphan packets of either layer) must be dropped, not paired
         // with a neighbour - one blind mispair shifts the merge phase for the
         // rest of the session.
-        constexpr double dtsTolerance = 10000.0; // DVD_TIME units; frame is ~41708
-
         // Fall back to the player dts only for a packet that never passed
         // through CVideoPlayer::ReadPacket and so carries no demuxDts; every
         // packet on the disc/file path does.
@@ -822,7 +856,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
           const bool dtsKnown =
               demuxDtsBackup != DVD_NOPTS_VALUE && pairDts != DVD_NOPTS_VALUE;
-          if (dtsKnown && demuxDtsBackup < pairDts - dtsTolerance)
+          if (dtsKnown && demuxDtsBackup < pairDts - DL_PAIR_DTS_TOLERANCE)
           {
             CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with demux dts: {:.3f} (incoming {} demux dts: {:.3f})", __FUNCTION__,
               isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE,
@@ -830,7 +864,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             PopPackageFront();
             continue;
           }
-          if (dtsKnown && demuxDtsBackup > pairDts + dtsTolerance)
+          if (dtsKnown && demuxDtsBackup > pairDts + DL_PAIR_DTS_TOLERANCE)
           {
             CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with demux dts: {:.3f} (queued {} demux dts: {:.3f})", __FUNCTION__,
               packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE,
