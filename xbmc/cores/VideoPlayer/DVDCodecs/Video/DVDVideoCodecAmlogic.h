@@ -165,6 +165,8 @@ private:
   CAMLFrameMetadataSequencer m_metadataSequencer;
   size_t m_packagesBytes = 0;
   bool m_packagesOverflowLogged = false;
+  bool m_segmentResetPending = false;
+  int m_segmentResetWait = 0;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
 };
