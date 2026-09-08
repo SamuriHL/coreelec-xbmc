@@ -2840,14 +2840,31 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
     return rpuData;
   }
 
-  if (!m_doviELTested)
+  // Keep testing until a full enhancement layer is actually seen, rather than
+  // deciding on the FIRST RPU this converter ever parses.
+  //
+  // The single-shot test misreported an entire title whenever the decoder opened
+  // anywhere other than a clip start. Measured on M3GAN 2.0: opening the feature
+  // from the ISO began mid-GOP, so the first converted access unit was
+  // "BL nal_type: 1" with a 73-byte EL slice - no residual, so that RPU reads MEL
+  // quite correctly - and the title latched MEL for its whole duration, logging
+  // "minimum enhancement layer" at OpenDecoder. The same disc, entered at a
+  // segment start, logs "full enhancement layer" for the same stream.
+  //
+  // Re-testing cannot produce a false positive: a genuine MEL stream's el_type
+  // never reads "FEL", so this can only ever correct a missed FEL, never invent
+  // one. Latching on the positive keeps it a one-way decision.
+  if (!m_doviIsFEL)
   {
     if (header->el_type && (header->guessed_profile == 4 || header->guessed_profile == 7))
     {
       if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
+      {
         m_doviIsFEL = true;
+        CLog::Log(LOGINFO, "CBitstreamConverter::processDoviRpu - full enhancement layer "
+                           "detected (profile {})", header->guessed_profile);
+      }
     }
-    m_doviELTested = true;
   }
 
   if (m_convert_dovi && header->guessed_profile == 7)

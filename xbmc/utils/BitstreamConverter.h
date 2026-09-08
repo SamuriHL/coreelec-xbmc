@@ -327,7 +327,6 @@ protected:
   bool m_doviIsFEL{false};
   bool m_lastAuIsIrap = false;
   bool m_lastAuIrapKnown = false;
-  bool m_doviELTested{false};
   bool m_IsHdr10Plus{false};
   bool m_Hdr10PlusTested{false};
   bool m_convert_Hdr10Plus{false};

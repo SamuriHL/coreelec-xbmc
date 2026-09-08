@@ -74,6 +74,14 @@ public:
   int           AddHDR10PData(uint8_t *pData, size_t iSize);
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture* pVideoPicture);
 
+  //! @brief Keep the tiny-IDR padding gate in step with CBitstreamConverter's.
+  //! The converter can only recognise a full enhancement layer once it has
+  //! parsed an RPU carrying one, which may be long after OpenDecoder copied the
+  //! flag. If the converter starts appending filler while this side still thinks
+  //! it does not, the idle-input threshold is short by exactly the filler size
+  //! and a benign park falls through to a decoder flush.
+  void          SetFelIdrPadding(bool enabled) { m_felIdrPadding = enabled; }
+
   void          SetSpeed(int speed);
   void          SetDrain(bool drain){m_drain = drain;};
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
