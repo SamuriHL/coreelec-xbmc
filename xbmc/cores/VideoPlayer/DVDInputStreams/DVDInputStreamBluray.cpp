@@ -2809,14 +2809,21 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   }
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
-  // Report the player's REAL 3D capability (PSR24) instead of libbluray's
-  // /* TODO */ 0xffffffff "every 3D mode" placeholder. 3D output is bounded by
-  // the connected display, which the box exposes via sysfs
-  // (aml_display_support_3d() -> amhdmitx0/support_3d). On a non-3D display the
-  // truthful value is 0 (no 3D capability), so a disc that branches on PSR24 is
-  // no longer told the player can do 3D it cannot. The exact non-zero 3D-cap
-  // bit layout is in the paywalled BD 3D spec and cannot be validated here (no
-  // 3D display available), so the 3D-capable branch is left at 0xffffffff.
+  // PSR24 is the PLAYER's 3D capability. The DISPLAY's is PSR23, written in
+  // Open() from the real sink, and the output preference is PSR21 - keying
+  // PSR24 off the connected display conflated the three.
+  //
+  // Deriving it from the display said "this player cannot decode 3D at all"
+  // whenever the panel was 2D, which is false: the base view of a BD 3D title
+  // decodes and presents as ordinary 2D. Frozen 3D read that as a player it
+  // could not serve and parked the title on playlist 90 - one PlayItem, one
+  // frame, still_mode 0x02 infinite - with no path forward and nothing drawn.
+  // Declaring the capability lets its Xlet take the normal route (playlists
+  // 11 -> 50 -> 20 -> 800) and the feature plays in 2D on a 2D display, which
+  // is what a 3D-capable player attached to a 2D panel does.
+  //
+  // 0xffffffff is libbluray's own placeholder for "every 3D mode"; the exact
+  // bit layout is in the paywalled BD 3D spec and cannot be validated here.
   // NOTE: libbluray's psr_init_3D() would rewrite PSR24 on 3D-disc detection,
   // but it is invoked with force=0 (bluray.c) and register.c refuses the
   // non-forced init once PSR_PROFILE_VERSION >= 0x0300 - and this player
@@ -2825,11 +2832,11 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   // A 3D disc therefore receives no 3D PSR setup from libbluray at all, so
   // Open() installs the profile-5 persona itself once bd_get_disc_info() has
   // reported content_exist_3D.
-  const bool display3d = EffectiveDisplaySupports3D();
-  const uint32_t threeDCap = display3d ? 0xffffffff : 0;
+  const uint32_t threeDCap = 0xffffffff;
   CLog::Log(LOGINFO,
-            "CDVDInputStreamBluray: 3D capability PSR24 0x{:08x} (display 3D: {})",
-            threeDCap, display3d);
+            "CDVDInputStreamBluray: 3D capability PSR24 0x{:08x} (player capability; "
+            "display 3D: {})",
+            threeDCap, EffectiveDisplaySupports3D());
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, threeDCap);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
