@@ -3335,6 +3335,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     return false;
 
   double correction = 0.0;
+  bool backwardRestart = false;
   if( pPacket->dts > maxdts + DVD_MSEC_TO_TIME(1000))
   {
     CLog::Log(LOGDEBUG,
@@ -3351,6 +3352,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
         "CVideoPlayer::CheckContinuity - resync backward :{}, prev:{:f}, curr:{:f}, diff:{:f}",
         current.type, current.dts, pPacket->dts, pPacket->dts - current.dts);
     correction = pPacket->dts - current.dts_end();
+    backwardRestart = true;
   }
   else if(pPacket->dts < current.dts)
   {
@@ -3380,7 +3382,12 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     // re-enters this block for every packet until another stream confirms.
     // Enhancement-layer packets never reach here - ProcessPacket routes them
     // straight to the video player - so the stamp always rides the base layer.
-    if (current.type == StreamType::VIDEO && !m_timelineRestartStamped)
+    // The speed test belongs here, not at the consumer: PLAYER_SETSPEED is a
+    // priority-1 message and overtakes the packet backlog, so a codec-side gate
+    // could read a speed set seconds after this packet was queued and silently
+    // drop the flush for a jump that has already been stamped.
+    if (backwardRestart && current.type == StreamType::VIDEO && !m_timelineRestartStamped &&
+        m_playSpeed == DVD_PLAYSPEED_NORMAL)
     {
       pPacket->timelineRestartSeq = ++m_timelineRestartSeq;
       m_timelineRestartStamped = true;

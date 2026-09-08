@@ -173,7 +173,6 @@ private:
   // VC_FLUSHED replay.
   bool m_pendingTimelineRestart = false;
   uint32_t m_lastTimelineRestartSeq = 0;
-  int m_speed = DVD_PLAYSPEED_NORMAL;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
 };
