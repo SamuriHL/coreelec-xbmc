@@ -31,6 +31,8 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 extern "C"
@@ -45,7 +47,14 @@ namespace
 // How many access units an armed seamless-boundary reset waits for an IRAP
 // before flushing anyway. The incoming clip's IRAP normally arrives in the
 // first access unit or two; this only bounds a boundary that carries none.
-constexpr int SEGMENT_RESET_MAX_AU_WAIT = 32;
+// How stale the cached IRAP may be, in access units actually fed, for a
+// seamless boundary to restore it. The boundary message trails its clip's
+// keyframe by only a handful of access units; anything older belongs to the
+// clip that just ended.
+constexpr uint64_t SEGMENT_RESET_MAX_IRAP_AGE_AU = 8;
+
+// Attempts to resubmit that IRAP into the freshly flushed decoder.
+constexpr int IRAP_RESUBMIT_ATTEMPTS = 16;
 
 // Display's DV VSVDB target max luminance in nits, for the Smart CMv4.0
 // bypass default. Delegates to AMLUtils' injection-aware parser (the local
@@ -994,27 +1003,31 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  // Flush the decoder across a seamless boundary at the moment the incoming
-  // clip's IRAP is in hand, so the reset lands between the old clip's
-  // references and the keyframe that replaces them. Resetting when the
-  // boundary message arrived would discard that IRAP; not resetting at all
-  // lets the old references corrupt the incoming frames. The bound covers a
-  // boundary whose first access units carry no IRAP.
-  if (m_segmentResetPending)
+  // Keep the most recent IRAP access unit so a seamless boundary can put it
+  // back. libbluray raises BD_EVENT_PLAYITEM only once the reader crosses into
+  // the new clip, by which point ffmpeg has already emitted the incoming IRAP,
+  // so the boundary is always known AFTER that keyframe has been fed. The copy
+  // is of the converted buffer, i.e. the merged BL+EL access unit including any
+  // FEL filler, so it can be resubmitted as-is.
+  const bool auIsIrap = m_bitstream && m_bitstream->GetLastAuIsIrap();
+  if (auIsIrap && pData && iSize > 0)
   {
-    const bool irap = m_bitstream && m_bitstream->GetLastAuIsIrap();
-    if (irap || ++m_segmentResetWait > SEGMENT_RESET_MAX_AU_WAIT)
-    {
-      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: seamless boundary - decoder reset {}",
-                __FUNCTION__,
-                irap ? "at the incoming IRAP" : "without an IRAP (wait bound reached)");
-      m_Codec->Reset();
-      m_segmentResetPending = false;
-      m_segmentResetWait = 0;
-    }
+    m_lastIrapAu.assign(pData, pData + iSize);
+    m_lastIrapDts = packet.dts;
+    m_lastIrapPts = packet.pts;
   }
 
   data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+
+  if (data_added)
+  {
+    ++m_auFedCount;
+    if (auIsIrap && !m_lastIrapAu.empty())
+    {
+      m_lastIrapFedAu = m_auFedCount;
+      m_lastIrapValid = true;
+    }
+  }
 
   if (data_added && packet.pData)
   {
@@ -1109,6 +1122,9 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   m_Codec->Reset();
 
+  m_lastIrapValid = false;
+  m_lastIrapAu.clear();
+
   while (!m_packages.empty())
   {
     PopPackageFront();
@@ -1145,16 +1161,6 @@ void CDVDVideoCodecAmlogic::ResetSegmentState(void)
   // that ended: a BL package still waiting for an EL the outgoing clip never
   // delivered, which would otherwise pair against the incoming segment's first
   // frames, and the DV metadata sequencer's position.
-  //
-  // The decoder does need flushing - HEVC reference state carries across the
-  // seam and corrupts the incoming frames - but not here. This message is
-  // dequeued AFTER AddData has already converted and fed the incoming clip's
-  // IRAP, so a codec_reset at this point destroys that IRAP and stalls decode
-  // until the next one, a GOP away. Arm it instead and let AddData run it
-  // immediately before the IRAP.
-  m_segmentResetPending = true;
-  m_segmentResetWait = 0;
-
   while (!m_packages.empty())
   {
     PopPackageFront();
@@ -1163,6 +1169,56 @@ void CDVDVideoCodecAmlogic::ResetSegmentState(void)
 
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
+
+  // HEVC reference state carries across the seam and corrupts the incoming
+  // frames, so the decoder does have to be flushed. The difficulty is that this
+  // message cannot arrive before the keyframe it needs to preserve: libbluray
+  // raises BD_EVENT_PLAYITEM only once the reader crosses into the new clip,
+  // and ffmpeg has emitted the incoming IRAP by then. The message is late in
+  // wall time but correctly ordered in DECODE time - it sits immediately behind
+  // that IRAP in the same queue - so flush and then put the keyframe back,
+  // rather than trying to land the flush ahead of it.
+  if (!m_Codec)
+    return;
+
+  const bool irapIsRecent =
+      m_lastIrapValid && !m_lastIrapAu.empty() && m_auFedCount >= m_lastIrapFedAu &&
+      (m_auFedCount - m_lastIrapFedAu) <= SEGMENT_RESET_MAX_IRAP_AGE_AU;
+
+  if (!irapIsRecent)
+  {
+    // No keyframe to restore. Leaving the decoder alone means the old clip's
+    // references bleed into the new one for a GOP; flushing without one means
+    // decode stalls until the next keyframe, which measured as a 5s freeze and
+    // a wedged decoder. Prefer the recoverable failure.
+    CLog::Log(LOGWARNING,
+              "{}::{} - seamless boundary with no recent IRAP to restore ({} access units since "
+              "the last one) - leaving the decoder untouched",
+              __MODULE_NAME__, __FUNCTION__,
+              m_lastIrapValid ? m_auFedCount - m_lastIrapFedAu : 0);
+    return;
+  }
+
+  CLog::Log(LOGINFO, "{}::{} - seamless boundary - flushing the decoder and restoring the {} byte "
+                     "IRAP fed {} access units ago",
+            __MODULE_NAME__, __FUNCTION__, m_lastIrapAu.size(),
+            m_auFedCount - m_lastIrapFedAu);
+
+  m_Codec->Reset();
+
+  // A freshly reset decoder has an empty input buffer, so this normally lands
+  // first try; the bound stops a decoder that is not accepting from spinning
+  // the video thread.
+  for (int attempt = 0; attempt < IRAP_RESUBMIT_ATTEMPTS; ++attempt)
+  {
+    if (m_Codec->AddData(m_lastIrapAu.data(), m_lastIrapAu.size(), m_lastIrapDts, m_lastIrapPts))
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  CLog::Log(LOGERROR, "{}::{} - could not restore the IRAP after the boundary flush; decode will "
+                      "stall until the next keyframe",
+            __MODULE_NAME__, __FUNCTION__);
 }
 
 void CDVDVideoCodecAmlogic::Reopen(void)
