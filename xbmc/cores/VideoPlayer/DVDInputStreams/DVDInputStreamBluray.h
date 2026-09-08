@@ -287,6 +287,18 @@ public:
    * angle), so playlist changes and seeks still take the full reopen. */
   bool IsSeamlessStreamChange() const { return m_seamlessHold; }
 
+  /* True for the whole window in which Read() is holding at a seamless
+   * playitem seam: the boundary event has been taken off libbluray but the
+   * player has not yet run NextStream()/BdSegmentTransition(), so every
+   * Read() in that window returns 0 bytes. The demuxer needs to tell this
+   * apart from a real end of stream - see dvd_file_read() in
+   * DVDDemuxFFmpeg.cpp, where reporting it as EOF used to amputate the
+   * incoming clip's first access unit. */
+  bool IsHeldAtSeamlessSeam() const
+  {
+    return m_navmode && m_hold == HOLD_HELD && m_seamlessHold;
+  }
+
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
    * the JVM's signal handlers) is understood */

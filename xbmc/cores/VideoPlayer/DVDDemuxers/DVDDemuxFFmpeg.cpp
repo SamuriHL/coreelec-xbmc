@@ -176,6 +176,20 @@ static int dvd_file_open(URLContext* h, const char* filename, int flags)
 }
 */
 
+/* A Blu-ray seamless playitem seam announces itself by HOLDING the read:
+ * libbluray hands the boundary event to CDVDInputStreamBluray::Read(), which
+ * latches HOLD_HELD and returns 0 bytes for every call until the player has
+ * run NextStream() + BdSegmentTransition(). That is not an end of stream, and
+ * it must not be reported as one - see dvd_file_read(). */
+static bool IsHeldAtBluraySeam(const std::shared_ptr<CDVDInputStream>& input)
+{
+#ifdef HAVE_LIBBLURAY
+  if (input && input->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+    return std::static_pointer_cast<CDVDInputStreamBluray>(input)->IsHeldAtSeamlessSeam();
+#endif
+  return false;
+}
+
 static int dvd_file_read(void* h, uint8_t* buf, int size)
 {
   if (interrupt_cb(h))
@@ -191,7 +205,30 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
   int len = pInputStream->Read(buf, size);
   if (len == 0)
+  {
+    // The seamless-seam hold, reported as EOF, is what breaks a Blu-ray
+    // playitem branch. read_frame_internal() answers an end of stream by
+    // FLUSHING every codec parser, and that flush emits whatever half-built
+    // access unit the parser is holding as a real packet. At a seam the
+    // parser is holding the INCOMING clip's first access unit, so the decoder
+    // is handed an IRAP slice fragment (2702 bytes of a ~500 kB picture on
+    // M3GAN 2.0) whose enhancement layer carries no slice at all. The hardware
+    // stops that picture partway through - "cur lcu idx = 540, (total 2040),
+    // set error_mark" - and every following picture then fails against the
+    // broken reference, which is the multi-second freeze and the macroblock
+    // garbage users see at every branch, in exactly the same places every
+    // time. The remainder of that picture is discarded a moment later by the
+    // seam flush, so the clip's own IRAP never reaches the decoder at all.
+    //
+    // AVERROR(EAGAIN) unwinds av_read_frame WITHOUT the parser flush (it
+    // returns early, before the flush loop), so nothing is emitted, the
+    // partial access unit stays buffered, and it completes from the incoming
+    // clip's own bytes once the hold is released. The player still gets a
+    // NULL packet and still runs the transition - see ReadInternal().
+    if (IsHeldAtBluraySeam(pInputStream))
+      return AVERROR(EAGAIN);
     return AVERROR_EOF;
+  }
   if (len > 0)
     demuxer->m_sourceReadBytes += len;
   return len;
@@ -1122,7 +1159,14 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
     {
       // assume we are not eof
       if (m_pFormatContext->pb)
+      {
         m_pFormatContext->pb->eof_reached = 0;
+        // avio latches the seam hold's EAGAIN in ->error and then answers
+        // every later fill from that latch without calling dvd_file_read
+        // again. Clear only that value: a genuine i/o error must survive.
+        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
+          m_pFormatContext->pb->error = 0;
+      }
 
       // check for saved packet after a program change
       if (m_pkt.result < 0)
@@ -1162,8 +1206,18 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 
       if (m_pkt.result == AVERROR(EINTR) || m_pkt.result == AVERROR(EAGAIN))
       {
-        // timeout, probably no real error, return empty packet
-        bReturnEmpty = true;
+        // The seam hold is not a timeout. An empty packet would send the
+        // player straight back into Read() and spin here for ever, because
+        // only a NULL packet makes it consult NextStream() and run the
+        // transition that releases the hold. Fall through with no packet and
+        // above all do NOT Flush(): the parsers are holding the incoming
+        // clip's first access unit, which is the entire point of the EAGAIN
+        // that dvd_file_read() returned.
+        if (m_pkt.result != AVERROR(EAGAIN) || !IsHeldAtBluraySeam(m_pInput))
+        {
+          // timeout, probably no real error, return empty packet
+          bReturnEmpty = true;
+        }
       }
       else if (m_pkt.result == AVERROR_EOF)
       {
