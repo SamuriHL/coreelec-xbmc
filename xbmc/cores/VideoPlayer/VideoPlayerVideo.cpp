@@ -483,6 +483,17 @@ void CVideoPlayerVideo::Process()
       m_renderManager.ShowVideo(false);
       m_rewindStalled = false;
     }
+    else if (pMsg->IsType(CDVDMsg::GENERAL_SEGMENT_RESET))
+    {
+      // Light counterpart of GENERAL_RESET for a seamless segment boundary:
+      // drop the codec's per-segment state only. The current picture, the
+      // queued packets, the sync state and the renderer are all left alone -
+      // the stream runs continuously across this boundary, so releasing the
+      // picture, restarting the sync handshake (SYNC_STARTING) or hiding video
+      // (ShowVideo(false)) would themselves be the glitch we are avoiding.
+      if (m_pVideoCodec)
+        m_pVideoCodec->ResetSegmentState();
+    }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;

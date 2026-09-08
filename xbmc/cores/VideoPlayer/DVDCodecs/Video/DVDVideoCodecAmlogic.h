@@ -87,6 +87,7 @@ public:
   virtual bool AddData(const DemuxPacket &packet) override;
   virtual void Abort() override;
   virtual void Reset() override;
+  virtual void ResetSegmentState() override;
   virtual void Reopen() override;
   virtual VCReturn GetPicture(VideoPicture* pVideoPicture) override;
   virtual void SetSpeed(int iSpeed) override;
