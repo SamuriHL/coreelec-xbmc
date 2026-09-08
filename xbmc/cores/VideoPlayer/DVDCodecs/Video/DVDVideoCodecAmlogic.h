@@ -177,6 +177,7 @@ private:
   bool m_pendingTimelineRestart = false;
   uint32_t m_lastTimelineRestartSeq = 0;
   bool m_timelineRestartSeqSeeded = false;
+  bool m_felIdrPaddingPushed = false;
   // Free the head of m_packages, keeping m_packagesBytes in step.
   void PopPackageFront();
 };
