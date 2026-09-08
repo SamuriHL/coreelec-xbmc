@@ -1456,6 +1456,21 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
                 m_seamlessHold = false;
               }
             }
+            // Glide past a seam the player will treat as SEAMLESS: keep the
+            // transport stream running rather than holding it. Holding makes
+            // the next Read() return 0, libavformat takes that as an i/o
+            // error, and mpegts_read_packet() flushes the PES in flight and
+            // skips the rest of it - amputating the incoming clip's first
+            // access unit and feeding the decoder the fragment. See the
+            // comment on SetSeamlessGlideAllowed() in the header. The event
+            // is not lost: it falls through to ProcessEvent() below exactly
+            // as a non-held event does, and the player collects the
+            // transition from TakePendingSeamlessTransition().
+            if (m_seamlessHold && m_seamlessGlideAllowed && !ShouldDiscardStreamQueue())
+            {
+              m_pendingSeamlessTransition = true;
+              break;
+            }
             m_hold = HOLD_HELD;
             return result;
           }
