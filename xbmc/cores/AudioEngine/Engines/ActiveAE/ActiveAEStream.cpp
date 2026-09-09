@@ -688,12 +688,13 @@ float CActiveAEStreamBuffers::GetDelay()
   // packet, and its duration is m_streamInfo.GetDuration() (milliseconds).
   //
   // nb_samples/config.sample_rate has no time meaning here: the RAW pool ctor
-  // forces m_frameSize=1 / m_frames=61440 (ActiveAEBuffer.cpp) so nb_samples
-  // counts BYTES, while config.sample_rate stays the ENCODED rate (48000), not
-  // the 192000 Hz wire rate. It is therefore always an overstatement, by a
-  // codec-dependent factor. Worst case is TrueHD MAT, whose burst is exactly
-  // 61440 bytes (TRUEHD_BUF_SIZE == MAX_IEC61937_PACKET): 61440/48000 = 1.280 s
-  // reported against a true 20 ms, i.e. exactly 64x.
+  // forces m_frameSize=1 / m_frames=MAX_IEC61937_PACKET (ActiveAEBuffer.cpp) so
+  // nb_samples counts BYTES, while config.sample_rate stays the ENCODED rate
+  // (48000), not the 192000 Hz wire rate. It is therefore always an
+  // overstatement, by a codec-dependent factor. Worst case is a full pool of
+  // 65536 bytes reported as 65536/48000 = 1.365 s against a true 20 ms, i.e.
+  // about 68x. (65536 is the DTS-HD subtype 5 burst, the largest IEC 61937
+  // defines; TrueHD MAT's own burst is 61440 and no longer equals the pool.)
   //
   // This lands in VideoPlayer as str.m_bufferedTime via CEngineStats::
   // UpdateStream -> GetDelay(status, stream), where it sets the A/V start anchor

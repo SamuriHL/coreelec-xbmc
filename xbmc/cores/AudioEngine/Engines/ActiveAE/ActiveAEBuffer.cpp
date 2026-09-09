@@ -11,6 +11,7 @@
 #include "ActiveAE.h"
 #include "ActiveAEFilter.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
+#include "cores/AudioEngine/Utils/AEPackIEC61937.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 
 #include <memory>
@@ -49,7 +50,12 @@ CActiveAEBufferPool::CActiveAEBufferPool(const AEAudioFormat& format) : m_format
   if (m_format.m_dataFormat == AE_FMT_RAW)
   {
     m_format.m_frameSize = 1;
-    m_format.m_frames = 61440;
+    // Must be the same constant the sink reply uses (ActiveAESink), or the
+    // recreate test in ActiveAE::Configure - m_sinkBuffers->m_format.m_frames
+    // != m_sinkFormat.m_frames - is true on EVERY call for RAW, and the sink
+    // buffer pool is discarded and rebuilt each time, dropping buffered
+    // passthrough audio with it.
+    m_format.m_frames = MAX_IEC61937_PACKET;
     m_format.m_channelLayout.Reset();
     m_format.m_channelLayout += AE_CH_FC;
   }
@@ -132,7 +138,12 @@ CActiveAEBufferPoolResample::CActiveAEBufferPoolResample(const AEAudioFormat& in
   if (m_inputFormat.m_dataFormat == AE_FMT_RAW)
   {
     m_format.m_frameSize = 1;
-    m_format.m_frames = 61440;
+    // Must be the same constant the sink reply uses (ActiveAESink), or the
+    // recreate test in ActiveAE::Configure - m_sinkBuffers->m_format.m_frames
+    // != m_sinkFormat.m_frames - is true on EVERY call for RAW, and the sink
+    // buffer pool is discarded and rebuilt each time, dropping buffered
+    // passthrough audio with it.
+    m_format.m_frames = MAX_IEC61937_PACKET;
     m_inputFormat.m_channelLayout.Reset();
     m_inputFormat.m_channelLayout += AE_CH_FC;
   }
