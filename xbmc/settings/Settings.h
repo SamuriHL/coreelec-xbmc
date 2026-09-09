@@ -481,6 +481,7 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND = "coreelec.amlogic.dolbyvision.cmv40.append";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD = "coreelec.amlogic.dolbyvision.cmv40.smart.threshold";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER = "coreelec.amlogic.dolbyvision.cmv40.auto.trigger";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS = "coreelec.amlogic.dolbyvision.display.maxnits";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM = "coreelec.amlogic.dolbyvision.target.minlum";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8 = "coreelec.amlogic.dolbyvision.vs10.sdr8";

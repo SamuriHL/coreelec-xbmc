@@ -25661,16 +25661,16 @@ msgctxt "#40804"
 msgid "{0:.1f} dB"
 msgstr ""
 
-#. Label of setting "Append CMv4.0 metadata"
+#. Label of setting "CMv4.0 metadata"
 #: system/settings/settings.xml
 msgctxt "#60320"
-msgid "Append CMv4.0 metadata"
+msgid "CMv4.0 metadata"
 msgstr ""
 
-#. Description of setting with label #60320 "Append CMv4.0 metadata"
+#. Description of setting with label #60320 "CMv4.0 metadata"
 #: system/settings/settings.xml
 msgctxt "#60321"
-msgid "Append Dolby Vision CMv4.0 metadata to CMv2.9 titles. \"Smart\" appends per-frame unless the frame's content peak exceeds the display's peak brightness by the threshold, in which case CMv2.9 is kept so its L2 trims apply. \"Smart\" is not available on player-led Dolby Vision output: switching the CM version mid-stream makes the display re-acquire Dolby Vision, so \"Smart\" behaves as plain \"Always\" there. It works per-frame for TV-led Dolby Vision output and for VS10 HDR10/SDR output."
+msgid "Add Dolby Vision CMv4.0 metadata to CMv2.9 titles, or take it away from CMv4.0 ones. \"Smart\" appends per-frame unless the frame's content peak exceeds the display's peak brightness by the threshold, in which case CMv2.9 is kept so its L2 trims apply. \"Smart\" is not available on player-led Dolby Vision output: switching the CM version mid-stream makes the display re-acquire Dolby Vision, so \"Smart\" behaves as plain \"Always\" there. It works per-frame for TV-led Dolby Vision output and for VS10 HDR10/SDR output. \"Auto\" decides once per title instead of per frame, from the title's own mastering brightness and the trigger below, so it never switches the CM version mid-playback. \"Strip to CMv2.9\" is the opposite operation: it removes CMv4.0 from titles that carry it, for older Dolby Vision displays that fail to fall back from CMv4.0 and show a black screen on it. Stripping only applies to TV-led Dolby Vision output, where the display itself reads the metadata."
 msgstr ""
 
 msgctxt "#60322"
@@ -25687,6 +25687,14 @@ msgstr ""
 
 msgctxt "#60325"
 msgid "Smart"
+msgstr ""
+
+msgctxt "#60326"
+msgid "Auto"
+msgstr ""
+
+msgctxt "#60327"
+msgid "Strip to CMv2.9"
 msgstr ""
 
 #. Label of setting "CMv4.0 smart bypass threshold (%)"
@@ -26017,4 +26025,36 @@ msgstr ""
 #. Help of the setting that reports 3D display capability to a Blu-ray 3D disc
 msgctxt "#60372"
 msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether or not it can. Many 3D discs ask before deciding what to play, and some refuse to start at all on a display that answers no - the disc's app parks the title on a single still frame and nothing further happens, with no menu, no picture and no sound. Turning this on lets those discs run their normal path; the film then plays in ordinary 2D, because only the base view of a 3D title is presented. Also useful when the display really can show 3D but its capability is lost on the way to the player, through an AV receiver or scaler that rewrites EDID. Affects Blu-ray 3D discs only and changes nothing for any other disc."
+msgstr ""
+
+#. Label of setting "CMv4.0 auto trigger"
+#: system/settings/settings.xml
+msgctxt "#60373"
+msgid "CMv4.0 auto trigger"
+msgstr ""
+
+#. Description of setting with label #60373 "CMv4.0 auto trigger"
+#: system/settings/settings.xml
+msgctxt "#60374"
+msgid "Only used when [CMv4.0 metadata] is set to [Auto]. Chooses what the title's own mastering brightness is compared against to decide, once per title, whether CMv4.0 is appended. [Display peak] appends when the display's peak brightness is at or above the title's mastering brightness, i.e. when the display can already show the whole grade. The fixed values append when the title was mastered at or below that brightness. In every case CMv4.0 is also appended when the title carries no L2 trim, since there is then nothing to preserve. With [Display peak] and no display peak available, nothing is compared and only no-trim titles are appended. Unlike [Smart], which re-decides every frame, [Auto] decides once and never changes the metadata version mid-playback."
+msgstr ""
+
+msgctxt "#60375"
+msgid "Display peak"
+msgstr ""
+
+msgctxt "#60376"
+msgid "1000 nits"
+msgstr ""
+
+msgctxt "#60377"
+msgid "2000 nits"
+msgstr ""
+
+msgctxt "#60378"
+msgid "4000 nits"
+msgstr ""
+
+msgctxt "#60379"
+msgid "10000 nits"
 msgstr ""

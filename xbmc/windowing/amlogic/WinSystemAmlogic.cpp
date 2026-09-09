@@ -397,7 +397,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
-                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD});
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER});
   }
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -469,6 +470,7 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // slider moves mid-playback.
   if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND ||
       settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD ||
+      settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER ||
       settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS)
     aml_dv_cmv40_settings_changed();
 
@@ -640,6 +642,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,

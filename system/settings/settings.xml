@@ -4227,6 +4227,27 @@
               <option label="60323">1</option>
               <option label="60324">2</option>
               <option label="60325">3</option>
+              <option label="60326">4</option>
+              <option label="60327">5</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string" />
+        </setting>
+        <setting id="coreelec.amlogic.dolbyvision.cmv40.auto.trigger" type="integer" label="60373" help="60374" parent="coreelec.amlogic.dolbyvision.cmv40.append">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>0</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.cmv40.append" operator="is">4</dependency>
+          </dependencies>
+          <constraints>
+            <options>
+              <option label="60375">0</option>
+              <option label="60376">1</option>
+              <option label="60377">2</option>
+              <option label="60378">3</option>
+              <option label="60379">4</option>
             </options>
           </constraints>
           <control type="spinner" format="string" />

@@ -2784,6 +2784,37 @@ DOVICMv40AppendResult AppendCMv40(DOVICMv40Mode mode,
   return ret == 0 ? CMV40_APPEND_ALREADY : CMV40_APPEND_FAILED;
 }
 
+// Down-convert CMv4.0 -> CMv2.9: remove the CMv4.0 extension blocks
+// (L3/L8/L9/L10/L11/L254) from the RPU, leaving a plain CMv2.9 payload. The
+// inverse of AppendCMv40, and for the opposite kind of display: CMv2.9-only
+// Dolby Vision sets that never learned to fall back from CMv4.0 and go black
+// (no OSD either) on it, rather than ignoring the levels they cannot parse.
+//
+// Gated on level254 (the CMv4.0 marker): libdovi's remove is documented to do
+// nothing when there is no CMv4.0 metadata and would still report success, so
+// without the gate every CMv2.9 stream would be re-serialised for nothing.
+//
+// Returns 1 = stripped, 0 = nothing to strip, -1 = libdovi errored.
+int StripCMv40(const DoviVdrDmData* vdr, DoviRpuOpaque* rpu)
+{
+  if (!vdr || !rpu)
+    return 0;
+  if (!vdr->dm_data.level254)
+    return 0;
+  // libdovi: 0 = success, -1 = error (the error text lands in RpuOpaque.error).
+  return dovi_rpu_remove_cmv40_metadata(rpu) == 0 ? 1 : -1;
+}
+
+const char* Cmv40StripResultName(int r)
+{
+  switch (r)
+  {
+    case 1:  return "CMv4.0 removed - RPU is now plain CMv2.9";
+    case 0:  return "no change - RPU carries no CMv4.0 to remove";
+    default: return "FAILED - libdovi rejected the removal";
+  }
+}
+
 const char* Cmv40AppendResultName(DOVICMv40AppendResult r)
 {
   switch (r)
@@ -2911,10 +2942,38 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
       dovi_rpu_free_vdr_dm_data(l5vdr);
   }
 
-  // CMv4.0 append (optionally per-frame "Smart"): append CMv4.0 metadata to
-  // CMv2.9 RPUs, unless (Smart) the frame content peak exceeds the display peak
-  // by the threshold, in which case CMv2.9 is kept so its L2 trims apply.
-  if (ret == 0 && m_append_cmv40 != CMV40_NONE)
+  // CMv4.0 -> CMv2.9 down-convert ("Strip"). Shares the spinner with the append
+  // modes below and is their inverse: it acts only on native CMv4.0 streams,
+  // which the append path deliberately leaves alone.
+  if (ret == 0 && m_append_cmv40 == CMV40_STRIP)
+  {
+    const DoviVdrDmData* vdr = dovi_rpu_get_vdr_dm_data(rpu);
+    const int stripResult = StripCMv40(vdr, rpu);
+    if (stripResult == 1)
+      processed = true;
+    // Same one-line-per-stream contract as the append side: first frame, then
+    // only when the outcome moves. A libdovi refusal is otherwise invisible -
+    // the L5 stage has usually already set `processed`, so a strip that did
+    // nothing serialises exactly like one that worked.
+    if (!m_cmv40_strip_logged || stripResult != m_cmv40_last_strip_result)
+    {
+      CLog::Log(stripResult < 0 ? LOGERROR : LOGINFO,
+                "CBitstreamConverter::processDoviRpu - CMv4.0 strip -> {}",
+                Cmv40StripResultName(stripResult));
+      m_cmv40_strip_logged = true;
+      m_cmv40_last_strip_result = stripResult;
+    }
+    if (vdr)
+      dovi_rpu_free_vdr_dm_data(vdr);
+  }
+
+  // CMv4.0 append: add CMv4.0 metadata to CMv2.9 RPUs. "Smart" decides per
+  // frame - append unless the frame's content peak exceeds the display peak by
+  // the threshold, in which case CMv2.9 is kept so its L2 trims apply. "Auto"
+  // decides once per stream from the source mastering peak. STRIP is excluded
+  // explicitly: it shares the spinner but is the inverse operation, and
+  // AppendCMv40's no-L2 rule would otherwise fire on it.
+  if (ret == 0 && m_append_cmv40 != CMV40_NONE && m_append_cmv40 != CMV40_STRIP)
   {
     const DoviVdrDmData* vdr = dovi_rpu_get_vdr_dm_data(rpu);
     DOVICMv40Mode effectiveMode = m_append_cmv40;
@@ -2973,6 +3032,61 @@ const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nalSi
                     contentNits, m_smart_display_nits, threshold, m_smart_threshold_pct,
                     bypass ? "bypass (no append)" : "append CMv4.0");
         m_smart_last_effective = effectiveMode;
+      }
+    }
+    else if (m_append_cmv40 == CMV40_AUTO)
+    {
+      // Per-TITLE decision, taken from the stream's mastering peak
+      // (source_max_pq), not from the frame. A CMv2.9 grade's L2 trims are
+      // authored against that mastering peak; once the display can actually
+      // show it - or the title was mastered at or below the selected level -
+      // the CMv4.0 grade is the better one, so append. Above it, keep CMv2.9
+      // so its trims still apply. A stream with no L2 trims has nothing to
+      // lose and is always appended, as in every other mode.
+      //
+      // Unlike Smart this cannot flip mid-stream (the source peak is a stream
+      // constant), so it needs no player-led pin: the CM version on the wire
+      // stays put and the sink never re-acquires Dolby Vision.
+      const bool level2IsEmpty = !vdr || (vdr->dm_data.level2.len == 0);
+      const int srcMaxPq = vdr ? static_cast<int>(vdr->source_max_pq) : 0;
+      if (srcMaxPq != m_cmv40_src_pq_memo)
+      {
+        m_cmv40_src_pq_memo = srcMaxPq;
+        m_cmv40_src_nits_memo = max_pq_to_nits(srcMaxPq);
+      }
+      const int srcMaxNits = m_cmv40_src_nits_memo;
+      int triggerNits = 0;
+      switch (m_cmv40_auto_trigger)
+      {
+        case CMV40_AUTO_1000_NITS:  triggerNits = 1000;  break;
+        case CMV40_AUTO_2000_NITS:  triggerNits = 2000;  break;
+        case CMV40_AUTO_4000_NITS:  triggerNits = 4000;  break;
+        case CMV40_AUTO_10000_NITS: triggerNits = 10000; break;
+        case CMV40_AUTO_SOURCE:     break;
+      }
+      // SOURCE is the only trigger that consults the display; the fixed levels
+      // do not need it at all. With SOURCE and an unknown display peak (0) the
+      // comparison can never pass, so Auto degrades to "append only when the
+      // stream has no L2 trims" - said out loud below rather than left silent.
+      const bool trigger = (m_cmv40_auto_trigger == CMV40_AUTO_SOURCE)
+                               ? (m_smart_display_nits >= srcMaxNits)
+                               : (srcMaxNits <= triggerNits);
+      effectiveMode = (level2IsEmpty || trigger) ? CMV40_ALWAYS : CMV40_NONE;
+      if (effectiveMode != m_cmv40_auto_last_effective)
+      {
+        m_cmv40_auto_last_effective = effectiveMode;
+        const char* outcome = (effectiveMode == CMV40_ALWAYS) ? "append CMv4.0" : "keep CMv2.9";
+        if (m_cmv40_auto_trigger == CMV40_AUTO_SOURCE)
+          CLog::Log(LOGINFO,
+                    "CBitstreamConverter::processDoviRpu - Auto CMv4.0: source {}nits display "
+                    "{}nits{} -> {} (decided per title)",
+                    srcMaxNits, m_smart_display_nits,
+                    m_smart_display_nits > 0 ? "" : " (unknown - trigger cannot pass)", outcome);
+        else
+          CLog::Log(LOGINFO,
+                    "CBitstreamConverter::processDoviRpu - Auto CMv4.0: source {}nits trigger "
+                    "<= {}nits -> {} (decided per title)",
+                    srcMaxNits, triggerNits, outcome);
       }
     }
     if (effectiveMode != CMV40_NONE)
