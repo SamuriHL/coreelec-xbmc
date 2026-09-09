@@ -745,6 +745,10 @@ protected:
    * forward resync cannot cover it - its 1000ms threshold exists to tell a
    * seek from jitter, and these steps are a third of a second. */
   bool m_seamStepPending = false;
+  /* The video dts the arm above was taken at; the arm is voided once video has
+   * run a second past it. Video, not audio: m_CurrentAudio.dts is the last dts
+   * audio was handed rather than where audio is, and across a menu boundary it
+   * can be tens of minutes stale on another timeline. */
   double m_seamStepArmedDts = DVD_NOPTS_VALUE;
 
   double m_menuWrapVideoGap = 0.0;
