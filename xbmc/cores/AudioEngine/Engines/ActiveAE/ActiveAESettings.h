@@ -58,7 +58,11 @@ protected:
       bool passthrough);
 
   CActiveAE &m_audioEngine;
-  CCriticalSection m_cs;
+  /* Guards m_instance, so it must NOT live inside the instance: every static
+   * entry point below has to be able to take it and only then decide whether
+   * there is an instance to use. Locking m_instance->m_cs performs the
+   * dereference the null check exists to prevent. */
+  static CCriticalSection m_cs;
   static CActiveAESettings* m_instance;
 };
 };
