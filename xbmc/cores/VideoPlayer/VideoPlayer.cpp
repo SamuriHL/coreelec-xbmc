@@ -1741,6 +1741,14 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // the renderer sits through, and it is a cut, not elapsed content. See
     // CheckContinuity.
     m_seamStepPending = true;
+    // Bound the arm. Roughly half of these boundaries step BACKWARD (an
+    // overlap, which needs no correction), so an unbounded flag would stay
+    // latched from one boundary to the next - measured 43.3s across a whole
+    // playitem - standing ready to consume the next unrelated forward step,
+    // such as two dropped frames. The incoming clip's step arrives within a
+    // packet or two of here, so a second is generous.
+    m_seamStepArmedDts = std::max(m_CurrentVideo.dts == DVD_NOPTS_VALUE ? 0.0 : m_CurrentVideo.dts,
+                                  m_CurrentAudio.dts == DVD_NOPTS_VALUE ? 0.0 : m_CurrentAudio.dts);
 
     // Clean the byte seam - but ONLY when we held it. Non-seamless-authored
     // playitem chains (connection_condition 1 - TNG stubs, menu loops) may
@@ -2014,6 +2022,11 @@ void CVideoPlayer::Prepare()
   m_bdStreamReuseAudio = false;
   m_menuWrapVideoGap = 0.0;
   m_timelineRestartStamped = false;
+  // CVideoPlayer is reused across files, so an arm left over from a disc that
+  // was stopped at a boundary would otherwise be consumed by the first
+  // sub-second forward step of whatever plays next.
+  m_seamStepPending = false;
+  m_seamStepArmedDts = DVD_NOPTS_VALUE;
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
@@ -3441,12 +3454,21 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
    * 00058 -> 00059 seam: video gap 0.374s (9 frames, quantised), audio gap
    * 0.333s, playlist step 0.332s - one global correction of each stream's own
    * gap lands both back on their own last dts_end. */
+  bool seamStep = false;
+  if (m_seamStepPending && m_seamStepArmedDts != DVD_NOPTS_VALUE &&
+      current.dts > m_seamStepArmedDts + DVD_MSEC_TO_TIME(1000))
+  {
+    // the boundary is behind us and no step came - let it go
+    m_seamStepPending = false;
+    m_seamStepArmedDts = DVD_NOPTS_VALUE;
+  }
   if (correction == 0.0 && m_seamStepPending && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
       current.dts_end() != DVD_NOPTS_VALUE &&
       pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(60) &&
       pPacket->dts < current.dts_end() + DVD_MSEC_TO_TIME(1000))
   {
     correction = pPacket->dts - current.dts_end();
+    seamStep = true;
     CLog::Log(LOGDEBUG,
               "CVideoPlayer::CheckContinuity - seam step :{}, prev:{:f}, curr:{:f}, closing {:f}",
               current.type, current.dts, pPacket->dts, correction);
@@ -3524,6 +3546,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       m_menuWrapVideoGap = 0.0;
       // the seam has been closed - one boundary, one correction
       m_seamStepPending = false;
+      m_seamStepArmedDts = DVD_NOPTS_VALUE;
       m_offset_pts += applied;
       UpdateCorrection(pPacket, applied);
       lastdts = pPacket->dts;
@@ -3556,14 +3579,21 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       // still only advanced once another stream agrees, so nothing downstream
       // sees a correction that was never confirmed, and no packet is corrected
       // twice.
-      if (backwardRestart && current.type == StreamType::VIDEO &&
+      // A seam step reaches here for the same reason a backward restart does -
+      // the other stream is too far away to confirm yet - and the packet in
+      // hand is the same one: the incoming clip's IRAP. Blanking it costs
+      // exactly what it costs there (dts = pts = NOPTS skips the ptsserver
+      // check-in in CAMLCodec, so the keyframe the new clip is predicted from
+      // reaches the decoder with no time base), which is the defect the
+      // preceding two commits exist to fix. Same treatment, same reasoning.
+      if ((backwardRestart || seamStep) && current.type == StreamType::VIDEO &&
           m_playSpeed == DVD_PLAYSPEED_NORMAL)
       {
         UpdateCorrection(pPacket, correction);
         CLog::Log(LOGDEBUG,
-                  "CVideoPlayer::CheckContinuity - timeline restart: keeping the boundary "
+                  "CVideoPlayer::CheckContinuity - {}: keeping the boundary "
                   "keyframe's timestamps (dts {:f}) rather than blanking them",
-                  pPacket->dts);
+                  seamStep ? "seam step" : "timeline restart", pPacket->dts);
       }
       else
       {
@@ -5860,6 +5890,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   // and so does an armed seam-step correction: after a flush the timestamps
   // either side of it are unrelated to the boundary that armed it
   m_seamStepPending = false;
+  m_seamStepArmedDts = DVD_NOPTS_VALUE;
 
 #if defined(HAVE_LIBBLURAY)
   // So does an armed-but-uncollected seamless glide. HandleMessages() runs
