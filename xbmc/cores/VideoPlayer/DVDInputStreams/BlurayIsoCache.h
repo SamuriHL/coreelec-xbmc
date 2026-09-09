@@ -89,8 +89,8 @@ private:
   void LogStats(const char* reason);
 
   void QueueForwardPrefetch(int64_t firstPage, int64_t lastPage);
-  void QueuePrefetchWindow(int64_t firstPage, size_t pageCount, bool highPriority);
-  void QueuePage(int64_t pageIndex, bool highPriority);
+  void QueuePrefetchWindow(int64_t firstPage, size_t pageCount);
+  void QueuePage(int64_t pageIndex);
   void Worker();
 
   bool IsValidPageIndex(int64_t pageIndex) const;
