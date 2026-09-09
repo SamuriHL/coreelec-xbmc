@@ -333,6 +333,20 @@ bool aml_dv_lldv_output_active()
          mode != DOLBY_VISION_OUTPUT_MODE_SDR8;
 }
 
+bool aml_dv_tvled_output_active()
+{
+  // Mirror of aml_dv_lldv_output_active for the other LED mode. Same VS10
+  // caveat: a conversion to HDR10/SDR carries no DV signal, so the sink never
+  // sees the RPU and nothing that rewrites it can reach the display.
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_TV_LED)
+    return false;
+  const unsigned int mode = aml_dv_get_vs10_pending();
+  return mode != DOLBY_VISION_OUTPUT_MODE_HDR10 &&
+         mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
+         mode != DOLBY_VISION_OUTPUT_MODE_SDR8;
+}
+
 bool aml_dv_source_engages_core()
 {
   // Whether a Dolby Vision *source* will be processed by the DV core: natively on
