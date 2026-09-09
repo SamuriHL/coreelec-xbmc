@@ -12,6 +12,7 @@
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Sinks/AESinkNULL.h"
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
+#include "cores/AudioEngine/Utils/AEPackIEC61937.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "utils/AMLUtils.h"
@@ -288,7 +289,10 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
             //! for raw packets frameSize is set to 1
             if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
             {
-              reply.format.m_frames = 61440;
+              // the constant this comment asks for, rather than a copy of what
+              // it happened to be - a DTS-HD subtype 5 burst is 65536 bytes and
+              // has to fit here too, not just in the packer's own buffer
+              reply.format.m_frames = MAX_IEC61937_PACKET;
             }
             reply.cacheTotal = m_sink->GetCacheTotal();
             reply.latency = m_sink->GetLatency();
