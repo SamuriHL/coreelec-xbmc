@@ -11,7 +11,14 @@
 #include <list>
 #include <stdint.h>
 
-#define MAX_IEC61937_PACKET  61440
+/* The largest burst IEC 61937 defines: DTS-HD subtype 5 has a repetition
+ * period of 16384 frames, and a burst is period x 4 bytes = 65536. Sizing this
+ * at 61440 made PackDTSHD's own burst larger than the buffer it packs into, so
+ * every DTS-HD MA frame with a 1024-sample core at 48 kHz - the common case on
+ * a Blu-ray - either overran the destination by 4 KB (before the bounds check)
+ * or packed nothing at all and played silence (after it). TrueHD's MAT burst
+ * is 61440 and is unaffected; this only raises the ceiling. */
+#define MAX_IEC61937_PACKET  65536
 #define IEC61937_DATA_OFFSET 8
 
 #define DTS1_FRAME_SIZE   512
