@@ -96,9 +96,23 @@ void CBlurayIsoCache::Stop()
 
 void CBlurayIsoCache::ResetAccessPattern()
 {
-  std::lock_guard<std::mutex> lock(m_accessMutex);
-  m_lastReadEndPage = -1;
-  m_prefetchHorizon = -1;
+  {
+    std::lock_guard<std::mutex> lock(m_accessMutex);
+    m_lastReadEndPage = -1;
+    m_prefetchHorizon = -1;
+  }
+
+  // Drop what was queued for the region we just left. This runs on every
+  // BD_EVENT_PLAYITEM and every seek, and without it the queue accumulates:
+  // five chapter skips in ten seconds leaves hundreds of 256 KiB reads pending
+  // for regions nobody will play, each one taking m_readBlocksLock against the
+  // player's own synchronous reads. Separate scope from m_accessMutex above -
+  // the two are never held together anywhere, and this keeps it that way.
+  {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    m_prefetchQueue.clear();
+    m_prefetchQueuedPages.clear();
+  }
 }
 
 int CBlurayIsoCache::ReadBlocks(uint8_t* buffer, int lba, int numBlocks)
@@ -316,8 +330,25 @@ void CBlurayIsoCache::QueuePrefetchWindow(int64_t firstPage, size_t pageCount, b
   if (pageCount == 0)
     return;
 
-  for (size_t i = 0; i < pageCount; ++i)
-    QueuePage(firstPage + static_cast<int64_t>(i), highPriority);
+  // High priority means push_front, which REVERSES the order it is fed in. A
+  // forward walk therefore left the queue as [last ... first+1, first] and the
+  // worker, which pops the front, started at the far end of the window: with
+  // the default 128 x 256 KiB it began 32 MiB ahead while the player missed on
+  // the very next page and fell back to synchronous reads, contending for
+  // m_readBlocksLock with the worker's useless far-ahead fetch. Every seek,
+  // title and playitem resets the horizon, so this is the state after every
+  // one of them - on NAS-over-WiFi, worse than no cache at all for several
+  // seconds. Walk backwards so the nearest page ends up at the head.
+  if (highPriority)
+  {
+    for (size_t i = pageCount; i-- > 0;)
+      QueuePage(firstPage + static_cast<int64_t>(i), true);
+  }
+  else
+  {
+    for (size_t i = 0; i < pageCount; ++i)
+      QueuePage(firstPage + static_cast<int64_t>(i), false);
+  }
 }
 
 void CBlurayIsoCache::QueuePage(int64_t pageIndex, bool highPriority)
