@@ -745,6 +745,7 @@ protected:
    * forward resync cannot cover it - its 1000ms threshold exists to tell a
    * seek from jitter, and these steps are a third of a second. */
   bool m_seamStepPending = false;
+  double m_seamStepArmedDts = DVD_NOPTS_VALUE;
 
   double m_menuWrapVideoGap = 0.0;
 
