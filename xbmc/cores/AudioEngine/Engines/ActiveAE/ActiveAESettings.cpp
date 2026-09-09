@@ -26,6 +26,7 @@ namespace ActiveAE
 {
 
 CActiveAESettings* CActiveAESettings::m_instance = nullptr;
+CCriticalSection CActiveAESettings::m_cs;
 
 CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
 {
@@ -65,6 +66,17 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
 
 CActiveAESettings::~CActiveAESettings()
 {
+  // Retire the singleton pointer FIRST. The early return below exists for the
+  // shutdown path where the settings component is already gone - which is
+  // exactly the path that must not leave m_instance dangling, because the
+  // static entry points dereference it. IsSettingVisible in particular locks
+  // m_instance->m_cs before testing m_instance, so a stale pointer turns a
+  // clean null dereference into a use-after-free on a mutex.
+  {
+    std::unique_lock lock(m_cs);
+    m_instance = nullptr;
+  }
+
   // the settings component can already be gone at shutdown
   const auto settingsComponent = CServiceBroker::GetSettingsComponent();
   if (!settingsComponent)
@@ -84,6 +96,9 @@ CActiveAESettings::~CActiveAESettings()
 void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
   std::unique_lock lock(m_cs);
+  if (!m_instance)
+    return;
+
   m_instance->m_audioEngine.OnSettingsChange();
 }
 
@@ -103,7 +118,9 @@ void CActiveAESettings::SettingOptionsAudioDevicesPassthroughFiller(
 void CActiveAESettings::SettingOptionsAudioQualityLevelsFiller(
     const SettingConstPtr& /*setting*/, std::vector<IntegerSettingOption>& list, int& /*current*/)
 {
-  std::unique_lock lock(m_instance->m_cs);
+  std::unique_lock lock(m_cs);
+  if (!m_instance)
+    return;
 
   if (m_instance->m_audioEngine.SupportsQualityLevel(AE_QUALITY_LOW))
     list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(13506),
@@ -125,7 +142,9 @@ void CActiveAESettings::SettingOptionsAudioQualityLevelsFiller(
 void CActiveAESettings::SettingOptionsAudioStreamsilenceFiller(
     const SettingConstPtr& /*setting*/, std::vector<IntegerSettingOption>& list, int& /*current*/)
 {
-  std::unique_lock lock(m_instance->m_cs);
+  std::unique_lock lock(m_cs);
+  if (!m_instance)
+    return;
 
   list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(20422),
                     XbmcThreads::EndTime<std::chrono::minutes>::Max().count());
@@ -154,7 +173,7 @@ bool CActiveAESettings::IsSettingVisible(const std::string& condition,
   if (setting == NULL || value.empty())
     return false;
 
-  std::unique_lock lock(m_instance->m_cs);
+  std::unique_lock lock(m_cs);
   if (!m_instance)
     return false;
 
@@ -171,7 +190,9 @@ void CActiveAESettings::SettingOptionsAudioDevicesFillerGeneral(
   std::string firstDevice;
   std::string preferredDevice;
 
-  std::unique_lock lock(m_instance->m_cs);
+  std::unique_lock lock(m_cs);
+  if (!m_instance)
+    return;
 
   bool foundValue = false;
   AEDeviceList sinkList;
