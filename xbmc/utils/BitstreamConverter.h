@@ -101,15 +101,34 @@ public:
   static bool CanStartDecode(const uint8_t* buf, int buf_size);
 };
 
-// Dolby Vision CMv4.0 append mode (coreelec.amlogic.dolbyvision.cmv40.append).
-// Appends CMv4.0 metadata to CMv2.9 titles. SMART decides per-frame whether to
-// append (see CBitstreamConverter::processDoviRpu).
+// Dolby Vision CMv4.0 metadata mode (coreelec.amlogic.dolbyvision.cmv40.append).
+// NO_L2 through AUTO all append CMv4.0 metadata to CMv2.9 titles, differing
+// only in when: SMART re-decides every frame, AUTO once per title. STRIP is
+// the inverse operation - it removes CMv4.0 from titles that carry it, leaving
+// plain CMv2.9. See CBitstreamConverter::processDoviRpu.
 enum DOVICMv40Mode : int
 {
   CMV40_NONE = 0,   // Off - never append
   CMV40_NO_L2,      // append only when the stream lacks L2 trims
   CMV40_ALWAYS,     // always append
   CMV40_SMART,      // per-frame: append unless content peak > display*(1+pct)
+  CMV40_AUTO,       // per-title: append when the source mastering peak passes
+                    // the trigger below (or the stream has no L2 trims)
+  CMV40_STRIP,      // down-convert: remove CMv4.0, leave the RPU plain CMv2.9
+};
+
+// What CMV40_AUTO tests the stream's source mastering peak against. SOURCE
+// compares it to the display's own peak (append when the display can already
+// show the whole grade); the fixed values append when the title was mastered
+// at or below that brightness. Unlike SMART this is a per-title decision - the
+// source peak is a stream constant - so it never flips mid-playback.
+enum DOVICMv40AutoTrigger : int
+{
+  CMV40_AUTO_SOURCE = 0,   // display peak >= source mastering peak
+  CMV40_AUTO_1000_NITS,    // source mastering peak <= 1000 nits
+  CMV40_AUTO_2000_NITS,
+  CMV40_AUTO_4000_NITS,
+  CMV40_AUTO_10000_NITS,
 };
 
 // What actually happened to the RPU when an append was attempted. The Smart
@@ -205,9 +224,11 @@ public:
   // bypass inputs are only consulted when the mode is CMV40_SMART. Safe to
   // re-call mid-stream (live-apply); the sentinel reset re-states the current
   // decision and append outcome once, rather than per frame.
-  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; m_cmv40_native_logged = false; m_cmv40_append_result_logged = false; }
+  void SetAppendCMv40(enum DOVICMv40Mode value) { m_append_cmv40 = value; m_smart_last_effective = CMV40_SMART; m_cmv40_native_logged = false; m_cmv40_append_result_logged = false; m_cmv40_strip_logged = false; m_cmv40_auto_last_effective = CMV40_SMART; m_cmv40_src_pq_memo = -1; }
   void SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
   void SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
+  // CMV40_AUTO trigger. Set BEFORE SetAppendCMv40, like the bypass inputs.
+  void SetCMv40AutoTrigger(enum DOVICMv40AutoTrigger value) { m_cmv40_auto_trigger = value; }
   bool GetDoviIsFEL() const { return m_doviIsFEL; }
   //! @brief Whether the access unit just converted contained an IRAP (IDR/CRA/BLA).
   //! A seamless Blu-ray branch is authored to start on one, and that IRAP is what
@@ -324,6 +345,17 @@ protected:
   // changes, so a healthy stream costs one line but a failure cannot hide
   bool m_cmv40_append_result_logged{false};
   DOVICMv40AppendResult m_cmv40_last_append_result{CMV40_APPEND_ADDED};
+  // strip-outcome logging: same one-line-per-stream contract as the append side
+  bool m_cmv40_strip_logged{false};
+  int m_cmv40_last_strip_result{-2};
+  enum DOVICMv40AutoTrigger m_cmv40_auto_trigger{CMV40_AUTO_SOURCE};
+  // source_max_pq -> nits is a PQ EOTF evaluation and the field is a stream
+  // constant, so convert it once per distinct value instead of per frame.
+  int m_cmv40_src_pq_memo{-1};
+  int m_cmv40_src_nits_memo{0};
+  // Sentinel-as-"not yet decided": the effective mode is only ever ALWAYS or
+  // NONE, so CMV40_SMART means nothing has been logged for this stream yet.
+  DOVICMv40Mode m_cmv40_auto_last_effective{CMV40_SMART};
   bool m_doviIsFEL{false};
   bool m_lastAuIsIrap = false;
   bool m_lastAuIrapKnown = false;

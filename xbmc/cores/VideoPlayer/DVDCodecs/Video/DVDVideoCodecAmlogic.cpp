@@ -666,7 +666,29 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
     }
     cmv40 = CMV40_ALWAYS;
   }
-  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART)
+  // Strip only reaches a display on TV-led DV output: there the sink parses the
+  // RPU, so removing CMv4.0 is what lets a CMv2.9-only set lock on. On
+  // player-led or VS10 output the box is the tonemapper and the raw RPU never
+  // hits the wire - stripping there would only take the CMv4.0 grade (L8 trims
+  // included) away from our own DM for nothing.
+  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_STRIP && !aml_dv_tvled_output_active())
+  {
+    if (!m_cmv40StripSkippedLogged)
+    {
+      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{} - CMv4.0 strip-to-CMv2.9 only applies to "
+                         "TV-led Dolby Vision output - not stripping",
+                __FUNCTION__);
+      m_cmv40StripSkippedLogged = true;
+    }
+    cmv40 = CMV40_NONE;
+  }
+  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_AUTO)
+    m_bitstream->SetCMv40AutoTrigger(static_cast<DOVICMv40AutoTrigger>(
+        settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER)));
+  // Auto's SOURCE trigger compares the display peak to the title's mastering
+  // peak, so it needs the same resolved nits Smart does.
+  if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART ||
+      static_cast<DOVICMv40Mode>(cmv40) == CMV40_AUTO)
   {
     // Display peak nits for the Smart bypass threshold. The same display.maxnits
     // value also drives the VSVDB force-inject (see aml_dv_apply_vsvdb); because
