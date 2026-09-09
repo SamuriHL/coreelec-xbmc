@@ -750,7 +750,20 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
         if (write_bytes < 0 || write_bytes > size) {
             CLog::Log(LOGDEBUG, "write codec data failed, write_bytes({:d}), errno({:d}), size({:d})", write_bytes, errno, size);
             if (-errno != AVERROR(EAGAIN)) {
-                CLog::Log(LOGDEBUG, "write codec data failed!");
+                // Account for what codec_write already took, exactly as the
+                // EAGAIN branch below does. The caller treats PLAYER_WR_FAILED
+                // as "resubmit" and rebuilds the packet from pData/iSize, so
+                // leaving the packet untouched here re-sends bytes the codec
+                // has already accepted: a 60 KB access unit that short-writes
+                // 40 KB and then errors comes back as 40 KB of duplicated
+                // slice data spliced ahead of the unit, which the parser sees
+                // as corruption while the retry is logged as a success. The
+                // old drop-on-failure behaviour lost the tail instead - also
+                // wrong, but self-limiting rather than self-amplifying.
+                pkt->data += len;
+                pkt->data_size -= len;
+                CLog::Log(LOGDEBUG, "write codec data failed! ({:d} of {:d} bytes accepted first)",
+                  len, len + size);
                 return PLAYER_WR_FAILED;
             } else {
                 // adjust for any data we already wrote into codec.
@@ -776,7 +789,12 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
                 buf += write_bytes;
                 size -= write_bytes;
             } else {
-                // writing more that we should is a failure.
+                // writing more than we should is a failure. The byte count is
+                // not trustworthy at this point, but len still records what we
+                // believe was accepted, so advance by it rather than let the
+                // resubmit duplicate the whole unit.
+                pkt->data += len;
+                pkt->data_size -= len;
                 return PLAYER_WR_FAILED;
             }
         }
