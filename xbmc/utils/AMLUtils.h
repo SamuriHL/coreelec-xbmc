@@ -81,6 +81,11 @@ bool aml_dv_core_active();
 // re-acquires DV on any mid-stream CM version change, so the per-frame Smart
 // CMv4.0 decision has to be pinned.
 bool aml_dv_lldv_output_active();
+// True when this stream will leave the box as TV-led (display-led) Dolby
+// Vision: the DV LED setting is TV-led AND the output stays Dolby Vision. That
+// is the only path where the sink itself parses the RPU, so it is the only one
+// where rewriting the RPU's CM version can change what the TV does.
+bool aml_dv_tvled_output_active();
 bool aml_dv_source_engages_core();
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
 bool aml_display_support_dv();
