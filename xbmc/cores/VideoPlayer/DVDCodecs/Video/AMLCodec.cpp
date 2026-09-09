@@ -312,6 +312,11 @@ typedef struct am_packet {
     unsigned char *data;
     unsigned char *buf;
     int           data_size;
+    /* Bytes codec_write accepted out of THIS access unit before a hard error.
+       Non-zero means the codec is holding a partial AU: the caller must not
+       simply re-send the unit, because AddData rebuilds it from pData/iSize
+       and the accepted bytes would be spliced in twice. */
+    int           partial_write;
     int           buf_size;
     hdr_buf_t     *hdr;
     codec_para_t  *codec;
@@ -750,18 +755,16 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
         if (write_bytes < 0 || write_bytes > size) {
             CLog::Log(LOGDEBUG, "write codec data failed, write_bytes({:d}), errno({:d}), size({:d})", write_bytes, errno, size);
             if (-errno != AVERROR(EAGAIN)) {
-                // Account for what codec_write already took, exactly as the
-                // EAGAIN branch below does. The caller treats PLAYER_WR_FAILED
-                // as "resubmit" and rebuilds the packet from pData/iSize, so
-                // leaving the packet untouched here re-sends bytes the codec
-                // has already accepted: a 60 KB access unit that short-writes
-                // 40 KB and then errors comes back as 40 KB of duplicated
-                // slice data spliced ahead of the unit, which the parser sees
-                // as corruption while the retry is logged as a success. The
-                // old drop-on-failure behaviour lost the tail instead - also
-                // wrong, but self-limiting rather than self-amplifying.
-                pkt->data += len;
-                pkt->data_size -= len;
+                // Tell the caller how much of this access unit the codec
+                // already swallowed. Advancing pkt->data here would be a dead
+                // store: AddData rebuilds the packet from pData/iSize on the
+                // resubmit and overwrites both fields. Only the caller can act
+                // on a partial write, and it must, because re-sending the whole
+                // unit splices the accepted bytes in twice - a 60 KB AU that
+                // short-writes 40 KB comes back as 40 KB of duplicated slice
+                // data ahead of the unit, which the parser sees as corruption
+                // while the retry logs as a success.
+                pkt->partial_write = len;
                 CLog::Log(LOGDEBUG, "write codec data failed! ({:d} of {:d} bytes accepted first)",
                   len, len + size);
                 return PLAYER_WR_FAILED;
@@ -789,12 +792,11 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
                 buf += write_bytes;
                 size -= write_bytes;
             } else {
-                // writing more than we should is a failure. The byte count is
-                // not trustworthy at this point, but len still records what we
-                // believe was accepted, so advance by it rather than let the
-                // resubmit duplicate the whole unit.
-                pkt->data += len;
-                pkt->data_size -= len;
+                // Unreachable: write_bytes > size is already caught above, so
+                // len cannot exceed data_size here. Left as a failure return
+                // rather than given the partial_write treatment - len > size
+                // would make that count a lie, and there is nothing to
+                // reconcile if the branch cannot be taken.
                 return PLAYER_WR_FAILED;
             }
         }
@@ -2939,6 +2941,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   am_private->am_pkt.isvalid    = 1;
   am_private->am_pkt.avduration = 0;
+  am_private->am_pkt.partial_write = 0;
   // new AU: its pts has not been checked in yet (see write_av_packet)
   am_private->am_pkt.pts_checkedin = 0;
 
@@ -3019,6 +3022,28 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   // the decoder every 250ms, and give the packet up after 2s.
   if (write_failed)
   {
+    // A hard error AFTER the codec accepted part of this access unit leaves it
+    // holding a fragment. Returning false here would resubmit the whole unit -
+    // AddData rebuilds it from pData/iSize - splicing the accepted bytes in
+    // twice, which the parser sees as corruption while the retry logs as a
+    // success. Only a reset clears the fragment, so do that and give the unit
+    // up: one lost access unit, self-limiting, instead of a duplicated one that
+    // corrupts what follows. A failure that accepted NOTHING is untouched and
+    // still takes the bounded retry below.
+    if (am_private->am_pkt.partial_write > 0)
+    {
+      CLog::Log(LOGWARNING,
+                "CAMLCodec::{}: codec write failed after accepting {} of {} bytes - resetting and "
+                "dropping the access unit rather than re-sending it whole",
+                __FUNCTION__, am_private->am_pkt.partial_write, iSize);
+      am_private->am_pkt.partial_write = 0;
+      am_private->am_pkt.isvalid = 0;
+      am_private->am_pkt.data_size = 0;
+      m_wrFailActive = false;
+      Reset();
+      return true;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     if (!m_wrFailActive)
     {
