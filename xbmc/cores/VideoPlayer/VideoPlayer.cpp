@@ -1733,6 +1733,15 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // path a CE21 player takes for these boundaries, proven stable there.
     CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
 
+    // Arm the seam-step correction. The two clips either side of a playitem
+    // boundary are timed independently, so the incoming clip's timestamps
+    // rarely continue the outgoing clip's exactly - M3GAN 2.0's 00801.mpls
+    // steps -0.159s, +0.332s, -0.430s, +0.291s ... across its 28 playitems. A
+    // negative step is an overlap and harmless; a positive one is dead time
+    // the renderer sits through, and it is a cut, not elapsed content. See
+    // CheckContinuity.
+    m_seamStepPending = true;
+
     // Clean the byte seam - but ONLY when we held it. Non-seamless-authored
     // playitem chains (connection_condition 1 - TNG stubs, menu loops) may
     // truncate the outgoing clip's last PES mid-body; feeding that tail into
@@ -3410,6 +3419,39 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
               current.type, current.dts, pPacket->dts, pPacket->dts - current.dts);
   }
 
+  /* A Blu-ray playitem boundary joins two independently timed clips, so the
+   * incoming one seldom picks up exactly where the outgoing one stopped. A
+   * backward step is an overlap - a fraction of a second shown twice, which
+   * nobody sees. A FORWARD step is dead time: the renderer waits it out with
+   * nothing to show and the audio bitstream simply stops, which on a TrueHD
+   * passthrough sink is long enough to drop lock. It is not elapsed content -
+   * a playitem boundary is a cut - so it must be closed, not waited through.
+   *
+   * The generic forward resync above cannot do it: its 1000ms threshold is
+   * there to distinguish a real seek from ordinary jitter, and these steps are
+   * a third of a second. M3GAN 2.0's 00801.mpls alternates overlap and gap
+   * across its 28 playitems (-0.159, +0.332, -0.430, +0.291, -0.464, +0.346
+   * ...), so most of the film's boundaries are affected and none of them reach
+   * the threshold. The later ones do (+24.9s, +48.1s) and are already handled.
+   *
+   * Correct against this stream's OWN end, exactly as the backward restart
+   * does. maxdts would be wrong here: it is the furthest-ahead stream, and
+   * audio and video do not end a clip on the same timestamp, so using it
+   * leaves whichever stream is behind still discontinuous. Measured at the
+   * 00058 -> 00059 seam: video gap 0.374s (9 frames, quantised), audio gap
+   * 0.333s, playlist step 0.332s - one global correction of each stream's own
+   * gap lands both back on their own last dts_end. */
+  if (correction == 0.0 && m_seamStepPending && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+      current.dts_end() != DVD_NOPTS_VALUE &&
+      pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(60) &&
+      pPacket->dts < current.dts_end() + DVD_MSEC_TO_TIME(1000))
+  {
+    correction = pPacket->dts - current.dts_end();
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::CheckContinuity - seam step :{}, prev:{:f}, curr:{:f}, closing {:f}",
+              current.type, current.dts, pPacket->dts, correction);
+  }
+
   double lastdts = pPacket->dts;
   if(correction != 0.0)
   {
@@ -3480,6 +3522,8 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
                   applied, correction);
       }
       m_menuWrapVideoGap = 0.0;
+      // the seam has been closed - one boundary, one correction
+      m_seamStepPending = false;
       m_offset_pts += applied;
       UpdateCorrection(pPacket, applied);
       lastdts = pPacket->dts;
@@ -5812,6 +5856,10 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 
   // a defer window from before the flush belongs to a dead sync attempt
   m_syncStartDeferred = false;
+
+  // and so does an armed seam-step correction: after a flush the timestamps
+  // either side of it are unrelated to the boundary that armed it
+  m_seamStepPending = false;
 
 #if defined(HAVE_LIBBLURAY)
   // So does an armed-but-uncollected seamless glide. HandleMessages() runs

@@ -737,6 +737,15 @@ protected:
   // only one stream can be made exactly continuous across the wrap; preferring
   // the video gap makes the wrap visually gapless and leaves audio a small
   // residual its sync skew absorbs. Player thread only.
+  /* Armed at a Blu-ray seamless playitem boundary, consumed by the first
+   * sub-second FORWARD timestamp step CheckContinuity sees afterwards. The two
+   * clips either side of a boundary are timed independently; a forward step is
+   * a cut, not elapsed content, and waiting it out is a visible freeze plus an
+   * audio dropout long enough to unlock a passthrough sink. The generic
+   * forward resync cannot cover it - its 1000ms threshold exists to tell a
+   * seek from jitter, and these steps are a third of a second. */
+  bool m_seamStepPending = false;
+
   double m_menuWrapVideoGap = 0.0;
 
   // Per-jump sequence stamped onto the packet that opens a timeline restart,
