@@ -1743,12 +1743,29 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     m_seamStepPending = true;
     // Bound the arm. Roughly half of these boundaries step BACKWARD (an
     // overlap, which needs no correction), so an unbounded flag would stay
-    // latched from one boundary to the next - measured 43.3s across a whole
-    // playitem - standing ready to consume the next unrelated forward step,
-    // such as two dropped frames. The incoming clip's step arrives within a
-    // packet or two of here, so a second is generous.
-    m_seamStepArmedDts = std::max(m_CurrentVideo.dts == DVD_NOPTS_VALUE ? 0.0 : m_CurrentVideo.dts,
-                                  m_CurrentAudio.dts == DVD_NOPTS_VALUE ? 0.0 : m_CurrentAudio.dts);
+    // latched from one boundary to the next - measured 2m33s of continuous
+    // playback in one capture - standing ready to consume the next unrelated
+    // forward step, such as two dropped frames. The incoming clip's step
+    // arrives within a packet or two of here, so a second is generous.
+    //
+    // Off VIDEO alone. m_CurrentAudio.dts is not audio's position: it is the
+    // last dts audio was ever handed, and it neither advances nor clears while
+    // audio is silent. Measured at three boundaries of one capture it sat at
+    // 4225.056 - a MENU timeline, 21 seconds stale and 3610s ahead of video -
+    // so taking the later of the two armed the deadline in the future and the
+    // bound never expired. ClassifyBdTransition only returns SEAMLESS with
+    // video open and SYNC_INSYNC, so video's dts is the one value here that is
+    // guaranteed current; if it somehow is not, do not arm at all rather than
+    // arm something unboundable.
+    if (m_CurrentVideo.dts != DVD_NOPTS_VALUE)
+    {
+      m_seamStepArmedDts = m_CurrentVideo.dts;
+    }
+    else
+    {
+      m_seamStepPending = false;
+      m_seamStepArmedDts = DVD_NOPTS_VALUE;
+    }
 
     // Clean the byte seam - but ONLY when we held it. Non-seamless-authored
     // playitem chains (connection_condition 1 - TNG stubs, menu loops) may
@@ -1819,6 +1836,14 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   m_CurrentAudio.Clear();
   m_CurrentVideo.Clear();
   m_CurrentSubtitle.Clear();
+
+  // This path tears the segment down without a FlushBuffers, so nothing else
+  // clears an arm left over from an earlier seamless boundary that never
+  // fired. It would otherwise cross a full demuxer and stream teardown onto a
+  // brand new timeline - menu 4225s to title 0s - where its deadline can never
+  // expire either. Same leak Prepare() closes at the file boundary.
+  m_seamStepPending = false;
+  m_seamStepArmedDts = DVD_NOPTS_VALUE;
 }
 
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
