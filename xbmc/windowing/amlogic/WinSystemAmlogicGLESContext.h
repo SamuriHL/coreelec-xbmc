@@ -84,8 +84,9 @@ private:
   bool m_guiFboClean{false};
   // Whether the GUI render pass will run this frame; set by BeginGuiComposite.
   bool m_guiWillRender{true};
-  // Set when CreateNewWindow replaced the GBM surface; cleared once a frame is presented on it.
-  bool m_guiRepaintPending{false};
+  // GUI frames still to repaint after CreateNewWindow replaced the GBM surface. More than one,
+  // because FlipPage cannot report a failed commit and swaps can fail around a mode switch.
+  int m_guiRepaintFrames{0};
   // Transfer function the LUTs were built for, and the GUI reference white
   // (PQ-normalized) baked into them - kept so a live guipeakluminance change can
   // rebuild the PQ LUT without waiting for the next stream start.
