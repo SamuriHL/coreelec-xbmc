@@ -4279,7 +4279,7 @@
           </constraints>
           <control type="edit" format="integer" />
         </setting>
-        <!-- DM target minimum luminance (reference black) for VS10-converted output, 0.0001-nit units, 0 = Dolby default -->
+        <!-- DM target minimum luminance (reference black), 0.0001-nit units, 0 = kernel default (0.0001 nit) -->
         <setting id="coreelec.amlogic.dolbyvision.target.minlum" type="integer" label="60355" help="60356">
           <requirement>HAVE_AMCODEC</requirement>
           <level>2</level>
