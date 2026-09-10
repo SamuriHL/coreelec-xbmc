@@ -238,7 +238,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   // The new surface has no cached OSD frame for the dirty-driven GUI skip to
   // keep on screen.
-  m_guiRepaintPending = true;
+  m_guiRepaintFrames = 3;
 
   if (!m_delayDispReset)
   {
@@ -293,7 +293,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
   // Keep the GUI rendering until a frame reaches the new surface, or a static
   // overlay such as an HDMV menu stays invisible until something dirties it.
-  if (m_guiRepaintPending && !rendered)
+  if (m_guiRepaintFrames > 0)
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 
   SetVSync(true);
@@ -330,7 +330,8 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     if (m_amlGBMUtils && m_amlGBMUtils->LockFrontBuffer(m_amlDisplay->aml_get_Device_handle()))
     {
       m_amlDisplay->FlipPage(m_amlGBMUtils->GetFBId());
-      m_guiRepaintPending = false;
+      if (m_guiRepaintFrames > 0)
+        m_guiRepaintFrames--;
     }
   }
   else if (!videoLayer)
