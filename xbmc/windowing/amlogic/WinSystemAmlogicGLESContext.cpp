@@ -282,8 +282,6 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     return;
   }
 
-  // Keep the GUI rendering until a frame reaches the new surface, or a static
-  // overlay such as an HDMV menu stays invisible until something dirties it.
   if (m_guiRepaintFrames > 0)
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 
