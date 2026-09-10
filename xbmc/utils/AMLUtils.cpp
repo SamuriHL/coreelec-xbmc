@@ -684,6 +684,11 @@ void aml_dv_pre_engage_disc_session()
              2u /* AMDV_FORCE_OUTPUT_MODE */);
   const unsigned int mode = aml_dv_resolve_tunnel_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
+  // The DM target belongs with the mode. Disc open through FirstPlay and the
+  // menus - everything before the first CAMLCodec::OpenDecoder - is real DV
+  // output, and the previous title's CloseDecoder left the override at zero, so
+  // without this the reference black is absent for the whole pre-roll.
+  aml_dv_apply_target_overrides(mode);
   s_dv_disc_engaged = true;
   // Mixed disc coming back from a released (non-DV) title: re-arm the session
   // VSIF hold that the release dropped. Idempotent at disc open, where
