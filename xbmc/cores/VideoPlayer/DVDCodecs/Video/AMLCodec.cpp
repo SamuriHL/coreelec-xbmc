@@ -2274,7 +2274,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     {
       AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FORCE_OUTPUT_MODE);
       unsigned int vs10_mode = aml_dv_resolve_tunnel_mode(aml_dv_get_vs10_pending());
-      aml_dv_apply_target_overrides(vs10_mode);
       if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
       {
         // VS10 engine: force the user-selected output mode for this source type
@@ -2330,7 +2329,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
           vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
         vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
                                                  : DOLBY_VISION_OUTPUT_MODE_SDR10;
-      aml_dv_apply_target_overrides(vs10_mode);
       if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
       {
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
@@ -2354,12 +2352,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         // would PQ-encode the OSD over an SDR output.
         dv_output_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
                                                       : DOLBY_VISION_OUTPUT_MODE_SDR10;
-        // Re-apply the DM target for the mode the sink actually receives. The
-        // earlier call saw BYPASS (nothing was forced) and zeroed it, which
-        // would leave the reference-black setting inert on this path only -
-        // anyone comparing the two conversions would then also be comparing
-        // "black target set" against "black target default" without knowing it.
-        aml_dv_apply_target_overrides(dv_output_mode);
       }
       else
         // Native DV output (tunnel left intact): the sink receives a PQ signal.
@@ -2405,6 +2397,19 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // Publish the resolved output mode so CRendererAML::Configure encodes the
   // GUI/OSD to match the actual signal the sink receives this stream.
   aml_dv_set_output_mode(dv_output_mode);
+
+  // ...and key the DM target overrides (reference black, and the HDR10 peak) on
+  // that same resolved mode instead of on the VS10 mode the user asked for. The
+  // two diverge wherever Dolby Vision reaches the wire without the VS10 spinner
+  // selecting it: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV 8.1
+  // conversion both leave the pending mode at BYPASS while the branches above
+  // still output IPT/IPT_TUNNEL, so applying the pending mode wrote a ZERO
+  // override - the reference black was inert on exactly the "HDR converted to
+  // DV" paths the 2026-08-28 fix was reported against, and stayed inert after
+  // it. Runs for a non-DV stream too (dv_output_mode BYPASS = nothing is
+  // mapping), which is what CloseDecoder writes anyway; the disc-session hold
+  // inside aml_dv_apply_target_overrides still protects a latched session.
+  aml_dv_apply_target_overrides(dv_output_mode);
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);

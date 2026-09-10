@@ -487,8 +487,12 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   if (dv_enable.Exists() &&
       StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
   {
-    // DM target overrides (peak + reference black) for the active VS10 mode.
-    aml_dv_apply_target_overrides(aml_dv_get_vs10_pending());
+    // DM target overrides (peak + reference black) for the mode the sink is
+    // actually receiving. NOT aml_dv_get_vs10_pending(): that stays at BYPASS on
+    // the converted-to-DV paths (so a live slider move re-zeroed the override),
+    // it is never updated by the live VS10 action, and on the stock-convert path
+    // it would drop the peak that OpenDecoder resolved.
+    aml_dv_apply_target_overrides(aml_dv_get_output_mode());
     if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM)
       aml_dv_apply_vsvdb();
   }
