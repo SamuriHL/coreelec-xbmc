@@ -714,38 +714,6 @@ void CAMLDRMUtils::apply_dv_wire_format()
   set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 }
 
-// A live VS10 switch changes the output without a mode change, so nothing else
-// re-decides the HDMI wire for it. Into DV, apply the tunnel format exactly as the
-// mode set path does. Out of a TV-led DV tunnel the link stays at the forced 8-bit
-// the tunnel needed: on later commits the kernel only re-tests the current attr,
-// which 8-bit passes, so HDR10 would inherit it. Setting color_space to RESERVED6
-// makes the kernel skip that test and decide the native format again (DV-aware,
-// meson_hdmitx_decide_color_attr); UPDATE applies it.
-void CAMLDRMUtils::aml_refresh_output_wire_format()
-{
-  const unsigned int mode = aml_dv_get_output_mode();
-  if (mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
-  {
-    apply_dv_wire_format();
-    return;
-  }
-
-  CSysfsPath config{"/sys/class/amhdmitx/amhdmitx0/config"};
-  if (!config.Exists() ||
-      config.Get<std::string>().value_or("").find("Colour depth: 8-bit") == std::string::npos)
-    return;
-
-  // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
-  constexpr unsigned int HDMI_CS_RESERVED6 = 6;
-
-  CLog::Log(LOGINFO, "CAMLDRMUtils::{} - output mode {} is on the 8-bit DV link, "
-            "letting the kernel decide the native format again", __FUNCTION__, mode);
-
-  set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR,
-              HDMI_CS_RESERVED6, NULL);
-  set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
-}
-
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
   unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req)
 {
