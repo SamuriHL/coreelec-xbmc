@@ -1247,9 +1247,9 @@ void aml_dv_apply_vsvdb()
     return;
   }
 
-  // Shared display peak value (0 = auto) and the optional colour-space
-  // override. Either one on its own is a reason to inject; only when BOTH are
-  // off is there nothing to force onto the panel.
+  // Shared display peak value (0 = auto), the optional colour-space override and
+  // the optional black level. Any one of them on its own is a reason to inject;
+  // only when ALL are off is there nothing to force onto the panel.
   //
   // The colour-space spinner has its own visibility rule (it shows whenever
   // 'Force peak onto display' is on) and no dependency on the peak, so gating
@@ -1257,10 +1257,12 @@ void aml_dv_apply_vsvdb()
   // explicitly chosen silently do nothing.
   int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
   const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
-  if (nits <= 0 && cs == 0)
+  // 0 = keep the panel's advertised black level, N = min-luminance index N-1.
+  const int blk = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM);
+  if (nits <= 0 && cs == 0 && blk <= 0)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0) and colour space is display - "
-                       "not injecting", __FUNCTION__);
+    CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0), colour space and black level "
+                       "are display - not injecting", __FUNCTION__);
     aml_dv_clear_vsvdb();
     return;
   }
@@ -1294,6 +1296,20 @@ void aml_dv_apply_vsvdb()
       if (d < best) { best = d; idx = i; }
     }
     b[7] = (b[7] & 0x07) | ((idx & 0x1F) << 3);
+  }
+
+  // Optional black level: the 5-bit "Minimum Luminance (PQ)" field, b[6] bits 7:3
+  // (target min PQ12 = 20 x index), keeping the low three bits (the backlight
+  // minimum-luma index). With player-led DV the Dolby library maps black to
+  // exactly this - dovi.ko's commit_reg reads the target min straight out of the
+  // VSVDB, unlike amdv_target_min_override, which it never reads. A panel
+  // advertising index 1 (0.0006 nit) therefore floors black at 10-bit code 68.
+  // -1 = the panel's own figure kept.
+  int minIdx = -1;
+  if (blk >= 1 && blk <= 32)
+  {
+    minIdx = blk - 1;
+    b[6] = (b[6] & 0x07) | ((minIdx & 0x1F) << 3);
   }
 
   // Optional colour-space / primary override: replace only the v2 primary fields
@@ -1348,12 +1364,14 @@ void aml_dv_apply_vsvdb()
   vsvdb_data.Set(data);
   force_vsvdb.Set(FORCE_VSVDB_USE_DATA);
   aml_hdmitx_reload_edid();
+  const std::string blkName =
+      minIdx >= 0 ? StringUtils::Format("min idx {} (PQ12 {})", minIdx, 20 * minIdx) : "display";
   if (idx >= 0)
-    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, data [{}]",
-              __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, data);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> {} nits (idx {}), primaries {}, black {}, "
+              "data [{}]", __FUNCTION__, vsvdb_v2_max_lum_lut[idx], idx, csName, blkName, data);
   else
-    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> display peak kept, primaries {}, data [{}]",
-              __FUNCTION__, csName, data);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VSVDB override -> display peak kept, primaries {}, black {}, "
+              "data [{}]", __FUNCTION__, csName, blkName, data);
 }
 
 // CMv4.0 append live-apply generation. Bumped from the settings thread, read by
