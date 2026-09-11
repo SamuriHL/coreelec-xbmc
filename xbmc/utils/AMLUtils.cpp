@@ -755,11 +755,6 @@ void aml_dv_pre_engage_disc_session()
              2u /* AMDV_FORCE_OUTPUT_MODE */);
   const unsigned int mode = aml_dv_resolve_tunnel_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
-  // The DM target belongs with the mode. Disc open through FirstPlay and the
-  // menus - everything before the first CAMLCodec::OpenDecoder - is real DV
-  // output, and the previous title's CloseDecoder left the override at zero, so
-  // without this the reference black is absent for the whole pre-roll.
-  aml_dv_apply_target_overrides(mode);
   s_dv_disc_engaged = true;
   // Mixed disc coming back from a released (non-DV) title: re-arm the session
   // VSIF hold that the release dropped. Idempotent at disc open, where
@@ -947,77 +942,37 @@ unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
 
 void aml_dv_apply_target_overrides(unsigned int mode)
 {
-  // DM target overrides (samurihl common_drivers patch; params absent on a stock
-  // kernel -> no-op). target.minlum steers the DM's target min / reference black
-  // in 0.0001-nit units; the display-peak setting steers the target max in nits.
-  //
-  // The reference black applies to NATIVE DV OUTPUT as well as to the VS10
-  // conversions. That was excluded originally on the reasoning that "the sink
-  // does the mapping" for a DV tunnel, which measurement disproves: with a DV
-  // title running to a DV display (fmt DOVI->DOVI, dolby_vision_mode=1) the
-  // kernel's own per-frame trace showed the target the DM was handed tracking
-  // the override exactly - t min-max went 1-40000000 at the default, then
-  // 12345-40000000 once amdv_target_min_override was poked. The box-side DM runs
-  // for tunnel output too, and it is handed a target; only Kodi writing 0 kept
-  // the setting inert there, which is what users reported as "the black level
-  // knob does nothing for DV".
-  //
-  // The target MAX stays HDR10-only. Its DV-output default measured 4000 nits,
-  // and pushing a typical panel figure onto that would clamp speculars the DM is
-  // currently rolling off - a separate decision from reference black, and not one
-  // this setting was scoped for. Bypass still zeroes both: nothing is mapping.
+  // The loaded dovi.ko never reads set_target_min_lum/max_lum: its DM target is
+  // hard-coded for HDR10/SDR output and taken from the VSVDB for player-led DV. So
+  // these overrides do not change the picture. The only consumer is patch 0011,
+  // which restates the max as the HDR10 mastering peak sent to the sink; the min is
+  // always 0 (the reference-black setting is retired). Params are absent on a
+  // stock kernel -> no-op.
   CSysfsPath min_override{"/sys/module/aml_media/parameters/amdv_target_min_override"};
   CSysfsPath max_override{"/sys/module/aml_media/parameters/amdv_target_max_override"};
   if (!min_override.Exists() || !max_override.Exists())
     return;
 
-  // Hold the target across a latched disc session. Every segment boundary in a
-  // menu session runs CloseDecoder -> OpenDecoder, and CloseDecoder asks for
-  // BYPASS; now that the reference black also applies to DV output, honouring
-  // that would drop the DM target to the Dolby default in each inter-segment gap
-  // and restore it again - the same "set it once and keep it" principle the disc
-  // session exists to enforce for the DV signalling itself. The session end
-  // (aml_dv_release_disc_engage) clears the overrides instead.
+  // Hold the value across a latched disc session: every segment boundary runs
+  // CloseDecoder -> OpenDecoder, and honouring its BYPASS would flip the value in
+  // each gap. aml_dv_release_disc_engage clears the overrides at session end.
   if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_engaged())
     return;
 
-  int min_lum = 0, max_nits = 0;
-  if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
-      mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
-      mode == DOLBY_VISION_OUTPUT_MODE_SDR8 ||
-      mode == DOLBY_VISION_OUTPUT_MODE_IPT ||
-      mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+  int max_nits = 0;
+  if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
   {
-    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-    min_lum = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM);
-    if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-    {
-      // ONLY an explicit user value sets the DM target. 0 leaves
-      // amdv_target_max_override at 0, i.e. the DM keeps its own built-in
-      // target - which is what a user who has chosen nothing gets.
-      //
-      // Deliberately NOT auto-detected from the display here. The VSVDB peak
-      // describes the player-led Dolby Vision contract, not what an HDR10
-      // output should be mapped for, and it is an advertised figure rather
-      // than a measured one - panels routinely claim a peak their real
-      // sustained output does not reach. Pushing it as the DM target raises
-      // the target above the built-in on essentially every DV display, which
-      // removes highlight roll-off that was previously being applied and
-      // clips specular detail at the panel instead of mapping it.
-      //
-      // This also keeps 0 meaning the same thing everywhere: it is the only
-      // value that reaches the built-in target, and no cached or injected
-      // EDID reading can ever become a tone-mapping target behind the user's
-      // back. The Smart CMv4.0 bypass threshold still auto-detects
-      // separately - that is a comparison, not a target.
-      max_nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
-    }
+    // Only an explicit user value; 0 leaves the source's mastering values alone.
+    // Not auto-detected: the VSVDB peak is an advertised player-led figure, and
+    // nothing read from EDID should be restated to the sink behind the user's back.
+    max_nits = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
   }
-  min_override.Set(min_lum < 0 ? 0 : min_lum);
+  min_override.Set(0);
   max_override.Set(max_nits < 0 ? 0 : max_nits);
-  if (min_lum > 0 || max_nits > 0)
-    CLog::Log(LOGINFO, "AMLUtils::{} - DM target overrides: min {} (0.0001 nit), max {} nits",
-              __FUNCTION__, min_lum, max_nits);
+  if (max_nits > 0)
+    CLog::Log(LOGINFO, "AMLUtils::{} - HDR10 output mastering peak override: {} nits",
+              __FUNCTION__, max_nits);
 }
 
 void aml_dv_set_vs10_mode(unsigned int mode)
