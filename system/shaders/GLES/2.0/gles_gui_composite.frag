@@ -33,6 +33,10 @@ void main()
   if (gui.a == 0.0)
     discard;
 
+  // The GUI blends into the FBO premultiplied, and the composite blend applies
+  // gui.a again, so encode the straight colour: the transfer is non-linear.
+  gui.rgb = min(gui.rgb / gui.a, vec3(1.0));
+
   // sRGB -> linear via LUT (IEC 61966-2-1 EOTF, replaces inline pow)
   vec3 lutCoord = (clamp(gui.rgb, 0.0, 1.0) * 255.0 + 0.5) / 256.0;
   vec3 linear = vec3(
