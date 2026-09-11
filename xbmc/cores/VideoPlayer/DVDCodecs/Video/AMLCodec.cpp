@@ -2397,12 +2397,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // Publish the resolved output mode so CRendererAML::Configure encodes the
   // GUI/OSD to match the actual signal the sink receives this stream.
   aml_dv_set_output_mode(dv_output_mode);
-  aml_dv_set_follow_source_mode(
-      dv_enable && hints.dovi.dv_profile != 0
-          ? (display_support_dv                ? DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL
-             : aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
-                                            : DOLBY_VISION_OUTPUT_MODE_SDR10)
-          : DOLBY_VISION_OUTPUT_MODE_BYPASS);
 
   // ...and key the DM target overrides (reference black, and the HDR10 peak) on
   // that same resolved mode instead of on the VS10 mode the user asked for. The
@@ -2696,7 +2690,6 @@ void CAMLCodec::CloseDecoder()
     AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
-  aml_dv_set_follow_source_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
   // (survives the stream) and a nonzero value overrides the kernel's per-format
   // graphics table for every mode, so a leak here dims/brightens the OSD of all
