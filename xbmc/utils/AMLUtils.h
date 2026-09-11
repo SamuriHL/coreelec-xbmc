@@ -154,6 +154,9 @@ bool aml_dv_disc_engaged();
 // (crash, OOM, the JVM SIGABRT after BD-J). Call once at window-system init.
 void aml_dv_recover_stale_disc_session();
 unsigned int aml_dv_dolby_vision_mode();
+// What the kernel's DV core puts on the wire right now (enabled and in a DV
+// tunnel mode), independent of the mode Kodi last published.
+bool aml_dv_core_outputs_dv();
 void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
