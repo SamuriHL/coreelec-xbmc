@@ -549,6 +549,11 @@ static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPAS
 void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
+// Native DV sources keep a DV (or, on a non-DV display, converted) output when
+// VS10 stops forcing a mode; everything else passes through as BYPASS.
+static std::atomic<unsigned int> s_dv_follow_source_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
+void aml_dv_set_follow_source_mode(unsigned int mode) { s_dv_follow_source_mode = mode; }
+
 // True when the DV output we are about to present needs a wire format the HDMI
 // link is not currently carrying.
 //
@@ -985,7 +990,12 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   }
 
   mode = aml_dv_resolve_tunnel_mode(mode);
-  aml_dv_apply_target_overrides(mode);
+  // What the sink receives after the switch, resolved as CAMLCodec::OpenDecoder
+  // resolves it. Published below so CRendererAML::ConfigChanged re-resolves the
+  // GUI/OSD encoding for the new output instead of keeping the stream-open one.
+  const unsigned int output_mode =
+      mode == DOLBY_VISION_OUTPUT_MODE_BYPASS ? s_dv_follow_source_mode.load() : mode;
+  aml_dv_apply_target_overrides(output_mode);
 
   // Keep the OSD graphics peak in step with the output mode, matching the
   // decoder-open path: the slider only applies to VS10 HDR10 output, and a
@@ -1005,7 +1015,9 @@ void aml_dv_set_vs10_mode(unsigned int mode)
         dolby_vision_policy.Get<int>().value() == static_cast<int>(AMDV_FORCE_OUTPUT_MODE))
       dolby_vision_policy.Set(AMDV_FOLLOW_SOURCE);
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
-    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", __FUNCTION__);
+    aml_dv_set_output_mode(output_mode);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source), output mode {}",
+              __FUNCTION__, output_mode);
     return;
   }
 
@@ -1013,6 +1025,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   dolby_vision_enable.Set('Y');
   dolby_vision_policy.Set(AMDV_FORCE_OUTPUT_MODE);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
+  aml_dv_set_output_mode(output_mode);
   CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
             __FUNCTION__, mode, (mode + 1) % 6);
 }

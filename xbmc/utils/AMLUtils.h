@@ -125,6 +125,9 @@ unsigned int aml_dv_get_vs10_pending();
 // SDR) rather than the source hdrType. BYPASS = DV core not forcing an output.
 void aml_dv_set_output_mode(unsigned int mode);
 unsigned int aml_dv_get_output_mode();
+// The output mode the current stream reaches when the DV core stops forcing one
+// (follow source), recorded by CAMLCodec::OpenDecoder for the live VS10 switch.
+void aml_dv_set_follow_source_mode(unsigned int mode);
 bool aml_dv_wire_format_mismatch();
 bool aml_dv_wire_format_is_lldv();
 // Disc-session DV latch: active while a Blu-ray whose content includes Dolby
