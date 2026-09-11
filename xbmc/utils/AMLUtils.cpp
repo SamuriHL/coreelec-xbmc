@@ -34,12 +34,14 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "filesystem/File.h"
+#include "jobs/JobManager.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 
 extern "C"
@@ -546,13 +548,59 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 // the render thread (CRendererAML::Configure) and per output picture from
 // CRendererAML::ConfigChanged.
 static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
-void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
+// Bumped by every publish, so a pending follow-source readback (below) never
+// overwrites a mode a newer decoder open, close or VS10 switch published.
+static unsigned int s_dv_output_mode_gen = 0;
+static std::mutex s_dv_output_mode_lock;
+void aml_dv_set_output_mode(unsigned int mode)
+{
+  std::unique_lock lock(s_dv_output_mode_lock);
+  s_dv_output_mode = mode;
+  ++s_dv_output_mode_gen;
+}
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
-// Native DV sources keep a DV (or, on a non-DV display, converted) output when
-// VS10 stops forcing a mode; everything else passes through as BYPASS.
-static std::atomic<unsigned int> s_dv_follow_source_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
-void aml_dv_set_follow_source_mode(unsigned int mode) { s_dv_follow_source_mode = mode; }
+// Under follow-source the kernel's policy picks the output from the source format
+// (amdv_policy_process_v2_stb: a DV source stays DV, HDR10/HLG keep the DV core
+// running in HDR10 mode on an HDR display, SDR and HDR10+ bypass it), so publish
+// what it resolved instead of predicting it. The policy runs per vsync while frames
+// flow; poll for a few seconds so a switch made while paused still lands on resume.
+static void aml_dv_publish_follow_source_mode(bool dvEnabled)
+{
+  if (!dvEnabled)
+  {
+    // The core is not running, so there is nothing to follow: native passthrough.
+    aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+    return;
+  }
+
+  unsigned int gen;
+  {
+    std::unique_lock lock(s_dv_output_mode_lock);
+    gen = ++s_dv_output_mode_gen;
+  }
+  CServiceBroker::GetJobManager()->Submit(
+      [gen]
+      {
+        for (int i = 0; i < 30; ++i)
+        {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          const unsigned int mode = aml_dv_dolby_vision_mode();
+          if (mode > DOLBY_VISION_OUTPUT_MODE_BYPASS)
+            continue;
+          std::unique_lock lock(s_dv_output_mode_lock);
+          if (gen != s_dv_output_mode_gen)
+            return;
+          if (mode == s_dv_output_mode)
+            continue;
+          s_dv_output_mode = mode;
+          lock.unlock();
+          aml_dv_apply_target_overrides(mode);
+          CLog::Log(LOGINFO, "AMLUtils::aml_dv_set_vs10_mode - follow source resolved to output mode {}",
+                    mode);
+        }
+      });
+}
 
 // True when the DV output we are about to present needs a wire format the HDMI
 // link is not currently carrying.
@@ -990,12 +1038,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   }
 
   mode = aml_dv_resolve_tunnel_mode(mode);
-  // What the sink receives after the switch, resolved as CAMLCodec::OpenDecoder
-  // resolves it. Published below so CRendererAML::ConfigChanged re-resolves the
-  // GUI/OSD encoding for the new output instead of keeping the stream-open one.
-  const unsigned int output_mode =
-      mode == DOLBY_VISION_OUTPUT_MODE_BYPASS ? s_dv_follow_source_mode.load() : mode;
-  aml_dv_apply_target_overrides(output_mode);
+  aml_dv_apply_target_overrides(mode);
 
   // Keep the OSD graphics peak in step with the output mode, matching the
   // decoder-open path: the slider only applies to VS10 HDR10 output, and a
@@ -1015,17 +1058,18 @@ void aml_dv_set_vs10_mode(unsigned int mode)
         dolby_vision_policy.Get<int>().value() == static_cast<int>(AMDV_FORCE_OUTPUT_MODE))
       dolby_vision_policy.Set(AMDV_FOLLOW_SOURCE);
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
-    aml_dv_set_output_mode(output_mode);
-    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source), output mode {}",
-              __FUNCTION__, output_mode);
+    aml_dv_publish_follow_source_mode(dv_enabled);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", __FUNCTION__);
     return;
   }
 
   // Force the requested VS10 output mode.
   dolby_vision_enable.Set('Y');
   dolby_vision_policy.Set(AMDV_FORCE_OUTPUT_MODE);
+  // Published so CRendererAML::ConfigChanged re-resolves the GUI/OSD encoding
+  // for the new output instead of keeping the stream-open one.
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
-  aml_dv_set_output_mode(output_mode);
+  aml_dv_set_output_mode(mode);
   CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
             __FUNCTION__, mode, (mode + 1) % 6);
 }
