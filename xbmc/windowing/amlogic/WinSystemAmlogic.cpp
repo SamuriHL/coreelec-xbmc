@@ -396,6 +396,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER});
@@ -477,7 +478,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE)
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE &&
+      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM)
     return;
 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
@@ -651,6 +653,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT,

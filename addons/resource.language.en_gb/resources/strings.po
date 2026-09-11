@@ -26058,3 +26058,39 @@ msgstr ""
 msgctxt "#60379"
 msgid "10000 nits"
 msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60380"
+msgid "Black level (VSVDB)"
+msgstr ""
+
+#. Description of setting with label #60380
+#: system/settings/settings.xml
+msgctxt "#60381"
+msgid "Override the minimum luminance advertised in the injected Dolby Vision VSVDB. With player-led (low-latency) Dolby Vision the Dolby engine in this box maps black to exactly this level, so it sets where near-black detail stops: a display advertising 0.0006 nit shows everything below 10-bit code 68 as black. 'Display' keeps the panel's own figure. Lower values reveal more shadow detail if the panel can reproduce it; higher values lift black for panels that crush. No effect on TV-led Dolby Vision (the television maps it) or on HDR10/SDR output. Requires a v2 VSVDB display."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60382"
+msgid "0 nit - reference black (code 64)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60383"
+msgid "0.0006 nit (code 68)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60384"
+msgid "0.0022 nit (code 73)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60385"
+msgid "0.0047 nit (code 77)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60386"
+msgid "0.0083 nit (code 81)"
+msgstr ""
