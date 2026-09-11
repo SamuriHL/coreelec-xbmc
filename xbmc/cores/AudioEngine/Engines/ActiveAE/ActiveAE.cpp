@@ -20,6 +20,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "cores/DataCacheCore.h"
+#include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
@@ -933,6 +934,32 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             LoadSettings();
             ValidateOutputDevices(false);
           }
+          // The sink was closed while suspended and Configure() discards every
+          // stream's queued audio, so the running streams have lost their sync
+          // exactly as a pause does: restart their start-sync, landing at the
+          // epoch park like a resume (see PAUSESTREAM). Left SYNC_INSYNC, the
+          // first measurement mixes pre-suspend and post-reset samples.
+          for (CActiveAEStream* stream : m_streams)
+          {
+            if (stream->m_paused || stream->m_syncState == CAESyncInfo::AESyncState::SYNC_OFF)
+              continue;
+            if (m_mode == MODE_RAW &&
+                stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC &&
+                stream->m_resumeSyncTargetValid)
+            {
+              stream->m_useResumeSyncTarget = true;
+              stream->m_resumeSyncChecks = 2;
+              CLog::Log(LOGDEBUG,
+                        "CActiveAE - sink reopen with parked sync error {:f} ms, restart will "
+                        "land there",
+                        stream->m_resumeSyncTarget);
+            }
+            else if (m_mode == MODE_RAW && !stream->m_resumeSyncTargetValid)
+            {
+              stream->m_captureAfterSinkReopen = true;
+            }
+            stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+          }
           Configure();
           if (!displayReset)
             msg->Reply(CActiveAEControlProtocol::ACC);
@@ -1614,6 +1641,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   stream->m_resumeSyncTargetValid = false;
   stream->m_resumeSyncTarget = 0.0;
   stream->m_resumeSyncChecks = 0;
+  stream->m_captureAfterSinkReopen = false;
   stream->ResetFreeBuffers();
 
   // Reset Logic State Variables to revive Servo
@@ -2653,10 +2681,34 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // booked against a refilling sink and measured ~10ms from the settled
     // truth. This alignment is what the viewer calibrates to. Mutually
     // exclusive with the confirmation branch above: an armed flag implies a
-    // valid target. Clamped defensively to the accept band.
-    stream->m_resumeSyncTarget = std::clamp(error, -30.0, 30.0);
-    stream->m_resumeSyncTargetValid = true;
-    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - epoch sync park settled at {:f} ms", error);
+    // valid target.
+    if (stream->m_captureAfterSinkReopen)
+    {
+      // This window started at a landing after a sink reopen and blends in
+      // the refill transient; the next one is settled.
+      stream->m_captureAfterSinkReopen = false;
+      CLog::Log(LOGDEBUG,
+                "ActiveAE::SyncStream - sink reopen, epoch park capture deferred past {:f} ms",
+                error);
+    }
+    else
+    {
+      // Refill bias can settle a park beyond the 30ms accept band. Keep it,
+      // as long as a landing within its band stays clear of the player's
+      // correction gate.
+      double band = 30.0;
+      const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+      if (frameMs > 0.0)
+        band = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
+      const double gate = CServiceBroker::GetSettingsComponent()
+                              ->GetAdvancedSettings()
+                              ->m_maxPassthroughOffSyncDuration;
+      const double limit = std::max(30.0, gate - band - 3.0);
+      stream->m_resumeSyncTarget = std::clamp(error, -limit, limit);
+      stream->m_resumeSyncTargetValid = true;
+      CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - epoch sync park settled at {:f} ms (limit {:f})",
+                error, limit);
+    }
   }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
   {
@@ -2824,7 +2876,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         // park read +12.2 at 1s, +29.0 at 2s, steady +28.6 from 2.5s), so a 1s
         // confirmation samples mid-transient, reads in-band, and wrongly
         // clears the flag. Ordinary landings keep the 1s cadence.
-        stream->m_syncError.Flush(stream->m_useResumeSyncTarget ? 4000ms : 1000ms);
+        stream->m_syncError.Flush(
+            stream->m_useResumeSyncTarget || stream->m_captureAfterSinkReopen ? 4000ms : 1000ms);
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",

@@ -552,6 +552,10 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
     {
       m_displayReset = true;
+      // the engine reopened the sink and restarts its start-sync (ActiveAE
+      // suspend exit) - the transient the settle window exists for
+      m_disconSettleTimer.Set(6000ms);
+      CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio - display reset: DISCON settle re-armed");
     }
   }
 }
