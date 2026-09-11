@@ -103,6 +103,7 @@ public:
   bool aml_set_drmDevice_active(std::string mode, int fractional_rate,
     const RenderStereoMode stereo_mode, bool active);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
+  void aml_refresh_output_wire_format();
   void FlipPage(uint32_t fb_id);
 
   void SetInFenceFd(int fd) { if (m_inFenceFd != -1) close(m_inFenceFd); m_inFenceFd = fd; }
@@ -178,6 +179,7 @@ public:
   void aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value)
     { m_amlDRMUtils->aml_set_drmProperty(name, obj_type, value); }
   void FlipPage(uint32_t fb_id) { m_amlDRMUtils->FlipPage(fb_id); }
+  void aml_refresh_output_wire_format() { m_amlDRMUtils->aml_refresh_output_wire_format(); }
   bool aml_set_drmDevice_active(bool active) const
     { return m_amlDRMUtils->aml_set_drmDevice_active(
       m_amlDRMUtils->aml_get_drmDevice_mode(),

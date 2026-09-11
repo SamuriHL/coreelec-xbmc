@@ -560,8 +560,9 @@ void aml_dv_set_output_mode(unsigned int mode)
 }
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
-// Invalidates any pending follow-source readback; returns the new generation.
-static unsigned int aml_dv_cancel_follow_source_readback()
+// Supersedes any pending output-mode job (readback or wire refresh); returns
+// the new generation.
+static unsigned int aml_dv_supersede_output_jobs()
 {
   std::unique_lock lock(s_dv_output_mode_lock);
   return ++s_dv_output_mode_gen;
@@ -580,6 +581,13 @@ static void aml_dv_apply_osd_brightness(unsigned int mode)
     aml_dv_set_hdr10_osd_brightness(0);
 }
 
+static void aml_dv_refresh_wire_format()
+{
+  auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (winSystem && winSystem->GetAmlDisplay())
+    winSystem->GetAmlDisplay()->aml_refresh_output_wire_format();
+}
+
 // Under follow-source the kernel's policy picks the output from the source format
 // (amdv_policy_process_v2_stb: a DV source stays DV, HDR10/HLG keep the DV core
 // running in HDR10 mode on an HDR display, SDR and HDR10+ bypass it), so publish
@@ -594,7 +602,7 @@ static void aml_dv_publish_follow_source_mode(bool dvEnabled)
     return;
   }
 
-  const unsigned int gen = aml_dv_cancel_follow_source_readback();
+  const unsigned int gen = aml_dv_supersede_output_jobs();
   CServiceBroker::GetJobManager()->Submit(
       [gen]
       {
@@ -614,8 +622,10 @@ static void aml_dv_publish_follow_source_mode(bool dvEnabled)
           aml_dv_apply_target_overrides(mode);
           aml_dv_apply_osd_brightness(mode);
           applied = mode;
+          lock.unlock();
           CLog::Log(LOGINFO, "AMLUtils::aml_dv_set_vs10_mode - follow source resolved to output mode {}",
                     mode);
+          aml_dv_refresh_wire_format();
         }
       });
 }
@@ -1011,7 +1021,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   }
 
   mode = aml_dv_resolve_tunnel_mode(mode);
-  aml_dv_cancel_follow_source_readback();
+  aml_dv_supersede_output_jobs();
   aml_dv_apply_target_overrides(mode);
 
   aml_dv_apply_osd_brightness(mode);
@@ -1038,6 +1048,21 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   aml_dv_set_output_mode(mode);
   CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
             __FUNCTION__, mode, (mode + 1) % 6);
+
+  // The HDMI wire follows once the core has made the switch; a newer publish
+  // (another switch, or the decoder closing) supersedes it.
+  const unsigned int gen = aml_dv_supersede_output_jobs();
+  CServiceBroker::GetJobManager()->Submit(
+      [gen]
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        {
+          std::unique_lock lock(s_dv_output_mode_lock);
+          if (gen != s_dv_output_mode_gen)
+            return;
+        }
+        aml_dv_refresh_wire_format();
+      });
 }
 
 void aml_dv_set_hdr10_osd_brightness(int nits)
