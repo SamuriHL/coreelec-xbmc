@@ -158,8 +158,8 @@ void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode);
-// DM target min/max overrides for VS10-converted output (needs the samurihl
-// common_drivers kernel patch; silently no-ops on a stock kernel).
+// HDR10-output mastering peak override restated to the sink by kernel patch 0011
+// (dovi.ko itself ignores it); silently no-ops on a stock kernel.
 void aml_dv_apply_target_overrides(unsigned int mode);
 void aml_dv_set_hdr10_osd_brightness(int nits);
 // Dolby Vision VSVDB max-luminance override: patch the display's advertised v2
