@@ -122,6 +122,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);
   bool force_mode_switch_by_fractional_rate = (cur_fractional_rate != fractional_rate);
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
+  bool force_mode_switch_by_wire = m_amlDisplay->aml_output_wire_stale();
 
   // get current used resolution
   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
@@ -137,11 +138,11 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
             "CWinSystemAmlogicGLESContext::{}: "
             "m_bWindowCreated: {}, "
             "hdrType: {}({}), "
-            "force mode switch by - hdr: {}, frac rate: {}, stereo mode: {}, hotplug: {}",
+            "force mode switch by - hdr: {}, frac rate: {}, stereo mode: {}, hotplug: {}, wire: {}",
             __FUNCTION__, m_bWindowCreated, new_hdrStr.empty() ? "none" : new_hdrStr,
             old_hdrStr.empty() ? "none" : old_hdrStr, force_mode_switch_by_hdr,
             force_mode_switch_by_fractional_rate, force_mode_switch_by_stereo_mode,
-            force_mode_switch_by_hotplug);
+            force_mode_switch_by_hotplug, force_mode_switch_by_wire);
   CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
     "cur: iWidth: {:04d}, iHeight: {:04d}, iScreenWidth: {:04d}, iScreenHeight: {:04d}, fRefreshRate: {:02.2f}, dwFlags: {:02x}, nativeGUI: {}",
     __FUNCTION__,
@@ -161,7 +162,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
           (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
       m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
       !force_mode_switch_by_hotplug && !force_mode_switch_by_fractional_rate &&
-      !force_mode_switch_by_stereo_mode)
+      !force_mode_switch_by_stereo_mode && !force_mode_switch_by_wire)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
     return true;
@@ -186,7 +187,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       MathUtils::FloatEquals(current_resolution.fRefreshRate, res.fRefreshRate, 0.06f))
   {
     // same resolution, check frac rate and other parameter
-    if (force_mode_switch_by_fractional_rate || force_mode_switch_by_hdr)
+    if (force_mode_switch_by_fractional_rate || force_mode_switch_by_hdr ||
+        force_mode_switch_by_wire)
       m_force_mode_switch = true;
   }
 

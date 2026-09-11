@@ -6585,17 +6585,24 @@ bool CVideoPlayer::OnAction(const CAction &action)
 
     // Dolby Vision VS10 engine: switch the output mode live during playback.
     // "Original" reverts to follow-source (native DV or native SDR/HDR as-is).
+    // The resolution update then lets the window system re-decide the HDMI wire
+    // for the new output through the same display lost/reset protocol a mode
+    // change uses, so playback pauses and re-anchors across the re-clock.
     case ACTION_VS10_ORIGINAL:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+      TriggerUpdateResolution();
       return true;
     case ACTION_VS10_SDR:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10);
+      TriggerUpdateResolution();
       return true;
     case ACTION_VS10_HDR10:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10);
+      TriggerUpdateResolution();
       return true;
     case ACTION_VS10_DV:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
+      TriggerUpdateResolution();
       return true;
   }
 

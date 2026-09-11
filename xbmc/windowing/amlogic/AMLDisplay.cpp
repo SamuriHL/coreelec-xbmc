@@ -570,6 +570,19 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
     }
   }
 
+  // Leaving the TV-led DV tunnel: on this commit the kernel would only re-test, and
+  // keep, the tunnel's 8-bit attr. RESERVED6 makes it decide the native format
+  // again (meson_hdmitx_decide_color_attr, which is DV-aware).
+  if (leaving_tvled_dv_wire())
+  {
+    // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
+    constexpr unsigned int HDMI_CS_RESERVED6 = 6;
+    CLog::Log(LOGINFO, "CAMLDRMUtils::{} - leaving the TV-led DV link, letting the kernel "
+              "decide the native format again", __FUNCTION__);
+    set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR,
+                HDMI_CS_RESERVED6, NULL);
+  }
+
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
   ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true);
 
@@ -589,6 +602,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 
     apply_dv_wire_format();
+    m_wireTvLedDv = aml_dv_core_outputs_dv() && !aml_dv_wire_format_is_lldv();
 
     aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
 
@@ -712,6 +726,18 @@ void CAMLDRMUtils::apply_dv_wire_format()
   set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, NULL);
   set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, NULL);
   set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
+}
+
+bool CAMLDRMUtils::leaving_tvled_dv_wire() const
+{
+  return m_wireTvLedDv && !aml_dv_core_outputs_dv();
+}
+
+// True when the HDMI wire no longer fits the output (a live VS10 switch changes the
+// output without a mode change), so the next window update must force a mode set.
+bool CAMLDRMUtils::aml_output_wire_stale()
+{
+  return aml_dv_wire_format_mismatch() || leaving_tvled_dv_wire();
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,

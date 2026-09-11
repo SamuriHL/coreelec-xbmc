@@ -103,6 +103,7 @@ public:
   bool aml_set_drmDevice_active(std::string mode, int fractional_rate,
     const RenderStereoMode stereo_mode, bool active);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
+  bool aml_output_wire_stale();
   void FlipPage(uint32_t fb_id);
 
   void SetInFenceFd(int fd) { if (m_inFenceFd != -1) close(m_inFenceFd); m_inFenceFd = fd; }
@@ -124,10 +125,13 @@ private:
                   void* data = nullptr,
                   int* data_len = nullptr);
   void apply_dv_wire_format();
+  bool leaving_tvled_dv_wire() const;
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
   int m_fd{-1};
+  // The last mode set left the link in the TV-led DV tunnel format (8-bit).
+  bool m_wireTvLedDv{false};
   int m_width;
   int m_height;
   int m_ScreenWidth;
@@ -178,6 +182,7 @@ public:
   void aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value)
     { m_amlDRMUtils->aml_set_drmProperty(name, obj_type, value); }
   void FlipPage(uint32_t fb_id) { m_amlDRMUtils->FlipPage(fb_id); }
+  bool aml_output_wire_stale() { return m_amlDRMUtils->aml_output_wire_stale(); }
   bool aml_set_drmDevice_active(bool active) const
     { return m_amlDRMUtils->aml_set_drmDevice_active(
       m_amlDRMUtils->aml_get_drmDevice_mode(),
