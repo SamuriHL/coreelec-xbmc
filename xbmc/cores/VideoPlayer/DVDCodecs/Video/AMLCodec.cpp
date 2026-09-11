@@ -2688,8 +2688,8 @@ void CAMLCodec::CloseDecoder()
   // the whole teardown in order at session end.
   if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged())
     AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
-  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
   // (survives the stream) and a nonzero value overrides the kernel's per-format
   // graphics table for every mode, so a leak here dims/brightens the OSD of all
