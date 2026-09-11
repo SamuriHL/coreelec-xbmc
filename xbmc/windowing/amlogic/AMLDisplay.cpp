@@ -598,7 +598,9 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
 
   if (ret)
   {
-    if (_force_mode_switch)
+    // apply_dv_wire_format() re-trains the link itself when the DV tunnel format is
+    // missing, so skip the plain UPDATE then rather than re-train twice.
+    if (_force_mode_switch && !aml_dv_wire_format_mismatch())
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 
     apply_dv_wire_format();
@@ -728,16 +730,22 @@ void CAMLDRMUtils::apply_dv_wire_format()
   set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 }
 
+// A disc session holding DV keeps the sink's Dolby VSIF latched across its segment
+// swaps, so the wire must stay in the tunnel format for as long as it holds.
 bool CAMLDRMUtils::leaving_tvled_dv_wire() const
 {
-  return m_wireTvLedDv && !aml_dv_core_outputs_dv();
+  return m_wireTvLedDv && !aml_dv_disc_engaged() && aml_dv_core_leaves_native_wire();
 }
 
 // True when the HDMI wire no longer fits the output (a live VS10 switch changes the
 // output without a mode change), so the next window update must force a mode set.
+// Into DV only when the kernel really outputs it: a forced DV request it refuses
+// (HDR10+ to an HDR10+ sink, a non-DV sink) must not pin the link to 8-bit.
 bool CAMLDRMUtils::aml_output_wire_stale()
 {
-  return aml_dv_wire_format_mismatch() || leaving_tvled_dv_wire();
+  if (aml_dv_disc_engaged())
+    return false;
+  return (aml_dv_core_outputs_dv() && aml_dv_wire_format_mismatch()) || leaving_tvled_dv_wire();
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
