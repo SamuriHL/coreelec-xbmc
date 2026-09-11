@@ -277,6 +277,8 @@ protected:
   bool m_useResumeSyncTarget;       // armed at pause, cleared once the landing is
                                     // confirmed by a settled INSYNC measurement
   int m_resumeSyncChecks;           // re-land budget for the post-settle confirmation
+  bool m_captureAfterSinkReopen;    // unarmed start-sync after a sink reopen: capture the
+                                    // epoch target past the refill transient
 };
 }
 
