@@ -25718,7 +25718,7 @@ msgstr ""
 #. Description of setting with label #60330
 #: system/settings/settings.xml
 msgctxt "#60331"
-msgid "Your display's Dolby Vision peak brightness in nits. 0 = auto: the Smart CMv4.0 bypass decision reads the display's own EDID (VSVDB) peak, and nothing is forced onto the Dolby Vision engine. Setting a value here is an explicit override: it replaces the auto-detected peak for the Smart CMv4.0 bypass decision, is injected into the display's VSVDB when 'Force peak onto display' below is enabled, and becomes the peak the Dolby Vision engine tone-maps to for VS10 HDR10 output."
+msgid "Your display's Dolby Vision peak brightness in nits. 0 = auto: the Smart CMv4.0 bypass decision reads the display's own EDID (VSVDB) peak, and nothing is forced onto the Dolby Vision engine. Setting a value here is an explicit override: it replaces the auto-detected peak for the Smart CMv4.0 bypass decision, and is injected into the display's VSVDB when 'Force peak onto display' below is enabled. On VS10 HDR10 output it is also sent to the television as the HDR10 mastering peak, so the television tone-maps for it; the Dolby Vision engine in this box always maps HDR10 output to its own fixed 1000-nit target, which no setting changes."
 msgstr ""
 
 #. Label of Dolby Vision VS10 SDR8 output setting
@@ -25850,7 +25850,7 @@ msgstr ""
 #. Description of setting with label #60340
 #: system/settings/settings.xml
 msgctxt "#60341"
-msgid "Inject the peak luminance set above into the display's Dolby Vision VSVDB (EDID), so the DV engine actually tone-maps for that brightness instead of the value the TV advertises. Useful when the TV over- or under-reports its real peak. Only the max-luminance field is changed; all other VSVDB data is kept. Snapped to the nearest Dolby PQ step. Requires a display with a v2 VSVDB and a peak value above (0 = auto does nothing). On player-led (low-latency) Dolby Vision output the DV engine takes its target peak from the VSVDB, and the peak is additionally capped to each title's own mastering peak - so a value set here can be lowered, but never raised, for content graded below it."
+msgid "Inject the peak luminance set above into the display's Dolby Vision VSVDB (EDID), so the DV engine tone-maps for that brightness instead of the value the TV advertises. Only has an effect on player-led (low-latency) Dolby Vision output, where the Dolby engine in this box takes its target from the VSVDB; on TV-led output the television maps with its own configuration. Useful when the TV over- or under-reports its real peak. Only the fields set here are changed (the peak, and optionally the colour space and black level below); all other VSVDB data is kept. Snapped to the nearest Dolby PQ step. Requires a display with a v2 VSVDB and a peak value above (0 = auto does nothing). On player-led (low-latency) Dolby Vision output the DV engine takes its target peak from the VSVDB, and the peak is additionally capped to each title's own mastering peak - so a value set here can be lowered, but never raised, for content graded below it."
 msgstr ""
 
 #. Label of Dolby Vision VSVDB colour-space override setting
@@ -25940,7 +25940,7 @@ msgstr ""
 #. Description of setting with label #60355
 #: system/settings/settings.xml
 msgctxt "#60356"
-msgid "Minimum luminance the Dolby Vision engine tone-maps to, in units of 0.0001 nit. 0 (recommended) uses the built-in 0.0001 nit: reference black stays black and near-black detail stays visible. Any higher value lifts black and flattens every shade below it into one grey level - 50 (0.005 nit) already clips everything below about video level 80. Only raise it for a display that cannot reach true black. Applies to Dolby Vision output as well as to VS10 conversions to HDR10 / SDR."
+msgid "Retired. The Dolby Vision engine in dovi.ko never reads this value, so it has no effect on the picture on any output. For player-led Dolby Vision, use 'Black level (VSVDB)' instead."
 msgstr ""
 
 #. Toast heading when a VS10 output mode is refused for software-decoded video

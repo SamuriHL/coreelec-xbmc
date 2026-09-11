@@ -393,7 +393,6 @@ bool CWinSystemAmlogic::InitWindowSystem()
     // append mode / Smart threshold when those change (both used to be latched
     // at stream open, so changing them mid-playback appeared to do nothing).
     dvMgr->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
-                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,
@@ -465,9 +464,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // CMv4.0 append mode / Smart threshold: publish to the codec, which re-pushes
   // them to its bitstream converter on the next packet. Unconditional - the
   // generation counter is inert when nothing is decoding, and a stream opening
-  // later reads the settings directly anyway. display.maxnits feeds BOTH this
-  // and the VSVDB inject below; bumping it here is what keeps the Smart bypass
-  // threshold and the peak the amdv core tone-maps to from diverging when the
+  // later reads the settings directly anyway. display.maxnits feeds both this
+  // and the VSVDB inject below, so bumping it here keeps the two in step when the
   // slider moves mid-playback.
   if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND ||
       settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD ||
@@ -476,7 +474,6 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     aml_dv_cmv40_settings_changed();
 
   if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS &&
-      settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE &&
       settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM)
@@ -489,14 +486,10 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   if (dv_enable.Exists() &&
       StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
   {
-    // DM target overrides (peak + reference black) for the mode the sink is
-    // actually receiving. NOT aml_dv_get_vs10_pending(): that stays at BYPASS on
-    // the converted-to-DV paths (so a live slider move re-zeroed the override),
-    // it is never updated by the live VS10 action, and on the stock-convert path
-    // it would drop the peak that OpenDecoder resolved.
+    // Keyed on the mode the sink receives: the pending VS10 mode stays BYPASS on
+    // the converted-to-DV paths and is not updated by a live VS10 switch.
     aml_dv_apply_target_overrides(aml_dv_get_output_mode());
-    if (settingId != CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM)
-      aml_dv_apply_vsvdb();
+    aml_dv_apply_vsvdb();
   }
 }
 
@@ -634,6 +627,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
   if (setting)
     setting->SetVisible(false);
 
+  // Retired: dovi.ko never reads the DM target min, so this setting cannot affect
+  // the picture. Kept defined so stored values load; "Black level (VSVDB)" is the
+  // working control for player-led DV.
+  setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM);
+  if (setting)
+    setting->SetVisible(false);
+
   // The VS10 engine, VSVDB override, Smart CMv4.0, L5 active-area and HDR10+ ->
   // DV conversion all rewrite the RPU before output mapping, so they are useful
   // whenever the SoC can process DV -- including on non-DV displays, where VS10
@@ -650,7 +650,6 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS,
-                           CSettings::SETTING_COREELEC_AMLOGIC_DV_TARGET_MINLUM,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,

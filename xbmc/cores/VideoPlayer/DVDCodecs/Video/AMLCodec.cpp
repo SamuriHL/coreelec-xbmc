@@ -2398,17 +2398,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // GUI/OSD to match the actual signal the sink receives this stream.
   aml_dv_set_output_mode(dv_output_mode);
 
-  // ...and key the DM target overrides (reference black, and the HDR10 peak) on
-  // that same resolved mode instead of on the VS10 mode the user asked for. The
-  // two diverge wherever Dolby Vision reaches the wire without the VS10 spinner
-  // selecting it: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV 8.1
-  // conversion both leave the pending mode at BYPASS while the branches above
-  // still output IPT/IPT_TUNNEL, so applying the pending mode wrote a ZERO
-  // override - the reference black was inert on exactly the "HDR converted to
-  // DV" paths the 2026-08-28 fix was reported against, and stayed inert after
-  // it. Runs for a non-DV stream too (dv_output_mode BYPASS = nothing is
-  // mapping), which is what CloseDecoder writes anyway; the disc-session hold
-  // inside aml_dv_apply_target_overrides still protects a latched session.
+  // Key the target overrides on the same resolved mode, not the requested VS10
+  // mode: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV conversion leave
+  // the pending mode at BYPASS while the branches above still output DV.
   aml_dv_apply_target_overrides(dv_output_mode);
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
