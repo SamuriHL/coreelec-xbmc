@@ -887,14 +887,31 @@ unsigned int aml_dv_dolby_vision_mode()
   return DOLBY_VISION_OUTPUT_MODE_BYPASS;
 }
 
-bool aml_dv_core_outputs_dv()
+static bool aml_dv_core_enabled()
 {
   CSysfsPath dolby_vision_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
-  if (!dolby_vision_enable.Exists() ||
-      !StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value_or("N"), "Y"))
+  return dolby_vision_enable.Exists() &&
+         StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value_or("N"), "Y");
+}
+
+bool aml_dv_core_outputs_dv()
+{
+  if (!aml_dv_core_enabled())
     return false;
   const unsigned int mode = aml_dv_dolby_vision_mode();
   return mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+}
+
+bool aml_dv_core_leaves_native_wire()
+{
+  // Patch 0004's is_amdv_output_dv() still forces the tunnel format while the core
+  // is enabled in BYPASS, so only a disabled core or a forced HDR10/SDR output gets
+  // the native attr from meson_hdmitx_decide_color_attr.
+  if (!aml_dv_core_enabled())
+    return true;
+  const unsigned int mode = aml_dv_dolby_vision_mode();
+  return mode == DOLBY_VISION_OUTPUT_MODE_HDR10 || mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
+         mode == DOLBY_VISION_OUTPUT_MODE_SDR8;
 }
 
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
