@@ -157,6 +157,9 @@ unsigned int aml_dv_dolby_vision_mode();
 // What the kernel's DV core puts on the wire right now (enabled and in a DV
 // tunnel mode), independent of the mode Kodi last published.
 bool aml_dv_core_outputs_dv();
+// True when a re-decided HDMI attr would be the native one rather than the DV
+// tunnel format (core disabled, or forced to HDR10/SDR output).
+bool aml_dv_core_leaves_native_wire();
 void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
