@@ -146,6 +146,7 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
 COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource)
 {
   m_isHDROverlay = o.m_isHDROverlay;
+  m_isPGS = o.m_isPGS;
 
   glGenTextures(1, &m_texture);
   glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -505,6 +506,10 @@ void COverlayTextureGLES::Render(SRenderState& state)
   // time a shader is bound, so non-PMA consumers stay on straight-alpha math.
   if (m_pma)
     glUniform1f(renderSystem->GUIShaderGetPma(), 1.0f);
+
+  // Do not modify PGS overlay luminance to keep correct hue/saturation
+  if (m_isPGS && CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ())
+    glUniform1f(renderSystem->GUIShaderGetSdrPeak(), 1.0f);
 
   GLfloat ver[4][2];
   GLfloat tex[4][2];
