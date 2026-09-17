@@ -168,6 +168,8 @@ unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode);
 // (dovi.ko itself ignores it); silently no-ops on a stock kernel.
 void aml_dv_apply_target_overrides(unsigned int mode);
 void aml_dv_set_hdr10_osd_brightness(int nits);
+// Push SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK to the kernel (read per frame).
+void aml_dv_apply_graphics_from_sink();
 // Dolby Vision VSVDB max-luminance override: patch the display's advertised v2
 // VSVDB block and inject it via aml_media force_vsvdb/vsvdb_data. apply() reads
 // the settings and enables/disables accordingly; clear() disables injection.
