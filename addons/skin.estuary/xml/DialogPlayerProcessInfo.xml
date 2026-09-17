@@ -171,6 +171,15 @@
 					<width>900</width>
 					<height>40</height>
 					<aligny>bottom</aligny>
+					<label>[COLOR button_focus]$LOCALIZE[60395]:[/COLOR] $INFO[Player.Process(audiodialnorm)]</label>
+					<font>font12</font>
+					<shadowcolor>black</shadowcolor>
+					<visible>!String.IsEmpty(Player.Process(audiodialnorm))</visible>
+				</control>
+				<control type="label">
+					<width>900</width>
+					<height>40</height>
+					<aligny>bottom</aligny>
 					<label>[COLOR button_focus]$LOCALIZE[31606]:[/COLOR] $VAR[audiostats]</label>
 					<font>font12</font>
 					<shadowcolor>black</shadowcolor>

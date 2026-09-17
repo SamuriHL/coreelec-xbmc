@@ -12,6 +12,7 @@
 #include "cores/DataCacheCore.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/log.h"
 
 #include <memory>
 #include <mutex>
@@ -414,6 +415,7 @@ void CProcessInfo::ResetAudioCodecInfo()
 
   m_audioDecoderName = "unknown";
   m_audioChannels = "unknown";
+  m_audioDialNorm.clear();
   m_audioSampleRate = 0;;
   m_audioBitsPerSample = 0;
   m_audioLiveBitRate = 0;
@@ -424,6 +426,7 @@ void CProcessInfo::ResetAudioCodecInfo()
   {
     m_dataCache->SetAudioDecoderName(m_audioDecoderName);
     m_dataCache->SetAudioChannels(m_audioChannels);
+    m_dataCache->SetAudioDialNorm(m_audioDialNorm);
     m_dataCache->SetAudioSampleRate(m_audioSampleRate);
     m_dataCache->SetAudioBitsPerSample(m_audioBitsPerSample);
     m_dataCache->SetAudioLiveBitRate(m_audioLiveBitRate);
@@ -457,6 +460,21 @@ void CProcessInfo::SetAudioChannels(const std::string &channels)
 
   if (m_dataCache)
     m_dataCache->SetAudioChannels(m_audioChannels);
+}
+
+void CProcessInfo::SetAudioDialNorm(const std::string& dialNorm)
+{
+  std::unique_lock lock(m_audioCodecSection);
+
+  if (dialNorm == m_audioDialNorm)
+    return;
+
+  m_audioDialNorm = dialNorm;
+  if (!m_audioDialNorm.empty())
+    CLog::Log(LOGINFO, "CProcessInfo: passthrough dialogue normalisation {}", m_audioDialNorm);
+
+  if (m_dataCache)
+    m_dataCache->SetAudioDialNorm(m_audioDialNorm);
 }
 
 std::string CProcessInfo::GetAudioChannels()

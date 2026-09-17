@@ -427,6 +427,11 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";
+  static constexpr auto SETTING_COREELEC_AUDIO_AC3_DIALNORM = "coreelec.audio.ac3.dialnorm";
+  static constexpr auto SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM =
+      "coreelec.audio.eac3.atmos.dialnorm";
+  static constexpr auto SETTING_COREELEC_AUDIO_TRUEHD_DIALNORM = "coreelec.audio.truehd.dialnorm";
+  static constexpr auto SETTING_COREELEC_AUDIO_DTS_DIALNORM = "coreelec.audio.dts.dialnorm";
   static constexpr auto SETTING_AUDIOOUTPUT_VOLUMESTEPS = "audiooutput.volumesteps";
   static constexpr auto SETTING_AUDIOOUTPUT_LOWLATENCY = "audiooutput.lowlatency";
   static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";
