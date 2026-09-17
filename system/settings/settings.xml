@@ -3718,6 +3718,59 @@
           </dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="coreelec.audio.ac3.dialnorm" type="boolean" label="60387" help="60388">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="aesettingvisible" setting="audiooutput.config">audiooutput.passthrough</dependency>
+            <dependency type="enable">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.audio.eac3.atmos.dialnorm" type="boolean" parent="coreelec.audio.ac3.dialnorm" label="60389" help="60390">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="aesettingvisible" setting="audiooutput.config">audiooutput.eac3passthrough</dependency>
+            <dependency type="enable">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+                <condition setting="coreelec.audio.ac3.dialnorm" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.audio.truehd.dialnorm" type="boolean" label="60391" help="60392">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="aesettingvisible" setting="audiooutput.config">audiooutput.truehdpassthrough</dependency>
+            <dependency type="enable">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.audio.dts.dialnorm" type="boolean" label="60393" help="60394">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="aesettingvisible" setting="audiooutput.config">audiooutput.dtspassthrough</dependency>
+            <dependency type="enable">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
       </group>
     </category>
     <category id="input" label="14125" help="36374">

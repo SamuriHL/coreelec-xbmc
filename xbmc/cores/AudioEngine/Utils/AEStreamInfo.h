@@ -46,6 +46,13 @@ public:
   unsigned int m_dtsPeriod = 0;
   unsigned int m_repeat = 0;
   unsigned int m_frameSize = 0;
+
+  // Dialogue normalisation of the passthrough bitstream, as the receiver would
+  // apply it: gain in dB (<= 0) before and after any defeat. Informational only,
+  // deliberately not part of operator== (a change must not reopen the sink).
+  bool m_hasDialNorm = false;
+  int m_dialNorm = 0;
+  int m_dialNormApplied = 0;
 };
 
 class CAEStreamParser
@@ -58,6 +65,11 @@ public:
   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
 
   void SetCoreOnly(bool value) { m_coreOnly = value; }
+  // Rewrite the bitstream's dialogue normalisation to 0 dB gain (receiver-side
+  // attenuation off), recomputing the affected CRCs.
+  void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
+  void SetDefeatTrueHDDialNorm(bool value) { m_defeatTrueHDDialNorm = value; }
+  void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
   unsigned int GetChannels() const { return m_info.m_channels; }
@@ -90,12 +102,19 @@ private:
   int m_substreams = 0;       /* used for TrueHD  */
   AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
 
+  bool m_defeatAC3DialNorm = false;
+  bool m_defeatTrueHDDialNorm = false;
+  bool m_defeatDTSDialNorm = false;
+
   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
   unsigned int DetectType(uint8_t *data, unsigned int size);
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
   unsigned int SyncAC3(uint8_t *data, unsigned int size);
   unsigned int SyncDTS(uint8_t *data, unsigned int size);
   unsigned int SyncTrueHD(uint8_t *data, unsigned int size);
+  void ProcessAC3DialNorm(uint8_t* data, unsigned int size);
+  void ProcessDTSDialNorm(uint8_t* data, unsigned int size);
+  void ProcessTrueHDDialNorm(uint8_t* data, unsigned int majorSyncSize);
 
   static unsigned int GetTrueHDChannels(const uint16_t chanmap);
 };
