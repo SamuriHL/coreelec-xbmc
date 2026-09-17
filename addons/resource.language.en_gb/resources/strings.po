@@ -26469,3 +26469,48 @@ msgstr ""
 msgctxt "#60386"
 msgid "0.0083 nit (code 81)"
 msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60387"
+msgid "AC3 / EAC3 dialogue normalisation defeat (0 dB)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60388"
+msgid "Force the dialogue normalisation of AC3 and EAC3 passthrough bitstreams to 0 dB, so the receiver does not turn the soundtrack down to its dialogue level. EAC3 Dolby Atmos is left alone unless the option below is also enabled."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60389"
+msgid "Include EAC3 Atmos (breaks Atmos)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60390"
+msgid "Also apply dialogue normalisation defeat to EAC3 Dolby Atmos (DD+ Atmos) streams. Receivers stop rendering the Atmos objects and fall back to standard Dolby Digital Plus surround. Only enable this if your setup does not use Atmos."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60391"
+msgid "TrueHD dialogue normalisation defeat (0 dB)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60392"
+msgid "Force the dialogue normalisation of TrueHD passthrough bitstreams to 0 dB for every presentation the stream carries (2, 6, 8 channel and Atmos), so the receiver does not turn the soundtrack down. That attenuation is headroom the mix may rely on: on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Turn this off if that happens."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60393"
+msgid "DTS / DTS-HD dialogue normalisation defeat (0 dB)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60394"
+msgid "Force the dialogue normalisation of DTS, DTS-HD High Resolution and DTS-HD Master Audio passthrough bitstreams (including DTS:X) to 0 dB. Many DTS titles carry no dialogue normalisation, so this has no effect on them."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60395"
+msgid "Dialogue normalisation"
+msgstr ""
