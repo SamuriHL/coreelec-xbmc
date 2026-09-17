@@ -409,8 +409,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
-                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER});
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,
+                                   CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK});
   }
+  aml_dv_apply_graphics_from_sink();
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
 
@@ -471,6 +473,12 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     return;
 
   const std::string& settingId = setting->GetId();
+
+  if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK)
+  {
+    aml_dv_apply_graphics_from_sink();
+    return;
+  }
 
   // CMv4.0 append mode / Smart threshold: publish to the codec, which re-pushes
   // them to its bitstream converter on the next packet. Unconditional - the
@@ -666,6 +674,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK,
+                           CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT,
                            CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT})
   {
