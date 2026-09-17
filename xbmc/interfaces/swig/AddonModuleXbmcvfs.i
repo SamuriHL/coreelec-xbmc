@@ -69,6 +69,14 @@ KODI_CONSTRUCT(XBMCAddon::xbmcvfs, Stat)
 %rename ("st_ctime") XBMCAddon::xbmcvfs::Stat::ctime;
 %include "interfaces/legacy/Stat.h"
 
+%ignore XBMCAddon::xbmcvfs::configini::__exit__();
+%extend XBMCAddon::xbmcvfs::configini {
+  void __exit__(PyObject* exc_type = nullptr, PyObject* exc_value = nullptr,
+                PyObject* traceback = nullptr)
+  {
+  }
+}
+
 %include "interfaces/legacy/configini.h"
 
 %rename ("delete") XBMCAddon::xbmcvfs::deleteFile;
