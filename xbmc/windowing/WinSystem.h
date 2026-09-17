@@ -291,6 +291,12 @@ public:
   // alpha blend (see CGUIFontTTFGLES::FirstBegin).
   virtual bool IsHdrComposite() const { return false; }
 
+  // True when overlays already in HDR (UHD PGS, CDVDOverlayImage::m_isHDROverlay)
+  // are drawn in the video pass straight onto the back buffer, bypassing the GUI
+  // composite. False routes them through the GUI layer instead, palette-converted
+  // to sRGB (OVERLAY::ConvertPQPaletteToSRGB) so the composite encodes them once.
+  virtual bool RendersHdrOverlaysInVideoPass() const { return IsHdrComposite(); }
+
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)
    *

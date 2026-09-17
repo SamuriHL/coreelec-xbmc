@@ -205,7 +205,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     //! @todo Move this into the overlay shader once limited-range and
     //! full-range GUI shader variants are kept compiled in parallel and
     //! selectable per draw; then this draw selects the limited variant.
-    if (m_isHDROverlay && CServiceBroker::GetWinSystem()->IsHdrComposite() &&
+    if (m_isHDROverlay && CServiceBroker::GetWinSystem()->RendersHdrOverlaysInVideoPass() &&
         CServiceBroker::GetWinSystem()->UseLimitedColor())
     {
       for (uint32_t& px : rgba)
