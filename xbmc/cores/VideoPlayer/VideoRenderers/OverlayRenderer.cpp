@@ -152,9 +152,9 @@ void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock lock(m_section);
 
-  // during HDR composite the m_isHDROverlay overlays render via
-  // RenderHDROverlays instead
-  const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite();
+  // when the platform draws them in the video pass, the m_isHDROverlay
+  // overlays render via RenderHDROverlays instead
+  const bool hdrInVideoPass = CServiceBroker::GetWinSystem()->RendersHdrOverlaysInVideoPass();
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
@@ -171,7 +171,7 @@ void CRenderer::Render(int idx, float depth)
                                                              stereoView, m_stereomode))
         continue;
 
-      if (!(hdrComposite && o->m_isHDROverlay))
+      if (!(hdrInVideoPass && o->m_isHDROverlay))
         Render(o.get());
     }
   }
@@ -183,7 +183,7 @@ void CRenderer::Render(int idx, float depth)
 // FBO's sRGB->HDR conversion
 void CRenderer::RenderHDROverlays(int idx)
 {
-  if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
+  if (!CServiceBroker::GetWinSystem()->RendersHdrOverlaysInVideoPass())
     return;
 
   std::unique_lock lock(m_section);
