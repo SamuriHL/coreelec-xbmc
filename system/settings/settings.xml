@@ -4224,6 +4224,15 @@
           </constraints>
           <control type="slider" format="integer" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.gui.sinkpeak" type="boolean" label="60396" help="60397">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.vs10.hdr10plus" type="integer" label="60057" help="60058">
           <requirement>HAVE_AMCODEC</requirement>
           <level>2</level>

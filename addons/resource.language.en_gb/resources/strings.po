@@ -26428,3 +26428,13 @@ msgstr ""
 msgctxt "#60395"
 msgid "Dialogue normalisation"
 msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60396"
+msgid "GUI brightness follows the display peak"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60397"
+msgid "On (default): during Dolby Vision processing the menus and on-screen display are mapped to the peak brightness your display reports, as current CoreELEC does, which makes them considerably brighter. Off: use the previous fixed graphics level of about 300 nits."
+msgstr ""
