@@ -282,7 +282,15 @@ bool CVideoPlayerVideo::AcceptsData() const
 
 bool CVideoPlayerVideo::HasData() const
 {
-  return m_messageQueue.GetDataSize() > 0;
+  bool ret;
+
+  if (!(ret = (m_messageQueue.GetDataSize() > 0)))
+  {
+    if (m_pVideoCodec && m_processInfo.IsVideoHwDecoder())
+      ret = m_pVideoCodec->GetDataLevel() > 0;
+  }
+
+  return ret;
 }
 
 bool CVideoPlayerVideo::IsInited() const
@@ -407,7 +415,7 @@ void CVideoPlayerVideo::Process()
         while (!m_bStop && m_pVideoCodec)
         {
           m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
-          if (!ProcessDecoderOutput(frametime, pts))
+          if (!ProcessDecoderOutput(frametime, pts) || m_processInfo.IsVideoHwDecoder())
             break;
         }
 
