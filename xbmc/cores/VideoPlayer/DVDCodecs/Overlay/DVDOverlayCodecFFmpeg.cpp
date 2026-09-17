@@ -17,14 +17,12 @@
 #include "cores/FFmpeg.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
-#include "cores/VideoPlayer/PQGraphicsTransform.h"
 #include "utils/EndianSwap.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
 #include <cstddef>
-#include <optional>
 #include <utility>
 
 using namespace KODI::VIDEO::SUBTITLES;
@@ -81,12 +79,6 @@ bool CDVDOverlayCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &optio
   // decoding of this kind of subs does not work reliable
   if (hints.codec == AV_CODEC_ID_EIA_608)
     return false;
-
-  m_pqAuthoredGraphics = hints.pqAuthoredGraphics;
-  if (hints.codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
-    CLog::Log(LOGDEBUG, "{} - PG palette regime: {}", __FUNCTION__,
-              m_pqAuthoredGraphics ? "BT.2020 PQ, pre-inverting to sRGB"
-                                   : "sRGB, no pre-inversion");
 
   const AVCodec* pCodec = avcodec_find_decoder(hints.codec);
   if (!pCodec)
@@ -333,28 +325,8 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
       t += overlay->linesize;
     }
 
-    // PG graphics on an HDR title are authored in BT.2020 PQ, but everything
-    // downstream treats overlays as sRGB and encodes them again - leaving
-    // subtitle white near 29 nits instead of ~203, desaturated (measured
-    // on-box against a UB820 reference player). Pre-invert so exactly one
-    // forward encode remains.
-    //
-    // The palette is the right place: it is at most 256 entries rather than
-    // every pixel, and it is still NON-premultiplied here. OVERLAY::build_rgba
-    // folds alpha in later, and PQ decoding is non-linear, so a premultiplied
-    // value would decode to the wrong luminance.
-    const bool prePQ = m_pqAuthoredGraphics &&
-                       m_pCodecContext->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
-    // Built once for the whole palette - the constructor resolves the GUI
-    // reference white, so it must not be reconstructed per entry.
-    std::optional<PQGRAPHICS::CPQGraphicsTransform> transform;
-    if (prePQ)
-      transform.emplace();
     for (int i = 0; i < rect.nb_colors; i++)
-    {
-      const uint32_t px = Endian_SwapLE32(((uint32_t*)rect.data[1])[i]);
-      overlay->palette[i] = transform ? transform->Convert(px) : px;
-    }
+      overlay->palette[i] = Endian_SwapLE32(((uint32_t *)rect.data[1])[i]);
 
     // CProcessInfo would be the natural owner of the source stereo layout, but it is not
     // accessible from an overlay codec. DataCacheCore provides the video player's thread-safe
