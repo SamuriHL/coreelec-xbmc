@@ -57,6 +57,7 @@ public:
   // it to BT.2020 PQ once, post-blend, instead of per-primitive in the GUI
   // shaders (which blends anti-aliased edges in PQ space). See CRendererAML.
   bool SetGuiCompositing(int colorTransfer) override;
+  bool BeginRender() override;
   bool BeginGuiComposite(bool guiWillRender) override;
   void EndGuiComposite() override;
   void CompositeGui() override;
