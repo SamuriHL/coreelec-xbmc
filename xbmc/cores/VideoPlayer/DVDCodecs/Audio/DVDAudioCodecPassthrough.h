@@ -18,6 +18,9 @@
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
+#include "settings/lib/ISettingCallback.h"
+
+#include <atomic>
 
 #include <list>
 #include <memory>
@@ -26,7 +29,7 @@
 class CProcessInfo;
 class CPackerMAT;
 
-class CDVDAudioCodecPassthrough : public CDVDAudioCodec
+class CDVDAudioCodecPassthrough : public CDVDAudioCodec, public ISettingCallback
 {
 public:
   CDVDAudioCodecPassthrough(CProcessInfo &processInfo, CAEStreamInfo::DataType streamType);
@@ -41,6 +44,8 @@ public:
   bool NeedPassthrough() override { return true; }
   std::string GetName() override { return m_codecName; }
   int GetBufferSize() override;
+
+  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 
   //============================================================================
   // LAV Audio passthrough A/V sync (OFF by default)
@@ -61,6 +66,7 @@ public:
 
 private:
   int GetData(uint8_t** dst);
+  void UpdateDialNormSettings();
   unsigned int PackTrueHD();
   CDVDStreamInfo m_hints;
   CAEStreamParser m_parser;
@@ -81,6 +87,14 @@ private:
   unsigned int m_trueHDoffset = 0;
   unsigned int m_trueHDframes = 0;
   bool m_deviceIsRAW{false};
+
+  // Dialogue normalisation defeat, cached from the settings callback (settings
+  // thread) and applied to the parser on the audio thread.
+  std::atomic<bool> m_defeatAC3DialNorm{false};
+  std::atomic<bool> m_defeatEAC3AtmosDialNorm{false};
+  std::atomic<bool> m_defeatTrueHDDialNorm{false};
+  std::atomic<bool> m_defeatDTSDialNorm{false};
+  bool m_isEAC3JOC{false};
 
   //============================================================================
   // LAV Audio A/V Sync state (only used when m_lavStyleSyncEnabled == true)
