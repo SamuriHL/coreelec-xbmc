@@ -764,7 +764,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     m_overlays.RenderHDROverlays(m_presentsource);
   }
 
-  if (gui || m_renderDebug)
+  // Under the HDR GUI composite the video pass draws onto the PQ back buffer that
+  // the GUI is composited over, so only HDR overlays belong there; the GUI pass
+  // still renders the debug overlay into the FBO.
+  if (gui || (m_renderDebug && !CServiceBroker::GetWinSystem()->IsHdrComposite()))
   {
     if (!m_pRenderer->IsGuiLayer())
       m_pRenderer->Update();
