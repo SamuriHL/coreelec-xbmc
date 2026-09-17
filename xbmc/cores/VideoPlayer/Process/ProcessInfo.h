@@ -76,6 +76,7 @@ public:
   std::string GetAudioDecoderName();
   void SetAudioChannels(const std::string &channels);
   std::string GetAudioChannels();
+  void SetAudioDialNorm(const std::string& dialNorm);
   void SetAudioSampleRate(int sampleRate);
   int GetAudioSampleRate();
   void SetAudioBitsPerSample(int bitsPerSample);
@@ -172,6 +173,7 @@ protected:
   // player audio info
   std::string m_audioDecoderName;
   std::string m_audioChannels;
+  std::string m_audioDialNorm;
   int m_audioSampleRate;
   int m_audioBitsPerSample;
   int m_audioLiveBitRate = 0;

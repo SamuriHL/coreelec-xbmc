@@ -367,6 +367,9 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
     case PLAYER_PROCESS_AUDIO_QUEUE_DATA_LEVEL:
       value = std::to_string(CServiceBroker::GetDataCacheCore().GetAudioQueueDataLevel());
       return true;
+    case PLAYER_PROCESS_AUDIO_DIALNORM:
+      value = CServiceBroker::GetDataCacheCore().GetAudioDialNorm();
+      return true;
     case PLAYER_PROCESS_VIDEO_LIVE_BITRATE:
       value = StringUtils::Format(
           "{:.1f}", CServiceBroker::GetDataCacheCore().GetVideoLiveBitRate() / 1048576.0);
