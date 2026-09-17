@@ -286,14 +286,11 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
   if (!isHDROverlay)
     return false;
 
-  // Convert to sRGB unless the overlay is going to a PQ destination: the video
-  // pass under the HDR composite, or a GUI layer that is output as an HDR signal.
-  // A GUI layer that is itself composited is an sRGB FBO, whatever the output.
+  // Convert to sRGB unless the overlay is going to a PQ destination: the HDR
+  // composite, or a GUI layer that is output as an HDR signal.
   const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   const bool destinationIsPQ =
-      winSystem->RendersHdrOverlaysInVideoPass() ||
-      (!winSystem->IsHdrComposite() &&
-       winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR);
+      winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
   return !destinationIsPQ;
 }
 
