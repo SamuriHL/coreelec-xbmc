@@ -1028,6 +1028,26 @@ void aml_dv_set_vs10_mode(unsigned int mode)
             __FUNCTION__, mode, (mode + 1) % 6);
 }
 
+void aml_dv_apply_graphics_from_sink()
+{
+  // Kernel patch 0015: with the upstream sink min/max flag on, N keeps the DV
+  // graphics (GUI) peak at the per-format table value (300 nits) instead of the
+  // display's VSVDB peak. Absent on kernels without the patch.
+  CSysfsPath param{"/sys/module/aml_media/parameters/amdv_graphics_from_sink"};
+  if (!param.Exists())
+    return;
+
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+  if (!settings)
+    return;
+
+  const bool fromSink = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK);
+  param.Set(fromSink ? "Y" : "N");
+  CLog::Log(LOGINFO, "AMLUtils::{} - DV graphics peak {}", __FUNCTION__,
+            fromSink ? "follows the display" : "per-format (300 nits)");
+}
+
 void aml_dv_set_hdr10_osd_brightness(int nits)
 {
   // OSD graphics peak luminance for VS10 HDR10 output. The donor wrote
