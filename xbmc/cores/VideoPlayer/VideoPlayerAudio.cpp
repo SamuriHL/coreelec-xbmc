@@ -18,6 +18,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 
 #include <mutex>
@@ -277,6 +278,19 @@ void CVideoPlayerAudio::UpdatePlayerInfo()
   m_processInfo.SetAudioLiveBitRate(m_audioStats.GetBitrate());
   m_processInfo.SetAudioQueueLevel(std::min(99, m_messageQueue.GetLevel()));
   m_processInfo.SetAudioQueueDataLevel(std::min(99, m_messageQueue.GetLevel(true)));
+
+  std::string dialNorm;
+  if (info.passthrough)
+  {
+    const CAEStreamInfo& streamInfo = m_pAudioCodec->GetFormat().m_streamInfo;
+    if (streamInfo.m_hasDialNorm)
+    {
+      dialNorm = StringUtils::Format("{} dB", streamInfo.m_dialNorm);
+      if (streamInfo.m_dialNormApplied != streamInfo.m_dialNorm)
+        dialNorm += StringUtils::Format(" (applied {} dB)", streamInfo.m_dialNormApplied);
+    }
+  }
+  m_processInfo.SetAudioDialNorm(dialNorm);
 }
 
 void CVideoPlayerAudio::Process()
