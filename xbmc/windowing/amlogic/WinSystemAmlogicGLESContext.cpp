@@ -438,6 +438,27 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
   return m_guiCompositing;
 }
 
+bool CWinSystemAmlogicGLESContext::BeginRender()
+{
+  if (!CRenderSystemGLES::BeginRender())
+    return false;
+
+  // CApplication::Render runs the video pass (RenderEx) before the GUI here, and
+  // it draws HDR overlays (UHD PGS) straight onto the OSD back buffer. Clear
+  // before that pass rather than after it, or the composite would present them
+  // wiped - and letterbox areas would keep stale swap-chain content otherwise.
+  if (m_guiCompositing)
+  {
+    // the scissor box still holds whatever the previous frame's GUI left
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+  }
+
+  return true;
+}
+
 bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
 {
   if (!m_guiCompositing)
@@ -531,18 +552,6 @@ void CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
   if (m_guiWillRender)
     m_guiFbo.EndRender();
-
-  // When the GUI didn't render this frame the cached OSD front buffer is
-  // reused and PresentRender skips the swap, so clearing the back buffer is
-  // wasted (dual-plane: nothing else draws into it).
-  if (!m_guiWillRender)
-    return;
-
-  // Clear the back buffer before video renders. In the FBO compositing path,
-  // video renders with clear=false, so DrawBlackBars is never called; without
-  // this, letterbox areas retain stale swap-chain content.
-  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
 }
 
 // CompositeGui is the last GL operation in the frame (called just before the
@@ -581,8 +590,11 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
   // The OSD plane is alpha-composited over the amvideo plane by the VPP. The
   // default blend also multiplies the stored alpha (leaving src.a^2); the
   // hardware composite then reads that squared alpha and translucent GUI
-  // pixels render at the wrong opacity. Replace the stored alpha with src.a.
-  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+  // pixels render at the wrong opacity. Composite the stored alpha "over"
+  // (src.a + dst.a * (1 - src.a)) instead: the back buffer is cleared to 0, so
+  // this is exactly src.a except under HDR overlays already drawn by the video
+  // pass, which keep their coverage.
+  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
   // orthographic projection (screen coords, Y-down)
   float w = static_cast<float>(m_guiFboWidth);
