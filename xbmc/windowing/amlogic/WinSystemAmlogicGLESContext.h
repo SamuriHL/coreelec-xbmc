@@ -61,10 +61,6 @@ public:
   void EndGuiComposite() override;
   void CompositeGui() override;
   bool IsHdrComposite() const override { return m_guiCompositing; }
-  // The video pass cannot carry overlays here: EndGuiComposite clears the OSD
-  // back buffer after it, and the composite replaces the stored alpha the VPP
-  // blends the OSD plane with. HDR overlays go through the GUI FBO instead.
-  bool RendersHdrOverlaysInVideoPass() const override { return false; }
   void ClearOverlayPlane() override;
 
   EGLDisplay GetEGLDisplay() const;
