@@ -959,17 +959,43 @@ void CRenderManager::UpdateResolution()
             user_stereo_mode == RenderStereoMode::UNDEFINED)
           m_bTriggerUpdateResolution = false;
 
-        if (m_bTriggerUpdateResolution &&
-          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
+        if (m_bTriggerUpdateResolution)
         {
+          // Whether we may CHOOSE a different display mode. Separate from whether
+          // the window update runs at all: on Amlogic the HDMI colour attributes
+          // for a Dolby Vision engage or release are decided inside
+          // CreateNewWindow (aml_output_wire_stale -> apply_dv_wire_format /
+          // the RESERVED6 hand-back), and skipping the update entirely because
+          // the user does not want refresh-rate switching left the link on the
+          // GUI's own format with the DV core already engaged. Measured on an
+          // AM9 Pro 2026-09-19 with videoplayer.adjustrefreshrate = Off: a live
+          // VS10 switch to DV put the core in IPT_TUNNEL while the wire stayed
+          // 12-bit YUV422 and the sink's EOTF never left SDR - no DV signal at
+          // all - and the leaving path was equally inert. Reported from the
+          // field as "DV-Std with 10-bit RGB instead of the 8-bit RGB tunnel",
+          // which is the same fault on a sink that negotiates further.
+          const bool mayChooseMode =
+              CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+                  CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF &&
+              m_fps > 0.0f;
+
+          // Keeping the incumbent resolution makes this a no-op for everyone
+          // else: CreateNewWindow still returns "no need to create a new window"
+          // unless something genuinely changed - the HDR type, the stereo mode,
+          // or a stale DV wire - so refresh-rate switching stays off for the
+          // people who asked for it off.
           // disc-session mode hold: see GetResolution()
           RESOLUTION res =
-              aml_disc_mode_hold()
-                  ? ChooseHeldResolution(
-                        m_fps, CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(),
-                        !m_picture.stereoMode.empty(), m_picture.iWidth, m_picture.iHeight)
-                  : CResolutionUtils::ChooseBestResolution(
-                        m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+              !mayChooseMode
+                  ? CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()
+                  : (aml_disc_mode_hold()
+                         ? ChooseHeldResolution(
+                               m_fps,
+                               CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(),
+                               !m_picture.stereoMode.empty(), m_picture.iWidth, m_picture.iHeight)
+                         : CResolutionUtils::ChooseBestResolution(
+                               m_fps, m_picture.iWidth, m_picture.iHeight,
+                               !m_picture.stereoMode.empty()));
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
