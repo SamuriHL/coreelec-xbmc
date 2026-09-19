@@ -623,12 +623,24 @@ bool aml_dv_wire_format_mismatch()
   const bool player_led = (CServiceBroker::GetSettingsComponent()->GetSettings()->
     GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED);
 
+  // One-line digest of what the link is actually carrying. The node opens
+  // "Colour depth: N-bit\nColourspace: X\nColour range: ...", and a wire that
+  // satisfies this check is exactly as interesting as one that does not: a
+  // wrongly-satisfied check is otherwise invisible, because the caller then
+  // simply does nothing.
+  std::string wire = cfg.substr(0, cfg.find("Colour range"));
+  StringUtils::Replace(wire, '\n', ' ');
+  StringUtils::Trim(wire);
+
   const bool wire_ok = player_led ? (cfg.find("Colour depth: 12-bit") != std::string::npos)
                                   : (cfg.find("Colour depth: 8-bit") != std::string::npos);
   if (!wire_ok)
     CLog::Log(LOGINFO, "aml_dv_wire_format_mismatch: DV output mode {} needs a {} link, "
-              "current wire is not - forcing the modeset that re-decides it",
-              mode, player_led ? "YUV422 12-bit" : "RGB/444 8-bit");
+              "current wire is not ({}) - forcing the modeset that re-decides it",
+              mode, player_led ? "YUV422 12-bit" : "RGB/444 8-bit", wire);
+  else
+    CLog::Log(LOGDEBUG, "aml_dv_wire_format_mismatch: DV output mode {} already on its "
+              "{} link ({})", mode, player_led ? "YUV422 12-bit" : "RGB/444 8-bit", wire);
   return !wire_ok;
 }
 
@@ -1014,6 +1026,29 @@ void aml_dv_set_vs10_mode(unsigned int mode)
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
     CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", __FUNCTION__);
     aml_dv_publish_follow_source_mode(dv_enabled);
+    // Follow-source resolved to BYPASS: this source is not DV, so the core has no
+    // job left - and leaving it merely idle is NOT neutral for the HDMI wire.
+    // Kernel patch 0004's is_amdv_output_dv() deliberately counts
+    // BYPASS-with-the-core-enabled as DV (it covers the window at DV stream start
+    // where the mode has not resolved yet), so decide_color_attr keeps forcing the
+    // tunnel format: the link stays pinned at RGB/444 8-bit under TV-led or YUV422
+    // 12-bit under player-led, and CAMLDRMUtils::leaving_dv_wire() rightly refuses
+    // to spend a re-clock that would land straight back on it. That is what left
+    // "Original" unable to restore the native wire however many times it was
+    // pressed. Take the core down instead, through the same ordered teardown the
+    // disc-session release uses - the VSIF-latch hazard is identical and the
+    // ordering there is the version that survived it.
+    //
+    // A DV source never reaches this: the publish above reads the mode the kernel
+    // resolved synchronously, and re-read here it is IPT/IPT_TUNNEL, so the core
+    // stays up and keeps producing the DV output "Original" is asking for.
+    if (dv_enabled && aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    {
+      CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to BYPASS on a non-DV "
+                         "source - taking the DV core down so the wire can go native",
+                __FUNCTION__);
+      dv_teardown_to_bypass();
+    }
     return;
   }
 
