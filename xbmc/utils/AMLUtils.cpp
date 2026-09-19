@@ -1064,6 +1064,42 @@ void aml_dv_set_vs10_mode(unsigned int mode)
 
   // Force the requested VS10 output mode.
   dolby_vision_enable.Set('Y');
+  // Re-assert the LED choice HERE, not only at decoder open.
+  //
+  // dolby_vision_ll_policy is a module param with no reset anywhere: CloseDecoder
+  // leaves it set, and until now the only writers were CAMLCodec::OpenDecoder's
+  // dv_enable branch and aml_dv_pre_engage_disc_session(). A live VS10 engage
+  // therefore inherited whatever the LAST DV decoder open left behind, so the
+  // driver's LED policy could contradict the user's current selection.
+  //
+  // Measured on an AM9 Pro 2026-09-19 against 20260917084023, the reporter's
+  // sequence exactly: TV-led native DV (decoder open correctly writes LL_DISABLE)
+  // -> stop -> select player-led -> convert SDR to DV with the live action. The
+  // core went to IPT (the player-led form) while the driver stayed in LL_DISABLE,
+  // and the sink's EOTF never left SDR - the DV signal did not engage at all.
+  // The mirror case is just as reachable: with LL_YUV422 left over, a TV-led
+  // IPT_TUNNEL engage signalled DV-LL over a 12-bit link.
+  //
+  // Written BEFORE the policy and mode writes, mirroring the ordering
+  // aml_dv_pre_engage_disc_session() already uses. Only meaningful when the output
+  // is actually DV: an HDR10/SDR conversion carries no DV signal, and the next DV
+  // engage - here or at a decoder open - writes the param again regardless.
+  if (mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+  {
+    const bool playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->
+      GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+    CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
+    if (ll_policy.Exists())
+    {
+      const unsigned int want = playerLed ? 1u /* DOLBY_VISION_LL_YUV422 */
+                                          : 0u /* DOLBY_VISION_LL_DISABLE */;
+      ll_policy.Set(want);
+      const int got = ll_policy.Get<int>().value_or(-1);
+      CLog::Log(got == static_cast<int>(want) ? LOGDEBUG : LOGWARNING,
+                "AMLUtils::{} - DV {} led: dolby_vision_ll_policy set to {}, reads back {}",
+                __FUNCTION__, playerLed ? "player" : "TV", want, got);
+    }
+  }
   dolby_vision_policy.Set(AMDV_FORCE_OUTPUT_MODE);
   // Published so CRendererAML::ConfigChanged re-resolves the GUI/OSD encoding
   // for the new output instead of keeping the stream-open one.
