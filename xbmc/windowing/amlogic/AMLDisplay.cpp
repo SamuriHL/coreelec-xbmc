@@ -574,14 +574,19 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
     }
   }
 
-  // Leaving the TV-led DV tunnel: on this commit the kernel would only re-test, and
-  // keep, the tunnel's 8-bit attr. RESERVED6 makes it decide the native format
-  // again (meson_hdmitx_decide_color_attr, which is DV-aware).
-  if (leaving_tvled_dv_wire())
+  // Leaving a DV tunnel: the kernel carries colorformat/bitdepth forward in the
+  // connector state (meson_hdmitx_atomic_duplicate_state) and, on this commit,
+  // would only re-test the stale attr and keep it - meson_hdmitx_decide_color_attr
+  // never runs while the carried-over attr is merely SUPPORTED by the new mode.
+  // RESERVED6 is the one value that forces the re-decide, and it settles both the
+  // colour space and the bit depth. Needed for BOTH tunnel formats: TV-led leaves
+  // 8-bit behind, player-led leaves 12-bit YUV422, and an SDR/HDR10 return happily
+  // accepts either.
+  if (leaving_dv_wire())
   {
     // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
     constexpr unsigned int HDMI_CS_RESERVED6 = 6;
-    CLog::Log(LOGINFO, "CAMLDRMUtils::{} - leaving the TV-led DV link, letting the kernel "
+    CLog::Log(LOGINFO, "CAMLDRMUtils::{} - leaving the DV link, letting the kernel "
               "decide the native format again", __FUNCTION__);
     set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR,
                 HDMI_CS_RESERVED6, NULL);
@@ -608,7 +613,9 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 
     apply_dv_wire_format();
-    m_wireTvLedDv = aml_dv_core_outputs_dv() && !aml_dv_wire_format_is_lldv();
+    // Either tunnel format counts: the leaving path has to hand the wire back
+    // whether we pinned it to 8-bit (TV-led) or to 12-bit YUV422 (player-led).
+    m_wireDvTunnel = aml_dv_core_outputs_dv();
 
     aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
 
@@ -739,9 +746,9 @@ void CAMLDRMUtils::apply_dv_wire_format()
 
 // A disc session holding DV keeps the sink's Dolby VSIF latched across its segment
 // swaps, so the wire must stay in the tunnel format for as long as it holds.
-bool CAMLDRMUtils::leaving_tvled_dv_wire() const
+bool CAMLDRMUtils::leaving_dv_wire() const
 {
-  return m_wireTvLedDv && !aml_dv_disc_engaged() && aml_dv_core_leaves_native_wire();
+  return m_wireDvTunnel && !aml_dv_disc_engaged() && aml_dv_core_leaves_native_wire();
 }
 
 // True when the HDMI wire no longer fits the output (a live VS10 switch changes the
@@ -752,7 +759,7 @@ bool CAMLDRMUtils::aml_output_wire_stale()
 {
   if (aml_dv_disc_engaged())
     return false;
-  return (aml_dv_core_outputs_dv() && aml_dv_wire_format_mismatch()) || leaving_tvled_dv_wire();
+  return (aml_dv_core_outputs_dv() && aml_dv_wire_format_mismatch()) || leaving_dv_wire();
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
