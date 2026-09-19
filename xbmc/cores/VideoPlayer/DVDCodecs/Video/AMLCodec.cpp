@@ -2280,13 +2280,26 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     aml_dv_apply_vsvdb();
 
     // use player led mode when enabled
-    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-            CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
-        !display_support_dv)
-      AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC, DOLBY_VISION_LL_YUV422);
-    else
-      AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC,
-                                      DOLBY_VISION_LL_DISABLE);
+    const bool ll_player_led =
+        (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+             CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
+         !display_support_dv);
+    const unsigned int ll_want =
+        ll_player_led ? DOLBY_VISION_LL_YUV422 : DOLBY_VISION_LL_DISABLE;
+    AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC, ll_want);
+    // This decoder open is the ONLY place the LED choice reaches the driver:
+    // CloseDecoder never resets dolby_vision_ll_policy and aml_dv_set_vs10_mode()
+    // never re-asserts it, so between streams it is whatever the last DV open
+    // left. That makes a silently-dropped write indistinguishable from a stale
+    // one in the field, so read the module param back rather than trusting the
+    // DRM property round-trip, and say so when they disagree.
+    {
+      CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
+      const int ll_got = ll_policy.Exists() ? ll_policy.Get<int>().value_or(-1) : -1;
+      CLog::Log(ll_got == static_cast<int>(ll_want) ? LOGDEBUG : LOGWARNING,
+                "CAMLCodec::OpenDecoder - DV {} led: dolby_vision_ll_policy requested {}, "
+                "reads back {}", ll_player_led ? "player" : "TV", ll_want, ll_got);
+    }
 
     // setup Dolby Vision VS-Engine for non DV media
     if (hints.dovi.dv_profile == 0)
