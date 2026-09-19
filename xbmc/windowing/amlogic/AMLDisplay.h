@@ -126,13 +126,15 @@ private:
                   void* data = nullptr,
                   int* data_len = nullptr);
   void apply_dv_wire_format();
-  bool leaving_tvled_dv_wire() const;
+  bool leaving_dv_wire() const;
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
   int m_fd{-1};
-  // The last mode set left the link in the TV-led DV tunnel format (8-bit).
-  bool m_wireTvLedDv{false};
+  // The last mode set left the link in a DV tunnel format: TV-led (RGB/444
+  // 8-bit) or player-led/LLDV (YUV422 12-bit). Either one has to be handed back
+  // to the kernel on the way out - see leaving_dv_wire().
+  bool m_wireDvTunnel{false};
   int m_width;
   int m_height;
   int m_ScreenWidth;
