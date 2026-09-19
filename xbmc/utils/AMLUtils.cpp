@@ -1039,9 +1039,19 @@ void aml_dv_set_vs10_mode(unsigned int mode)
     // disc-session release uses - the VSIF-latch hazard is identical and the
     // ordering there is the version that survived it.
     //
-    // A DV source never reaches this: the publish above reads the mode the kernel
-    // resolved synchronously, and re-read here it is IPT/IPT_TUNNEL, so the core
-    // stays up and keeps producing the DV output "Original" is asking for.
+    // A DV source never reaches this: the dv_mode write above runs the
+    // follow-source policy synchronously, so re-reading the kernel here gives
+    // what it actually resolved - IPT/IPT_TUNNEL for a DV source, HDR10 for an
+    // HDR10 source on an HDR display - and only a genuine BYPASS takes the core
+    // down. Measured on an AM9 Pro 2026-09-19: native DV resolved to 1 and HDR10
+    // to 2 (both left the core up, the leaving path in CAMLDRMUtils handled the
+    // wire), SDR resolved to BYPASS and tore down as intended.
+    //
+    // Do NOT lean on aml_dv_publish_follow_source_mode()'s own "mode > BYPASS"
+    // early-out to make this distinction: BYPASS is 5, the HIGHEST value in the
+    // enum, so that guard can never fire and the helper publishes every resolved
+    // mode. Left alone deliberately - publishing IPT_TUNNEL/HDR10 is what the
+    // OSD-encoding gate and the target overrides want - but it is not a filter.
     if (dv_enabled && aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_BYPASS)
     {
       CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to BYPASS on a non-DV "
