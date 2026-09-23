@@ -506,6 +506,11 @@ protected:
    * full persist-forever semantics. */
   int64_t m_argbFlushLastTick = 0;
   int m_argbFlushStreak = 0;
+  // BD-J ARGB plane lifecycle, for the debug log: a BD-J screen that plays no
+  // playlist has no video under it, and whether its graphics ever reach us is
+  // otherwise invisible. Touched only on the JVM graphics thread.
+  int m_argbDrawsSinceInit = 0;
+  int m_argbFlushesSinceInit = 0;
   /* diagnostics only: tracks whether the keep-alive streak is currently
    * earned, so OverlayFlush logs the transitions instead of every flush */
   bool m_argbKeepAliveActive = false;
