@@ -231,11 +231,8 @@ void CRenderer::RenderHDROverlays(int idx)
                           std::chrono::steady_clock::now() - diag0)
                           .count();
   if (diagMs > 20 || m_textureid != diagTex0)
-    CLog::Log(LOGDEBUG, "DIAG OverlayRender HDR idx {} elems {} drawn {} newTex {} cache {} {}ms "
-              "rs({},{},{},{}) rd({},{},{},{}) rv({},{},{},{})",
-              idx, list.size(), diagDrawn, m_textureid - diagTex0, m_textureCache.size(), diagMs,
-              m_rs.x1, m_rs.y1, m_rs.x2, m_rs.y2, m_rd.x1, m_rd.y1, m_rd.x2, m_rd.y2, m_rv.x1,
-              m_rv.y1, m_rv.x2, m_rv.y2);
+    CLog::Log(LOGDEBUG, "DIAG OverlayRender HDR idx {} elems {} drawn {} newTex {} cache {} {}ms",
+              idx, list.size(), diagDrawn, m_textureid - diagTex0, m_textureCache.size(), diagMs);
 }
 
 void CRenderer::Render(COverlay* o)
