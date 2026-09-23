@@ -221,6 +221,8 @@ namespace OVERLAY {
 
     void Release(std::vector<SElement>& list);
     void ReleaseCache();
+    // drop converted textures when their destination regime changes
+    void ReleaseCacheOnRegimeChange();
     void ReleaseUnused();
 
     /*!
@@ -238,6 +240,9 @@ namespace OVERLAY {
     std::vector<SElement> m_buffers[NUM_BUFFERS];
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
+    // PQ destination (HDR composite / PQ GUI) the cached textures were
+    // converted for: -1 unknown, 0 SDR, 1 PQ
+    int m_cachePqDestination = -1;
     CRect m_rv; // Frame size
     CRect m_rs; // Source size
     CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)

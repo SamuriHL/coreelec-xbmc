@@ -377,6 +377,21 @@ bool CRenderManager::IsPresenting()
 void CRenderManager::FrameMove()
 {
   bool firstFrame = false;
+
+  {
+    std::unique_lock lock(m_statelock);
+    if (m_renderState == STATE_UNCONFIGURED)
+    {
+      lock.unlock();
+      // No video configured. A disc can still show a screen with no playlist
+      // (BD-J); keep its presentation-time composition current for Render().
+      // No display-mode decision without a picture: the first Configure()
+      // triggers the resolution update again.
+      m_overlays.PrepareOverlays(-1);
+      return;
+    }
+  }
+
   UpdateResolution();
 
   {
@@ -724,6 +739,41 @@ RESOLUTION CRenderManager::GetResolution()
   return res;
 }
 
+// No picture presented: a disc screen with no playlist behind it, or the gap
+// between a new video's Configure() and its first frame. A real player shows
+// the disc's graphics over black here, so draw the presentation-time
+// composition over the full screen (the fullscreen window has already cleared
+// to black). Nothing else in the video path applies without a picture.
+void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
+{
+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+  auto& gfx = winSystem->GetGfxContext();
+
+  // the fullscreen video window owns this; a GUI video control (a skin's
+  // preview) must not get the disc's full-screen graphics
+  if (!gfx.IsFullScreenVideo())
+    return;
+
+  CRect view(0, 0, static_cast<float>(gfx.GetWidth()), static_cast<float>(gfx.GetHeight()));
+
+  if (!gui)
+  {
+    // the HDR composite only exists once a renderer is configured
+    if (configured && m_overlays.HasHDROverlays(-1))
+    {
+      m_overlays.SetVideoRect(view, view, view);
+      const bool offscreen = winSystem->BeginHdrOverlayRender();
+      m_overlays.RenderHDROverlays(-1);
+      if (offscreen)
+        winSystem->EndHdrOverlayRender(true);
+    }
+    return;
+  }
+
+  m_overlays.SetVideoRect(view, view, view);
+  m_overlays.Render(-1);
+}
+
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
   CSingleExit exitLock(CServiceBroker::GetWinSystem()->GetGfxContext());
@@ -731,7 +781,12 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     std::unique_lock lock(m_statelock);
     if (m_presentsource == -1 || (m_renderState != STATE_CONFIGURED))
+    {
+      const bool configured = m_renderState == STATE_CONFIGURED;
+      lock.unlock();
+      RenderWithoutPicture(gui, configured);
       return;
+    }
   }
 
   if (!gui && m_pRenderer->IsGuiLayer())

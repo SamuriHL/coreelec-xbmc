@@ -540,6 +540,11 @@ protected:
 
   bool OpenInputStream();
   bool OpenDemuxStream();
+  // A disc (BD-J) showing a screen with no playlist: nothing to demux yet
+  bool IsDiscWaitingForPlayback();
+  // present such a screen: leave the busy dialog, go fullscreen, route keys
+  void CheckMenuOnlyStart();
+  void SignalStreamsReady();
   void CloseDemuxer();
   void OpenDefaultStreams(bool reset = true);
   void UpdateHasVideoAudio();
@@ -763,6 +768,10 @@ protected:
   bool m_updateStreamDetails{false};
 
   std::atomic<bool> m_displayLost;
+  // playback started on a disc screen with no stream behind it (BD-J screen
+  // with no playlist); HasVideo() reports it so the fullscreen video window
+  // can own the screen and the remote. Read from the GUI thread.
+  std::atomic<bool> m_discMenuOnly{false};
   std::atomic<bool> m_repostDiscOverlays{false};
 
   double m_messageQueueTimeSize{0.0};
