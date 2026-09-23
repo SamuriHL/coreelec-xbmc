@@ -41,6 +41,7 @@ public:
   void UpdateResolutions() override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
+  float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
 
   virtual void Register(IDispResource *resource);
