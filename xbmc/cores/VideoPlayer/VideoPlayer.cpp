@@ -5411,6 +5411,43 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
         hint.colorSpace = m_CurrentVideo.hint.colorSpace;
         hint.colorPrimaries = m_CurrentVideo.hint.colorPrimaries;
         hint.colorTransferCharacteristic = m_CurrentVideo.hint.colorTransferCharacteristic;
+
+        // The video's transfer tag misses PQ-authored titles: Dolby Vision
+        // profile 5 leaves it unspecified, and a DV output then runs an
+        // untagged PQ palette through the GUI composite, encoding it to PQ a
+        // second time (washed, near-white colours). Decide the regime the way
+        // the pre-20260909 PG pre-invert did and tag PQ so the HDR overlay path
+        // owns it. Disc playback: the playlist's STN dynamic range. Files: the
+        // demuxer's pristine hdr_type - NOT m_CurrentVideo.hint.hdrType, which
+        // the VS10 engage rewrites to DOLBYVISION even for SDR sources.
+        bool pqAuthored = false;
+        bool haveDiscRegime = false;
+#if defined(HAVE_LIBBLURAY)
+        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        {
+          pqAuthored = bluray->HasPqAuthoredGraphics();
+          haveDiscRegime = true;
+        }
+#endif
+        if (!haveDiscRegime && m_pDemuxer && m_CurrentVideo.id >= 0)
+        {
+          CDemuxStream* videoStream =
+              m_pDemuxer->GetStream(m_CurrentVideo.demuxerId, m_CurrentVideo.id);
+          if (videoStream && videoStream->type == StreamType::VIDEO)
+          {
+            const StreamHdrType hdr = static_cast<CDemuxStreamVideo*>(videoStream)->hdr_type;
+            pqAuthored = hdr == StreamHdrType::HDR_TYPE_HDR10 ||
+                         hdr == StreamHdrType::HDR_TYPE_HDR10PLUS ||
+                         hdr == StreamHdrType::HDR_TYPE_DOLBYVISION;
+          }
+        }
+        if (pqAuthored)
+          hint.colorTransferCharacteristic = AVCOL_TRC_SMPTE2084;
+        CLog::Log(LOGDEBUG, "CVideoPlayer::OpenStream - PGS palette regime: {} ({}, video trc {})",
+                  hint.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084 ? "PQ" : "not PQ",
+                  haveDiscRegime ? "disc STN" : "video hdr_type",
+                  static_cast<int>(m_CurrentVideo.hint.colorTransferCharacteristic));
       }
       res = OpenSubtitleStream(hint);
       break;
