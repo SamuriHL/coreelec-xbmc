@@ -16,7 +16,6 @@
 #include "DVDInputStreamFile.h"
 #include "DVDDemuxers/DemuxMVC.h"
 #include "IVideoPlayer.h"
-#include "PQGraphicsTransform.h"
 #include "LangInfo.h"
 #include "ServiceBroker.h"
 #include "URL.h"
@@ -48,7 +47,6 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -959,8 +957,8 @@ void CDVDInputStreamBluray::UpdatePqAuthoredGraphics()
   if (!m_pqRegimeLogged || pq != m_pqAuthoredGraphics)
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamBluray - playlist graphics regime: {} (dynamic_range_type {})",
-              pq ? "BT.2020 PQ, pre-inverting BD-J and HDMV overlays"
-                 : "sRGB, no pre-inversion",
+              pq ? "BT.2020 PQ, BD-J and HDMV overlays drawn as HDR"
+                 : "sRGB, overlays drawn as SDR",
               range);
   m_pqRegimeLogged = true;
 
@@ -1616,9 +1614,11 @@ static uint8_t  clamp(double v)
 //
 // The palette's colour space follows the PLAYLIST, exactly as BD-J ARGB does:
 // an SDR playlist authors BT.601 Y'CbCr, an HDR/DV playlist authors BT.2020
-// ST.2084 (PQ) Y'CbCr (BD-ROM 3.x). Pass a transform to decode the PQ variant;
-// pass nullptr for the SDR one, which keeps the original BT.601 conversion
-// bit-for-bit and is what leaves SDR-menu discs untouched.
+// ST.2084 (PQ) Y'CbCr (BD-ROM 3.x). pqAuthored selects the BT.2020 matrix and
+// yields BT.2020 PQ R'G'B' codes, which the caller flags m_isHDROverlay so the
+// renderer draws them as authored (see the note after this function); false
+// keeps the original BT.601 conversion bit-for-bit and leaves SDR-menu discs
+// untouched.
 //
 // Measured on Halo Season 2 Disc 1, whose menu chrome is authored at
 // 106/202/294 nits: without the decode those land at 46/60/68 nits, because a
@@ -1628,11 +1628,10 @@ static uint8_t  clamp(double v)
 //
 // Coefficients are limited-range 8-bit: Y scaled 255/219, chroma 255/224, over
 // BT.2020 non-constant-luminance Kr=0.2627 Kb=0.0593.
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,
-                           const PQGRAPHICS::CPQGraphicsTransform* pq)
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e, bool pqAuthored)
 {
   double r, g, b;
-  if (pq)
+  if (pqAuthored)
   {
     r = 1.164384 * (e.Y - 16)                             + 1.678706 * (e.Cr - 128);
     g = 1.164384 * (e.Y - 16) - 0.187326 * (e.Cb - 128)   - 0.650424 * (e.Cr - 128);
@@ -1645,51 +1644,39 @@ static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,
     b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
   }
 
-  const uint32_t px = static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
-                    | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
-                    | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
-                    | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
-
-  // Safe on the packed value: build_rgba does not premultiply (OverlayRendererUtil
-  // folds alpha in later) and the transform passes alpha through untouched.
-  return pq ? pq->Convert(px) : px;
+  return static_cast<uint32_t>(e.T)      << PIXEL_ASHIFT
+       | static_cast<uint32_t>(clamp(r)) << PIXEL_RSHIFT
+       | static_cast<uint32_t>(clamp(g)) << PIXEL_GSHIFT
+       | static_cast<uint32_t>(clamp(b)) << PIXEL_BSHIFT;
 }
 
-// --- BD-J HDR menu graphics: recover authored color for the PQ GUI composite ---
-// On an Ultra HD Blu-ray whose playlist is HDR/Dolby Vision, BD-ROM 3.x has BD-J
-// (and IG/PG) graphics authored ALREADY in BT.2020 ST.2084 (PQ) 8-bit - a
-// conforming player composites them directly onto the PQ video plane. Kodi's
-// Amlogic GUI composite (CGuiCompositeShaderGLES, keyed on gui_is_pq in
-// CRendererAML::Configure) instead treats every GUI pixel as sRGB and runs
-// sRGB->BT.709->BT.2020->PQ. Applied to graphics that are ALREADY PQ/2020 that is
-// a second encode: the rich authored blue of the Superman menu (disc PQ
-// 64,78,104) collapses to a washed grey-blue (renders like sRGB 64,78,104,
-// saturation ~0.37) instead of the reference player's (0,104,184) (saturation
-// 1.0).
+// --- HDR menu graphics: drawn as authored, like PGS subtitles ---
+// On an Ultra HD Blu-ray whose playlist is HDR/Dolby Vision, BD-ROM 3.x has BD-J,
+// IG and PG graphics authored ALREADY in BT.2020 ST.2084 (PQ) 8-bit - a
+// conforming player composites them directly onto the PQ video plane.
 //
-// The BD-J ARGB callback is the only source of already-PQ pixels in the GUI plane
-// (Kodi's own OSD is genuinely sRGB), so pre-invert just those pixels here: PQ
-// decode -> BT.2020->BT.709 -> sRGB encode. The composite's forward
-// sRGB->2020->PQ then reproduces the authored color (round-trip verified: disc
-// (64,78,104) -> sRGB (0,105,184), reference (0,104,184); output saturation 0.98
-// vs 0.37 unfixed). The decode reference white is the disc's authored graphics
-// white (~80 nits, the measured fit); the composite re-references graphics to
-// Kodi's 203-nit BT.2408 white, so menu graphics render at OSD luminance.
+// They used to be pre-inverted here (PQ decode -> BT.709 -> sRGB against the GUI
+// reference white) so the GUI's forward sRGB->PQ encode reproduced them. That
+// clipped every channel at GUI reference white (~200 nits) and at the BT.709
+// gamut - authored highlights above white and saturated BT.2020 colours were
+// lost, with hue shifts where one channel clipped - and it tied menu brightness
+// to the HDR GUI brightness setting.
 //
-// Gated by the caller on the STABLE per-disc DV-session latch (m_dvDiscSession),
-// NOT the live aml_dv_get_output_mode(): the output mode flips across the
-// repeated OpenDecoder calls of a movie-load transition, so a per-draw output
-// gate baked the resume menu inconsistently (panel drawn washed under a
-// transient non-PQ read, buttons/highlights inverted under the settled PQ read -
-// a half-correct menu). The session latch is engaged for the whole DV disc (the
-// VSIF hold keeps the output in DV/PQ across those gaps), so every BD-J overlay
-// is treated consistently. Known limitation: an SDR-authored BD-J menu on a DV
-// disc (sRGB graphics VS10-mapped to DV output) would be over-inverted; not seen
-// on tested discs (Superman menus are all PQ-authored), documented as a risk.
-// The transform itself lives in PQGraphicsTransform so the PG (subtitle)
-// palette path can apply the identical decode - see CPQGraphicsTransform. It
-// resolves the GUI reference white from the same source the composite uses, so
-// decode and encode stay exact inverses of each other.
+// Now they are flagged m_isHDROverlay and left as authored, which is the route
+// PQ-authored PGS subtitles take: on any HDR output the renderer draws them raw
+// in the HDR overlay pass, after the GUI composite's encode, so they reach the
+// sink exactly as authored whatever the GUI brightness; on SDR output it
+// tone-maps them to sRGB against the BT.2408 203-nit white, scaling colours
+// above white down with their hue kept (ConvertPQPaletteToSRGB).
+//
+// The regime is decided from two STABLE signals, never the live output mode,
+// which flips across a movie-load's repeated OpenDecoder calls and once baked a
+// half-converted resume menu:
+//   m_dvDiscSession       - whole-disc DV latch
+//   m_pqAuthoredGraphics  - the playlist's authored dynamic range, which also
+//                           covers a plain HDR10 UHD carrying no DV stream
+// Known limitation: an SDR-authored BD-J menu on a DV disc would be treated as
+// PQ; not seen on tested discs.
 
 void CDVDInputStreamBluray::OverlayClose()
 {
@@ -1899,14 +1886,8 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   SPlane& plane(m_planes[ov->plane]);
 
   // Authored-graphics regime for this disc/playlist, from the same two STABLE
-  // signals the BD-J ARGB path uses - never the live output mode, which flips
-  // across a movie-load's OpenDecoder churn and bakes a half-converted
-  // composition. Built once here, not per palette entry: the constructor
-  // resolves the GUI reference white and builds a decode LUT.
-  std::optional<PQGRAPHICS::CPQGraphicsTransform> pqTransform;
-  if (m_dvDiscSession || m_pqAuthoredGraphics)
-    pqTransform.emplace();
-  const PQGRAPHICS::CPQGraphicsTransform* const pq = pqTransform ? &*pqTransform : nullptr;
+  // signals the BD-J ARGB path uses (see the note above OverlayClose).
+  const bool pq = m_dvDiscSession || m_pqAuthoredGraphics;
 
   if (ov->cmd == BD_OVERLAY_CLEAR)
   {
@@ -1950,6 +1931,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
         SOverlay copy = std::make_shared<CDVDOverlayImage>(
             *o, o->x, o->y, o->width, o->height);
         copy->palette = pal;
+        copy->m_isHDROverlay = pq;
         o = copy;
       }
       CLog::Log(LOGDEBUG,
@@ -1966,6 +1948,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   if (ov->img && ov->cmd == BD_OVERLAY_DRAW)
   {
     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
+    overlay->m_isHDROverlay = pq;
 
     if (ov->palette)
     {
@@ -2040,38 +2023,10 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     overlay->pixels.resize(bytes);
     memcpy(overlay->pixels.data(), ov->argb, bytes);
 
-    // BD-J graphics on an HDR playlist arrive already BT.2020 PQ; convert them to
-    // sRGB so the single forward sRGB->2020->PQ encode downstream (the GUI
-    // composite under DV output, or the VPP's own OSD stage on native HDR10)
-    // reproduces the authored color instead of double-encoding it into a washed
-    // grey (see helper above).
-    //
-    // Two STABLE signals, never the live output mode - that flips during a
-    // movie-load transition and baked the resume menu half-washed:
-    //   m_dvDiscSession       - whole-disc DV latch
-    //   m_pqAuthoredGraphics  - the playlist's authored dynamic range, which also
-    //                           covers a plain HDR10 UHD carrying no DV stream
-    //
-    // NOTE this is NOT a no-op for DV discs. m_dvDiscSession additionally requires
-    // a DV-capable display and the DV setting enabled, so the new term newly fires
-    // for a DV disc played (a) on an HDR10-only display - the validated profile-7
-    // FEL -> VS10 path - (b) with Dolby Vision disabled in settings, or (c) on an
-    // SDR display. In all three the graphics really are PQ-authored, so
-    // pre-inverting them is the correct call and the downstream encode is the VPP's
-    // or none at all, but those configurations have not been eyeballed on-box.
-    if (m_dvDiscSession || m_pqAuthoredGraphics)
-    {
-      // One transform per composition: it resolves the GUI reference white and
-      // bakes it into a decode LUT, so it must not be rebuilt per pixel.
-      const PQGRAPHICS::CPQGraphicsTransform transform;
-      uint32_t* p = reinterpret_cast<uint32_t*>(overlay->pixels.data());
-      const size_t pixelCount = static_cast<size_t>(ov->stride) * ov->h;
-      for (size_t i = 0; i < pixelCount; ++i)
-      {
-        if (p[i] & (0xffu << PIXEL_ASHIFT)) // skip fully transparent pixels
-          p[i] = transform.Convert(p[i]);
-      }
-    }
+    // BD-J graphics on an HDR playlist arrive already BT.2020 PQ: keep them as
+    // authored and let the renderer draw them raw on HDR output (see the note
+    // above OverlayClose).
+    overlay->m_isHDROverlay = m_dvDiscSession || m_pqAuthoredGraphics;
 
     overlay->linesize = ov->stride * 4;
     overlay->x = ov->x;
