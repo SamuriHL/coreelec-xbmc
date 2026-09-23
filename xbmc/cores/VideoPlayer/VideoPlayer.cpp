@@ -4782,6 +4782,20 @@ void CVideoPlayer::CheckMenuOnlyStart(bool noPlaylist)
     return;
 
   CLog::Log(LOGINFO, "VideoPlayer: disc screen with no playlist is up, starting menu-only playback");
+
+  // A DV disc session engages the DV output at disc open, ahead of its first
+  // video. With no video the DV core presents nothing - the screen stays black
+  // (John Wick 3's resume prompt; shows at once with DV disabled). Release the
+  // engage for this screen only: the first DV-output segment re-engages it in
+  // OpenStream before its decoder opens, the same path a mixed disc takes.
+  // Normal starts never get here (a playlist inside the grace period).
+  if (aml_dv_disc_engaged())
+  {
+    CLog::Log(LOGINFO, "VideoPlayer: releasing the DV disc engage for the menu-only screen");
+    aml_dv_release_disc_engage();
+    bluray->SetMenuOnlyNativeGraphics(true);
+  }
+
   m_discMenuOnly = true;
   SetCaching(CACHESTATE_DONE);
   SignalStreamsReady();

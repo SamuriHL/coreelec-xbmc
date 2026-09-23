@@ -120,6 +120,11 @@ public:
   // overlays composite above video here, so it is only shown while no
   // playlist is open. Player thread.
   void SetBackgroundVisible(bool visible);
+  /*! A DV disc's menu-only screen shown with the DV engage released (the DV
+      core presents nothing without video): draw its graphics by the disc's
+      declared range instead of the DV-session rule, as with DV disabled.
+      Cleared when a playlist starts. Player thread. */
+  void SetMenuOnlyNativeGraphics(bool on);
 
 
   /* IMenus */
@@ -511,6 +516,7 @@ protected:
   std::atomic<bool> m_hasOverlay{false};
   // read in OverlayFlush on the JVM graphics thread
   std::atomic<bool> m_bgVisible{true};
+  std::atomic<bool> m_menuOnlyNativeGraphics{false};
   /* BD-J ARGB flush-cadence tracker (guarded by m_overlayLock, written on the
    * JVM graphics thread): a composition that has been re-posted at a sustained
    * high cadence is one whose visibility is maintained by continuous re-posts -
