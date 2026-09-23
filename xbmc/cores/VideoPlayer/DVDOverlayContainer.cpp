@@ -167,6 +167,17 @@ bool CDVDOverlayContainer::ContainsOverlayType(DVDOverlayType type)
   return result;
 }
 
+std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetPresentLatestOverlay()
+{
+  std::unique_lock lock(*this);
+  for (auto it = m_overlays.rbegin(); it != m_overlays.rend(); ++it)
+  {
+    if ((*it)->m_presentLatest && !(*it)->IsOverlayContainerFlushable())
+      return *it;
+  }
+  return nullptr;
+}
+
 bool CDVDOverlayContainer::HasDrawableOverlay()
 {
   std::unique_lock lock(*this);
