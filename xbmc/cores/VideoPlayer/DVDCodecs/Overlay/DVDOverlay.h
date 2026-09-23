@@ -47,6 +47,7 @@ public:
     m_setForcedMargins = false;
     m_stereoView = DVDOverlayStereoView::BOTH;
     m_keepAliveTick = 0;
+    m_presentLatest = false;
   }
 
   CDVDOverlay(const CDVDOverlay& src) : std::enable_shared_from_this<CDVDOverlay>(src)
@@ -63,6 +64,7 @@ public:
     m_setForcedMargins = src.m_setForcedMargins;
     m_stereoView = src.m_stereoView;
     m_keepAliveTick = src.m_keepAliveTick;
+    m_presentLatest = src.m_presentLatest;
   }
 
   virtual ~CDVDOverlay() = default;
@@ -132,6 +134,14 @@ public:
   // reliable here. Deliberately NOT part of operator== (it must not affect
   // subtitle grouping).
   int64_t m_keepAliveTick;
+  // Shown as soon as it is posted rather than on the video timeline: BD-J
+  // graphics (libbluray posts every ARGB flush with pts -1) belong to the
+  // graphics plane as it is at presentation time. The video output thread leaves
+  // such overlays alone and the overlay renderer picks up the latest one on each
+  // displayed frame (OVERLAY::CRenderer::PrepareOverlays). Attaching them to
+  // decoded frames instead sampled a menu animation up to ~0.7s early, at the
+  // decoder's bursty output cadence - a visibly choppy slide-in.
+  bool m_presentLatest;
   unsigned long m_textureid;
   DVDOverlayStereoView m_stereoView;
 
