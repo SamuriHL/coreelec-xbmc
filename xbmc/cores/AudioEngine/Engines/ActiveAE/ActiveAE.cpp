@@ -2240,6 +2240,8 @@ bool CActiveAE::RunStages()
               out = tmp;
             continue;
           }
+          if ((*it)->m_syncWaitSilence)
+            continue;
 
           (*it)->m_started = true;
 
@@ -2513,6 +2515,8 @@ bool CActiveAE::RunStages()
           (*it)->m_started = true;
           buffer = SyncStream(*it);
           m_stats.UpdateStream(*it);
+          if (!buffer && (*it)->m_syncWaitSilence)
+            continue;
           if (!buffer)
           {
             buffer = (*it)->m_processingBuffers->m_outputSamples.front();
@@ -2564,6 +2568,9 @@ bool CActiveAE::HasWork()
 CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 {
   CSampleBuffer *ret = NULL;
+
+  const bool wasWaitingSilence = stream->m_syncWaitSilence;
+  stream->m_syncWaitSilence = false;
 
   if (!stream->m_pClock)
     return ret;
@@ -2780,6 +2787,20 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           ret->Return();
           ret = nullptr;
         }
+      }
+      else
+      {
+        // Every silence buffer is queued in the sink. Returning null here
+        // would let the caller output the stream's real audio mid-walk: the
+        // listener hears audio start, then cut when the walk resumes. The
+        // pool is sized in frames (500ms / 20ms = 25 for TrueHD) and a resume
+        // walk needs more than that. Hold the stream instead; the sink's
+        // RETURNSAMPLE wakes the engine and the walk continues.
+        stream->m_syncWaitSilence = true;
+        if (!wasWaitingSilence)
+          CLog::Log(LOGDEBUG,
+                    "ActiveAE::SyncStream - silence pool empty at error {:.0f}ms, holding audio",
+                    error);
       }
     }
     else
