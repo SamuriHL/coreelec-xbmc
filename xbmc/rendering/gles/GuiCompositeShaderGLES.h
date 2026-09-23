@@ -32,6 +32,10 @@ public:
 
   bool CreateLUTs(int colorTransfer);
 
+  // Texture of already-PQ HDR overlays (premultiplied), output as-is under the
+  // transformed GUI; 0 when there are none. Takes effect on the next Enable.
+  void SetHdrTexture(GLuint texId) { m_hdrTexId = texId; }
+
   GLint GetPosLoc() { return m_hPos; }
   GLint GetTexLoc() { return m_hTex; }
 
@@ -52,6 +56,7 @@ private:
 
   GLuint m_lutDegammaTexId{0};
   GLuint m_lutTFTexId{0};
+  GLuint m_hdrTexId{0};
   float m_ootfGamma{0.0f};
 
   GLint m_hPos{-1};
@@ -61,4 +66,6 @@ private:
   GLint m_hLutTF{-1};
   GLint m_hProj{-1};
   GLint m_hOotfGamma{-1};
+  GLint m_hHdr{-1};
+  GLint m_hHasHdr{-1};
 };

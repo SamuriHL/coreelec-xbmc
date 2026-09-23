@@ -432,6 +432,10 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
     m_guiFbo.Cleanup();
     m_guiFboWidth = 0;
     m_guiFboHeight = 0;
+    m_hdrFbo.Cleanup();
+    m_hdrFboWidth = 0;
+    m_hdrFboHeight = 0;
+    m_hdrFboHasContent = false;
     m_compositeShader.reset();
   }
 
@@ -443,10 +447,11 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   if (!CRenderSystemGLES::BeginRender())
     return false;
 
-  // CApplication::Render runs the video pass (RenderEx) before the GUI here, and
-  // it draws HDR overlays (UHD PGS) straight onto the OSD back buffer. Clear
-  // before that pass rather than after it, or the composite would present them
-  // wiped - and letterbox areas would keep stale swap-chain content otherwise.
+  // CApplication::Render runs the video pass (RenderEx) before the GUI here. HDR
+  // overlays go to their own FBO when it can be created (BeginHdrOverlayRender)
+  // and fall back to this back buffer otherwise. Clear before that pass rather
+  // than after it, or the composite would present a fallback draw wiped - and
+  // letterbox areas would keep stale swap-chain content otherwise.
   if (m_guiCompositing)
   {
     // the scissor box still holds whatever the previous frame's GUI left
@@ -548,6 +553,54 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
   return true;
 }
 
+bool CWinSystemAmlogicGLESContext::BeginHdrOverlayRender()
+{
+  if (!m_guiCompositing)
+    return false;
+
+  const int width = m_nWidth;
+  const int height = m_nHeight;
+  if (!m_hdrFbo.IsValid() || m_hdrFboWidth != width || m_hdrFboHeight != height)
+  {
+    m_hdrFbo.Cleanup();
+    if (!m_hdrFbo.Initialize() ||
+        !m_hdrFbo.CreateAndBindToTexture(GL_TEXTURE_2D, width, height, GL_RGBA))
+    {
+      CLog::Log(LOGERROR,
+                "CWinSystemAmlogicGLESContext: failed to create HDR overlay FBO {}x{}, "
+                "drawing HDR overlays onto the back buffer",
+                width, height);
+      m_hdrFbo.Cleanup();
+      m_hdrFboWidth = 0;
+      m_hdrFboHeight = 0;
+      m_hdrFboHasContent = false;
+      return false;
+    }
+    m_hdrFboWidth = width;
+    m_hdrFboHeight = height;
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext: created HDR overlay FBO {}x{}", width,
+              height);
+  }
+
+  if (!m_hdrFbo.BeginRender())
+    return false;
+
+  // the scissor box still holds whatever the previous frame's GUI left
+  glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glEnable(GL_SCISSOR_TEST);
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::EndHdrOverlayRender(bool drawn)
+{
+  // drawn == true only ever follows a successful BeginHdrOverlayRender
+  if (drawn)
+    m_hdrFbo.EndRender();
+  m_hdrFboHasContent = drawn && m_hdrFbo.IsValid();
+}
+
 void CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
   if (m_guiWillRender)
@@ -603,6 +656,7 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
   GLfloat proj[16] = {2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f, 0, 1};
 
   m_compositeShader->SetProjection(proj);
+  m_compositeShader->SetHdrTexture(m_hdrFboHasContent ? m_hdrFbo.Texture() : 0);
   m_compositeShader->Enable();
 
   GLint posLoc = m_compositeShader->GetPosLoc();

@@ -211,6 +211,24 @@ void CRenderer::RenderHDROverlays(int idx)
   ReleaseUnused();
 }
 
+bool CRenderer::HasHDROverlays(int idx) const
+{
+  if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
+    return false;
+
+  std::unique_lock lock(m_section);
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return false;
+
+  for (const auto& e : m_buffers[idx])
+  {
+    if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+        static_cast<const CDVDOverlayImage&>(*e.overlay_dvd).m_isHDROverlay)
+      return true;
+  }
+  return false;
+}
+
 void CRenderer::Render(COverlay* o)
 {
   SRenderState state;
