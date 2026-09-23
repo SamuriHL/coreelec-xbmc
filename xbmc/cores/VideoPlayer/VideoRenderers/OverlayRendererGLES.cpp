@@ -193,6 +193,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       convertedPalette = o.palette;
       OVERLAY::ConvertPQPaletteToSRGB(convertedPalette);
       paletteOverride = &convertedPalette;
+      m_pgsPaletteConvertedToSrgb = true;
     }
 
     // Which route a PGS palette takes decides whether it is PQ-encoded once or
@@ -557,8 +558,13 @@ void COverlayTextureGLES::Render(SRenderState& state)
   if (m_pma)
     glUniform1f(renderSystem->GUIShaderGetPma(), 1.0f);
 
-  // Do not modify PGS overlay luminance to keep correct hue/saturation
-  if (m_isPGS && CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ())
+  // Do not modify the luminance of a PQ-coded PGS palette drawn as-is, to keep
+  // correct hue/saturation. A palette already converted to sRGB is ordinary
+  // SDR graphics and takes the GUI peak like every other GUI pixel: on Amlogic
+  // native HDR10 output the VPP encodes the OSD plane, and full-scale saturated
+  // input there comes out with the wrong hue (yellow shown as red).
+  if (m_isPGS && m_isHDROverlay && !m_pgsPaletteConvertedToSrgb &&
+      CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ())
     glUniform1f(renderSystem->GUIShaderGetSdrPeak(), 1.0f);
 
   GLfloat ver[4][2];
