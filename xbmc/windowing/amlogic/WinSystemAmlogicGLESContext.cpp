@@ -22,7 +22,6 @@
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
-#include <chrono>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -307,13 +306,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
     // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
     // there is probably nothing we can do about it
-    const auto diagSwap0 = std::chrono::steady_clock::now();
     m_pGLContext->TrySwapBuffers();
-    const auto diagSwapMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - diagSwap0)
-                                .count();
-    if (diagSwapMs > 100)
-      CLog::Log(LOGWARNING, "DIAG PresentRender - eglSwapBuffers took {}ms", diagSwapMs);
 
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
     if (m_eglFence)
