@@ -159,8 +159,8 @@ public:
   /*! \brief True when the current playlist declares PQ-authored graphics, i.e.
    * its video stream is HDR10 or Dolby Vision in the MPLS STN table.
    *
-   * Both the BD-J overlay path and the PG (subtitle) palette path need the
-   * pre-invert in that case. The PG decoder is a separate codec with no view
+   * Both the BD-J/HDMV overlay path and the PG (subtitle) palette path then
+   * treat their graphics as PQ (m_isHDROverlay). The PG decoder is a separate codec with no view
    * of the input stream, so CVideoPlayer stamps this onto the subtitle
    * CDVDStreamInfo - the same way it stamps hint.stills from
    * IsMenuDomainVideo(). Atomic: written on the player thread, read when a
@@ -523,8 +523,8 @@ protected:
   std::atomic<uint32_t> m_bdjKeyInterest{0};
   bool m_navmode = false;
   // Latched true at Open when this disc's DV session is engaged (DV disc + DV
-  // display); held for the whole disc session. Gates the BD-J ARGB overlay's
-  // PQ->sRGB pre-inversion: a STABLE signal that correctly predicts the DV/PQ
+  // display); held for the whole disc session. Marks the BD-J and HDMV
+  // overlays as PQ-authored (m_isHDROverlay): a STABLE signal that correctly predicts the DV/PQ
   // output plane, unlike the live aml_dv_get_output_mode() which flips across
   // the repeated OpenDecoder calls of a movie-load transition (that flicker
   // baked half of the resume menu washed and half correct).
@@ -538,7 +538,7 @@ protected:
    * graphics are authored directly in BT.2020 PQ (they never pass through the DV
    * composer). m_dvDiscSession only covers DV discs, so a plain HDR10 UHD had its
    * PQ graphics treated as sRGB and encoded a second time - the washed grey-blue
-   * this pre-inversion exists to prevent.
+   * that flagging them m_isHDROverlay prevents.
    *
    * Taken from the clip's own STN table (bd_stream_info::dynamic_range_type), so
    * it is disc-authored STATIC metadata that is stable for the whole playitem -
