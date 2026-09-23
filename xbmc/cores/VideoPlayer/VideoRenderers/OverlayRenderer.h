@@ -96,6 +96,7 @@ namespace OVERLAY {
     // hold information if overlay is PGS format
     bool m_isPGS{false};
     bool m_isColoredPGS{false};
+    bool m_pgsPaletteConvertedToSrgb{false};
 
     int m_3dSubtitleDepth{0};
     bool m_pgsSubtitle{false};
