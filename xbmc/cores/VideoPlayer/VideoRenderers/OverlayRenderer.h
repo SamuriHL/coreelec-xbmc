@@ -97,6 +97,8 @@ namespace OVERLAY {
     bool m_isPGS{false};
     bool m_isColoredPGS{false};
     bool m_pgsPaletteConvertedToSrgb{false};
+    int m_texWidthDiag{0}; // DIAG
+    int m_texHeightDiag{0}; // DIAG
 
     int m_3dSubtitleDepth{0};
     bool m_pgsSubtitle{false};
