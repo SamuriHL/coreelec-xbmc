@@ -157,10 +157,9 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
   return std::make_shared<COverlayTextureGLES>(o, rSource);
 }
 
-inline bool IsImageColored(const std::vector<uint32_t>& rgba)
+inline bool IsImageColored(const uint32_t* rgba, size_t count)
 {
   constexpr uint8_t TOL = 2; // grayscale tolerance
-  const size_t count = rgba.size();
 
   for (size_t i = 0; i < count; ++i)
   {
@@ -209,11 +208,37 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       paletteOverride = &convertedPalette;
     }
 
+    // Which route a PGS palette takes decides whether it is PQ-encoded once or
+    // twice; log it whenever the route changes.
+    if (o.m_isPGS)
+    {
+      static int lastRoute = -1;
+      const bool composite = CServiceBroker::GetWinSystem()->IsHdrComposite();
+      const int route = (o.m_isHDROverlay ? 1 : 0) | (paletteOverride ? 2 : 0) | (composite ? 4 : 0);
+      if (route != lastRoute)
+      {
+        lastRoute = route;
+        uint32_t raw = 0, out = 0;
+        for (size_t i = 0; i < o.palette.size(); i++)
+        {
+          if ((o.palette[i] >> PIXEL_ASHIFT) & 0xff)
+          {
+            raw = o.palette[i];
+            out = paletteOverride ? convertedPalette[i] : raw;
+            break;
+          }
+        }
+        CLog::Log(LOGDEBUG,
+                  "COverlayTextureGLES - PGS route: hdrOverlay {} convertToSrgb {} hdrComposite {} "
+                  "palette[first opaque] {:08x} -> {:08x}",
+                  o.m_isHDROverlay, paletteOverride != nullptr, composite, raw, out);
+      }
+    }
+
     m_pma = !!USE_PREMULTIPLIED_ALPHA;
     uint32_t lut[256];
     BuildRGBALut(paletteOverride ? *paletteOverride : o.palette, m_pma, lut);
 
-    m_isColoredPGS = IsImageColored(rgba);
     // the direct back-buffer draw in Render bypasses the composite's
     // limited-range encode, so apply it to the palette here
     //! @todo Move this into the overlay shader once limited-range and
@@ -251,6 +276,10 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     auto rgba = std::make_unique_for_overwrite<uint32_t[]>(static_cast<size_t>(width) * height);
     ConvertIndices(o.pixels.data() + y0 * o.linesize + x0, o.linesize, width, height, lut,
                    rgba.get());
+    // the margin cropped away is transparent (black once premultiplied); on
+    // the limited-range route the scan reads encoded texels, whose spread is
+    // 219/255 of the source's (a pixel at the tolerance can read grey)
+    m_isColoredPGS = IsImageColored(rgba.get(), static_cast<size_t>(width) * height);
     LoadTexture(GL_TEXTURE_2D, width, height, width * 4, &m_u, &m_v, false, rgba.get());
   }
 
