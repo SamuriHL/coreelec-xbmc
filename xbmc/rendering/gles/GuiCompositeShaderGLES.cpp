@@ -35,8 +35,8 @@ float ForwardPQ(float L)
 }
 
 // The PQ code -> luminance direction (ST2084 EOTF) now lives in
-// PQGRAPHICS::PeakFromPQCode, so every consumer of the GUI peak resolves it
-// through one implementation. PeakFromPQCode delegates.
+// PQGRAPHICS::PeakFromPQCode, so the overlay pre-invert and this composite
+// resolve the GUI peak through one implementation. PeakFromPQCode delegates.
 
 // IEC 61966-2-1 sRGB EOTF.
 float SRGBToLinear(float v)
@@ -157,10 +157,10 @@ std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
 
 float CGuiCompositeShaderGLES::PeakFromPQCode(float code)
 {
-  // Delegates to PQGRAPHICS so this composite and CPQGraphicsTransform (its
-  // exact inverse) can never resolve the same setting to different luminances.
-  // Disc menus no longer go through that inverse: PQ-authored menu graphics
-  // are drawn as HDR overlays, outside this composite.
+  // Delegates to PQGRAPHICS so this composite and the overlay pre-invert that
+  // must be its exact inverse (PQGraphicsTransform) can never resolve the same
+  // setting to different luminances - a mismatch there silently amplifies every
+  // pre-inverted overlay and clips brightly-authored menus.
   //
   // Semantics are unchanged, and documented at the definition: the legacy
   // Amlogic GUI peak is a PQ CODE, not nits (the scalar-encoded OSD plane is
