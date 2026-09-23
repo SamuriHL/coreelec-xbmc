@@ -24,6 +24,7 @@
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/TimeUtils.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
@@ -98,6 +99,8 @@ void CRenderer::Flush()
 
   for(std::vector<SElement>& buffer : m_buffers)
     Release(buffer);
+  Release(m_presentLatest);
+  m_presentLatestGroup.reset();
 
   ReleaseCache();
   Reset();
@@ -139,6 +142,13 @@ void CRenderer::ReleaseUnused()
       if (found)
         break;
     }
+    for (auto& dvdoverlay : m_presentLatest)
+    {
+      if (found)
+        break;
+      if (dvdoverlay.overlay_dvd && dvdoverlay.overlay_dvd->m_textureid == it->first)
+        found = true;
+    }
     if (!found)
     {
       it = m_textureCache.erase(it);
@@ -158,16 +168,19 @@ void CRenderer::Render(int idx, float depth)
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
-  std::vector<SElement>& list = m_buffers[idx];
-  for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+  // the presentation-time menu composition goes on top of the buffer's overlays
+  for (std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
   {
-    if (it->overlay_dvd)
+    for (SElement& e : *list)
     {
-      std::shared_ptr<COverlay> o = Convert(*it);
+      if (!e.overlay_dvd)
+        continue;
+
+      std::shared_ptr<COverlay> o = Convert(e);
       if (!o)
         continue;
 
-      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(it->overlay_dvd->m_stereoView,
+      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(e.overlay_dvd->m_stereoView,
                                                              stereoView, m_stereomode))
         continue;
 
@@ -191,16 +204,18 @@ void CRenderer::RenderHDROverlays(int idx)
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
-  std::vector<SElement>& list = m_buffers[idx];
-  for (std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+  for (std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
   {
-    if (it->overlay_dvd)
+    for (SElement& e : *list)
     {
-      std::shared_ptr<COverlay> o = Convert(*it);
+      if (!e.overlay_dvd)
+        continue;
+
+      std::shared_ptr<COverlay> o = Convert(e);
       if (!o || !o->m_isHDROverlay)
         continue;
 
-      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(it->overlay_dvd->m_stereoView,
+      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(e.overlay_dvd->m_stereoView,
                                                              stereoView, m_stereomode))
         continue;
 
@@ -220,11 +235,14 @@ bool CRenderer::HasHDROverlays(int idx) const
   if (idx < 0 || idx >= NUM_BUFFERS)
     return false;
 
-  for (const auto& e : m_buffers[idx])
+  for (const std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
   {
-    if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
-        static_cast<const CDVDOverlayImage&>(*e.overlay_dvd).m_isHDROverlay)
-      return true;
+    for (const auto& e : *list)
+    {
+      if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+          static_cast<const CDVDOverlayImage&>(*e.overlay_dvd).m_isHDROverlay)
+        return true;
+    }
   }
   return false;
 }
@@ -323,6 +341,10 @@ bool CRenderer::HasVisibleOverlay(int idx) const
   std::unique_lock lock(m_section);
   if (idx < 0 || idx >= NUM_BUFFERS)
     return false;
+
+  // a presentation-time menu composition is on screen whenever it holds anything
+  if (!m_presentLatest.empty())
+    return true;
 
   for (const auto& e : m_buffers[idx])
   {
@@ -496,6 +518,24 @@ void CRenderer::PrepareOverlays(int idx)
   // below the m_section lock.
   const bool containerEmpty = m_pOverlayContainer && !m_pOverlayContainer->HasDrawableOverlay();
 
+  // Same ordering rule: the presentation-time menu composition is fetched from
+  // the container before m_section is taken.
+  std::shared_ptr<CDVDOverlay> presentLatest =
+      m_pOverlayContainer ? m_pOverlayContainer->GetPresentLatestOverlay() : nullptr;
+
+  // Keep-alive expiry, as CVideoPlayerVideo::ProcessOverlays applies it to
+  // overlays on the video timeline: a composition the Xlet kept alive by
+  // continuous re-posts is dropped ~1s after the re-posts stop (BD-J sends no
+  // clear event). Suspended while paused, when the repaint loop may pause too.
+  if (presentLatest && presentLatest->m_keepAliveTick != 0 &&
+      !CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->IsPausedPlayback())
+  {
+    constexpr int64_t KEEPALIVE_TTL_MS = 1000;
+    if (CurrentHostCounter() - presentLatest->m_keepAliveTick >
+        CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000)
+      presentLatest.reset();
+  }
+
   std::unique_lock lock(m_section);
   if (idx < 0 || idx >= NUM_BUFFERS)
     return;
@@ -520,6 +560,24 @@ void CRenderer::PrepareOverlays(int idx)
   }
 
   bool doMarkDirty = false;
+
+  // a new composition was posted (or the menu went away): show it this frame
+  if (presentLatest != m_presentLatestGroup)
+  {
+    m_presentLatestGroup = presentLatest;
+    Release(m_presentLatest);
+    if (presentLatest && presentLatest->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
+    {
+      for (const auto& o : static_cast<CDVDOverlayGroup&>(*presentLatest).m_overlays)
+      {
+        SElement e;
+        e.overlay_dvd = o;
+        m_presentLatest.push_back(e);
+      }
+    }
+    doMarkDirty = true;
+  }
+
   int nImageSpu = 0;
   for (auto& e : m_buffers[idx])
   {

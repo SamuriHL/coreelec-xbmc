@@ -955,6 +955,10 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
       if(!pOverlay->bForced && !m_bRenderSubs)
         continue;
 
+      // picked up at presentation time by the overlay renderer instead
+      if (pOverlay->m_presentLatest)
+        continue;
+
       // Keep-alive expiry (BD-J ARGB compositions maintained by continuous
       // re-posts, see CDVDOverlay::m_keepAliveTick): once the re-posts stop the
       // composition was abandoned - the disc sends no clear event - so stop
