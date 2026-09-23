@@ -23,7 +23,6 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
 #include <chrono>
-#include <poll.h>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -298,9 +297,6 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
       int fd = m_amlDisplay->TakeOutFenceFd();
       if (fd != -1)
       {
-        struct pollfd diagPfd = {fd, POLLIN, 0};
-        if (poll(&diagPfd, 1, 0) == 0)
-          CLog::Log(LOGDEBUG, "DIAG PresentRender - display out-fence NOT yet signalled");
         m_eglFence->CreateKMSFence(fd);
         m_eglFence->WaitSyncGPU();
       }
@@ -316,7 +312,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     const auto diagSwapMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - diagSwap0)
                                 .count();
-    if (diagSwapMs > 30)
+    if (diagSwapMs > 100)
       CLog::Log(LOGWARNING, "DIAG PresentRender - eglSwapBuffers took {}ms", diagSwapMs);
 
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
