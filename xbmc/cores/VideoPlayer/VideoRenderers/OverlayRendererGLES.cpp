@@ -233,6 +233,8 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       }
     }
     LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.linesize, &m_u, &m_v, false, rgba);
+    m_texWidthDiag = o.width;
+    m_texHeightDiag = o.height;
   }
   else
   {
@@ -590,6 +592,18 @@ void COverlayTextureGLES::Render(SRenderState& state)
     float right = state.x + state.width;
 
     rd.SetRect(left, top, right, bottom);
+  }
+
+  if (m_isHDROverlay)
+  {
+    static int diagCount = 0;
+    const bool bad = !std::isfinite(rd.x1) || !std::isfinite(rd.y1) || !std::isfinite(rd.x2) ||
+                     !std::isfinite(rd.y2) || std::fabs(rd.Width()) > 8000 ||
+                     std::fabs(rd.Height()) > 8000;
+    if (bad || diagCount++ < 12)
+      CLog::Log(LOGDEBUG, "DIAG HDR overlay draw rd({},{},{},{}) tex {}x{} u{} v{} pos {} align {}",
+                rd.x1, rd.y1, rd.x2, rd.y2, m_texWidthDiag, m_texHeightDiag, m_u, m_v,
+                static_cast<int>(m_pos), static_cast<int>(m_align));
   }
 
   CRenderSystemGLES* renderSystem =
