@@ -262,5 +262,11 @@ namespace OVERLAY {
     // Overlay container (owned by the player), queried by PrepareOverlays to
     // detect an emptied container during a stall. Not owned; may be null.
     CDVDOverlayContainer* m_pOverlayContainer{nullptr};
+    // The disc menu composition shown at presentation time (BD-J graphics, see
+    // CDVDOverlay::m_presentLatest): refreshed from the container by
+    // PrepareOverlays on every displayed frame and drawn over each buffer's own
+    // overlays, instead of riding on whichever decoded frame it was attached to.
+    std::shared_ptr<CDVDOverlay> m_presentLatestGroup;
+    std::vector<SElement> m_presentLatest;
   };
 }

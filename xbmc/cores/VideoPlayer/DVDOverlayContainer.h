@@ -47,6 +47,13 @@ public:
    */
   bool HasDrawableOverlay();
 
+  /*!
+   * \brief The current disc menu composition that is shown at presentation time
+   * (CDVDOverlay::m_presentLatest), or nullptr. Disc navigation keeps at most one
+   * menu composition in the container, so this is always the latest.
+   */
+  std::shared_ptr<CDVDOverlay> GetPresentLatestOverlay();
+
   void Clear(); // clear the fifo and delete all overlays
 
   /*
