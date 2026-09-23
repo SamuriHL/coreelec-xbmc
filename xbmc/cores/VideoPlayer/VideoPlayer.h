@@ -540,10 +540,13 @@ protected:
 
   bool OpenInputStream();
   bool OpenDemuxStream();
-  // A disc (BD-J) showing a screen with no playlist: nothing to demux yet
-  bool IsDiscWaitingForPlayback();
-  // present such a screen: leave the busy dialog, go fullscreen, route keys
-  void CheckMenuOnlyStart();
+  // A disc (BD-J) waiting for playback: nothing to demux yet.
+  // 0 = no, 1 = a screen with no playlist, 2 = a playlist selected, not started
+  int DiscWaitState(bool drain);
+  // present a screen with no playlist: leave the busy dialog, go fullscreen,
+  // route keys (after a grace, so a normal start is not announced early)
+  void CheckMenuOnlyStart(bool noPlaylist);
+  std::chrono::steady_clock::time_point m_menuOnlyCandidateSince{};
   void SignalStreamsReady();
   void CloseDemuxer();
   void OpenDefaultStreams(bool reset = true);

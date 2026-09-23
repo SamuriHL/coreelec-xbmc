@@ -2007,6 +2007,7 @@ void CVideoPlayer::Prepare()
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
   m_discMenuOnly = false;
+  m_menuOnlyCandidateSince = {};
   m_CurrentVideo.hint.Clear();
   m_CurrentAudio.hint.Clear();
   m_CurrentSubtitle.hint.Clear();
@@ -2076,7 +2077,7 @@ void CVideoPlayer::Prepare()
   // would park this thread in the input stream's idle loop: no key would
   // reach the disc and nothing would be presented. Defer the demuxer to the
   // main loop, which opens it once the disc starts a playlist.
-  const bool deferDemux = IsDiscWaitingForPlayback();
+  const bool deferDemux = DiscWaitState(false) != 0;
   if (deferDemux)
     CLog::Log(LOGINFO, "VideoPlayer: disc shows a screen with no playlist, deferring the demuxer");
   else if (!OpenDemuxStream())
@@ -2169,7 +2170,13 @@ void CVideoPlayer::Prepare()
     }
   }
 
-  if (starttime > 0ms)
+  if (starttime > 0ms && deferDemux)
+  {
+    // nothing to seek yet; the disc decides where its playback starts
+    CLog::Log(LOGINFO, "{} - start position {} ms not applied: the disc has no playlist yet",
+              __FUNCTION__, starttime.count());
+  }
+  else if (starttime > 0ms)
   {
     double startpts = DVD_NOPTS_VALUE;
     if (m_pDemuxer)
@@ -2258,13 +2265,14 @@ void CVideoPlayer::Process()
     {
       // a disc screen with no playlist: keep handling input and presenting
       // the disc's graphics until it starts one (see Prepare)
-      if (IsDiscWaitingForPlayback())
+      if (const int waitState = DiscWaitState(true))
       {
         UpdatePlayState(200);
-        CheckMenuOnlyStart();
+        CheckMenuOnlyStart(waitState == 1);
         CThread::Sleep(20ms);
         continue;
       }
+      m_menuOnlyCandidateSince = {};
 
       if (m_pInputStream->NextStream() == CDVDInputStream::NEXTSTREAM_NONE)
         break;
@@ -4732,25 +4740,45 @@ void CVideoPlayer::SignalStreamsReady()
   m_State.streamsReady = true;
 }
 
-bool CVideoPlayer::IsDiscWaitingForPlayback()
+int CVideoPlayer::DiscWaitState(bool drain)
 {
 #if defined(HAVE_LIBBLURAY)
   if (std::shared_ptr<CDVDInputStreamBluray> bluray =
           std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
-    return bluray->IsWaitingForPlayback();
+    return bluray->GetBdjWaitState(drain);
 #endif
-  return false;
+  return 0;
 }
 
-void CVideoPlayer::CheckMenuOnlyStart()
+void CVideoPlayer::CheckMenuOnlyStart(bool noPlaylist)
 {
   // Playback start is normally announced when the streams sync. A disc screen
   // with no playlist has no streams, and a real player shows it over black:
-  // once the disc has put graphics up, announce the start so the busy dialog
-  // releases the remote and the fullscreen video window presents the screen.
-  if (m_State.streamsReady || m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0)
+  // once the disc has put menu graphics up, announce the start so the busy
+  // dialog releases the remote and the fullscreen video window presents the
+  // screen. Most BD-J discs draw something (a spinner, a logo) before their
+  // first playlist, so only a screen that stays without one qualifies.
+  constexpr auto MENU_ONLY_GRACE = 3s;
+
+  bool candidate = !m_State.streamsReady && noPlaylist && m_CurrentVideo.id < 0 &&
+                   m_CurrentAudio.id < 0;
+#if defined(HAVE_LIBBLURAY)
+  std::shared_ptr<CDVDInputStreamBluray> bluray =
+      std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+  candidate = candidate && bluray && bluray->HasOverlayGraphics();
+#else
+  candidate = false;
+#endif
+  if (!candidate)
+  {
+    m_menuOnlyCandidateSince = {};
     return;
-  if (!m_overlayContainer.GetPresentLatestOverlay())
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (m_menuOnlyCandidateSince == std::chrono::steady_clock::time_point{})
+    m_menuOnlyCandidateSince = now;
+  if (now - m_menuOnlyCandidateSince < MENU_ONLY_GRACE)
     return;
 
   CLog::Log(LOGINFO, "VideoPlayer: disc screen with no playlist is up, starting menu-only playback");
@@ -5737,6 +5765,12 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
   m_HasVideo = true;
   m_discMenuOnly = false;
+#if defined(HAVE_LIBBLURAY)
+  // a video stream covers the disc's background plane
+  if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+          std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    bluray->SetBackgroundVisible(false);
+#endif
 
   static_cast<IDVDStreamPlayerVideo*>(player)->SendMessage(
       std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_REQUEST_STATE), 1);

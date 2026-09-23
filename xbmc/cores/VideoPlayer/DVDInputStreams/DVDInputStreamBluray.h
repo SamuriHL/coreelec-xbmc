@@ -108,10 +108,18 @@ public:
   int64_t GetLength() override;
   int GetBlockSize() override { return 6144; }
   ENextStream NextStream() override;
-  /*! A BD-J title is showing a screen with no playlist behind it (or one it
-      prefetched but has not started): Read() would only idle. Drains queued
-      disc events first. Player thread only. */
-  bool IsWaitingForPlayback();
+  /*! BD-J is waiting for playback: Read() would only idle.
+      0 = not waiting, 1 = a screen with no playlist open, 2 = a playlist is
+      selected (prefetched) but not started. With drain, queued disc events are
+      consumed first (not before the first demuxer probe: that would move the
+      hold state Open() set). Player thread only. */
+  int GetBdjWaitState(bool drain);
+  //! PG/IG menu graphics are up (the background plane alone does not count)
+  bool HasOverlayGraphics() const { return m_hasOverlay; }
+  // HAVi background plane (plane 2) visibility: it lies behind video, and
+  // overlays composite above video here, so it is only shown while no
+  // playlist is open. Player thread.
+  void SetBackgroundVisible(bool visible);
 
 
   /* IMenus */
@@ -435,10 +443,6 @@ protected:
 
   void OverlayFlush(int64_t pts, bool keepAliveEligible = false);
   void OverlayClose();
-  // HAVi background plane (plane 2) visibility: it lies behind video, and
-  // overlays composite above video here, so it is only shown while no
-  // playlist is playing. Player thread.
-  void SetBackgroundVisible(bool visible);
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
   bool ProcessItem(int playitem);
