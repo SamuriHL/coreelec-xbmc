@@ -27,8 +27,6 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
-#include <atomic>
-#include <unistd.h>
 #include <chrono>
 #include <algorithm>
 #include <mutex>
@@ -151,27 +149,13 @@ void CRenderer::ReleaseUnused()
   }
 }
 
-// DIAG (temporary): /storage/.kodi/DIAG_NO_HDR_PASS present = draw HDR overlays
-// in the GUI pass instead of the HDR overlay pass. Re-checked once a second.
-static bool DiagNoHdrPass()
-{
-  static std::atomic<int64_t> lastCheck{0};
-  static std::atomic<bool> value{false};
-  const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::steady_clock::now().time_since_epoch())
-                          .count();
-  if (lastCheck.exchange(now) != now)
-    value = access("/storage/.kodi/DIAG_NO_HDR_PASS", F_OK) == 0;
-  return value;
-}
-
 void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock lock(m_section);
 
   // during HDR composite the m_isHDROverlay overlays render via
   // RenderHDROverlays instead
-  const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite() && !DiagNoHdrPass();
+  const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite();
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
   const auto diag0 = std::chrono::steady_clock::now();
@@ -212,7 +196,7 @@ void CRenderer::Render(int idx, float depth)
 // FBO's sRGB->HDR conversion
 void CRenderer::RenderHDROverlays(int idx)
 {
-  if (!CServiceBroker::GetWinSystem()->IsHdrComposite() || DiagNoHdrPass())
+  if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
     return;
 
   std::unique_lock lock(m_section);
