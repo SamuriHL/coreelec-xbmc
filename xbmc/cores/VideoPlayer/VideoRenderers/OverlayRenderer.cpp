@@ -27,7 +27,6 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
-#include <chrono>
 #include <algorithm>
 #include <mutex>
 #include <utility>
@@ -158,9 +157,6 @@ void CRenderer::Render(int idx, float depth)
   const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite();
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
-  const auto diag0 = std::chrono::steady_clock::now();
-  const unsigned int diagTex0 = m_textureid;
-  int diagDrawn = 0;
 
   std::vector<SElement>& list = m_buffers[idx];
   for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
@@ -176,20 +172,11 @@ void CRenderer::Render(int idx, float depth)
         continue;
 
       if (!(hdrComposite && o->m_isHDROverlay))
-      {
         Render(o.get());
-        diagDrawn++;
-      }
     }
   }
 
   ReleaseUnused();
-  const auto diagMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - diag0)
-                          .count();
-  if (diagMs > 20 || m_textureid != diagTex0)
-    CLog::Log(LOGDEBUG, "DIAG OverlayRender GUI idx {} elems {} drawn {} newTex {} cache {} {}ms",
-              idx, list.size(), diagDrawn, m_textureid - diagTex0, m_textureCache.size(), diagMs);
 }
 
 // drawn onto the back buffer right after the video, bypassing the GUI
@@ -200,9 +187,6 @@ void CRenderer::RenderHDROverlays(int idx)
     return;
 
   std::unique_lock lock(m_section);
-  const auto diag0 = std::chrono::steady_clock::now();
-  const unsigned int diagTex0 = m_textureid;
-  int diagDrawn = 0;
 
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
@@ -221,17 +205,10 @@ void CRenderer::RenderHDROverlays(int idx)
         continue;
 
       Render(o.get());
-      diagDrawn++;
     }
   }
 
   ReleaseUnused();
-  const auto diagMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - diag0)
-                          .count();
-  if (diagMs > 20 || m_textureid != diagTex0)
-    CLog::Log(LOGDEBUG, "DIAG OverlayRender HDR idx {} elems {} drawn {} newTex {} cache {} {}ms",
-              idx, list.size(), diagDrawn, m_textureid - diagTex0, m_textureCache.size(), diagMs);
 }
 
 void CRenderer::Render(COverlay* o)
