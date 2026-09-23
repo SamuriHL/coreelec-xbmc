@@ -108,6 +108,10 @@ public:
   int64_t GetLength() override;
   int GetBlockSize() override { return 6144; }
   ENextStream NextStream() override;
+  /*! A BD-J title is showing a screen with no playlist behind it (or one it
+      prefetched but has not started): Read() would only idle. Drains queued
+      disc events first. Player thread only. */
+  bool IsWaitingForPlayback();
 
 
   /* IMenus */
@@ -431,6 +435,10 @@ protected:
 
   void OverlayFlush(int64_t pts, bool keepAliveEligible = false);
   void OverlayClose();
+  // HAVi background plane (plane 2) visibility: it lies behind video, and
+  // overlays composite above video here, so it is only shown while no
+  // playlist is playing. Player thread.
+  void SetBackgroundVisible(bool visible);
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
   bool ProcessItem(int playitem);
@@ -497,6 +505,8 @@ protected:
   bool m_hasBdjTitles = false;
   bool m_isInMainMenu = false;
   std::atomic<bool> m_hasOverlay{false};
+  // read in OverlayFlush on the JVM graphics thread
+  std::atomic<bool> m_bgVisible{true};
   /* BD-J ARGB flush-cadence tracker (guarded by m_overlayLock, written on the
    * JVM graphics thread): a composition that has been re-posted at a sustained
    * high cadence is one whose visibility is maintained by continuous re-posts -
