@@ -767,6 +767,12 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
       if (offscreen)
         winSystem->EndHdrOverlayRender(true);
     }
+    else if (configured)
+    {
+      // nothing HDR this frame: the composite must not keep sampling the
+      // last one (as the picture path does)
+      winSystem->EndHdrOverlayRender(false);
+    }
     return;
   }
 

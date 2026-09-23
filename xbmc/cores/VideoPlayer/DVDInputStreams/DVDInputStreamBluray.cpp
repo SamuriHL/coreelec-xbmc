@@ -1742,7 +1742,12 @@ void CDVDInputStreamBluray::RedrawMenuOverlays()
   // so the menu image survives the reopen. Runs on the player thread while
   // BD-J may be repainting from the JVM thread - m_overlayLock (taken in
   // OverlayFlush) makes the iteration safe.
-  if (m_hasOverlay)
+  bool hasBackground;
+  {
+    std::unique_lock lock(m_overlayLock);
+    hasBackground = !m_planes[2].o.empty();
+  }
+  if (m_hasOverlay || hasBackground)
     OverlayFlush(-1);
 #endif
 }
@@ -2055,7 +2060,19 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     if (othersEmpty)
       OverlayClose();
     else
+    {
+      if (ov->plane == BD_OVERLAY_IG)
+      {
+        // the graphics plane's repaint cadence ends with it: what remains
+        // (the background) must not inherit a keep-alive stamp and expire
+        std::unique_lock lock(m_overlayLock);
+        m_argbFlushStreak = 0;
+        m_argbFlushLastTick = 0;
+        m_argbLastKeepAliveTick = 0;
+        m_argbKeepAliveActive = false;
+      }
       OverlayFlush(-1);
+    }
     return;
   }
 
@@ -2441,20 +2458,28 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   return NEXTSTREAM_OPEN;
 }
 
-bool CDVDInputStreamBluray::IsWaitingForPlayback()
+int CDVDInputStreamBluray::GetBdjWaitState(bool drain)
 {
+#if defined(BD_HAVE_BDJ_WAITING_FOR_PLAYBACK)
   if (m_bd == nullptr || !m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
-    return false;
+    return 0;
 
   // BD-J starts playlists (and changes titles) on its own threads; the events
   // it queues are what move us on, so consume them before asking
-  while (bd_get_event(m_bd, &m_event))
-    ProcessEvent();
+  if (drain)
+  {
+    while (bd_get_event(m_bd, &m_event))
+      ProcessEvent();
+  }
 
-  const bool waiting = bd_bdj_waiting_for_playback(m_bd) != 0;
-  if (waiting)
-    SetBackgroundVisible(true);
-  return waiting;
+  const int state = bd_bdj_waiting_for_playback(m_bd);
+  // the background is behind video: show it only while no playlist is open,
+  // not while one is selected and about to start
+  SetBackgroundVisible(state == 1);
+  return state;
+#else
+  return 0;
+#endif
 }
 
 void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
