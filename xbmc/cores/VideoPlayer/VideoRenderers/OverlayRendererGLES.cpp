@@ -26,6 +26,7 @@
 #include "windowing/WinSystem.h"
 
 #include <cmath>
+#include <unordered_map>
 
 // GLES2.0 cant do CLAMP, but can do CLAMP_TO_EDGE.
 #define GL_CLAMP GL_CLAMP_TO_EDGE
@@ -182,6 +183,55 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
   {
     m_pma = false;
     const uint32_t* rgba = reinterpret_cast<const uint32_t*>(o.pixels.data());
+    // A PQ-authored ARGB image (BD-J menu graphics on an HDR disc) takes the
+    // same two treatments as a PQ palette below: tone-mapped to sRGB when it is
+    // not going to a PQ destination, limited-range encoded for the direct
+    // back-buffer draw otherwise. Straight alpha, so the offset is not scaled.
+    std::vector<uint32_t> hdrPixels;
+    if (m_isHDROverlay)
+    {
+      const bool toSrgb = OVERLAY::ShouldConvertPQPaletteToSRGB(true);
+      const bool limited = !toSrgb && CServiceBroker::GetWinSystem()->IsHdrComposite() &&
+                           CServiceBroker::GetWinSystem()->UseLimitedColor();
+      if (toSrgb || limited)
+      {
+        hdrPixels.assign(rgba, rgba + o.linesize / 4 * o.height);
+        if (toSrgb)
+        {
+          // Menus are a handful of distinct colours; convert each once.
+          std::unordered_map<uint32_t, uint32_t> converted;
+          std::vector<uint32_t> one(1);
+          for (uint32_t& px : hdrPixels)
+          {
+            if (!((px >> PIXEL_ASHIFT) & 0xff))
+              continue;
+            auto it = converted.find(px);
+            if (it == converted.end())
+            {
+              one[0] = px;
+              OVERLAY::ConvertPQPaletteToSRGB(one);
+              it = converted.emplace(px, one[0]).first;
+            }
+            px = it->second;
+          }
+          m_pgsPaletteConvertedToSrgb = true;
+        }
+        else
+        {
+          for (uint32_t& px : hdrPixels)
+          {
+            const uint32_t r = (px >> PIXEL_RSHIFT) & 0xff;
+            const uint32_t g = (px >> PIXEL_GSHIFT) & 0xff;
+            const uint32_t b = (px >> PIXEL_BSHIFT) & 0xff;
+            px = (px & (0xffu << PIXEL_ASHIFT)) |
+                 (((r * 219 + 255 * 16 + 127) / 255) << PIXEL_RSHIFT) |
+                 (((g * 219 + 255 * 16 + 127) / 255) << PIXEL_GSHIFT) |
+                 (((b * 219 + 255 * 16 + 127) / 255) << PIXEL_BSHIFT);
+          }
+        }
+        rgba = hdrPixels.data();
+      }
+    }
     LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.linesize, &m_u, &m_v, false, rgba);
   }
   else
@@ -558,12 +608,13 @@ void COverlayTextureGLES::Render(SRenderState& state)
   if (m_pma)
     glUniform1f(renderSystem->GUIShaderGetPma(), 1.0f);
 
-  // Do not modify the luminance of a PQ-coded PGS palette drawn as-is, to keep
-  // correct hue/saturation. A palette already converted to sRGB is ordinary
-  // SDR graphics and takes the GUI peak like every other GUI pixel: on Amlogic
-  // native HDR10 output the VPP encodes the OSD plane, and full-scale saturated
-  // input there comes out with the wrong hue (yellow shown as red).
-  if (m_isPGS && m_isHDROverlay && !m_pgsPaletteConvertedToSrgb &&
+  // Do not modify the luminance of PQ-coded graphics (PGS, HDR disc menus)
+  // drawn as-is, to keep correct hue/saturation. Graphics already converted to
+  // sRGB are ordinary SDR graphics and take the GUI peak like every other GUI
+  // pixel: on Amlogic native HDR10 output without the kernel's OSD passthrough
+  // the VPP encodes the OSD plane, and full-scale saturated input there comes
+  // out with the wrong hue (yellow shown as red).
+  if (m_isHDROverlay && !m_pgsPaletteConvertedToSrgb &&
       CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ())
     glUniform1f(renderSystem->GUIShaderGetSdrPeak(), 1.0f);
 

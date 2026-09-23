@@ -119,8 +119,9 @@ bool CRendererAML::ConfigChanged(const VideoPicture& picture)
   // mode at BYPASS for the whole of each gap. A BYPASS reading during a session
   // is therefore the volatile teardown value, not a real output change: acting
   // on it would recreate the renderer twice per decoder swap - and briefly run a
-  // DV menu through the scalar path, which is not the transform the BD-J
-  // pre-inversion assumes. Wait for the session's next real Configure instead.
+  // DV menu through the scalar path, where its PQ graphics are tone-mapped to
+  // sRGB instead of drawn as authored. Wait for the session's next real
+  // Configure instead.
   if (dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_session())
     return false;
 
