@@ -2609,6 +2609,30 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         delete stream;
         return nullptr;
       }
+      // A Blu-ray SECONDARY VIDEO stream (PID 0x1b00-0x1b1f) is the disc's
+      // picture-in-picture track, never the feature. The playlist's STN table
+      // does not list it as video at all - CDVDInputStreamBluray::GetStreamInfo
+      // reports it as an unhandled pid - and Kodi has no PiP presentation to
+      // put it in, so leaving it in the stream list only lets it be chosen as
+      // the main video. 30 Minutes or Less carries one at 720x480 and played
+      // that behind-the-scenes reel instead of the 1080p film.
+      //
+      // Filtered here rather than at selection time because this is where the
+      // PID is authoritative: by the time the player walks its selection list
+      // a BD clip change may have replaced the demuxer, and a lookup that
+      // misses leaves the stream unexamined and selectable.
+      if (pStream->id >= HDMV_PID_SECONDARY_VIDEO_FIRST &&
+          pStream->id <= HDMV_PID_SECONDARY_VIDEO_LAST)
+      {
+        CLog::Log(LOGDEBUG,
+                  "CDVDDemuxFFmpeg::AddStream - discarding bluray secondary video "
+                  "(picture-in-picture) stream, pid {:#06x}",
+                  pStream->id);
+        pStream->discard = AVDISCARD_ALL;
+        delete stream;
+        return nullptr;
+      }
+
       stream->dvdNavId = pStream->id;
 
       auto it = std::find_if(m_streams.begin(), m_streams.end(),
