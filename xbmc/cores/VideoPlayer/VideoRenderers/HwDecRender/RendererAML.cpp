@@ -40,6 +40,7 @@ CRendererAML::~CRendererAML()
   CServiceBroker::GetWinSystem()->SetGuiCompositing(0);
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
+  CSysfsPath(OSD_PQ_PASSTHROUGH, 0);
 }
 
 CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
@@ -53,6 +54,18 @@ bool CRendererAML::Register()
 {
   VIDEOPLAYER::CRendererFactory::RegisterRenderer("amlogic", CRendererAML::Create);
   return true;
+}
+
+// Kernel switch (common_drivers patch 0016): with it set, the VPP leaves the OSD
+// planes' transfer alone on native PQ output and applies only the BT.2020
+// RGB->YUV matrix, so Kodi can hand it an already PQ-encoded GUI.
+const char* const CRendererAML::OSD_PQ_PASSTHROUGH =
+    "/sys/module/aml_media/parameters/osd_pq_passthrough";
+
+bool CRendererAML::OsdPqPassthroughAvailable()
+{
+  static const bool available = CSysfsPath(OSD_PQ_PASSTHROUGH).Exists();
+  return available;
 }
 
 // Single source of truth for the GUI/OSD encoding decision, shared by Configure
@@ -74,7 +87,16 @@ CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(const VideoPicture& p
   const bool native_is_pq(dvOutputMode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
     (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
     isHdrDisplay);
-  return native_is_pq ? GuiEncoding::Scalar : GuiEncoding::Srgb;
+  if (!native_is_pq)
+    return GuiEncoding::Srgb;
+
+  // Native PQ output composites like the DV core does when the kernel can be
+  // told to pass the OSD through (see Configure). HLG output keeps the VPP's
+  // own SDR->HLG encode and the scalar trim.
+  const bool native_hlg(picture.hdrType == StreamHdrType::HDR_TYPE_HLG &&
+                        picture.color_transfer != AVCOL_TRC_SMPTE2084);
+  return !native_hlg && OsdPqPassthroughAvailable() ? GuiEncoding::Composite
+                                                    : GuiEncoding::Scalar;
 }
 
 bool CRendererAML::ConfigChanged(const VideoPicture& picture)
@@ -135,6 +157,7 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   m_guiEncoding = ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay);
   const bool core_is_pq(m_guiEncoding == GuiEncoding::Composite);
   const bool gui_is_pq(m_guiEncoding != GuiEncoding::Srgb);
+  const bool native_output(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS);
 
   // WHO OWNS the OSD plane's sRGB -> BT.2020 PQ encode decides what Kodi may do,
   // and the two output classes differ:
@@ -162,14 +185,26 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   //    (dim) instead. That corner needs the DV core forced to a non-bypass
   //    target, which makes is_amdv_on() true and lands us in the core_is_pq
   //    branch above instead, so it is not reachable from here in practice.
+  //    The VPP encode cannot carry PQ-authored graphics (Blu-ray PGS): its
+  //    input is sRGB, so nothing outside BT.709 or above SDR white survives.
+  //    So when the kernel has osd_pq_passthrough (patch 0016), native PQ output
+  //    resolves to Composite as well, and the switch below turns the VPP's OSD
+  //    SDR->HDR encode into a pass-through with the BT.2020 matrix. HLG, and a
+  //    kernel without the switch, stay on the scalar path described here.
   //
-  // Hence the composite is gated on core_is_pq, NOT on gui_is_pq. If its
-  // shader/LUTs fail to build, fall back to the per-primitive encode so a DV GUI
-  // stays visible rather than black.
+  // Hence the composite is gated on core_is_pq (Kodi owns the transform), NOT
+  // on gui_is_pq. If its shader/LUTs fail to build, fall back to the
+  // per-primitive encode so a DV GUI stays visible rather than black.
   CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
   const bool composite(core_is_pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084));
   if (!core_is_pq)
     winSystem->SetGuiCompositing(0);
+
+  // Only a native composite hands the VPP a PQ plane; with the DV core engaged
+  // the VPP OSD stage is not programmed at all, and a failed composite falls
+  // back to the scalar trim, which needs the VPP's own encode.
+  const bool osd_pq_passthrough(composite && native_output);
+  CSysfsPath(OSD_PQ_PASSTHROUGH, osd_pq_passthrough ? 1 : 0);
 
   // Per-primitive m_sdrPeak encode: the intended path for native BYPASS output
   // (scalar trim only, the VPP does the transform), and the fallback when a DV
@@ -185,7 +220,9 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // OSD-brightness complaint can be triaged from the log alone.
   CLog::Log(LOGDEBUG, "CRendererAML::Configure - resolved DV output mode {}, GUI transform {} ({})",
     dv_output_mode,
-    !gui_is_pq ? "none, plain sRGB" : composite ? "sRGB->BT.2020 PQ, FBO composite"
+    !gui_is_pq ? "none, plain sRGB"
+      : osd_pq_passthrough ? "sRGB->BT.2020 PQ, FBO composite, VPP OSD passthrough"
+      : composite ? "sRGB->BT.2020 PQ, FBO composite"
       : core_is_pq ? "m_sdrPeak scalar, composite unavailable"
                    : "m_sdrPeak scalar only, the VPP encodes the OSD plane",
     gui_is_pq ? "graphic_fmt=9 FORMAT_HDR8" : "graphic_fmt=2 FORMAT_SDR");
