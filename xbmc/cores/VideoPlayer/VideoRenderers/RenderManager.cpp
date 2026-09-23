@@ -761,7 +761,19 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
-    m_overlays.RenderHDROverlays(m_presentsource);
+
+    // Off-screen when the platform composites them (see BeginHdrOverlayRender),
+    // straight onto the back buffer otherwise.
+    CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+    if (m_overlays.HasHDROverlays(m_presentsource))
+    {
+      const bool offscreen = winSystem->BeginHdrOverlayRender();
+      m_overlays.RenderHDROverlays(m_presentsource);
+      if (offscreen)
+        winSystem->EndHdrOverlayRender(true);
+    }
+    else
+      winSystem->EndHdrOverlayRender(false);
   }
 
   // Under the HDR GUI composite the video pass draws onto the PQ back buffer that

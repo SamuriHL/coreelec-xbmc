@@ -125,6 +125,9 @@ namespace OVERLAY {
     // render overlays already in HDR (not sRGB)
     void RenderHDROverlays(int idx);
 
+    // True if RenderHDROverlays would draw anything for this buffer
+    bool HasHDROverlays(int idx) const;
+
     /*!
      * \brief Pre-walk hook: render libass output for the present slot.
      *  Called once per frame on the GUI/main thread before the GUI walk-skip
