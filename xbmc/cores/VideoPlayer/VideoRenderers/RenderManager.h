@@ -152,6 +152,8 @@ public:
 
 protected:
 
+  void RenderWithoutPicture(bool gui, bool configured);
+
   void PresentSingle(bool clear, DWORD flags, DWORD alpha);
   void PresentFields(bool clear, DWORD flags, DWORD alpha);
   void PresentBlend(bool clear, DWORD flags, DWORD alpha);

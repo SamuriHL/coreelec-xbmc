@@ -693,6 +693,17 @@ bool CDVDInputStreamBluray::Open()
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - BD-J titles         : {}",
               disc_info->num_bdj_titles);
     m_hasBdjTitles = disc_info->num_bdj_titles > 0;
+
+    // Graphics regime before any playlist exists: a BD-J title can put a
+    // screen up with no playlist (then no clip says what it was authored
+    // for), so start from the disc's declared initial dynamic range.
+    // UpdatePqAuthoredGraphics() takes over at the first playlist.
+    m_pqAuthoredGraphics =
+        disc_info->initial_dynamic_range_type != BLURAY_DYNAMIC_RANGE_SDR;
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - initial dynamic range: {} ({})",
+              disc_info->initial_dynamic_range_type,
+              m_pqAuthoredGraphics ? "graphics drawn as HDR until a playlist says otherwise"
+                                   : "SDR");
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - BD-J handled        : {}",
               disc_info->bdj_handled);
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - UNSUPPORTED titles  : {}",
@@ -1178,6 +1189,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    // the background plane lies behind video: once a playlist plays, it is covered
+    SetBackgroundVisible(false);
     // A jump breaks the sequential run the ISO read-ahead is keyed on.
     ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
@@ -1700,6 +1713,26 @@ void CDVDInputStreamBluray::OverlayClose()
 #endif
 }
 
+void CDVDInputStreamBluray::SetBackgroundVisible(bool visible)
+{
+#if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+  if (m_bgVisible.exchange(visible) == visible)
+    return;
+
+  bool hasBackground;
+  {
+    std::unique_lock lock(m_overlayLock);
+    hasBackground = !m_planes[2].o.empty();
+  }
+  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - background plane {}{}",
+            visible ? "shown (no playlist playing)" : "hidden behind video",
+            hasBackground ? "" : " (empty)");
+  // re-post so the change takes effect without waiting for the disc to redraw
+  if (hasBackground)
+    OverlayFlush(-1);
+#endif
+}
+
 void CDVDInputStreamBluray::RedrawMenuOverlays()
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
@@ -1851,6 +1884,8 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
   // then PG (0), then IG (1) on top
   for (int planeIdx : {2, 0, 1})
   {
+    if (planeIdx == 2 && !m_bgVisible)
+      continue;
     for (const SOverlay& o : m_planes[planeIdx].o)
       group->m_overlays.push_back(o);
   }
@@ -1858,8 +1893,9 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   // content-based, not latched-true: a HIDE (or a flush of fully-cleared
   // planes) must drop the "overlay up" state or menu-domain classification
-  // and IsInMenu() stay stuck after the composition is gone
-  m_hasOverlay = !group->m_overlays.empty();
+  // and IsInMenu() stay stuck after the composition is gone. The background
+  // plane is not a menu: a background left up alone must not keep it set.
+  m_hasOverlay = !m_planes[0].o.empty() || !m_planes[1].o.empty();
 #endif
 }
 
@@ -1988,18 +2024,38 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
 #ifdef HAVE_LIBBLURAY_BDJ
 void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s * const ov)
 {
-  if(ov == nullptr || ov->cmd == BD_ARGB_OVERLAY_CLOSE)
+  if (ov == nullptr)
   {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J ARGB overlay CLOSE ({} draws, {} flushes)",
-              m_argbDrawsSinceInit, m_argbFlushesSinceInit);
     OverlayClose();
     return;
   }
 
-  if (ov->plane > 1)
+  // 0 PG, 1 IG (BD-J graphics), 2 BG (HAVi background, libbluray 1.5.0)
+  if (ov->plane > 2)
   {
     CLog::Log(LOGWARNING, "CDVDInputStreamBluray - Ignoring ARGB overlay on unknown plane {}",
               ov->plane);
+    return;
+  }
+
+  if (ov->cmd == BD_ARGB_OVERLAY_CLOSE)
+  {
+    CLog::Log(LOGDEBUG,
+              "CDVDInputStreamBluray - BD-J ARGB overlay CLOSE plane {} ({} draws, {} flushes)",
+              ov->plane, m_argbDrawsSinceInit, m_argbFlushesSinceInit);
+    // Closing one plane must not wipe the others: the background plane opens
+    // and closes independently of the BD-J graphics plane. When nothing is
+    // left, close the whole overlay session exactly as before.
+    bool othersEmpty;
+    {
+      std::unique_lock lock(m_overlayLock);
+      m_planes[ov->plane].o.clear();
+      othersEmpty = m_planes[0].o.empty() && m_planes[1].o.empty() && m_planes[2].o.empty();
+    }
+    if (othersEmpty)
+      OverlayClose();
+    else
+      OverlayFlush(-1);
     return;
   }
 
@@ -2036,9 +2092,13 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
 
     overlay->palette.clear();
-    size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
-    overlay->pixels.resize(bytes);
-    memcpy(overlay->pixels.data(), ov->argb, bytes);
+    // rows are ov->stride apart, but the last row only has ov->w pixels
+    // behind ov->argb: copying stride*h would read past the source when the
+    // region does not start at x = 0
+    const size_t stride = static_cast<size_t>(ov->stride);
+    overlay->pixels.assign(stride * ov->h * 4, 0);
+    if (ov->h > 0)
+      memcpy(overlay->pixels.data(), ov->argb, ((ov->h - 1) * stride + ov->w) * 4);
 
     // BD-J graphics on an HDR playlist arrive already BT.2020 PQ: keep them as
     // authored and let the renderer draw them raw on HDR output (see the note
@@ -2379,6 +2439,22 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 
   m_hold = HOLD_DATA;
   return NEXTSTREAM_OPEN;
+}
+
+bool CDVDInputStreamBluray::IsWaitingForPlayback()
+{
+  if (m_bd == nullptr || !m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+    return false;
+
+  // BD-J starts playlists (and changes titles) on its own threads; the events
+  // it queues are what move us on, so consume them before asking
+  while (bd_get_event(m_bd, &m_event))
+    ProcessEvent();
+
+  const bool waiting = bd_bdj_waiting_for_playback(m_bd) != 0;
+  if (waiting)
+    SetBackgroundVisible(true);
+  return waiting;
 }
 
 void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)

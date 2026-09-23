@@ -124,6 +124,22 @@ void CRenderer::ReleaseCache()
   m_textureid++;
 }
 
+// A texture bakes in its conversion: a PQ-authored overlay converted to sRGB
+// for an SDR destination is wrong once the destination is PQ, and the reverse.
+// The regime changes when a renderer configures (e.g. a disc screen shown with
+// no playlist, then its first video engaging the HDR composite); a static menu
+// is never re-posted, so its stale texture would stay until the next change.
+void CRenderer::ReleaseCacheOnRegimeChange()
+{
+  const int pqDestination = ShouldConvertPQPaletteToSRGB(true) ? 0 : 1;
+  if (pqDestination != m_cachePqDestination)
+  {
+    if (m_cachePqDestination != -1)
+      ReleaseCache();
+    m_cachePqDestination = pqDestination;
+  }
+}
+
 void CRenderer::ReleaseUnused()
 {
   for (auto it = m_textureCache.begin(); it != m_textureCache.end(); )
@@ -161,6 +177,7 @@ void CRenderer::ReleaseUnused()
 void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock lock(m_section);
+  ReleaseCacheOnRegimeChange();
 
   // during HDR composite the m_isHDROverlay overlays render via
   // RenderHDROverlays instead
@@ -169,8 +186,15 @@ void CRenderer::Render(int idx, float depth)
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
   // the presentation-time menu composition goes on top of the buffer's overlays
-  for (std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
+  // idx < 0: no picture presented yet (a disc screen with no playlist, or the
+  // gap before a new video's first frame) - only the presentation-time
+  // composition applies
+  std::vector<SElement>* const buffer =
+      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  for (std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
+    if (!list)
+      continue;
     for (SElement& e : *list)
     {
       if (!e.overlay_dvd)
@@ -200,12 +224,20 @@ void CRenderer::RenderHDROverlays(int idx)
     return;
 
   std::unique_lock lock(m_section);
+  ReleaseCacheOnRegimeChange();
 
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
-  for (std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
+  // idx < 0: no picture presented yet (a disc screen with no playlist, or the
+  // gap before a new video's first frame) - only the presentation-time
+  // composition applies
+  std::vector<SElement>* const buffer =
+      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  for (std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
+    if (!list)
+      continue;
     for (SElement& e : *list)
     {
       if (!e.overlay_dvd)
@@ -232,11 +264,13 @@ bool CRenderer::HasHDROverlays(int idx) const
     return false;
 
   std::unique_lock lock(m_section);
-  if (idx < 0 || idx >= NUM_BUFFERS)
-    return false;
+  const std::vector<SElement>* const buffer =
+      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
 
-  for (const std::vector<SElement>* list : {&m_buffers[idx], &m_presentLatest})
+  for (const std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
+    if (!list)
+      continue;
     for (const auto& e : *list)
     {
       if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
@@ -537,8 +571,7 @@ void CRenderer::PrepareOverlays(int idx)
   }
 
   std::unique_lock lock(m_section);
-  if (idx < 0 || idx >= NUM_BUFFERS)
-    return;
+  const bool hasBuffer = idx >= 0 && idx < NUM_BUFFERS;
 
   // The container holds no drawable overlay (menu closed / all subtitles ended),
   // but this buffer was never refreshed because no new picture arrived (a stall:
@@ -547,7 +580,7 @@ void CRenderer::PrepareOverlays(int idx)
   // genuinely empty container - navigation always leaves a non-empty composition,
   // so it can never clear a live menu. Only image/SPU are removed, so a libass
   // (TEXT/SSA) overlay is left untouched.
-  if (containerEmpty)
+  if (containerEmpty && hasBuffer)
   {
     std::vector<SElement>& buf = m_buffers[idx];
     buf.erase(std::remove_if(buf.begin(), buf.end(),
@@ -576,6 +609,14 @@ void CRenderer::PrepareOverlays(int idx)
       }
     }
     doMarkDirty = true;
+  }
+
+  // no picture presented yet: the presentation-time composition is all there is
+  if (!hasBuffer)
+  {
+    if (doMarkDirty)
+      MarkDirty();
+    return;
   }
 
   int nImageSpu = 0;
