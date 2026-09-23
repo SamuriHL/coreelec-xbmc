@@ -1990,6 +1990,8 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
 {
   if(ov == nullptr || ov->cmd == BD_ARGB_OVERLAY_CLOSE)
   {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J ARGB overlay CLOSE ({} draws, {} flushes)",
+              m_argbDrawsSinceInit, m_argbFlushesSinceInit);
     OverlayClose();
     return;
   }
@@ -2009,12 +2011,24 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
 
   if (ov->cmd == BD_ARGB_OVERLAY_INIT)
   {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J ARGB overlay INIT plane {} {}x{}", ov->plane,
+              ov->w, ov->h);
+    m_argbDrawsSinceInit = 0;
+    m_argbFlushesSinceInit = 0;
     OverlayInit(plane, ov->w, ov->h);
     return;
   }
 
+  // first few and then every 200th, so an animating menu cannot flood the log
+  const auto sampled = [](int n) { return n <= 3 || n % 200 == 0; };
+
   if (ov->cmd == BD_ARGB_OVERLAY_DRAW)
+  {
+    if (sampled(++m_argbDrawsSinceInit))
+      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J ARGB draw #{} plane {} at {},{} {}x{}",
+                m_argbDrawsSinceInit, ov->plane, ov->x, ov->y, ov->w, ov->h);
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
+  }
 
   /* uncompress and draw bitmap */
   if (ov->argb && ov->cmd == BD_ARGB_OVERLAY_DRAW)
@@ -2042,7 +2056,12 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
   }
 
   if(ov->cmd == BD_ARGB_OVERLAY_FLUSH)
+  {
+    if (sampled(++m_argbFlushesSinceInit))
+      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J ARGB flush #{} ({} draws so far)",
+                m_argbFlushesSinceInit, m_argbDrawsSinceInit);
     OverlayFlush(ov->pts, /*keepAliveEligible=*/true);
+  }
 }
 #endif
 
