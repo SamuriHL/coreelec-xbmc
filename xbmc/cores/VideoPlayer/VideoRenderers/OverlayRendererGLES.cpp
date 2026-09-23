@@ -205,6 +205,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     {
       const bool toSrgb = OVERLAY::ShouldConvertPQPaletteToSRGB(true);
       const bool limited = !toSrgb && CServiceBroker::GetWinSystem()->IsHdrComposite() &&
+                           !CServiceBroker::GetWinSystem()->HdrOverlaysComposited() &&
                            CServiceBroker::GetWinSystem()->UseLimitedColor();
       if (toSrgb || limited)
       {
@@ -290,12 +291,14 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     uint32_t lut[256];
     BuildRGBALut(paletteOverride ? *paletteOverride : o.palette, m_pma, lut);
 
-    // the direct back-buffer draw in Render bypasses the composite's
-    // limited-range encode, so apply it to the palette here
+    // a direct back-buffer draw in Render bypasses the composite's
+    // limited-range encode, so apply it to the palette here (not when the
+    // platform routes HDR overlays through the composite, which encodes them)
     //! @todo Move this into the overlay shader once limited-range and
     //! full-range GUI shader variants are kept compiled in parallel and
     //! selectable per draw; then this draw selects the limited variant.
     if (m_isHDROverlay && CServiceBroker::GetWinSystem()->IsHdrComposite() &&
+        !CServiceBroker::GetWinSystem()->HdrOverlaysComposited() &&
         CServiceBroker::GetWinSystem()->UseLimitedColor())
     {
       for (uint32_t& px : lut)
