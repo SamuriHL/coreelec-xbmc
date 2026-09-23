@@ -1773,6 +1773,9 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
   group->SetOverlayContainerFlushable(false);
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
+  // no pts = not on the video timeline: BD-J ARGB flushes (libbluray always
+  // posts them with pts -1) and reposts of the retained composition
+  group->m_presentLatest = pts < 0;
 
   // BD-J ARGB abandoned-composition expiry: some Xlets keep an overlay (e.g. a
   // subtitle they render themselves) visible by re-posting the composition
