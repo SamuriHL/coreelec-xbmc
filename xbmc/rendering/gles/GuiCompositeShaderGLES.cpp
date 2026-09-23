@@ -69,10 +69,13 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hLutTF = glGetUniformLocation(ProgramHandle(), "u_lutTF");
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
+  m_hHdr = glGetUniformLocation(ProgramHandle(), "u_hdr");
+  m_hHasHdr = glGetUniformLocation(ProgramHandle(), "u_hasHdr");
   glUseProgram(ProgramHandle());
   glUniform1i(m_hSamp, 0);
   glUniform1i(m_hLutDegamma, 1);
   glUniform1i(m_hLutTF, 2);
+  glUniform1i(m_hHdr, 3);
   glUseProgram(0);
 }
 
@@ -87,6 +90,12 @@ bool CGuiCompositeShaderGLES::OnEnabled()
   glBindTexture(GL_TEXTURE_2D, m_lutDegammaTexId);
   glActiveTexture(GL_TEXTURE2);
   glBindTexture(GL_TEXTURE_2D, m_lutTFTexId);
+  glUniform1f(m_hHasHdr, m_hdrTexId ? 1.0f : 0.0f);
+  if (m_hdrTexId)
+  {
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, m_hdrTexId);
+  }
   glActiveTexture(GL_TEXTURE0);
 
   return true;

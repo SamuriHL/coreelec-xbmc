@@ -274,6 +274,18 @@ public:
   virtual void EndGuiComposite() {}
   virtual void CompositeGui() {}
 
+  // HDR overlays (PQ-authored PGS subtitles and disc menus) during a GUI
+  // composite. When BeginHdrOverlayRender returns true the platform has bound an
+  // off-screen target for them, and CompositeGui outputs its content as-is under
+  // the colour-transformed GUI. When false they are drawn straight onto the back
+  // buffer after the video pass. EndHdrOverlayRender(false) records that no HDR
+  // overlay is on screen, without binding anything.
+  virtual bool BeginHdrOverlayRender() { return false; }
+  virtual void EndHdrOverlayRender(bool drawn) {}
+  // True when HDR overlays reach the output through CompositeGui, which then also
+  // owns their limited-range encode.
+  virtual bool HdrOverlaysComposited() const { return false; }
+
   // Force the OSD/overlay plane to a cleared (opaque black) state right now by
   // presenting cleared buffers through the platform present path. Used at
   // playback teardown when a BD menu / subtitle overlay is still on the plane:

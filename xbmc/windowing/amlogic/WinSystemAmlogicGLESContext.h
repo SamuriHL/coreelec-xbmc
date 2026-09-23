@@ -61,6 +61,9 @@ public:
   bool BeginGuiComposite(bool guiWillRender) override;
   void EndGuiComposite() override;
   void CompositeGui() override;
+  bool BeginHdrOverlayRender() override;
+  void EndHdrOverlayRender(bool drawn) override;
+  bool HdrOverlaysComposited() const override { return m_guiCompositing; }
   bool IsHdrComposite() const override { return m_guiCompositing; }
   void ClearOverlayPlane() override;
 
@@ -85,6 +88,14 @@ private:
   bool m_guiFboClean{false};
   // Whether the GUI render pass will run this frame; set by BeginGuiComposite.
   bool m_guiWillRender{true};
+  // HDR overlays (PQ PGS, disc menus) drawn off-screen by the video pass and
+  // output as-is by CompositeGui under the transformed GUI. Drawing them straight
+  // onto the back buffer instead stalled the GPU for ~4s at a BD-J menu clip
+  // change (Superman UHD), freezing the menu's slide-in animation.
+  CFrameBufferObject m_hdrFbo;
+  int m_hdrFboWidth{0};
+  int m_hdrFboHeight{0};
+  bool m_hdrFboHasContent{false};
   // GUI frames still to repaint after CreateNewWindow replaced the GBM surface. More than one,
   // because FlipPage cannot report a failed commit and swaps can fail around a mode switch.
   int m_guiRepaintFrames{0};
