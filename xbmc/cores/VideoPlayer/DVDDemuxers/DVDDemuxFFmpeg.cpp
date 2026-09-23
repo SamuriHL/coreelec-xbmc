@@ -2632,6 +2632,22 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         delete stream;
         return nullptr;
       }
+      // Its companion, a SECONDARY AUDIO stream (PID 0x1a00-0x1a1f), is the
+      // PiP commentary the disc mixes over the primary track. Kodi has no mixer
+      // for it and GetStreamInfo does not handle the pid either, so on its own
+      // it can only turn up as an unnamed audio track that replaces the film's
+      // sound with commentary.
+      if (pStream->id >= HDMV_PID_SECONDARY_AUDIO_FIRST &&
+          pStream->id <= HDMV_PID_SECONDARY_AUDIO_LAST)
+      {
+        CLog::Log(LOGDEBUG,
+                  "CDVDDemuxFFmpeg::AddStream - discarding bluray secondary audio "
+                  "(picture-in-picture) stream, pid {:#06x}",
+                  pStream->id);
+        pStream->discard = AVDISCARD_ALL;
+        delete stream;
+        return nullptr;
+      }
 
       stream->dvdNavId = pStream->id;
 
