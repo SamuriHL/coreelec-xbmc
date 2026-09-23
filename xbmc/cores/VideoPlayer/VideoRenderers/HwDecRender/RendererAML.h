@@ -53,11 +53,14 @@ private:
   {
     Srgb, // plain sRGB: nothing downstream encodes the OSD plane
     Scalar, // m_sdrPeak trim only; the VPP encodes the OSD plane itself
-    Composite, // Kodi owns the full sRGB->BT.2020 PQ transform (DV core reads the plane)
+    Composite, // Kodi owns the full sRGB->BT.2020 PQ transform (DV core reads the
+               // plane, or the VPP passes it through on native PQ output)
   };
   static GuiEncoding ResolveGuiEncoding(const VideoPicture& picture,
                                         unsigned int dvOutputMode,
                                         bool isHdrDisplay);
+  static const char* const OSD_PQ_PASSTHROUGH;
+  static bool OsdPqPassthroughAvailable();
 
   GuiEncoding m_guiEncoding{GuiEncoding::Srgb};
   // Sink HDR capability, sampled in Configure. CWinSystemAmlogic::IsHDRDisplay()
