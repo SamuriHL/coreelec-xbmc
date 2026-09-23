@@ -1191,6 +1191,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
   case BD_EVENT_PLAYLIST:
     // the background plane lies behind video: once a playlist plays, it is covered
     SetBackgroundVisible(false);
+    // a playlist brings the DV engage back (VideoPlayer::OpenStream), and with
+    // it the DV-session graphics rule
+    SetMenuOnlyNativeGraphics(false);
     // A jump breaks the sequential run the ISO read-ahead is keyed on.
     ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
@@ -1733,6 +1736,40 @@ void CDVDInputStreamBluray::SetBackgroundVisible(bool visible)
 #endif
 }
 
+void CDVDInputStreamBluray::SetMenuOnlyNativeGraphics(bool on)
+{
+#if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+  if (m_menuOnlyNativeGraphics.exchange(on) == on)
+    return;
+
+  const bool hdr = on ? m_pqAuthoredGraphics.load() : (m_dvDiscSession || m_pqAuthoredGraphics);
+  bool any = false;
+  {
+    std::unique_lock lock(m_overlayLock);
+    // Re-create the retained graphics under the new rule: a posted overlay's
+    // texture is cached against it (a copy starts with no texture id), so
+    // flipping the flag in place would keep the old conversion on screen.
+    for (SPlane& plane : m_planes)
+    {
+      for (SOverlay& o : plane.o)
+      {
+        if (o->m_isHDROverlay == hdr)
+          continue;
+        auto copy = std::make_shared<CDVDOverlayImage>(*o, o->x, o->y, o->width, o->height);
+        copy->m_isHDROverlay = hdr;
+        o = copy;
+      }
+      any = any || !plane.o.empty();
+    }
+  }
+  CLog::Log(LOGINFO, "CDVDInputStreamBluray - menu-only graphics drawn as {}",
+            on ? (hdr ? "HDR (disc's initial range)" : "SDR (disc's initial range, DV released)")
+               : "per the DV disc session again");
+  if (any)
+    OverlayFlush(-1);
+#endif
+}
+
 void CDVDInputStreamBluray::RedrawMenuOverlays()
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
@@ -2120,7 +2157,8 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // BD-J graphics on an HDR playlist arrive already BT.2020 PQ: keep them as
     // authored and let the renderer draw them raw on HDR output (see the note
     // above OverlayClose).
-    overlay->m_isHDROverlay = m_dvDiscSession || m_pqAuthoredGraphics;
+    overlay->m_isHDROverlay =
+        m_menuOnlyNativeGraphics ? m_pqAuthoredGraphics.load() : (m_dvDiscSession || m_pqAuthoredGraphics);
 
     overlay->linesize = ov->stride * 4;
     overlay->x = ov->x;
