@@ -287,10 +287,14 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
     return false;
 
   // Convert to sRGB unless the overlay is going to a PQ destination: the HDR
-  // composite, or a GUI layer that is output as an HDR signal.
-  const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-  const bool destinationIsPQ =
-      winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
+  // composite, or a GUI layer that is output as an HDR signal. The latter
+  // includes a GUI drawn with the per-primitive PQ transfer: Amlogic reports an
+  // SDR EOTF for the window but encodes the GUI as PQ codes on native HDR10
+  // output, and converting there clips every colour above reference white.
+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+  const bool destinationIsPQ = winSystem->IsHdrComposite() ||
+                               winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR ||
+                               winSystem->GetGfxContext().IsTransferPQ();
   return !destinationIsPQ;
 }
 
