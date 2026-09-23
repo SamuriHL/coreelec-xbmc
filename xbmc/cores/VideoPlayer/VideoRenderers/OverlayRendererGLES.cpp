@@ -195,6 +195,33 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       paletteOverride = &convertedPalette;
     }
 
+    // Which route a PGS palette takes decides whether it is PQ-encoded once or
+    // twice; log it whenever the route changes.
+    if (o.m_isPGS)
+    {
+      static int lastRoute = -1;
+      const bool composite = CServiceBroker::GetWinSystem()->IsHdrComposite();
+      const int route = (o.m_isHDROverlay ? 1 : 0) | (paletteOverride ? 2 : 0) | (composite ? 4 : 0);
+      if (route != lastRoute)
+      {
+        lastRoute = route;
+        uint32_t raw = 0, out = 0;
+        for (size_t i = 0; i < o.palette.size(); i++)
+        {
+          if ((o.palette[i] >> PIXEL_ASHIFT) & 0xff)
+          {
+            raw = o.palette[i];
+            out = paletteOverride ? convertedPalette[i] : raw;
+            break;
+          }
+        }
+        CLog::Log(LOGDEBUG,
+                  "COverlayTextureGLES - PGS route: hdrOverlay {} convertToSrgb {} hdrComposite {} "
+                  "palette[first opaque] {:08x} -> {:08x}",
+                  o.m_isHDROverlay, paletteOverride != nullptr, composite, raw, out);
+      }
+    }
+
     std::vector<uint32_t> rgba(o.width * o.height);
     m_pma = !!USE_PREMULTIPLIED_ALPHA;
     convert_rgba(o, m_pma, rgba, paletteOverride);
