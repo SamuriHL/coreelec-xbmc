@@ -20,17 +20,23 @@
 
 #include "RenderBufferFBO.h"
 
+#include "RenderBufferPoolFBO.h"
 #include "utils/log.h"
 
 using namespace KODI;
 using namespace RETRO;
 
-CRenderBufferFBO::CRenderBufferFBO(
-    CRenderContext&, bool depth, bool stencil, bool bottomLeftOrigin, Type type)
+CRenderBufferFBO::CRenderBufferFBO(CRenderContext&,
+                                   bool depth,
+                                   bool stencil,
+                                   bool bottomLeftOrigin,
+                                   Type type,
+                                   std::shared_ptr<Sync> sync)
   : m_depth(depth),
     m_stencil(stencil),
     m_bottomLeftOrigin(type == Type::CLIENT && bottomLeftOrigin),
-    m_type(type)
+    m_type(type),
+    m_resources(std::make_shared<Resources>(std::move(sync)))
 {
 }
 
@@ -41,8 +47,8 @@ void CRenderBufferFBO::Resources::Destroy()
   std::unique_lock lock(mutex);
   if (rendered)
   {
-    glWaitSync(rendered, 0, GL_TIMEOUT_IGNORED);
-    glDeleteSync(rendered);
+    sync->wait(rendered);
+    sync->destroy(rendered);
     rendered = nullptr;
   }
   if (ready)
@@ -173,8 +179,8 @@ void CRenderBufferFBO::PrepareForCapture()
 {
   if (m_resources->rendered)
   {
-    glWaitSync(m_resources->rendered, 0, GL_TIMEOUT_IGNORED);
-    glDeleteSync(m_resources->rendered);
+    m_resources->sync->wait(m_resources->rendered);
+    m_resources->sync->destroy(m_resources->rendered);
     m_resources->rendered = nullptr;
   }
   if (m_resources->ready)
@@ -206,9 +212,11 @@ void CRenderBufferFBO::FinishRender()
     return;
 
   if (m_resources->rendered)
-    glDeleteSync(m_resources->rendered);
-  m_resources->rendered = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    m_resources->sync->destroy(m_resources->rendered);
+  m_resources->rendered = m_resources->sync->fence();
   if (!m_resources->rendered)
     m_resources->retired = true;
-  glFlush();
+  if (auto* pool = static_cast<CRenderBufferPoolFBO*>(GetPool());
+      pool && !m_resources->guiPending.exchange(true))
+    pool->MarkRendered(m_resources);
 }

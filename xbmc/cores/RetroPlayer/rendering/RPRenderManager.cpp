@@ -540,6 +540,7 @@ void CRPRenderManager::SetSpeed(double speed)
 
 void CRPRenderManager::FrameMove()
 {
+  FlushRendered();
   CheckFlush();
 
   bool bIsConfigured = false;
@@ -564,6 +565,12 @@ void CRPRenderManager::FrameMove()
     for (auto& renderer : m_renderers)
       renderer->FrameMove();
   }
+}
+
+void CRPRenderManager::FlushRendered()
+{
+  for (IRenderBufferPool* pool : m_processInfo.GetBufferManager().GetBufferPools())
+    pool->FlushRendered();
 }
 
 void CRPRenderManager::CheckFlush()
