@@ -19,7 +19,6 @@
 #include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
-#include <atomic>
 #include <list>
 #include <mutex>
 #include <utility>
@@ -114,7 +113,7 @@ protected:
 
   int m_speed;
   bool m_stalled;
-  std::atomic<bool> m_paused;
+  bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
   XbmcThreads::EndTime<> m_syncTimer;
   // Longer settle for the SYNC_DISCON correction gate: post-resync sink
