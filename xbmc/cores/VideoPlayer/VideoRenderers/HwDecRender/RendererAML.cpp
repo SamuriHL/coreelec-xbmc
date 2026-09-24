@@ -8,19 +8,21 @@
 
 #include "RendererAML.h"
 
-#include "ServiceBroker.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+#include "ServiceBroker.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/MediaSettings.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
 #include "utils/ScreenshotAML.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
-#include "windowing/WinSystem.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/WinSystem.h"
 
 CRendererAML::CRendererAML()
  : m_prevVPts(DVD_NOPTS_VALUE)
@@ -32,8 +34,7 @@ CRendererAML::CRendererAML()
 CRendererAML::~CRendererAML()
 {
   Reset();
-  static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-      ->ReleaseHdrGuiSession(m_hdrGuiOwner);
+  CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
 }
 
 CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
@@ -65,72 +66,19 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   SetViewMode(m_videoSettings.m_ViewMode);
   ManageRenderArea();
 
-  int color_transfer = 0;
-  const bool dv_graphics =
-      picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && aml_dolby_vision_enabled();
-  switch (picture.color_space)
-  {
-    case AVCOL_SPC_BT2020_NCL:
-    {
-      if (CServiceBroker::GetWinSystem()->IsHDRDisplay())
-      {
-        auto hdr_cap = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
-        switch (picture.color_transfer)
-        {
-          case AVCOL_TRC_ARIB_STD_B67:
-            if (hdr_cap.SupportsHLG())
-            {
-              color_transfer = AVCOL_TRC_ARIB_STD_B67;
-              break;
-            }
-            [[fallthrough]];
-          case AVCOL_TRC_SMPTE2084:
-            if (hdr_cap.SupportsHDR10())
-              color_transfer = AVCOL_TRC_SMPTE2084;
-            break;
-          default:
-            break;
-        }
-      }
-      break;
-    }
+  // Configure GUI/OSD for HDR PQ when display is in HDR PQ mode
+  bool device_support_dv(aml_support_dolby_vision());
+  bool user_dv_disable(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  bool dv_is_used(device_support_dv && !user_dv_disable &&
+    picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+    static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
+  bool hdr_is_used((picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
+    CServiceBroker::GetWinSystem()->IsHDRDisplay());
+  CLog::Log(LOGDEBUG, "CRendererAML::Configure {}DV support, {}, DV system is {}, HDR is {}", device_support_dv ? "" : "no ",
+    user_dv_disable ? "disabled" : "enabled", dv_is_used ? "enabled" : "disabled", hdr_is_used ? "used" : "not used");
 
-    case AVCOL_SPC_ICTCP:
-    {
-      auto hdr_cap = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
-      switch (picture.color_transfer)
-      {
-        case AVCOL_TRC_SMPTE2084:
-          if (hdr_cap.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE || hdr_cap.SupportsHDR10())
-          {
-            color_transfer = AVCOL_TRC_SMPTE2084;
-          }
-          break;
-        default:
-          break;
-      }
-      break;
-    }
-    default:
-      break;
-  }
+  CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(dv_is_used | hdr_is_used);
 
-  // dolby vision is PQ even when its stream color fields are unspecified
-  if (dv_graphics)
-    color_transfer = AVCOL_TRC_SMPTE2084;
-
-  const auto winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
-  if (color_transfer != 0)
-  {
-    m_hdrGuiOwner = winSystem->ConfigureHdrGuiSession(m_hdrGuiOwner, color_transfer, dv_graphics);
-    if (m_hdrGuiOwner == 0)
-      CLog::Log(LOGWARNING, "CRendererAML: HDR GUI composite unavailable; using normal GUI path");
-  }
-  else
-  {
-    winSystem->ReleaseHdrGuiSession(m_hdrGuiOwner);
-    m_hdrGuiOwner = 0;
-  }
   m_bConfigured = true;
 
   return true;

@@ -41,11 +41,8 @@ public:
   void UpdateResolutions() override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
+  float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
-
-  // prevent a stale renderer from restoring HDR GUI state owned by a newer session
-  virtual uint64_t ConfigureHdrGuiSession(uint64_t owner, int colorTransfer, bool dvGraphics) = 0;
-  virtual void ReleaseHdrGuiSession(uint64_t owner) = 0;
 
   virtual void Register(IDispResource *resource);
   virtual void Unregister(IDispResource *resource);
