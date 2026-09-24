@@ -783,8 +783,8 @@ bool CDVDInputStreamBluray::Open()
   if (m_navmode)
   {
     // Disc-session DV latch: if this disc carries Dolby Vision and the display
-    // can take it, engage the DV output now - during the load phase - and keep
-    // it for the whole disc session. Menu-domain segments without a DV stream
+    // can take it, engage the DV output at the first DV mode set and keep it
+    // for the whole disc session. Menu-domain segments without a DV stream
     // (FirstPlay bumpers, menu loops) are VS10-mapped into DV by VideoPlayer,
     // so the HDMI DV signalling never bounces at segment boundaries (each
     // bounce is a ~2s TV resync that segment audio plays straight through).

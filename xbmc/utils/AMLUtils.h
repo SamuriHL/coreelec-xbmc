@@ -137,10 +137,14 @@ bool aml_dv_wire_format_is_lldv();
 // discs must output HDR10/HDR10+ demos untouched).
 void aml_dv_set_disc_session(bool active);
 bool aml_dv_disc_session();
-// Engage the DV output once at disc open (before any stream exists) so the
-// TV's resync into DV overlaps the disc load phase instead of the first
-// audible seconds of playback.
+// Request the disc-session DV output engage. It is applied by the next mode set
+// carrying a DV picture (aml_dv_engage_pending_disc_session), so the sink locks
+// into DV once, at the film's display mode.
 void aml_dv_pre_engage_disc_session();
+// Called by CreateNewWindow once the display mode is set: applies a pending
+// engage when the window now shows a DV picture.
+void aml_dv_engage_pending_disc_session(bool dvPicture);
+bool aml_dv_disc_engage_pending();
 // MIXED discs (DV present on the disc, but the selected title is native
 // HDR10/SDR with conform off): actively release the pre-engaged DV output -
 // drop the session VSIF hold and return amdv to follow-source - so the title's

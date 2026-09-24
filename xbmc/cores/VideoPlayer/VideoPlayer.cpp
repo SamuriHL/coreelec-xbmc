@@ -4819,13 +4819,13 @@ void CVideoPlayer::CheckMenuOnlyStart(bool noPlaylist)
 
   CLog::Log(LOGINFO, "VideoPlayer: disc screen with no playlist is up, starting menu-only playback");
 
-  // A DV disc session engages the DV output at disc open, ahead of its first
-  // video. With no video the DV core presents nothing - the screen stays black
+  // A DV disc session requests the DV output engage at disc open (applied at
+  // the first DV mode set). With no video the DV core presents nothing - the screen stays black
   // (John Wick 3's resume prompt; shows at once with DV disabled). Release the
   // engage for this screen only: the first DV-output segment re-engages it in
   // OpenStream before its decoder opens, the same path a mixed disc takes.
   // Normal starts never get here (a playlist inside the grace period).
-  if (aml_dv_disc_engaged())
+  if (aml_dv_disc_engaged() || aml_dv_disc_engage_pending())
   {
     CLog::Log(LOGINFO, "VideoPlayer: releasing the DV disc engage for the menu-only screen");
     aml_dv_release_disc_engage();
@@ -5479,8 +5479,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
         }
       }
       // Mixed disc coming back onto a DV-output segment (native DV title, or
-      // a segment VS10-mapped into the DV output) after a release: re-engage
-      // before the decoder opens so the sink locks DV ahead of first frame.
+      // a segment VS10-mapped into the DV output) after a release: request the
+      // re-engage, applied by that segment's DV mode set.
       if (aml_dv_disc_session() && !aml_dv_disc_engaged() &&
           (hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION ||
            vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS))
