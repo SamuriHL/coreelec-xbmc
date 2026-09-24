@@ -14,6 +14,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <math.h>
 #include <mutex>
@@ -293,7 +294,7 @@ unsigned CDVDMessageQueue::GetPacketCount(CDVDMsg::Message type)
   return count;
 }
 
-void CDVDMessageQueue::WaitUntilEmpty()
+void CDVDMessageQueue::WaitUntilEmpty(const std::function<bool()>& consumerHeld)
 {
   {
     std::unique_lock lock(m_section);
@@ -326,6 +327,8 @@ void CDVDMessageQueue::WaitUntilEmpty()
   XbmcThreads::EndTime<> totalTimer(ceiling);
   size_t lastRemaining = std::numeric_limits<size_t>::max();
   XbmcThreads::EndTime<> stallTimer(1500ms);
+  // bounds a hold that never ends (a display that does not come back)
+  XbmcThreads::EndTime<> heldBudget(30000ms);
   while (!m_bAbortRequest && !totalTimer.IsTimePast())
   {
     size_t remaining;
@@ -336,6 +339,20 @@ void CDVDMessageQueue::WaitUntilEmpty()
 
     if (remaining == 0)
       break;
+
+    // A consumer held by the player (paused across a display mode change)
+    // is not stalled: the playout resumes when the display is back, so
+    // neither the stall window nor the ceiling runs while it is held.
+    if (consumerHeld && consumerHeld() && !heldBudget.IsTimePast())
+    {
+      const auto heldStart = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(25ms);
+      const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - heldStart);
+      stallTimer.Set(1500ms);
+      totalTimer.Set(totalTimer.GetTimeLeft() + held);
+      continue;
+    }
 
     // Progress must look like a realtime playout, not a trickle: a consumer
     // sync-waiting against a stopped clock still pulls the odd message, which
