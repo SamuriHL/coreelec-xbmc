@@ -193,7 +193,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // wait until buffers are empty
   if (bWait)
-    m_messageQueue.WaitUntilEmpty([this] { return m_paused.load(); });
+  {
+    // a display mode change pauses the clock mid-drain; that is not a stall
+    m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
+  }
 
   // send abort message to the audio queue
   m_messageQueue.Abort();
@@ -515,7 +518,7 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
-      CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_PAUSE: {}", m_paused.load());
+      CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
