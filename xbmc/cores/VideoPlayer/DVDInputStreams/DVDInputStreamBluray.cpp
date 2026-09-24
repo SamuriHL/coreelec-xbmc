@@ -26,6 +26,7 @@
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
@@ -3087,6 +3088,19 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
       uhdCap |= 0x04;
     if (aml_display_support_hdr10plus())
       uhdCap |= 0x20;
+    // PSR26 bit 0 is the display's UHD resolution, beside bit 1's HDR10. The
+    // S&M enumeration above starts at 0x02, and Universal's BD-J framework
+    // (M3GAN 2.0) tests both, naming the neither-bit state DISPLAY_HD_SDR; a
+    // UHD title without both plays its "UHD not available" playlist.
+    const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+    for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+    {
+      if (displaySettings.GetResolutionInfo(i).iScreenHeight >= 2160)
+      {
+        uhdDisplayCap |= 0x01;
+        break;
+      }
+    }
     // display capability, straight from the EDID caps
     if (aml_display_support_dv())
       uhdDisplayCap |= 0x04;
