@@ -2653,10 +2653,15 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // at the same target - bounded by m_resumeSyncChecks so a genuinely
     // unstable basis degrades to upstream behavior instead of chasing noise.
     // `error` is already shifted by the target here.
+    // The band is a whole frame, not the landing's half frame: this re-land
+    // runs seconds into audible playback and can only move whole frames, so a
+    // sub-frame residual (measured 2026-09-24, TrueHD: 11.8/12.1ms against an
+    // 11ms band) was traded for an audible dropout. The multi-frame parks this
+    // exists for (45ms) are still caught.
     double confirmBand = 30.0;
     const double frameMs = stream->m_format.m_streamInfo.GetDuration();
     if (frameMs > 0.0)
-      confirmBand = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
+      confirmBand = std::clamp(frameMs + 1.0, 5.0, 30.0);
 
     if (fabs(error) > confirmBand && stream->m_resumeSyncChecks > 0)
     {
