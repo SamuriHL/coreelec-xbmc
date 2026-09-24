@@ -165,6 +165,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_wire)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
     return true;
   }
 
@@ -205,6 +206,9 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   {
     return false;
   }
+
+  // the disc-session DV engage waits for this mode set, so the sink locks once
+  aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
 
   uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
   if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format))

@@ -651,10 +651,16 @@ static bool s_dv_disc_session = false;
 // on the CVideoPlayerVideo thread (the in-playback codec-reopen path). Every
 // session guard keys on this read.
 static std::atomic<bool> s_dv_disc_engaged = false;
+// Requested by aml_dv_pre_engage_disc_session(), applied by the first mode set
+// that carries a DV picture. atomic: requested on the player thread, applied on
+// the GUI thread (CreateNewWindow).
+static std::atomic<bool> s_dv_disc_engage_pending{false};
 void aml_dv_set_disc_session(bool active)
 {
   const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
+  if (!active)
+    s_dv_disc_engage_pending = false;
   // Session over with the DV output engage still applied (e.g. stopped on a
   // DV segment): restore follow-source so the desktop/next playback signals
   // its own format instead of inheriting a forced DV output.
@@ -711,12 +717,10 @@ static std::atomic<bool> s_disc_mode_anchored{false};
 bool aml_disc_mode_anchored() { return s_disc_mode_anchored.load(); }
 void aml_set_disc_mode_anchored(bool anchored) { s_disc_mode_anchored = anchored; }
 
-void aml_dv_pre_engage_disc_session()
+static void aml_dv_engage_disc_session_now()
 {
   // Mirrors the DV-enable writes CAMLCodec::OpenDecoder performs per stream
-  // (same values; the codec's later writes are idempotent). Doing them at disc
-  // open raises the Dolby VSIF while libbluray/BD-J are still loading, so the
-  // TV's multi-second sync into DV is over before the first segment renders.
+  // (same values; the codec's later writes are idempotent).
   CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'Y');
   aml_dv_apply_vsvdb();
   const bool playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->
@@ -742,6 +746,40 @@ void aml_dv_pre_engage_disc_session()
   CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: DV output engaged "
             "({} led)", playerLed ? "player" : "TV");
 }
+
+void aml_dv_pre_engage_disc_session()
+{
+  // Not now: engaging here raises the Dolby VSIF at the display mode the GUI is
+  // in, and the first DV picture always gets a mode set of its own (the window's
+  // HDR type changes, so CreateNewWindow forces one even at an unchanged
+  // refresh rate). The sink then locks twice - into DV at the GUI's rate, and
+  // again ~1s later at the film's (Halo S2, 60Hz -> 24p). Until that mode set
+  // the decoder raises DV by itself, so the kernel still picks the DV wire for
+  // it; the session guards take over from the mode set on.
+  if (!s_dv_disc_engage_pending.exchange(true))
+    CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: DV output engage deferred "
+              "to the first DV mode set");
+}
+
+void aml_dv_engage_pending_disc_session(bool dvPicture)
+{
+  if (!s_dv_disc_engage_pending || !dvPicture)
+    return;
+  s_dv_disc_engage_pending = false;
+  // the stream's own resolved output (CAMLCodec::OpenDecoder) decides: a DV
+  // title the user converts to HDR10/SDR (vs10.dv) must not be forced back to DV
+  const unsigned int mode = aml_dv_get_output_mode();
+  if (mode != DOLBY_VISION_OUTPUT_MODE_IPT && mode != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+  {
+    CLog::Log(LOGINFO, "aml_dv_pre_engage_disc_session: stream outputs mode {}, not DV - "
+              "disc engage not applied", mode);
+    return;
+  }
+  if (s_dv_disc_session && !s_dv_disc_engaged)
+    aml_dv_engage_disc_session_now();
+}
+
+bool aml_dv_disc_engage_pending() { return s_dv_disc_engage_pending.load(); }
 
 // The ordered DV teardown. Shared by the disc-session release and by the
 // stale-session recovery at startup, because getting this order wrong is what
@@ -844,6 +882,7 @@ void aml_dv_recover_stale_disc_session()
 
 void aml_dv_release_disc_engage()
 {
+  s_dv_disc_engage_pending = false;
   if (!s_dv_disc_engaged)
     return;
   s_dv_disc_engaged = false;
