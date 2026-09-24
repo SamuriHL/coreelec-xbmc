@@ -544,6 +544,11 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     m_bWindowCreated = true;
   }
 
+  // the delay is for the display to lock onto the new mode, so count it from
+  // when the mode is set
+  if (delay > 0 && m_delayDispReset)
+    m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
+
   m_force_mode_switch = false;
   m_hotplug_mode_switch = false;
   return ret;
