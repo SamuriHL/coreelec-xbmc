@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <list>
 #include <string>
 
@@ -77,7 +78,7 @@ public:
   double GetTimeSize() const;
   unsigned GetPacketCount(CDVDMsg::Message type);
   bool ReceivedAbortRequest() { return m_bAbortRequest; }
-  void WaitUntilEmpty();
+  void WaitUntilEmpty(const std::function<bool()>& consumerHeld = {});
 
   // non messagequeue related functions
   // Full when EITHER dimension is exhausted. The data (MB) cap alone lets

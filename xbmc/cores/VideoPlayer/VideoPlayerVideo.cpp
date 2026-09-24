@@ -251,7 +251,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   if (bWaitForBuffers && m_speed > 0)
   {
     SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
-    m_messageQueue.WaitUntilEmpty();
+    m_messageQueue.WaitUntilEmpty([this] { return m_paused.load(); });
   }
 
   m_messageQueue.Abort();
@@ -566,7 +566,7 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
-      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
+      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused.load());
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
