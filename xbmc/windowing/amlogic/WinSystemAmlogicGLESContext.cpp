@@ -428,6 +428,12 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
   if (!m_guiFbo.BeginRender())
     return false;
 
+  // RenderEx() (video/subtitles) now runs before the GUI pass and may leave
+  // GL state behind. Normalize it before clearing/drawing into the FBO.
+  CServiceBroker::GetRenderSystem()->ResetScissors();
+  glViewport(0, 0, m_guiFboWidth, m_guiFboHeight);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
   // Clear only when the FBO holds stale content; idle frames are already clean.
   if (!m_guiFboClean)
   {
@@ -443,12 +449,20 @@ void CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
   if (m_guiWillRender)
     m_guiFbo.EndRender();
+}
+
+void CWinSystemAmlogicGLESContext::ClearBackBuffer()
+{
+  if (!m_guiWillRender)
+    return;
 
   // Clear the backbuffer before video renders. In the FBO compositing path,
   // video renders in the RenderEx pass with clear=false, so DrawBlackBars is
   // never called. Without this clear, letterbox areas retain stale content
   // from the swap chain when the display resolution doesn't change between
   // GUI and video playback.
+  CServiceBroker::GetRenderSystem()->ResetScissors();
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -477,6 +491,9 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
   {
     return;
   }
+
+  // We draw to the backbuffer here; don't inherit the FBO/video viewport.
+  glViewport(0, 0, m_nWidth, m_nHeight);
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
