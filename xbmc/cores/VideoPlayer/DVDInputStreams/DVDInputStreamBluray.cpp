@@ -1967,6 +1967,18 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   std::unique_lock lock(m_overlayLock);
   SPlane& plane(m_planes[ov->plane]);
 
+  // The disc supplies the rectangle; the decode below writes w*h pixels and
+  // OverlayClear() cuts existing images by it, so keep it on the plane.
+  if (ov->cmd == BD_OVERLAY_DRAW && !ov->palette_update_flag &&
+      (ov->w == 0 || ov->h == 0 || ov->x > plane.w || ov->y > plane.h || ov->w > plane.w - ov->x ||
+       ov->h > plane.h - ov->y))
+  {
+    CLog::Log(LOGWARNING, "CDVDInputStreamBluray - invalid overlay rectangle {}x{} at {},{} on "
+                          "plane {} ({}x{})",
+              ov->w, ov->h, ov->x, ov->y, ov->plane, plane.w, plane.h);
+    return;
+  }
+
   // Authored-graphics regime for this disc/playlist, from the same two STABLE
   // signals the BD-J ARGB path uses (see the note above OverlayClose).
   const bool pq = m_dvDiscSession || m_pqAuthoredGraphics;
@@ -2029,6 +2041,11 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   /* uncompress and draw bitmap */
   if (ov->img && ov->cmd == BD_OVERLAY_DRAW)
   {
+    if (!ov->palette)
+    {
+      CLog::Log(LOGWARNING, "CDVDInputStreamBluray - indexed overlay has no palette");
+      return;
+    }
     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
     overlay->m_isHDROverlay = pq;
 
@@ -2042,12 +2059,34 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     else
       overlay->palette.clear();
 
+    // Decode the disc's RLE without trusting it: a zero-length run is only an
+    // end-of-line marker on a row boundary, and no run may pass the image end
+    // (the old loop wrote past the buffer on an over-long final run).
     const BD_PG_RLE_ELEM *rlep = ov->img;
-    size_t bytes = ov->w * ov->h;
+    const size_t bytes = static_cast<size_t>(ov->w) * ov->h;
     overlay->pixels.resize(bytes);
 
-    for (size_t i = 0; i < bytes; i += rlep->len, rlep++)
+    size_t lastEol = 0;
+    for (size_t i = 0; i < bytes; ++rlep)
+    {
+      if (rlep->len == 0)
+      {
+        if (rlep->color != 0 || i == lastEol || i % ov->w != 0)
+        {
+          CLog::Log(LOGWARNING, "CDVDInputStreamBluray - invalid overlay RLE line marker");
+          return;
+        }
+        lastEol = i;
+        continue;
+      }
+      if (rlep->len > bytes - i || rlep->color > 255)
+      {
+        CLog::Log(LOGWARNING, "CDVDInputStreamBluray - invalid overlay RLE run");
+        return;
+      }
       memset(overlay->pixels.data() + i, rlep->color, rlep->len);
+      i += rlep->len;
+    }
 
     overlay->linesize = ov->w;
     overlay->x = ov->x;
