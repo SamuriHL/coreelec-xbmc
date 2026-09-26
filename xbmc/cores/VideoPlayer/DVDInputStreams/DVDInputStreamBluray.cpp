@@ -1212,8 +1212,51 @@ void CDVDInputStreamBluray::ProcessEvent() {
                 "wrap, identity unchanged", m_event.param);
       break;
     }
-    m_playlist = m_event.param;
-    ProcessItem(m_playlist);
+    {
+      // A playlist change inside the post-seamless HOLD_DATA window (see
+      // SetSeamlessCarry): no hold was taken for it, so the running decoders
+      // would carry straight into the new playlist. Harmless for menu->menu
+      // clips of one format, wrong across the menu/feature line - M3GAN 2.0
+      // entered from its BD-J menu played the whole FEL feature on the menu
+      // clip's frame-mode MEL decoder, base layer only.
+      const bool carry = m_seamlessCarry && m_hold == HOLD_DATA;
+      const bool oldMenuDomain = carry && IsMenuDomainVideo();
+      const bool oldHasVideo = carry && m_clip && m_clip->video_stream_count > 0;
+      BLURAY_STREAM_INFO oldVideo{};
+      if (oldHasVideo)
+        oldVideo = m_clip->video_streams[0];
+
+      m_playlist = m_event.param;
+      ProcessItem(m_playlist);
+
+      if (carry)
+      {
+        const BLURAY_CLIP_INFO* first =
+            m_titleInfo && m_titleInfo->clip_count > 0 ? &m_titleInfo->clips[0] : nullptr;
+        const bool newHasVideo = first && first->video_stream_count > 0;
+        bool videoChanged = oldHasVideo != newHasVideo;
+        if (oldHasVideo && newHasVideo)
+        {
+          const BLURAY_STREAM_INFO& v = first->video_streams[0];
+          videoChanged = v.coding_type != oldVideo.coding_type || v.format != oldVideo.format ||
+                         v.rate != oldVideo.rate || v.aspect != oldVideo.aspect ||
+                         v.dynamic_range_type != oldVideo.dynamic_range_type;
+        }
+        const bool domainChanged = IsMenuDomainVideo() != oldMenuDomain;
+        if (domainChanged || videoChanged)
+        {
+          CLog::Log(LOGINFO,
+                    "CDVDInputStreamBluray - playlist {} arrived inside a seamless carry "
+                    "({}{}): holding for a full transition",
+                    m_playlist, domainChanged ? "menu/feature domain change" : "",
+                    videoChanged ? (domainChanged ? ", video format change" : "video format change")
+                                 : "");
+          m_seamlessCarry = false;
+          m_menuAtHold = m_menu;
+          m_hold = HOLD_HELD;
+        }
+      }
+    }
     // Genuine menu -> feature transition: the just-opened playlist is
     // feature-length (IsMenuDomainVideo() false via its duration heuristic,
     // which is independent of the stuck m_menu/m_hasOverlay these BD-J discs
@@ -1526,7 +1569,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       }
 
       if(result > 0)
+      {
         m_hold = HOLD_NONE;
+        m_seamlessCarry = false;
+      }
 
       ProcessEvent();
 
@@ -2521,6 +2567,9 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   // spurious transition one iteration later, on a pipeline this one has just
   // rebuilt.
   CancelPendingSeamlessTransition();
+  // a new transition is under way; the player re-arms the carry only if it
+  // takes the SEAMLESS path again
+  m_seamlessCarry = false;
 
   /* process any current event */
   ProcessEvent();

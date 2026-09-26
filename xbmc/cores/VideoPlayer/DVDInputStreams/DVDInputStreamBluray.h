@@ -308,6 +308,14 @@ public:
    * angle), so playlist changes and seeks still take the full reopen. */
   bool IsSeamlessStreamChange() const { return m_seamlessHold; }
 
+  /* The player took the SEAMLESS path at a held boundary: nothing was rebuilt.
+   * Until the next segment's first byte arrives (m_hold == HOLD_DATA), Read()
+   * does not hold on playlist events, so a playlist change landing in that
+   * window would be glued onto the old decoders with no transition at all.
+   * While this is set, a playlist change that alters the video's domain or
+   * format forces a hold, and the player runs a real transition. */
+  void SetSeamlessCarry(bool on) { m_seamlessCarry = on; }
+
   /* Seamless-seam GLIDE.
    *
    * The old boundary handshake was: latch HOLD_HELD, return 0 bytes from
@@ -484,6 +492,7 @@ protected:
   std::chrono::milliseconds ChapterPosDemux(int ch) const;
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
+  bool m_seamlessCarry = false;
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
