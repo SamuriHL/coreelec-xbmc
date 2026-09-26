@@ -216,6 +216,9 @@ public:
   // Returns true if the pid is listed in the current clip's stream tables;
   // flags report the DV extension table / per-stream HDR10+ attribute.
   bool GetDiscStreamHdrMetadata(int pid, bool& isDolbyVision, bool& isHdrPlus);
+  /* the frame rate the playlist's STN table declares for a video pid, and
+   * whether its format is progressive; false when the pid or rate is unknown */
+  bool GetDiscVideoFrameRate(int pid, int& rate, int& scale, bool& progressive) const;
 
   int Get3dSubtitlePlane(uint16_t pid);
 
