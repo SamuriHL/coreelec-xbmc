@@ -1848,7 +1848,8 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // and the application has already moved past them: release them now, as a
   // flush does, rather than leave them stamped on a timeline that is gone.
   if (!drain && m_pInputBluray &&
-      m_pInputBluray->ClassifyStreamQueue() ==
+      m_pInputBluray->ClassifyStreamQueue(m_CurrentVideo.id >= 0 &&
+                                          m_CurrentVideo.dts != DVD_NOPTS_VALUE) ==
           CDVDInputStreamBluray::QueueDecision::DISCARD_BDJ_APP_JUMP)
     ApplyDiscTimelineEvents(true);
 #endif

@@ -529,8 +529,10 @@ protected:
    * was taken (see ClassifyStreamQueue); set in ProcessEvent, cleared when a
    * new hold is taken */
   bool m_bdjAppJumpAtHold = false;
-  /* the BD-J playlist ran out (END_OF_TITLE) and no data has flowed since:
-   * what is queued is the natural tail, rendered out rather than dropped */
+  /* the reader reached the end of the playlist (END_OF_TITLE) ... */
+  bool m_bdjEndOfTitleRead = false;
+  /* ... and the picture got there too, with no data since: what is queued
+   * is the natural tail, rendered out rather than dropped */
   bool m_bdjAtPlaylistEnd = false;
   void NoteBdjAppJump()
   {

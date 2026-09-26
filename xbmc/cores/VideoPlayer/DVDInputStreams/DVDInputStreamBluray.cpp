@@ -1170,8 +1170,14 @@ void CDVDInputStreamBluray::ProcessEvent() {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_END_OF_TITLE {}", m_event.param);
     /* when a title ends, playlist WILL eventually change */
     FreeTitleInfo();
-    if (BdjTimingActive())
-      m_bdjAtPlaylistEnd = true;
+    if (m_bdjTiming)
+    {
+      m_bdjEndOfTitleRead = true;
+      // an HDMV title holds nothing back for the picture to reach, and the
+      // BD-J title its program may start next must not drop its tail
+      if (!IsBdjTitle())
+        m_bdjAtPlaylistEnd = true;
+    }
     break;
 
   case BD_EVENT_TITLE:
@@ -1499,11 +1505,22 @@ void CDVDInputStreamBluray::StampBdjPending()
 void CDVDInputStreamBluray::WaitForBdjPresentation()
 {
 #if defined(BD_BDJ_PRESENTATION_TIMING)
-  if (!m_bdjTiming || !IsBdjTitle() || bd_bdj_pending_seq(m_bd) == 0)
+  if (!m_bdjTiming || !IsBdjTitle())
     return;
-  m_player->OnDiscNavResult(nullptr, BD_EVENT_BDJ_PRESENTATION_STAMP);
   if (bd_bdj_pending_seq(m_bd) != 0)
-    KODI::TIME::Sleep(5ms);
+  {
+    m_player->OnDiscNavResult(nullptr, BD_EVENT_BDJ_PRESENTATION_STAMP);
+    if (bd_bdj_pending_seq(m_bd) != 0)
+    {
+      KODI::TIME::Sleep(5ms);
+      return;
+    }
+  }
+  // Everything held is released: the picture reached the end of what was
+  // read. Only from here is a jump the natural end rather than a key press
+  // or an application action somewhere inside the read-ahead.
+  if (m_bdjEndOfTitleRead)
+    m_bdjAtPlaylistEnd = true;
 #endif
 }
 
@@ -1676,6 +1693,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       {
         m_hold = HOLD_NONE;
         m_seamlessCarry = false;
+        m_bdjEndOfTitleRead = false;
         m_bdjAtPlaylistEnd = false;
       }
 
