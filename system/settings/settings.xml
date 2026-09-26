@@ -4242,6 +4242,8 @@
           <default>true</default>
           <dependencies>
             <dependency type="visible" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+            <!-- TV-led: kernel patch 0017 passes PQ graphics unmapped, so no box-side graphics peak applies -->
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvisionled" operator="is">1</dependency>
           </dependencies>
           <control type="toggle" />
         </setting>

@@ -26549,5 +26549,5 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60397"
-msgid "On (default): during Dolby Vision processing the menus and on-screen display are mapped to the peak brightness your display reports, as current CoreELEC does, which makes them considerably brighter. Off: use the previous fixed graphics level of about 300 nits."
+msgid "Player-Led Dolby Vision only. On (default): the menus and on-screen display are mapped to the peak brightness your display reports, as current CoreELEC does, which makes them considerably brighter. Off: use the previous fixed graphics level of about 300 nits. In TV-Led the display maps them itself, so this does not apply."
 msgstr ""
