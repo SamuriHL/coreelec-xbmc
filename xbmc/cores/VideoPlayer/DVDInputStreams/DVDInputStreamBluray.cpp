@@ -1173,6 +1173,13 @@ void CDVDInputStreamBluray::ProcessEvent() {
     if (m_bdjTiming)
     {
       m_bdjEndOfTitleRead = true;
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+      // the newest held batch was stamped with the last data read, so its
+      // release is the picture reaching the end; with nothing held, the next
+      // stamped batch (END_OF_PLAYLIST) serves - see StampBdjPending
+      if (IsBdjTitle() && m_bdjEndSeq == 0)
+        m_bdjEndSeq = bd_bdj_pending_seq(m_bd);
+#endif
       // an HDMV title holds nothing back for the picture to reach, and the
       // BD-J title its program may start next must not drop its tail
       if (!IsBdjTitle())
@@ -1491,6 +1498,8 @@ void CDVDInputStreamBluray::StampBdjPending()
   if (seq == 0 || seq == m_bdjStampedSeq)
     return;
   m_bdjStampedSeq = seq;
+  if (m_bdjEndOfTitleRead && m_bdjEndSeq == 0)
+    m_bdjEndSeq = seq;
   // runs on the player thread inside the demux read: the player stamps it
   // with the read position (last delivered video dts)
   m_player->OnDiscNavResult(&seq, BD_EVENT_BDJ_PRESENTATION_STAMP);
@@ -1528,7 +1537,15 @@ void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq)
 {
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   if (m_bd && m_bdjTiming)
+  {
     bd_bdj_release(m_bd, seq);
+    // Latch the presented end here, not on "nothing pending" afterwards: the
+    // application's end-of-playlist listener runs on its own thread and may
+    // start the next playlist - holding a new notification - before
+    // WaitForBdjPresentation looks again.
+    if (m_bdjEndSeq != 0 && seq >= m_bdjEndSeq)
+      m_bdjAtPlaylistEnd = true;
+  }
 #endif
 }
 
@@ -1694,6 +1711,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         m_hold = HOLD_NONE;
         m_seamlessCarry = false;
         m_bdjEndOfTitleRead = false;
+        m_bdjEndSeq = 0;
         m_bdjAtPlaylistEnd = false;
       }
 

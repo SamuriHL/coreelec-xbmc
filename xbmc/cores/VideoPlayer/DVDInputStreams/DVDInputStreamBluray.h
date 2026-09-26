@@ -531,6 +531,10 @@ protected:
   bool m_bdjAppJumpAtHold = false;
   /* the reader reached the end of the playlist (END_OF_TITLE) ... */
   bool m_bdjEndOfTitleRead = false;
+  /* the held batch that marks the end of the data read (the newest held at
+   * END_OF_TITLE, else the next stamped - END_OF_PLAYLIST): its release is
+   * the picture reaching the end; 0 = none yet */
+  uint32_t m_bdjEndSeq = 0;
   /* ... and the picture got there too, with no data since: what is queued
    * is the natural tail, rendered out rather than dropped */
   bool m_bdjAtPlaylistEnd = false;
