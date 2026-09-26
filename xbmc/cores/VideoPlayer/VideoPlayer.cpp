@@ -1833,6 +1833,15 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
             drain ? "wait for old streams to be finished"
                   : "discarding menu stream remainder (full close)");
+#if defined(HAVE_LIBBLURAY)
+  // The dropped remainder carried the BD-J notifications still held for it,
+  // and the application has already moved past them: release them now, as a
+  // flush does, rather than leave them stamped on a timeline that is gone.
+  if (!drain && m_pInputBluray &&
+      m_pInputBluray->ClassifyStreamQueue() ==
+          CDVDInputStreamBluray::QueueDecision::DISCARD_BDJ_APP_JUMP)
+    ApplyDiscTimelineEvents(true);
+#endif
   CloseStream(m_CurrentAudio, drain);
   CloseStream(m_CurrentVideo, drain);
 

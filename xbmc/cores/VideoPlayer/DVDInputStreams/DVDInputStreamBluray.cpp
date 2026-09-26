@@ -1098,6 +1098,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     // A jump breaks the sequential run the ISO read-ahead is keyed on.
     ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
+    if (BdjTimingActive())
+      m_bdjAppJumpAtHold = true;
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
     //m_hold = HOLD_HELD;
@@ -1234,6 +1236,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
       if (oldHasVideo)
         oldVideo = m_clip->video_streams[0];
 
+      // BD-J titles have no navigation commands: a different playlist is
+      // always the application's choice
+      if (BdjTimingActive())
+        m_bdjAppJumpAtHold = true;
       m_playlist = m_event.param;
       ProcessItem(m_playlist);
 
@@ -1558,6 +1564,8 @@ bool CDVDInputStreamBluray::HoldForEvent()
         // consulted by the player to decide whether the queued remainder
         // is dropped (user left the menu) or rendered out
         m_menuAtHold = m_menu;
+        // the event itself and those behind it set this in ProcessEvent
+        m_bdjAppJumpAtHold = false;
         // a hold from a bare playitem advance (no intervening playlist/
         // title/seek/angle event - ProcessEvent's voiding switch clears
         // those) is a same-format continuation the player can serve
