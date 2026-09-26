@@ -258,10 +258,18 @@ public:
     KEEP_TITLE_TO_MENU_NATURAL,
     DISCARD_MENU_TO_TITLE,
     DISCARD_TITLE_TO_MENU_USER,
+    DISCARD_BDJ_APP_JUMP,
   };
 
   QueueDecision ClassifyStreamQueue() const
   {
+    // A BD-J title on the presentation clock: the application acts only once
+    // the picture reaches what it reacts to, so when it jumps (a seek, or a
+    // different playlist) everything still queued lies past the point it
+    // left - a player would never show it. M3GAN 2.0: Play seeks the 4 h
+    // menu playlist, and draining its 16 s queue held the feature back.
+    if (m_bdjAppJumpAtHold)
+      return QueueDecision::DISCARD_BDJ_APP_JUMP;
     if (m_menuAtHold && !m_menu)
       return QueueDecision::DISCARD_MENU_TO_TITLE;
     if (!m_menuAtHold && m_menu)
@@ -288,6 +296,8 @@ public:
         return "menu->title - dropping the queued menu remainder";
       case QueueDecision::DISCARD_TITLE_TO_MENU_USER:
         return "title->menu after a user menu call - dropping the queued feature remainder";
+      case QueueDecision::DISCARD_BDJ_APP_JUMP:
+        return "BD-J application jump at the presented position - dropping the queued remainder";
     }
     return "unclassified";
   }
@@ -296,7 +306,8 @@ public:
   {
     const QueueDecision decision = ClassifyStreamQueue();
     return decision == QueueDecision::DISCARD_MENU_TO_TITLE ||
-           decision == QueueDecision::DISCARD_TITLE_TO_MENU_USER;
+           decision == QueueDecision::DISCARD_TITLE_TO_MENU_USER ||
+           decision == QueueDecision::DISCARD_BDJ_APP_JUMP;
   }
 
   /* the pending NEXTSTREAM_OPEN is a playitem advance within the same playlist:
@@ -514,6 +525,11 @@ protected:
   void WaitForBdjPresentation();
   bool m_bdjTiming = false;
   uint32_t m_bdjStampedSeq = 0;
+  /* the BD-J application seeked or started another playlist since the hold
+   * was taken (see ClassifyStreamQueue); set in ProcessEvent, cleared when a
+   * new hold is taken */
+  bool m_bdjAppJumpAtHold = false;
+  bool BdjTimingActive() const { return m_bdjTiming && IsBdjTitle(); }
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
