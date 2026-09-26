@@ -2704,6 +2704,40 @@ bool CDVDInputStreamBluray::GetDiscStreamHdrMetadata(int pid, bool& isDolbyVisio
 #endif
 }
 
+bool CDVDInputStreamBluray::GetDiscVideoFrameRate(int pid,
+                                                  int& rate,
+                                                  int& scale,
+                                                  bool& progressive) const
+{
+  if (!m_titleInfo || m_titleInfo->clip_count == 0)
+    return false;
+
+  // same clip fallback as GetDiscStreamHdrMetadata
+  const BLURAY_CLIP_INFO* clip = m_clip ? m_clip : &m_titleInfo->clips[0];
+  for (uint8_t i = 0; i < clip->video_stream_count; i++)
+  {
+    const BLURAY_STREAM_INFO& v = clip->video_streams[i];
+    if (v.pid != pid)
+      continue;
+    switch (v.rate)
+    {
+      case BLURAY_VIDEO_RATE_24000_1001: rate = 24000; scale = 1001; break;
+      case BLURAY_VIDEO_RATE_24:         rate = 24;    scale = 1;    break;
+      case BLURAY_VIDEO_RATE_25:         rate = 25;    scale = 1;    break;
+      case BLURAY_VIDEO_RATE_30000_1001: rate = 30000; scale = 1001; break;
+      case BLURAY_VIDEO_RATE_50:         rate = 50;    scale = 1;    break;
+      case BLURAY_VIDEO_RATE_60000_1001: rate = 60000; scale = 1001; break;
+      default:
+        return false;
+    }
+    progressive = v.format == BLURAY_VIDEO_FORMAT_480P || v.format == BLURAY_VIDEO_FORMAT_576P ||
+                  v.format == BLURAY_VIDEO_FORMAT_720P || v.format == BLURAY_VIDEO_FORMAT_1080P ||
+                  v.format == BLURAY_VIDEO_FORMAT_2160P;
+    return true;
+  }
+  return false;
+}
+
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 {
   if(!m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)

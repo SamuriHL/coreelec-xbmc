@@ -2269,6 +2269,36 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         st->hdr_type = DetermineHdrType(pStream);
 
 #ifdef HAVE_LIBBLURAY
+        // Disc-authoritative frame rate, VC-1 only: ffmpeg reports progressive
+        // VC-1 in m2ts at twice its frame rate (Star Trek S2: 48000/1001 for a
+        // 23.976 stream). The decoder, renderer and display mode all start
+        // from that, and CalcFrameRate's correction ~6 s in re-locks the TV
+        // mid-clip. Correct only that exact doubling, on a progressive format.
+        if (m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+            pStream->codecpar->codec_id == AV_CODEC_ID_VC1 && st->iFpsRate > 0 &&
+            st->iFpsScale > 0)
+        {
+          int discRate = 0;
+          int discScale = 0;
+          bool progressive = false;
+          if (std::static_pointer_cast<CDVDInputStreamBluray>(m_pInput)
+                  ->GetDiscVideoFrameRate(pStream->id, discRate, discScale, progressive) &&
+              progressive)
+          {
+            const double demuxFps = static_cast<double>(st->iFpsRate) / st->iFpsScale;
+            const double discFps = static_cast<double>(discRate) / discScale;
+            if (std::abs(demuxFps - 2.0 * discFps) < 0.01)
+            {
+              CLog::Log(LOGINFO,
+                        "CDVDDemuxFFmpeg::AddStream - pid {:#06x}: VC-1 reported at {}/{}, "
+                        "twice the playlist's {}/{} - using the playlist rate",
+                        pStream->id, st->iFpsRate, st->iFpsScale, discRate, discScale);
+              st->iFpsRate = discRate;
+              st->iFpsScale = discScale;
+            }
+          }
+        }
+
         // Disc-authoritative HDR metadata: the BD playlist STN tables state
         // per-PID dynamic range (the DV extension stream table and the
         // per-stream HDR10+ flag) that ffmpeg cannot always infer from the
