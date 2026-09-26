@@ -1098,8 +1098,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     // A jump breaks the sequential run the ISO read-ahead is keyed on.
     ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
-    if (BdjTimingActive())
-      m_bdjAppJumpAtHold = true;
+    NoteBdjAppJump();
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
     //m_hold = HOLD_HELD;
@@ -1171,6 +1170,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_END_OF_TITLE {}", m_event.param);
     /* when a title ends, playlist WILL eventually change */
     FreeTitleInfo();
+    if (BdjTimingActive())
+      m_bdjAtPlaylistEnd = true;
     break;
 
   case BD_EVENT_TITLE:
@@ -1210,6 +1211,12 @@ void CDVDInputStreamBluray::ProcessEvent() {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
     BDSTAGE::Playlist(static_cast<int>(m_event.param), m_menu);
     UpdateLibblurayDebugMask();
+    // BD-J titles have no navigation commands: a different playlist is
+    // always the application's choice. By number alone - END_OF_TITLE frees
+    // the title info, so a loop re-selecting the same playlist after it ran
+    // out takes the rebuild below, and it is not a jump.
+    if (m_event.param != m_playlist)
+      NoteBdjAppJump();
     if (m_event.param == m_playlist && m_titleInfo)
     {
       // same-playlist wrap (looping menu re-selecting itself, TNG language
@@ -1236,10 +1243,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
       if (oldHasVideo)
         oldVideo = m_clip->video_streams[0];
 
-      // BD-J titles have no navigation commands: a different playlist is
-      // always the application's choice
-      if (BdjTimingActive())
-        m_bdjAppJumpAtHold = true;
       m_playlist = m_event.param;
       ProcessItem(m_playlist);
 
@@ -1673,6 +1676,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       {
         m_hold = HOLD_NONE;
         m_seamlessCarry = false;
+        m_bdjAtPlaylistEnd = false;
       }
 
       const uint32_t event = m_event.event;
