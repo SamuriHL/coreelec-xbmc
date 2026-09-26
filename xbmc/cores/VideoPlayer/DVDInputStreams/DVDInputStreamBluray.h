@@ -41,6 +41,8 @@ extern "C"
 #define BD_EVENT_MENU_OVERLAY -1
 #define BD_EVENT_MENU_ERROR   -2
 #define BD_EVENT_ENC_ERROR    -3
+// pData: const uint32_t* - newest held BD-J presentation-timing sequence
+#define BD_EVENT_BDJ_PRESENTATION_STAMP -4
 
 #define HDMV_PID_VIDEO            0x1011
 #define HDMV_PID_VIDEO_EL         0x1015
@@ -316,6 +318,19 @@ public:
    * format forces a hold, and the player runs a real transition. */
   void SetSeamlessCarry(bool on) { m_seamlessCarry = on; }
 
+  /* BD-J presentation timing (libbluray patch 13). libbluray holds the timing
+   * notifications its reader produces for a BD-J title (play mark, playitem,
+   * chapter, end of playlist, PSR 8) until we say the picture got there. We
+   * stamp each newly held batch with the read position (OnDiscNavResult ->
+   * the player's disc timeline) and release it when the render clock reaches
+   * that stamp. BD-J titles only: HDMV titles and file playback never hold. */
+  void ReleaseBdjEvents(uint32_t seq);
+  void ReleaseAllBdjEvents();
+  /* While the player's queues are full it does not read, and the events the
+   * BD-J application queues (a playlist stop after a key press) would wait
+   * behind up to the whole buffer. Consume them without reading data. */
+  void PollEvents();
+
   /* Seamless-seam GLIDE.
    *
    * The old boundary handshake was: latch HOLD_HELD, return 0 bytes from
@@ -493,6 +508,12 @@ protected:
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
   bool m_seamlessCarry = false;
+  bool HoldForEvent();
+  bool IsBdjTitle() const { return m_title && m_title->bdj; }
+  void StampBdjPending();
+  void WaitForBdjPresentation();
+  bool m_bdjTiming = false;
+  uint32_t m_bdjStampedSeq = 0;
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned

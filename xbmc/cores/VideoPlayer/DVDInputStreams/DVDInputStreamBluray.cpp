@@ -814,6 +814,14 @@ bool CDVDInputStreamBluray::Open()
       return false;
     }
     m_hold = HOLD_DATA;
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    // Menu (navigation) playback only; libbluray applies it to BD-J titles
+    // alone, so HDMV titles on the same disc are untouched.
+    bd_bdj_set_presentation_timing(m_bd, 1);
+    m_bdjTiming = true;
+    m_bdjStampedSeq = 0;
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J presentation timing enabled");
+#endif
   }
   else
   {
@@ -1459,6 +1467,172 @@ static bool ClipConnectionIsSeamless(const BLURAY_CLIP_INFO* clip)
   return clip && (clip->connection_condition == 5 || clip->connection_condition == 6);
 }
 
+void CDVDInputStreamBluray::StampBdjPending()
+{
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (!m_bdjTiming || !IsBdjTitle())
+    return;
+  uint32_t seq = bd_bdj_pending_seq(m_bd);
+  if (seq == 0 || seq == m_bdjStampedSeq)
+    return;
+  m_bdjStampedSeq = seq;
+  // runs on the player thread inside the demux read: the player stamps it
+  // with the read position (last delivered video dts)
+  m_player->OnDiscNavResult(&seq, BD_EVENT_BDJ_PRESENTATION_STAMP);
+#endif
+}
+
+// At the end of a BD-J playlist the reader has nothing to give until the
+// application picks what plays next, and Read() waits inside this loop for
+// that. With presentation timing the application only hears "end of playlist"
+// once the picture gets there - which needs the player's timeline to run, and
+// the player thread is here. So run it here, and do not spin while waiting.
+void CDVDInputStreamBluray::WaitForBdjPresentation()
+{
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (!m_bdjTiming || !IsBdjTitle() || bd_bdj_pending_seq(m_bd) == 0)
+    return;
+  m_player->OnDiscNavResult(nullptr, BD_EVENT_BDJ_PRESENTATION_STAMP);
+  if (bd_bdj_pending_seq(m_bd) != 0)
+    KODI::TIME::Sleep(5ms);
+#endif
+}
+
+void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq)
+{
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (m_bd && m_bdjTiming)
+    bd_bdj_release(m_bd, seq);
+#endif
+}
+
+void CDVDInputStreamBluray::ReleaseAllBdjEvents()
+{
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (m_bd && m_bdjTiming)
+    bd_bdj_release_all(m_bd);
+#endif
+}
+
+void CDVDInputStreamBluray::PollEvents()
+{
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (!m_bd || !m_navmode || !m_bdjTiming || !IsBdjTitle())
+    return;
+  // a held, still or dead stream belongs to the normal read path
+  if (m_hold != HOLD_NONE && m_hold != HOLD_DATA)
+    return;
+  for (int i = 0; i < 64; ++i)
+  {
+    // a zero-length read returns queued events only, never stream data
+    if (bd_read_ext(m_bd, nullptr, 0, &m_event) < 0)
+    {
+      m_hold = HOLD_ERROR;
+      return;
+    }
+    if (m_event.event == BD_EVENT_NONE)
+      return;
+    if (HoldForEvent())
+      return;
+    ProcessEvent();
+    if (m_hold == HOLD_HELD)
+      return;
+  }
+#endif
+}
+
+// Does the event in m_event hold the stream? Read() and PollEvents() share
+// this so a boundary is held the same way whichever path consumed it.
+bool CDVDInputStreamBluray::HoldForEvent()
+{
+  /* Check for holding events */
+  switch(m_event.event) {
+    case BD_EVENT_SEEK:
+    case BD_EVENT_TITLE:
+    case BD_EVENT_ANGLE:
+    case BD_EVENT_PLAYLIST:
+    case BD_EVENT_PLAYITEM:
+      if(m_hold != HOLD_DATA)
+      {
+        // menu state at the moment the stream change was signalled -
+        // consulted by the player to decide whether the queued remainder
+        // is dropped (user left the menu) or rendered out
+        m_menuAtHold = m_menu;
+        // a hold from a bare playitem advance (no intervening playlist/
+        // title/seek/angle event - ProcessEvent's voiding switch clears
+        // those) is a same-format continuation the player can serve
+        // without teardown. A PLAYLIST event naming the playlist that is
+        // ALREADY playing is the same thing: a looping menu playlist
+        // wrapping back to its start (TNG language screen re-fires
+        // playlist 94 every ~9s) - same clips, same streams, only a
+        // backward timeline jump, which CheckContinuity resolves. Without
+        // this the loop wrap tears down and reopens the video stream
+        // every iteration (visible glitch + a window that eats input).
+        m_seamlessHold =
+            (m_event.event == BD_EVENT_PLAYITEM) ||
+            (m_event.event == BD_EVENT_PLAYLIST && m_event.param == m_playlist);
+        // checked contract, not a heuristic: cc=1 in-playlist connections
+        // may change stream attributes/STN across the seam, and a format
+        // change must never be glued into live decoders - compare the two
+        // clips' stream attributes and fall back to the full reopen path
+        // on any mismatch (review finding A10)
+        const BLURAY_CLIP_INFO* next = nullptr;
+        if (m_seamlessHold && m_titleInfo)
+        {
+          if (m_event.event == BD_EVENT_PLAYITEM &&
+              m_event.param < m_titleInfo->clip_count)
+            next = &m_titleInfo->clips[m_event.param];
+          else if (m_event.event == BD_EVENT_PLAYLIST &&
+                   m_titleInfo->clip_count > 0)
+            next = &m_titleInfo->clips[0];
+          if (!ClipFormatsMatch(m_clip, next))
+          {
+            CLog::Log(LOGDEBUG,
+                      "CDVDInputStreamBluray - seam stream-attribute "
+                      "change at {} {}: dropping seamless hold, full "
+                      "reopen", m_event.event == BD_EVENT_PLAYITEM
+                          ? "playitem" : "playlist wrap", m_event.param);
+            m_seamlessHold = false;
+          }
+        }
+        // Glide past a seam the player will treat as SEAMLESS: keep the
+        // transport stream running rather than holding it. Holding makes
+        // the next Read() return 0, libavformat takes that as an i/o
+        // error, and mpegts_read_packet() flushes the PES in flight and
+        // skips the rest of it - amputating the incoming clip's first
+        // access unit and feeding the decoder the fragment. See the
+        // comment on SetSeamlessGlideAllowed() in the header. The event
+        // is not lost: it falls through to ProcessEvent() below exactly
+        // as a non-held event does, and the player collects the
+        // transition from TakePendingSeamlessTransition().
+        if (m_seamlessHold && m_seamlessGlideAllowed &&
+            ClipConnectionIsSeamless(next) && !ShouldDiscardStreamQueue())
+        {
+          CLog::Log(LOGDEBUG,
+                    "CDVDInputStreamBluray - gliding seamless seam at "
+                    "playitem {} (connection_condition {})",
+                    m_event.param, next->connection_condition);
+          m_pendingSeamlessTransition = true;
+          break;
+        }
+        m_hold = HOLD_HELD;
+        return true;
+      }
+      break;
+
+    case BD_EVENT_STILL_TIME:
+      if(m_hold == HOLD_STILL)
+        m_event.event = 0; /* Consume duplicate still event */
+      else
+        m_hold = HOLD_HELD;
+      return true;
+
+    default:
+      break;
+  }
+  return false;
+}
+
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
   int result = 0;
@@ -1482,91 +1656,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         return result;
       }
 
-      /* Check for holding events */
-      switch(m_event.event) {
-        case BD_EVENT_SEEK:
-        case BD_EVENT_TITLE:
-        case BD_EVENT_ANGLE:
-        case BD_EVENT_PLAYLIST:
-        case BD_EVENT_PLAYITEM:
-          if(m_hold != HOLD_DATA)
-          {
-            // menu state at the moment the stream change was signalled -
-            // consulted by the player to decide whether the queued remainder
-            // is dropped (user left the menu) or rendered out
-            m_menuAtHold = m_menu;
-            // a hold from a bare playitem advance (no intervening playlist/
-            // title/seek/angle event - ProcessEvent's voiding switch clears
-            // those) is a same-format continuation the player can serve
-            // without teardown. A PLAYLIST event naming the playlist that is
-            // ALREADY playing is the same thing: a looping menu playlist
-            // wrapping back to its start (TNG language screen re-fires
-            // playlist 94 every ~9s) - same clips, same streams, only a
-            // backward timeline jump, which CheckContinuity resolves. Without
-            // this the loop wrap tears down and reopens the video stream
-            // every iteration (visible glitch + a window that eats input).
-            m_seamlessHold =
-                (m_event.event == BD_EVENT_PLAYITEM) ||
-                (m_event.event == BD_EVENT_PLAYLIST && m_event.param == m_playlist);
-            // checked contract, not a heuristic: cc=1 in-playlist connections
-            // may change stream attributes/STN across the seam, and a format
-            // change must never be glued into live decoders - compare the two
-            // clips' stream attributes and fall back to the full reopen path
-            // on any mismatch (review finding A10)
-            const BLURAY_CLIP_INFO* next = nullptr;
-            if (m_seamlessHold && m_titleInfo)
-            {
-              if (m_event.event == BD_EVENT_PLAYITEM &&
-                  m_event.param < m_titleInfo->clip_count)
-                next = &m_titleInfo->clips[m_event.param];
-              else if (m_event.event == BD_EVENT_PLAYLIST &&
-                       m_titleInfo->clip_count > 0)
-                next = &m_titleInfo->clips[0];
-              if (!ClipFormatsMatch(m_clip, next))
-              {
-                CLog::Log(LOGDEBUG,
-                          "CDVDInputStreamBluray - seam stream-attribute "
-                          "change at {} {}: dropping seamless hold, full "
-                          "reopen", m_event.event == BD_EVENT_PLAYITEM
-                              ? "playitem" : "playlist wrap", m_event.param);
-                m_seamlessHold = false;
-              }
-            }
-            // Glide past a seam the player will treat as SEAMLESS: keep the
-            // transport stream running rather than holding it. Holding makes
-            // the next Read() return 0, libavformat takes that as an i/o
-            // error, and mpegts_read_packet() flushes the PES in flight and
-            // skips the rest of it - amputating the incoming clip's first
-            // access unit and feeding the decoder the fragment. See the
-            // comment on SetSeamlessGlideAllowed() in the header. The event
-            // is not lost: it falls through to ProcessEvent() below exactly
-            // as a non-held event does, and the player collects the
-            // transition from TakePendingSeamlessTransition().
-            if (m_seamlessHold && m_seamlessGlideAllowed &&
-                ClipConnectionIsSeamless(next) && !ShouldDiscardStreamQueue())
-            {
-              CLog::Log(LOGDEBUG,
-                        "CDVDInputStreamBluray - gliding seamless seam at "
-                        "playitem {} (connection_condition {})",
-                        m_event.param, next->connection_condition);
-              m_pendingSeamlessTransition = true;
-              break;
-            }
-            m_hold = HOLD_HELD;
-            return result;
-          }
-          break;
+      StampBdjPending();
 
-        case BD_EVENT_STILL_TIME:
-          if(m_hold == HOLD_STILL)
-            m_event.event = 0; /* Consume duplicate still event */
-          else
-            m_hold = HOLD_HELD;
-          return result;
-
-        default:
-          break;
-      }
+      if (HoldForEvent())
+        return result;
 
       if(result > 0)
       {
@@ -1574,7 +1667,14 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         m_seamlessCarry = false;
       }
 
+      const uint32_t event = m_event.event;
       ProcessEvent();
+
+      // nothing to read and nothing happened: the reader is waiting on the
+      // BD-J application (end of playlist, no playlist)
+      if (result == 0 && (event == BD_EVENT_NONE || event == BD_EVENT_END_OF_TITLE ||
+                          event == BD_EVENT_IDLE))
+        WaitForBdjPresentation();
 
     } while(result == 0);
 

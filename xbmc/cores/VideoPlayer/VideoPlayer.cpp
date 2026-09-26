@@ -1528,6 +1528,10 @@ void CVideoPlayer::HandleDynamicBufferLevel()
 // position that may never arrive.
 void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
 {
+#if defined(HAVE_LIBBLURAY)
+  if (flushAll && m_pInputBluray)
+    m_pInputBluray->ReleaseAllBdjEvents();
+#endif
   if (m_discTimelineEvents.empty())
     return;
 
@@ -1557,6 +1561,17 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
       if (ev.stampPts - clock < DVD_SEC_TO_TIME(m_messageQueueTimeSize + 4.0))
         break;
     }
+    if (ev.bdjReleaseSeq != 0)
+    {
+      // the picture reached where the BD-J application's held notifications
+      // were read (per read batch: logged only when a flush forces it)
+      if (flushAll)
+        CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J presentation timing - flush releases seq {}",
+                  ev.bdjReleaseSeq);
+      bluray->ReleaseBdjEvents(ev.bdjReleaseSeq);
+      m_discTimelineEvents.pop_front();
+      continue;
+    }
     const std::string stamp =
         ev.stampPts == DVD_NOPTS_VALUE ? std::string("NOPTS")
                                        : StringUtils::Format("{:.3f}", ev.stampPts / DVD_TIME_BASE);
@@ -1577,6 +1592,9 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
     }
     m_discTimelineEvents.pop_front();
   }
+  // a flush also covers what was held but not stamped yet
+  if (flushAll)
+    bluray->ReleaseAllBdjEvents();
 #endif
 }
 
@@ -2363,6 +2381,13 @@ void CVideoPlayer::Process()
     if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
         (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
     {
+#if defined(HAVE_LIBBLURAY)
+      // a BD-J application acting on a key press (stop this playlist, play
+      // another) must not wait behind the whole buffer: take its events now.
+      // A playlist stop posts GENERAL_FLUSH, handled on the next iteration.
+      if (m_pInputBluray)
+        m_pInputBluray->PollEvents();
+#endif
       if (m_playSpeed == DVD_PLAYSPEED_PAUSE &&
           m_demuxerSpeed != DVD_PLAYSPEED_PAUSE)
       {
@@ -6225,6 +6250,26 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // early. Demux machinery reads m_titleInfo directly and is unaffected.
       const auto& ui = *static_cast<std::shared_ptr<const BlurayTitleUiSnapshot>*>(pData);
       m_discTimelineEvents.push_back({m_CurrentVideo.dts, 0, ui});
+      break;
+    }
+    case BD_EVENT_BDJ_PRESENTATION_STAMP:
+    {
+      if (!pData)
+      {
+        // the input stream is waiting inside the demux read for the BD-J
+        // application: run the timeline so held notifications can release
+        ApplyDiscTimelineEvents(false);
+        break;
+      }
+      // stamped like every disc timeline event: the last delivered video dts
+      // is the read position of the batch libbluray just held. Consecutive
+      // batches at the same position collapse into the newest sequence.
+      const uint32_t seq = *static_cast<const uint32_t*>(pData);
+      if (!m_discTimelineEvents.empty() && m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
+          m_discTimelineEvents.back().stampPts == m_CurrentVideo.dts)
+        m_discTimelineEvents.back().bdjReleaseSeq = seq;
+      else
+        m_discTimelineEvents.push_back({m_CurrentVideo.dts, 0, nullptr, seq});
       break;
     }
     case BD_EVENT_PLAYLIST_STOP:

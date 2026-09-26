@@ -812,6 +812,9 @@ protected:
     double stampPts;
     uint32_t menuState;
     std::shared_ptr<const BlurayTitleUiSnapshot> titleUi;
+    // non-zero: release BD-J presentation-timing items up to this sequence
+    // (libbluray patch 13); menuState/titleUi unused
+    uint32_t bdjReleaseSeq = 0;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   void ApplyDiscTimelineEvents(bool flushAll);
