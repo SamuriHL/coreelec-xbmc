@@ -1663,10 +1663,20 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
     // Record WHY, not just what: m_menu is set silently by BD_EVENT_TITLE as
     // well as by the logged BD_EVENT_MENU, so the branch taken here cannot be
     // reconstructed from the event lines alone.
-    CLog::Log(LOGINFO, "VideoPlayer: BD queue decision - {}",
-              CDVDInputStreamBluray::DescribeQueueDecision(bluray->ClassifyStreamQueue()));
+    // Events for a stream without video were stamped NOPTS and reached the
+    // BD-J application at read time, so its jump says nothing about what was
+    // presented: classify as if it had not been flagged.
+    const bool honourBdjJump =
+        m_CurrentVideo.id >= 0 && m_CurrentVideo.dts != DVD_NOPTS_VALUE;
+    CLog::Log(LOGINFO, "VideoPlayer: BD queue decision - {}{}",
+              CDVDInputStreamBluray::DescribeQueueDecision(
+                  bluray->ClassifyStreamQueue(honourBdjJump)),
+              !honourBdjJump && bluray->ClassifyStreamQueue() ==
+                                    CDVDInputStreamBluray::QueueDecision::DISCARD_BDJ_APP_JUMP
+                  ? " (BD-J jump ignored: no video timeline)"
+                  : "");
 
-    if (bluray->ShouldDiscardStreamQueue())
+    if (bluray->ShouldDiscardStreamQueue(honourBdjJump))
     {
       // the transition crosses the menu boundary (menu->title OR
       // title->menu): the queued remainder of the abandoned segment must be

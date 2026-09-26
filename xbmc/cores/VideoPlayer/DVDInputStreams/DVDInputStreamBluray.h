@@ -261,14 +261,14 @@ public:
     DISCARD_BDJ_APP_JUMP,
   };
 
-  QueueDecision ClassifyStreamQueue() const
+  QueueDecision ClassifyStreamQueue(bool honourBdjJump = true) const
   {
     // A BD-J title on the presentation clock: the application acts only once
     // the picture reaches what it reacts to, so when it jumps (a seek, or a
     // different playlist) everything still queued lies past the point it
     // left - a player would never show it. M3GAN 2.0: Play seeks the 4 h
     // menu playlist, and draining its 16 s queue held the feature back.
-    if (m_bdjAppJumpAtHold)
+    if (honourBdjJump && m_bdjAppJumpAtHold)
       return QueueDecision::DISCARD_BDJ_APP_JUMP;
     if (m_menuAtHold && !m_menu)
       return QueueDecision::DISCARD_MENU_TO_TITLE;
@@ -302,9 +302,9 @@ public:
     return "unclassified";
   }
 
-  bool ShouldDiscardStreamQueue() const
+  bool ShouldDiscardStreamQueue(bool honourBdjJump = true) const
   {
-    const QueueDecision decision = ClassifyStreamQueue();
+    const QueueDecision decision = ClassifyStreamQueue(honourBdjJump);
     return decision == QueueDecision::DISCARD_MENU_TO_TITLE ||
            decision == QueueDecision::DISCARD_TITLE_TO_MENU_USER ||
            decision == QueueDecision::DISCARD_BDJ_APP_JUMP;
@@ -529,6 +529,14 @@ protected:
    * was taken (see ClassifyStreamQueue); set in ProcessEvent, cleared when a
    * new hold is taken */
   bool m_bdjAppJumpAtHold = false;
+  /* the BD-J playlist ran out (END_OF_TITLE) and no data has flowed since:
+   * what is queued is the natural tail, rendered out rather than dropped */
+  bool m_bdjAtPlaylistEnd = false;
+  void NoteBdjAppJump()
+  {
+    if (BdjTimingActive() && !m_bdjAtPlaylistEnd)
+      m_bdjAppJumpAtHold = true;
+  }
   bool BdjTimingActive() const { return m_bdjTiming && IsBdjTitle(); }
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
