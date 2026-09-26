@@ -1705,6 +1705,17 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // path a CE21 player takes for these boundaries, proven stable there.
     CLog::Log(LOGINFO, "VideoPlayer: next stream, seamless playitem continuation");
 
+#if defined(HAVE_LIBBLURAY)
+    // A held boundary leaves the input stream in HOLD_DATA until the next
+    // segment's first byte; a glide never held. See SetSeamlessCarry().
+    if (!glided)
+    {
+      if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+              std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        bluray->SetSeamlessCarry(true);
+    }
+#endif
+
     // Arm the seam-step correction. The two clips either side of a playitem
     // boundary are timed independently, so the incoming clip's timestamps
     // rarely continue the outgoing clip's exactly - M3GAN 2.0's 00801.mpls
