@@ -1584,11 +1584,7 @@ void CDVDInputStreamBluray::PollEvents()
 #endif
 }
 
-// Decide, for the boundary event in m_event, whether it is a same-format seamless
-// continuation (m_seamlessHold) and whether the player may glide past it without a
-// hold. Returns true when the glide is armed. Shared by HoldForEvent() (navigation)
-// and the direct-playlist read path, which never holds but needs the same
-// transition at a seamless seam.
+// Returns true when the boundary event in m_event is glided rather than held.
 bool CDVDInputStreamBluray::ArmSeamlessGlide()
 {
   // a hold from a bare playitem advance (no intervening playlist/
@@ -1744,14 +1740,8 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
     result = bd_read(m_bd, buf, buf_size);
     while (bd_get_event(m_bd, &m_event))
     {
-      // Direct playlist playback (.mpls, resume, main title) never holds, so a
-      // seamless playitem seam used to reach the player as nothing at all: no
-      // seam-step correction (each clip is timed independently - M3GAN 2.0's
-      // 00801 steps -0.46 to +0.35 s; each forward step froze video for its
-      // length and sync was then pulled back in whole-frame ErrorAdjust steps)
-      // and no FEL segment reset. Arm the glide
-      // the navigation path takes; a seam it declines keeps the stock no-hold
-      // path, with no seamless state left set behind it.
+      // Direct playlist playback never holds; a seamless playitem seam still
+      // needs the player's seamless transition (seam-step, FEL segment reset).
       if (m_event.event == BD_EVENT_PLAYITEM && !ArmSeamlessGlide())
         m_seamlessHold = false;
       ProcessEvent();

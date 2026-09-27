@@ -372,6 +372,8 @@ public:
    * which this class can answer itself. Anything else still takes the hold. */
   void SetSeamlessGlideAllowed(bool allowed) { m_seamlessGlideAllowed = allowed; }
 
+  bool IsNavigationMode() const { return m_navmode; }
+
   bool TakePendingSeamlessTransition()
   {
     const bool pending = m_pendingSeamlessTransition;
