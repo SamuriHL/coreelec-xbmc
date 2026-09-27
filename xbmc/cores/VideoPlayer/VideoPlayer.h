@@ -525,6 +525,7 @@ protected:
   bool ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream);
   void HandleDynamicBufferLevel();
   void UpdateMenuDomainQueueDepth(bool segmentOpen);
+  void UpdateVideoLeadAllowed();
 
   /* BD segment transition: every NEXTSTREAM_OPEN boundary is executed by one
    * routine against an explicit survival contract - which pipeline components

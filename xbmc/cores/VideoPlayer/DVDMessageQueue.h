@@ -111,6 +111,11 @@ public:
     return m_TimeSize;
   }
   bool IsInited() const { return m_bInitialized; }
+  bool IsDraining() const
+  {
+    std::unique_lock lock(m_section);
+    return m_drain;
+  }
   bool IsDataBased() const;
 
 private:
