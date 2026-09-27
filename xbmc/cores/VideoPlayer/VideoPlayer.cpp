@@ -3594,8 +3594,8 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
 
   /* A Blu-ray playitem boundary joins two independently timed clips, so the
    * incoming one seldom picks up exactly where the outgoing one stopped. A
-   * backward step is an overlap - a fraction of a second shown twice, which
-   * nobody sees. A FORWARD step is dead time: the renderer waits it out with
+   * backward step is closed below for glided seams. A FORWARD step is dead
+   * time: the renderer waits it out with
    * nothing to show and the audio bitstream simply stops, which on a TrueHD
    * passthrough sink is long enough to drop lock. It is not elapsed content -
    * a playitem boundary is a cut - so it must be closed, not waited through.
@@ -3633,10 +3633,12 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
               "CVideoPlayer::CheckContinuity - seam step :{}, prev:{:f}, curr:{:f}, closing {:f}",
               current.type, current.dts, pPacket->dts, correction);
   }
-  // The backward step is an overlap in both streams alike (same STC offset), not
-  // repeated content: left open, video drops the overlapped frames while audio
-  // plays them and is re-timed ~5 s later, which audio then skips to recover.
+  // A backward step in the video timeline: left open, video drops the
+  // overlapped frames while audio plays them and is re-timed ~5 s later, which
+  // audio then skips to recover. Video only: an audio-only overlap (a cc 5
+  // audio frame) must not move video.
   else if (correction == 0.0 && m_seamStepPending && m_seamStepOverlapOk &&
+           current.type == StreamType::VIDEO &&
            m_playSpeed == DVD_PLAYSPEED_NORMAL && current.dts_end() != DVD_NOPTS_VALUE &&
            pPacket->dts < current.dts_end() - DVD_MSEC_TO_TIME(20) &&
            pPacket->dts > current.dts_end() - DVD_MSEC_TO_TIME(1000))
