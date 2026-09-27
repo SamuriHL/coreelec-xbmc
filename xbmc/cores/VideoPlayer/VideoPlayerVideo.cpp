@@ -210,6 +210,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   m_iLateFrames = 0;
 
   m_leadBlocked = true;
+  ++m_leadAllowGen;
   m_leadAllowQueued = false;
   ResetLeadSettle();
 
@@ -352,6 +353,8 @@ void CVideoPlayerVideo::Process()
   bool bRequestDrop = false;
   int iDropDirective;
   bool onlyPrioMsgs = false;
+  // the 1ms poll that follows a picture handed to the renderer
+  bool pollAfterPicture = false;
 
   m_vfmt.clear();
   int vfmtCheckCount = 0;
@@ -383,7 +386,8 @@ void CVideoPlayerVideo::Process()
     std::shared_ptr<CDVDMsg> pMsg;
     MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
 
-    const bool wasPrioPoll = onlyPrioMsgs;
+    const bool wasPollAfterPicture = pollAfterPicture;
+    pollAfterPicture = false;
     onlyPrioMsgs = false;
 
     if (MSGQ_IS_ERROR(ret))
@@ -415,8 +419,8 @@ void CVideoPlayerVideo::Process()
                 m_processInfo.IsFrameAdvance() ||
                 m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
       {
-        // only the 1ms poll that follows a picture; never on a real timeout
-        if (wasPrioPoll && LeadOk(bRequestDrop))
+        // never on a real timeout
+        if (wasPollAfterPicture && LeadOk(bRequestDrop))
         {
           NoteLeadSkip();
           continue;
@@ -424,6 +428,7 @@ void CVideoPlayerVideo::Process()
         if (ProcessDecoderOutput(frametime, pts))
         {
           onlyPrioMsgs = true;
+          pollAfterPicture = true;
           continue;
         }
       }
@@ -596,8 +601,12 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_LEAD_ALLOW))
     {
-      m_leadAllowQueued = false;
-      AdoptLeadWanted();
+      // an allow sent before a later menu entry is stale
+      if (std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value == m_leadAllowGen)
+      {
+        m_leadAllowQueued = false;
+        AdoptLeadWanted();
+      }
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
@@ -679,6 +688,7 @@ void CVideoPlayerVideo::Process()
         else if (ProcessDecoderOutput(frametime, pts))
         {
           onlyPrioMsgs = true;
+          pollAfterPicture = true;
         }
 
         if (vfmtCheckCount > 0 && --vfmtCheckCount % 5 == 0)
@@ -1367,13 +1377,18 @@ void CVideoPlayerVideo::SetLeadAllowed(bool allowed)
   if (!allowed)
   {
     m_leadBlocked = true;
+    if (m_leadAllowQueued)
+    {
+      ++m_leadAllowGen;
+      m_leadAllowQueued = false;
+    }
     return;
   }
   // unblock in-band, behind any menu packets still queued
   if (m_leadBlocked && !m_leadAllowQueued && m_messageQueue.IsInited())
   {
     m_leadAllowQueued = true;
-    SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_LEAD_ALLOW), 0);
+    SendMessage(std::make_shared<CDVDMsgInt>(CDVDMsg::VIDEO_LEAD_ALLOW, m_leadAllowGen.load()), 0);
   }
 }
 

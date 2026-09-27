@@ -212,6 +212,7 @@ private:
   bool            m_leadFault = false;
   // false after every Open/Reset until the first counted picture comes out
   bool            m_leadArmed = false;
+  const char*     m_leadOffReason = nullptr;
 
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.

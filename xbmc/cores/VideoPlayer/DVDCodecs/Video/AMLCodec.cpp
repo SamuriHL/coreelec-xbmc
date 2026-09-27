@@ -3332,15 +3332,23 @@ int CAMLCodec::GetLeadAUs() const
 
 bool CAMLCodec::WantsInputLead()
 {
-  // FEL only: m_felIdrPadding follows the converter's full-enhancement-layer flag
-  if (!m_opened || !m_skipBufferFillGate || !m_felIdrPadding || m_drain ||
-      m_speed != DVD_PLAYSPEED_NORMAL)
-    return false;
-  const int lead = GetLeadAUs();
-  if (lead < 0 || lead >= kLeadTargetAUs)
-    return false;
+  const char* off = nullptr;
   int data_len, free_len, size;
-  return GetBufferLevel(0, data_len, free_len, size) < kLeadMaxBufferLevel;
+  // FEL only: m_felIdrPadding follows the converter's full-enhancement-layer flag
+  if (!m_opened || !m_skipBufferFillGate || !m_felIdrPadding)
+    off = "not a dual-stream FEL session";
+  else if (m_drain || m_speed != DVD_PLAYSPEED_NORMAL)
+    off = "drain or trick play";
+  else if (GetLeadAUs() < 0)
+    off = m_leadFault ? "faulted" : "waiting for the first counted picture";
+  else if (GetBufferLevel(0, data_len, free_len, size) >= kLeadMaxBufferLevel)
+    off = "stream buffer above the cap";
+  if (off != m_leadOffReason)
+  {
+    CLog::Log(LOGINFO, "CAMLCodec::{}: input lead {}", __FUNCTION__, off ? off : "available");
+    m_leadOffReason = off;
+  }
+  return !off && GetLeadAUs() < kLeadTargetAUs;
 }
 
 int CAMLCodec::DequeueBuffer()
