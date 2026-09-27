@@ -1311,12 +1311,12 @@ void CRenderManager::PrepareNextRender()
       static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment()));
 
   const bool isPaused = m_dvdClock.IsPaused();
-  // A hardware-plane renderer (the AML video layer) cannot take back a frame it has
-  // released, so keep the display latency while paused: a frame picked during any pause
-  // (user, caching, display reset) is then picked as in play. Only the latency, from
-  // xbmc/xbmc #29406; the mid-frame advance below stays off while paused (0f0425b38e).
+  // A hardware-plane renderer cannot take back a released frame, so a pause keeps
+  // the display latency (xbmc/xbmc #29406) - except during a display reset, where
+  // nothing may reach the plane while the TV relocks.
   // Twin: CDVDVideoCodecAmlogic::DrainMetadataToClock.
-  const bool keepLatency = m_pRenderer && m_pRenderer->VideoBypassesFramebuffer();
+  const bool keepLatency =
+      !m_displayLost && m_pRenderer && m_pRenderer->VideoBypassesFramebuffer();
   double renderPts = frameOnScreen;
   if (!isPaused || keepLatency)
     renderPts += m_displayLatency;
