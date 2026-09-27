@@ -2490,8 +2490,18 @@ void CVideoPlayer::Process()
         // BdSegmentTransition closes the demuxer. Never fall through to
         // ReadPacket after that - the NULL packet it returns would reach
         // NextStream() and run the whole transition a second time.
-        BdSegmentTransition(true);
-        continue;
+        // Direct playlist playback has no navigation to reopen from, so a
+        // teardown there would end playback: only the seamless transition runs.
+        if (!m_pInputBluray->IsNavigationMode() &&
+            ClassifyBdTransition() != EBdTransition::SEAMLESS)
+        {
+          CLog::Log(LOGDEBUG, "VideoPlayer: glided seam no longer seamless - ignored");
+        }
+        else
+        {
+          BdSegmentTransition(true);
+          continue;
+        }
       }
     }
 #endif
