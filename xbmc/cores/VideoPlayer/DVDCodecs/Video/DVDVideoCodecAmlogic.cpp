@@ -1240,9 +1240,9 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
   if (!m_hints.pClock || m_metadataSequencer.Empty())
     return;
 
-  double target = m_hints.pClock->GetClock();
-  if (!m_hints.pClock->IsPaused())
-    target += RenderDisplayLatency();
+  // the AML renderer keeps the display latency while paused
+  // (CRenderManager::PrepareNextRender), so the metadata target does too
+  const double target = m_hints.pClock->GetClock() + RenderDisplayLatency();
 
   AMLFrameMetadata meta;
   if (m_metadataSequencer.Consume(target, meta))
