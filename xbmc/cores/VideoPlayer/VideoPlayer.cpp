@@ -844,6 +844,7 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   CreatePlayers();
 
   m_displayLost = false;
+  m_renderManager.SetDisplayLost(false);
   m_error = false;
   m_bCloseRequest = false;
   if (auto system = CServiceBroker::GetWinSystem(); system != nullptr)
@@ -8041,6 +8042,8 @@ void CVideoPlayer::OnLostDisplay()
     m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
   if (m_VideoPlayerVideo->IsInited())
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
+  // before the clock pauses, so the renderer never takes this for a plain pause
+  m_renderManager.SetDisplayLost(true);
   m_clock.Pause(true);
   m_displayLost = true;
   // Causes https://github.com/xbmc/xbmc/issues/15447
@@ -8057,6 +8060,7 @@ void CVideoPlayer::OnResetDisplay()
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
   m_clock.Pause(false);
   m_displayLost = false;
+  m_renderManager.SetDisplayLost(false);
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
   // a mode switch (e.g. Dolby Vision engaging mid-menu) leaves a still disc
