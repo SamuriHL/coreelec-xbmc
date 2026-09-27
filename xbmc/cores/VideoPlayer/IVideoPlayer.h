@@ -124,6 +124,9 @@ public:
   virtual void SetMaxDataSize(int iMaxDataSize) {}
   virtual void SetMaxTimeSize(double sec) {}
   virtual int GetMaxDataSize() const = 0;
+  //! Called by the player thread every pass: false while a disc menu domain
+  //! plays, which blocks the decoder input lead at once.
+  virtual void SetLeadAllowed(bool allowed) {}
 };
 
 class CDVDAudioCodec;

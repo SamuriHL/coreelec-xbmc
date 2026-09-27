@@ -38,6 +38,16 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+// Input lead: the render queue must be this full (about a third of a second of
+// pictures), have blocked the thread, and have taken this many pictures since
+// the last discontinuity before a pull may be deferred.
+constexpr int kLeadMinRenderLevel = 8;
+constexpr int kLeadSettlePictures = 24;
+constexpr int kLeadMaxPullsSkipped = 4;
+} // namespace
+
 class CDVDMsgVideoCodecChange : public CDVDMsg
 {
 public:
@@ -199,6 +209,10 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   m_iDroppedRequest = 0;
   m_iLateFrames = 0;
 
+  m_leadBlocked = true;
+  m_leadAllowQueued = false;
+  ResetLeadSettle();
+
   if( m_fFrameRate > 120 || m_fFrameRate < 5 )
   {
     CLog::Log(LOGERROR,
@@ -264,6 +278,8 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   StopThread();
 
   m_messageQueue.End();
+  m_leadBlocked = true;
+  m_leadAllowQueued = false;
 
   CLog::Log(LOGINFO, "deleting video codec");
   m_pVideoCodec.reset();
@@ -367,6 +383,7 @@ void CVideoPlayerVideo::Process()
     std::shared_ptr<CDVDMsg> pMsg;
     MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
 
+    const bool wasPrioPoll = onlyPrioMsgs;
     onlyPrioMsgs = false;
 
     if (MSGQ_IS_ERROR(ret))
@@ -398,6 +415,12 @@ void CVideoPlayerVideo::Process()
                 m_processInfo.IsFrameAdvance() ||
                 m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
       {
+        // only the 1ms poll that follows a picture; never on a real timeout
+        if (wasPrioPoll && LeadOk(bRequestDrop))
+        {
+          NoteLeadSkip();
+          continue;
+        }
         if (ProcessDecoderOutput(frametime, pts))
         {
           onlyPrioMsgs = true;
@@ -455,6 +478,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
       m_rewindStalled = false;
       m_renderManager.ShowVideo(true);
+      ResetLeadSettle();
 
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_RESYNC({:f})", pts);
       if (m_processInfo.IsVideoHwDecoder())
@@ -483,6 +507,7 @@ void CVideoPlayerVideo::Process()
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
       m_renderManager.ShowVideo(false);
       m_rewindStalled = false;
+      ResetLeadSettle();
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_SEGMENT_RESET))
     {
@@ -525,6 +550,10 @@ void CVideoPlayerVideo::Process()
 
       m_renderManager.DiscardBuffer();
       FlushMessages();
+      // the flush deleted any queued VIDEO_LEAD_ALLOW
+      m_leadAllowQueued = false;
+      AdoptLeadWanted();
+      ResetLeadSettle();
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -533,6 +562,7 @@ void CVideoPlayerVideo::Process()
         m_pVideoCodec->SetSpeed(m_speed);
 
       m_droppingStats.Reset();
+      ResetLeadSettle();
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {
@@ -564,8 +594,14 @@ void CVideoPlayerVideo::Process()
           break;
       }
     }
+    else if (pMsg->IsType(CDVDMsg::VIDEO_LEAD_ALLOW))
+    {
+      m_leadAllowQueued = false;
+      AdoptLeadWanted();
+    }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
+      ResetLeadSettle();
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
@@ -638,7 +674,9 @@ void CVideoPlayerVideo::Process()
         m_videoStats.AddSampleBytes(pPacket->iSize);
         UpdatePlayerInfo();
 
-        if (ProcessDecoderOutput(frametime, pts))
+        if (LeadOk(bRequestDrop))
+          NoteLeadSkip();
+        else if (ProcessDecoderOutput(frametime, pts))
         {
           onlyPrioMsgs = true;
         }
@@ -676,6 +714,7 @@ void CVideoPlayerVideo::Process()
     {
       CLog::Log(LOGINFO, "CVideoPlayerVideo: display reset occurred, clear skipped frames");
       m_renderManager.DisplayReset();
+      ResetLeadSettle();
     }
   }
 }
@@ -712,6 +751,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     m_packets.clear();
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
     m_renderManager.DiscardBuffer();
+    ResetLeadSettle();
     return false;
   }
 
@@ -727,6 +767,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     m_pVideoCodec->Reopen();
     m_packets.clear();
     m_renderManager.DiscardBuffer();
+    ResetLeadSettle();
     return false;
   }
 
@@ -756,6 +797,9 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   if (decoderState == CDVDVideoCodec::VC_PICTURE)
   {
     bool hasTimestamp = true;
+
+    m_leadPullsSkipped = 0;
+    m_leadWritesAtPicture = m_pVideoCodec->GetInputLeadWrites();
 
     // Detect progressive content misidentified as interlaced: if picture
     // duration consistently equals double what the fps implies, halve fps.
@@ -1105,7 +1149,17 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (m_speed > DVD_PLAYSPEED_NORMAL)
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
-  int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+  bool renderBlocked = false;
+  int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime, &renderBlocked);
+  if (buffer > 0)
+  {
+    m_leadRenderBlockedOnce |= renderBlocked;
+    m_leadRenderLevel = buffer;
+    if (m_leadPicsSinceSettle < kLeadSettlePictures)
+      ++m_leadPicsSinceSettle;
+  }
+  else
+    m_leadRenderLevel = 0;
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
   // Only once we are actually due and have a buffer: that is the first frame the
@@ -1305,6 +1359,90 @@ void CVideoPlayerVideo::CalcFrameRate()
     m_fStableFrameRate = 0.0;
     m_iFrameRateCount = 0;
   }
+}
+
+void CVideoPlayerVideo::SetLeadAllowed(bool allowed)
+{
+  m_leadWanted = allowed;
+  if (!allowed)
+  {
+    m_leadBlocked = true;
+    return;
+  }
+  // unblock in-band, behind any menu packets still queued
+  if (m_leadBlocked && !m_leadAllowQueued && m_messageQueue.IsInited())
+  {
+    m_leadAllowQueued = true;
+    SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_LEAD_ALLOW), 0);
+  }
+}
+
+void CVideoPlayerVideo::AdoptLeadWanted()
+{
+  m_leadBlocked = !m_leadWanted;
+  // a menu entry racing this write must win
+  if (!m_leadWanted)
+    m_leadBlocked = true;
+}
+
+void CVideoPlayerVideo::ResetLeadSettle()
+{
+  m_leadRenderBlockedOnce = false;
+  m_leadRenderLevel = 0;
+  m_leadPicsSinceSettle = 0;
+}
+
+bool CVideoPlayerVideo::LeadOk(bool requestDrop)
+{
+  if (!m_pVideoCodec)
+    return false;
+  // negative: not a lead-tracking decoder session
+  const int aus = m_pVideoCodec->GetInputLeadAUs();
+  if (aus < 0)
+    return false;
+
+  const char* reason = nullptr;
+  if (m_leadBlocked)
+    reason = "menu";
+  else if (m_syncState != IDVDStreamPlayer::SYNC_INSYNC || m_paused ||
+           m_speed != DVD_PLAYSPEED_NORMAL || m_pClock->IsPaused())
+    reason = "not playing";
+  else if (m_outputSate == OUTPUT_AGAIN || requestDrop || m_iLateFrames > 0)
+    reason = "late";
+  else if (!m_leadRenderBlockedOnce || m_leadRenderLevel < kLeadMinRenderLevel ||
+           m_leadPicsSinceSettle < kLeadSettlePictures)
+    reason = "render queue";
+  else if (m_leadPullsSkipped >= kLeadMaxPullsSkipped ||
+           m_pVideoCodec->GetInputLeadWrites() > m_leadWritesAtPicture)
+    reason = "budget";
+  else if (m_messageQueue.GetDataSize() <= 0 || m_messageQueue.IsDraining())
+    reason = "no packet";
+  else if (!m_pVideoCodec->WantsInputLead())
+    reason = "codec";
+
+  if (m_leadStatMaxAUs < 0)
+    m_leadStatMinAUs = m_leadStatMaxAUs = aus;
+  m_leadStatMinAUs = std::min(m_leadStatMinAUs, aus);
+  m_leadStatMaxAUs = std::max(m_leadStatMaxAUs, aus);
+  const auto now = std::chrono::steady_clock::now();
+  if (now - m_leadStatsStart >= 1s)
+  {
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayerVideo - input lead: skips {} leadAUs {}..{} render level {} ({})",
+              m_leadStatSkips, m_leadStatMinAUs, m_leadStatMaxAUs, m_leadRenderLevel,
+              reason ? reason : "open");
+    m_leadStatsStart = now;
+    m_leadStatSkips = 0;
+    m_leadStatMinAUs = m_leadStatMaxAUs = -1;
+  }
+
+  return !reason;
+}
+
+void CVideoPlayerVideo::NoteLeadSkip()
+{
+  ++m_leadPullsSkipped;
+  ++m_leadStatSkips;
 }
 
 int CVideoPlayerVideo::CalcDropRequirement(double pts)

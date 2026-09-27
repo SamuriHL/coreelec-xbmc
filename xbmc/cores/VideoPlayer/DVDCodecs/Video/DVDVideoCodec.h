@@ -213,6 +213,16 @@ public:
   virtual unsigned GetAllowedReferences() { return 0; }
 
   /**
+   * Input lead: true when the decoder wants the player to feed the next access
+   * unit before it pulls a picture. GetInputLeadWrites counts access units the
+   * decoder accepted (monotonic); GetInputLeadAUs is its measured lead, -1 if
+   * unknown.
+   */
+  virtual bool WantsInputLead() { return false; }
+  virtual uint64_t GetInputLeadWrites() { return 0; }
+  virtual int GetInputLeadAUs() { return -1; }
+
+  /**
    * For calculation of dropping requirements player asks for some information.
    * - pts : right after decoder, used to detect gaps (dropped frames in decoder)
    * - droppedFrames : indicates if decoder has dropped a frame
