@@ -522,6 +522,7 @@ protected:
   bool m_seamlessHold = false;
   bool m_seamlessCarry = false;
   bool HoldForEvent();
+  bool ArmSeamlessGlide();
   bool IsBdjTitle() const { return m_title && m_title->bdj; }
   void StampBdjPending();
   void WaitForBdjPresentation();
