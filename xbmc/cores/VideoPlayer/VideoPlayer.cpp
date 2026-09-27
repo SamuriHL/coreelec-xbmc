@@ -1784,6 +1784,9 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // the renderer sits through, and it is a cut, not elapsed content. See
     // CheckContinuity.
     m_seamStepPending = true;
+    // Only a glided (cc 5/6) seam may close a backward step; held cc=1 menu
+    // loop joins keep their wrapback/resync handling.
+    m_seamStepOverlapOk = glided;
     // Bound the arm. Roughly half of these boundaries step BACKWARD (an
     // overlap, which needs no correction), so an unbounded flag would stay
     // latched from one boundary to the next - measured 2m33s of continuous
@@ -3628,6 +3631,20 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     seamStep = true;
     CLog::Log(LOGDEBUG,
               "CVideoPlayer::CheckContinuity - seam step :{}, prev:{:f}, curr:{:f}, closing {:f}",
+              current.type, current.dts, pPacket->dts, correction);
+  }
+  // The backward step is an overlap in both streams alike (same STC offset), not
+  // repeated content: left open, video drops the overlapped frames while audio
+  // plays them and is re-timed ~5 s later, which audio then skips to recover.
+  else if (correction == 0.0 && m_seamStepPending && m_seamStepOverlapOk &&
+           m_playSpeed == DVD_PLAYSPEED_NORMAL && current.dts_end() != DVD_NOPTS_VALUE &&
+           pPacket->dts < current.dts_end() - DVD_MSEC_TO_TIME(20) &&
+           pPacket->dts > current.dts_end() - DVD_MSEC_TO_TIME(1000))
+  {
+    correction = pPacket->dts - current.dts_end();
+    seamStep = true;
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::CheckContinuity - seam overlap :{}, prev:{:f}, curr:{:f}, closing {:f}",
               current.type, current.dts, pPacket->dts, correction);
   }
 
