@@ -2919,13 +2919,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     if (m_skipBufferFillGate)
     {
       // Segment-fed dual-stream DV can EOS below any fill threshold — dequeue
-      // immediately. Still keep the stream path's 10% cushion: at 0 an easily
-      // decoded FEL stream is fed one access unit per displayed frame, and the
-      // BL picture is output before its EL bytes reach the core (amdv "not
-      // found el", BL-only composite). A tail below it is covered by drain and
-      // the starve probe in GetPicture.
+      // immediately.
       m_buffer_level_ready = true;
-      m_minimum_buffer_level = 10.0f;
+      m_minimum_buffer_level = 0.0f;
 
       CSysfsPath pre_decode_buf_level{"/sys/module/amvdec_h265/parameters/pre_decode_buf_level"};
       if (pre_decode_buf_level.Exists())
