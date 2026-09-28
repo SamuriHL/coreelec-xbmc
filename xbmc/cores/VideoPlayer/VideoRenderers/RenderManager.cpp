@@ -1414,8 +1414,6 @@ void CRenderManager::PrepareNextRender()
     bool seeded = false;
     if (seed)
     {
-      if (m_clockSync.m_seedCount == 0 && !m_clockSync.m_seedPrevValid)
-        m_syncDbgFrames = 40; // SYNCDBG
       const int blockFrames =
           std::max(2, static_cast<int>(std::ceil(DVD_MSEC_TO_TIME(100) / frametime)));
       m_clockSync.m_seedSum += err;
@@ -1438,13 +1436,6 @@ void CRenderManager::PrepareNextRender()
           m_clockSync.m_seedPrevValid = true;
         }
       }
-    }
-    if (m_syncDbgFrames > 0 && !isPaused) // SYNCDBG
-    {
-      m_syncDbgFrames--;
-      CLog::Log(LOGDEBUG, "SYNCDBG frameErr {:.2f} ms n={} frameOnScreen {:.1f} ref {:.2f}",
-                -err / 1000.0, 40 - m_syncDbgFrames, frameOnScreen / 1000.0,
-                -m_clockSync.m_ref / 1000.0);
     }
     m_clockSync.m_error += err;
     m_clockSync.m_errCount ++;

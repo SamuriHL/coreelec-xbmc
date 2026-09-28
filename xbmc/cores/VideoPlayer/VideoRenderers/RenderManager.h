@@ -276,7 +276,6 @@ protected:
     bool m_enabled = false;
   };
   CClockSync m_clockSync;
-  int m_syncDbgFrames = 0; // SYNCDBG
 
   // steady_clock: differenced only to bound the wait for the video layer to
   // start, so a wall-clock step must not be able to expire it early.
