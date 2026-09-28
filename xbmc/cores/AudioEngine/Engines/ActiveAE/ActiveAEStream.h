@@ -55,6 +55,7 @@ public:
     if(m_timer.IsTimePast())
     {
       error = Get();
+      m_lastWindowEmpty = (m_count == 0);
       Flush(interval);
       m_lastError = error;
       return true;
@@ -65,6 +66,8 @@ public:
       return false;
     }
   }
+
+  bool LastWindowEmpty() const { return m_lastWindowEmpty; }
 
   double GetLastError(unsigned int &time)
   {
@@ -88,6 +91,7 @@ protected:
   double m_buffer;
   double m_lastError;
   int m_count;
+  bool m_lastWindowEmpty = false;
   XbmcThreads::EndTime<> m_timer;
 };
 
