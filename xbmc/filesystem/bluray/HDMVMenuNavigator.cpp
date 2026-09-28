@@ -554,9 +554,12 @@ private:
           switch (insn.cmpOpt)
           {
             case INSN_BC:
-              // true when dst is contained in the src mask (hdmv_vm.c skips
-              // on !!(dst & ~src))
-              result = (dst & ~src) == 0;
+              // true when every bit of the src mask is set in dst - the VM
+              // this build runs (libbluray patch all-003, upstream MR 76, which
+              // skips on !!(src & ~dst)). The stock reversed test would make
+              // this simulation branch differently from the real VM on every
+              // capability check against a multi-bit PSR.
+              result = (src & ~dst) == 0;
               break;
             case INSN_EQ:
               result = dst == src;
