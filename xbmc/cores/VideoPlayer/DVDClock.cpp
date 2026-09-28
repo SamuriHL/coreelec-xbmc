@@ -14,6 +14,7 @@
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
 
+#include <cmath>
 #include <inttypes.h>
 #include <math.h>
 #include <memory>
@@ -120,12 +121,19 @@ void CDVDClock::SetVsyncAdjust(double adjustment)
   // does not affect.
   //
   // fmod first so a pathological input cannot spin the range reduction.
+  //
+  // The representative is the one nearest the value already published (zero
+  // after a reset), not a fixed +-frame/2 cut: a phase sitting near half a
+  // frame otherwise flips sides between windows, and every flip steps the
+  // clock audio is synced against by a whole frame.
   if (m_frameTime > 0.0)
   {
+    const double ref = m_vSyncAdjustPending ? 0.0 : m_vSyncAdjust;
     adjustment = fmod(adjustment, m_frameTime);
-    if (adjustment > m_frameTime / 2)
+    adjustment -= m_frameTime * std::round((adjustment - ref) / m_frameTime);
+    if (adjustment > m_frameTime)
       adjustment -= m_frameTime;
-    else if (adjustment <= -m_frameTime / 2)
+    else if (adjustment < -m_frameTime)
       adjustment += m_frameTime;
   }
 
@@ -133,6 +141,19 @@ void CDVDClock::SetVsyncAdjust(double adjustment)
     CLog::Log(LOGDEBUG, "SYNCDBG vsyncAdjust {:.1f} -> {:.1f} ms (frameTime {:.1f})",
               m_vSyncAdjust / 1000.0, adjustment / 1000.0, m_frameTime / 1000.0);
   m_vSyncAdjust = adjustment;
+  m_vSyncAdjustPending = false;
+}
+
+void CDVDClock::SetVsyncAdjustPending()
+{
+  std::unique_lock lock(m_critSection);
+  m_vSyncAdjustPending = true;
+}
+
+bool CDVDClock::IsVsyncAdjustPending() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_vSyncAdjustPending;
 }
 
 double CDVDClock::GetVsyncAdjust()

@@ -388,6 +388,11 @@ double CAudioSinkAE::GetClock()
     return 0.0;
 }
 
+bool CAudioSinkAE::IsClockPhasePending()
+{
+  return m_pClock && m_pClock->IsVsyncAdjustPending();
+}
+
 double CAudioSinkAE::GetClockSpeed()
 {
   if (m_pClock)
