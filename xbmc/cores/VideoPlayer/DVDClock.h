@@ -50,7 +50,8 @@ public:
   double GetFrequency() { return (double)m_systemFrequency ; }
 
   bool GetClockInfo(int& MissedVblanks, double& ClockSpeed, double& RefreshRate) const;
-  void SetVsyncAdjust(double adjustment);
+  //! phaseGeneration: GetVsyncPhaseGeneration() when the phase was measured
+  void SetVsyncAdjust(double adjustment, unsigned int phaseGeneration);
   double GetVsyncAdjust();
   //! renderer reset: no phase, and the display's phase is still to come
   void ResetVsyncAdjust();
@@ -58,8 +59,9 @@ public:
   void ClearVsyncAdjust(bool settled);
   //! the renderer was reset and has not published this display's phase yet
   bool IsVsyncAdjustPending() const;
-  //! a display phase is published (false after a reset or clear)
-  bool HasVsyncAdjustPhase() const;
+  //! changes whenever the phase is dropped or reset: samples measured under an
+  //! older generation belong to a phase that no longer holds
+  unsigned int GetVsyncPhaseGeneration() const;
   //! no phase is coming soon (no frame is being played): stop waiting for one
   void SettleVsyncAdjust();
 
@@ -96,6 +98,9 @@ protected:
   double m_vSyncAdjust;
   bool m_vSyncAdjustPending = false;
   bool m_vSyncAdjustHasPhase = false;
+  double m_vSyncAdjustHint = 0.0; // the phase last held before a drop
+  bool m_vSyncAdjustHintValid = false;
+  unsigned int m_vSyncPhaseGeneration = 0;
   double m_frameTime;
 
   double m_maxspeedadjust;
