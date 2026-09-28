@@ -286,6 +286,7 @@ protected:
   int m_muteWindows;                // RAW start sync: windows measured while muted
   int m_mutePhaseWindows;           // RAW start sync: windows spent waiting for the video phase
   double m_muteLastError;           // RAW start sync: previous muted window's error
+  double m_muteLastPhase;           // RAW start sync: clock display phase at that window's end
   bool m_syncWaitSilence;           // the delay walk wants silence but the pool is empty:
                                     // hold the stream's audio until a buffer returns
 };

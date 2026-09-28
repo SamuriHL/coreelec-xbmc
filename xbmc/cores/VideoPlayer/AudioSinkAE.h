@@ -66,6 +66,7 @@ public:
   double GetClock() override;
   double GetClockSpeed() override;
   bool IsClockPhasePending() override;
+  double GetClockPhase() override;
 
   CAEStreamInfo::DataType GetPassthroughStreamType(AVCodecID codecId, int samplerate, int profile);
 

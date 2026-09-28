@@ -59,6 +59,7 @@ CActiveAEStream::CActiveAEStream(AEAudioFormat* format, unsigned int streamid, C
   m_muteWindows = 0;
   m_mutePhaseWindows = 0;
   m_muteLastError = 0.0;
+  m_muteLastPhase = 0.0;
   m_syncWaitSilence = false;
 }
 

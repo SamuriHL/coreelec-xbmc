@@ -393,6 +393,11 @@ bool CAudioSinkAE::IsClockPhasePending()
   return m_pClock && m_pClock->IsVsyncAdjustPending();
 }
 
+double CAudioSinkAE::GetClockPhase()
+{
+  return m_pClock ? m_pClock->GetVsyncAdjust() / DVD_TIME_BASE * 1000 : 0.0;
+}
+
 double CAudioSinkAE::GetClockSpeed()
 {
   if (m_pClock)
