@@ -20,7 +20,6 @@
 #include "utils/BitstreamStats.h"
 
 #include <atomic>
-#include <chrono>
 
 #define DROP_DROPPED 1
 #define DROP_VERYLATE 2
@@ -81,7 +80,6 @@ public:
   void SetMaxDataSize(int iMaxDataSize) { m_messageQueue.SetMaxDataSize(iMaxDataSize); }
   void SetMaxTimeSize(double sec) { m_messageQueue.SetMaxTimeSize(sec); }
   int GetMaxDataSize() const { return m_messageQueue.GetMaxDataSize(); }
-  void SetLeadAllowed(bool allowed) override;
 
   // classes
   CDVDOverlayContainer* m_pOverlayContainer;
@@ -114,30 +112,6 @@ protected:
   void ResetFrameRateCalc();
   void CalcFrameRate();
   int CalcDropRequirement(double pts);
-
-  // Input lead (docs/fel_el_lead_design.md): on a saturated render queue, feed
-  // the next packet before pulling a picture when the decoder asks for it.
-  bool LeadOk(bool requestDrop);
-  void NoteLeadSkip();
-  void ResetLeadSettle();
-  void AdoptLeadWanted();
-
-  // written by the player thread (SetLeadAllowed), read by the video thread
-  std::atomic_bool m_leadWanted{false};
-  std::atomic_bool m_leadBlocked{true};
-  std::atomic_bool m_leadAllowQueued{false};
-  // render saturation, reset at every discontinuity in output
-  bool m_leadRenderBlockedOnce = false;
-  int m_leadRenderLevel = 0;
-  int m_leadPicsSinceSettle = 0;
-  // per released picture
-  int m_leadPullsSkipped = 0;
-  uint64_t m_leadWritesAtPicture = 0;
-  // once-per-second statistics
-  std::chrono::steady_clock::time_point m_leadStatsStart{};
-  int m_leadStatSkips = 0;
-  int m_leadStatMinAUs = -1;
-  int m_leadStatMaxAUs = -1;
 
   double m_iSubtitleDelay;
 

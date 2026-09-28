@@ -63,7 +63,6 @@ public:
     // video related messages
     VIDEO_SET_ASPECT,               // set aspectratio of video
     VIDEO_DRAIN,                    // wait for decoder to output last frame
-    VIDEO_LEAD_ALLOW,               // menu domain over: input lead may resume
 
     // subtitle related messages
     SUBTITLE_CLUTCHANGE,

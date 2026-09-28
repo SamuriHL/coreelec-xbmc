@@ -1241,8 +1241,7 @@ bool CRenderManager::Supports(ESCALINGMETHOD method) const
 }
 
 int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
-                                  std::chrono::milliseconds timeout,
-                                  bool* blocked)
+                                  std::chrono::milliseconds timeout)
 {
   std::unique_lock lock(m_presentlock);
 
@@ -1271,8 +1270,6 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   }
 
   XbmcThreads::EndTime<> endtime{timeout};
-  if (blocked)
-    *blocked = m_free.empty();
   while(m_free.empty())
   {
     m_presentevent.wait(lock, std::min(50ms, timeout));
