@@ -2076,7 +2076,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_drain = false;
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
-  ResetLead();
   m_dst_rect.SetRect(0, 0, 0, 0);
   m_zoom = -1.0f;
   m_contrast = -1;
@@ -2745,7 +2744,6 @@ void CAMLCodec::CloseDecoder()
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
   m_opened = false;
-  ResetLead();
 
   am_packet_release(&am_private->am_pkt);
   am_private->extradata = {};
@@ -2897,7 +2895,6 @@ void CAMLCodec::Reset()
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_state = 0;
-  ResetLead();
   m_buffer_level_ready = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
@@ -2907,7 +2904,7 @@ void CAMLCodec::Reset()
   SetPollDevice(am_private->vcodec.cntl_handle);
 }
 
-bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts, bool leadAU)
+bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
   if (iSize > 0)
     m_no_data_since_reset = false;
@@ -3142,8 +3139,6 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts, bo
     return false;
   }
   m_wrFailActive = false;
-  if (leadAU && iSize > 0 && m_opened)
-    NoteLeadAU(pts);
   if (iSize > 50000)
     usleep(2000); // wait 2ms to process larger packets
 
@@ -3252,97 +3247,6 @@ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len, int
   return level;
 }
 
-namespace
-{
-// the lead that stopped every EL miss on the am9pro (0 of 815 frames)
-constexpr int kLeadTargetAUs = 4;
-// keep lead writes well away from the 95% "skip add data" zone
-constexpr float kLeadMaxBufferLevel = 20.0f;
-constexpr size_t kLeadMaxQueued = 64;
-constexpr int kLeadMaxNoMatch = 8;
-// written and dequeued pts are the same value; allow for rounding only
-constexpr uint64_t kLeadPtsSlack = 5000;
-} // namespace
-
-void CAMLCodec::ResetLead()
-{
-  m_leadPts.clear();
-  m_leadLastPts = 0;
-  m_leadNoMatch = 0;
-  m_leadFault = false;
-  m_leadArmed = false;
-}
-
-void CAMLCodec::LeadFault(const char* reason)
-{
-  if (!m_leadFault)
-    CLog::Log(LOGINFO, "CAMLCodec::{}: input lead off until the next reset - {}", __FUNCTION__,
-              reason);
-  m_leadFault = true;
-  m_leadPts.clear();
-}
-
-void CAMLCodec::NoteLeadAU(double pts)
-{
-  ++m_leadWrites;
-  if (m_leadFault)
-    return;
-  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
-  {
-    LeadFault("access unit without pts");
-    return;
-  }
-  const uint64_t p = static_cast<uint64_t>(pts);
-  if (m_leadLastPts && p <= m_leadLastPts)
-  {
-    LeadFault("pts not increasing (reordered stream)");
-    return;
-  }
-  m_leadLastPts = p;
-  m_leadPts.push_back(p);
-  if (m_leadPts.size() > kLeadMaxQueued)
-    LeadFault("written access units are not coming out");
-}
-
-void CAMLCodec::NoteLeadDequeued(uint64_t pts)
-{
-  if (m_leadFault || m_leadPts.empty())
-    return;
-  bool popped = false;
-  while (!m_leadPts.empty() && m_leadPts.front() <= pts + kLeadPtsSlack)
-  {
-    m_leadPts.pop_front();
-    popped = true;
-  }
-  if (popped)
-  {
-    m_leadNoMatch = 0;
-    m_leadArmed = true;
-  }
-  else if (++m_leadNoMatch >= kLeadMaxNoMatch)
-    LeadFault("dequeued pictures do not match written pts");
-}
-
-int CAMLCodec::GetLeadAUs() const
-{
-  if (m_leadFault || !m_leadArmed)
-    return -1;
-  return static_cast<int>(m_leadPts.size()) - 1;
-}
-
-bool CAMLCodec::WantsInputLead()
-{
-  // FEL only: m_felIdrPadding follows the converter's full-enhancement-layer flag
-  if (!m_opened || !m_skipBufferFillGate || !m_felIdrPadding || m_drain ||
-      m_speed != DVD_PLAYSPEED_NORMAL)
-    return false;
-  const int lead = GetLeadAUs();
-  if (lead < 0 || lead >= kLeadTargetAUs)
-    return false;
-  int data_len, free_len, size;
-  return GetBufferLevel(0, data_len, free_len, size) < kLeadMaxBufferLevel;
-}
-
 int CAMLCodec::DequeueBuffer()
 {
   v4l2_buffer vbuf = v4l2_buffer();
@@ -3370,7 +3274,6 @@ int CAMLCodec::DequeueBuffer()
   			static_cast<double>(m_cur_pts) /  DVD_TIME_BASE, vbuf.index);
 
     m_bufferIndex = vbuf.index;
-    NoteLeadDequeued(m_cur_pts);
   }
   else if (ret != EAGAIN)
   {

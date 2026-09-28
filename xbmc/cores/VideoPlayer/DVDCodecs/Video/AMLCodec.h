@@ -72,10 +72,7 @@ public:
   void          Abort();
   void          Reset();
 
-  //! @param leadAU the data is one merged BL+EL access unit of a dual-stream DV
-  //! session; it is counted for the input lead (see WantsInputLead).
-  bool          AddData(uint8_t *pData, size_t size, double dts, double pts,
-                        bool leadAU = false);
+  bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
   int           AddHDR10PData(uint8_t *pData, size_t iSize);
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture* pVideoPicture);
 
@@ -86,16 +83,6 @@ public:
   //! it does not, the idle-input threshold is short by exactly the filler size
   //! and a benign park falls through to a decoder flush.
   void          SetFelIdrPadding(bool enabled) { m_felIdrPadding = enabled; }
-
-  //! @brief Input lead for dual-stream FEL (docs/fel_el_lead_design.md). The EL
-  //! slave instance reports picture N done only once the first NAL of access
-  //! unit N+1 is in the stream buffer, so with one AU written ahead the EL lands
-  //! after the vsync that shows its BL and amdv composites the BL alone.
-  //! Only whole merged BL+EL access units are ever counted or written; nothing
-  //! here touches a decoded EL frame.
-  bool          WantsInputLead();
-  int           GetLeadAUs() const;
-  uint64_t      GetLeadWrites() const { return m_leadWrites; }
 
   void          SetSpeed(int speed);
   void          SetDrain(bool drain){m_drain = drain;};
@@ -195,23 +182,6 @@ private:
   // parked still ABOVE the idle-input threshold below, which would turn a
   // benign park into a decoder flush - so the threshold moves with the pad.
   bool            m_felIdrPadding = false;
-
-  // Input lead: pts of the counted access units the decoder has not output
-  // yet, oldest first. Popped as pictures are dequeued, so a picture the
-  // decoder drops cannot make the count drift. Any doubt (no pts, pts going
-  // backwards = reordered stream, overflow, dequeues that match nothing) sets
-  // m_leadFault and turns the lead off until the next Reset/Open.
-  void            NoteLeadAU(double pts);
-  void            NoteLeadDequeued(uint64_t pts);
-  void            LeadFault(const char* reason);
-  void            ResetLead();
-  std::deque<uint64_t> m_leadPts;
-  uint64_t        m_leadWrites = 0;
-  uint64_t        m_leadLastPts = 0;
-  int             m_leadNoMatch = 0;
-  bool            m_leadFault = false;
-  // false after every Open/Reset until the first counted picture comes out
-  bool            m_leadArmed = false;
 
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.

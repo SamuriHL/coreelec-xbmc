@@ -614,7 +614,6 @@ void CDVDVideoCodecAmlogic::Close(void)
     PopPackageFront();
   }
   m_packagesOverflowLogged = false;
-  m_leadUnmerged = false;
 
   m_videoBufferPool = nullptr;
 
@@ -1013,8 +1012,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
       else
       {
-        if (packet.isDualStream)
-          m_leadUnmerged = true;
         if (!m_bitstream->Convert(pData, iSize))
         {
           m_pendingMeta = m_streamMeta;
@@ -1187,8 +1184,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   }
 
   data_added = m_Codec->AddData(pData, iSize, mergedDts,
-                                m_hints.ptsinvalid ? DVD_NOPTS_VALUE : mergedPts,
-                                dual_layer_converted);
+                                m_hints.ptsinvalid ? DVD_NOPTS_VALUE : mergedPts);
 
   if (data_added && packet.pData)
   {
@@ -1211,21 +1207,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   }
 
   return data_added;
-}
-
-bool CDVDVideoCodecAmlogic::WantsInputLead()
-{
-  return m_Codec && !m_leadUnmerged && m_Codec->WantsInputLead();
-}
-
-uint64_t CDVDVideoCodecAmlogic::GetInputLeadWrites()
-{
-  return m_Codec ? m_Codec->GetLeadWrites() : 0;
-}
-
-int CDVDVideoCodecAmlogic::GetInputLeadAUs()
-{
-  return m_Codec && !m_leadUnmerged ? m_Codec->GetLeadAUs() : -1;
 }
 
 // the latency the renderer adds when it schedules a frame for display,

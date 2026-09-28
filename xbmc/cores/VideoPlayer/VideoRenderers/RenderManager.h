@@ -133,8 +133,7 @@ public:
    * by itself when it wants to drop a frame.
    */
   int WaitForBuffer(volatile std::atomic_bool& bStop,
-                    std::chrono::milliseconds timeout = std::chrono::milliseconds(100),
-                    bool* blocked = nullptr);
+                    std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
 
   /**
    * Can be called by player for lateness detection. This is done best by

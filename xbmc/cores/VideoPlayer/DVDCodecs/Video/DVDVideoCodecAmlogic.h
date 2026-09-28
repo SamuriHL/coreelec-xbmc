@@ -106,9 +106,6 @@ public:
   // drain there is none, so recovery never happened (review finding A5).
   // ~one GOP of packets; the player also time-caps the buffer at 10s.
   unsigned GetConvergeCount() override { return m_opened ? 30 : 0; }
-  bool WantsInputLead() override;
-  uint64_t GetInputLeadWrites() override;
-  int GetInputLeadAUs() override;
 
 protected:
   void            Close(void);
@@ -174,9 +171,6 @@ private:
   CAMLFrameMetadataSequencer m_metadataSequencer;
   size_t m_packagesBytes = 0;
   bool m_packagesOverflowLogged = false;
-  // A dual-stream BL or EL was written on its own this session: the input
-  // lead counts merged BL+EL access units only, so it stays off.
-  bool m_leadUnmerged = false;
   // A timeline restart was stamped on an incoming packet; flush the decoder
   // before the next access unit reaches it. The sequence number is what makes
   // it once-per-jump: the same packet is re-delivered on retries and on the

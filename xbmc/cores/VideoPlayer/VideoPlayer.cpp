@@ -1665,18 +1665,6 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
             menuDomain ? "entering" : "leaving", target);
 }
 
-// The decoder input lead (VideoPlayerVideo) must never run while a disc menu
-// plays; independent of the queue-depth clamp above, which can be disabled.
-void CVideoPlayer::UpdateVideoLeadAllowed()
-{
-  bool menuDomain = false;
-#if defined(HAVE_LIBBLURAY)
-  if (m_pInputBluray)
-    menuDomain = m_pInputBluray->IsMenuDomainVideo();
-#endif
-  m_VideoPlayerVideo->SetLeadAllowed(!menuDomain);
-}
-
 /* BD segment transition (docs/bd_menu_architecture.md §5).
  *
  * Every NEXTSTREAM_OPEN boundary - a bluray playitem/playlist change, or any
@@ -2421,7 +2409,6 @@ void CVideoPlayer::Process()
 
     // restore full queue read-ahead as soon as menu domain ends (grow-only)
     UpdateMenuDomainQueueDepth(false);
-    UpdateVideoLeadAllowed();
     ApplyDiscTimelineEvents(false);
 
     // make sure we run subtitle process here
@@ -5659,10 +5646,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       // A new video segment is the only point where the menu-domain
       // low-latency clamp may shrink the queues.
       if (res)
-      {
         UpdateMenuDomainQueueDepth(true);
-        UpdateVideoLeadAllowed();
-      }
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
       // renderer's Configure() sees a valid viewport via GetViewWindow().
       // The WINDOW_FULLSCREEN_VIDEO skin activation is deferred to
