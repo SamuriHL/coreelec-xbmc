@@ -373,12 +373,15 @@ void CRenderer::Render(COverlay* o)
 bool CRenderer::HasVisibleOverlay(int idx) const
 {
   std::unique_lock lock(m_section);
-  if (idx < 0 || idx >= NUM_BUFFERS)
-    return false;
 
-  // a presentation-time menu composition is on screen whenever it holds anything
+  // A presentation-time menu composition is on screen whenever it holds
+  // anything - including a BD-J screen with no playlist, where there is no
+  // presented video buffer (idx < 0). Checked first for that reason.
   if (!m_presentLatest.empty())
     return true;
+
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return false;
 
   for (const auto& e : m_buffers[idx])
   {

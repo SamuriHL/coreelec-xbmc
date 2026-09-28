@@ -117,7 +117,7 @@ public:
    *  Must be called after CRenderManager::FrameMove has run this frame
    *  (which calls PrepareOverlays). Reads cached state; cheap.
    */
-  bool HasVisibleOverlay() const { return m_overlays.HasVisibleOverlay(m_presentsource); }
+  bool HasVisibleOverlay() const;
 
   /*! \brief Give the overlay renderer the player's overlay container so it can
    *  clear a stale overlay plane when the container empties during a stall. */
@@ -179,7 +179,7 @@ protected:
   OVERLAY::CRenderer m_overlays;
   CDebugRenderer m_debugRenderer;
   mutable CCriticalSection m_statelock;
-  CCriticalSection m_presentlock;
+  mutable CCriticalSection m_presentlock;
   CCriticalSection m_datalock;
   bool m_bTriggerUpdateResolution = false;
   bool m_bRenderGUI = true;
