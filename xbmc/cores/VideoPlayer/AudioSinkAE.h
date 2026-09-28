@@ -88,6 +88,7 @@ protected:
   std::atomic_bool m_bAbort;
   // a Create() wait for a suspended engine ran out; don't block again until it resumes
   bool m_suspendWaitExpired = false;
+  unsigned int m_dtsFrameSamples = 0;
   std::atomic_bool m_abortCreate{false};
   CDVDClock *m_pClock;
 };
