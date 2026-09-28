@@ -129,6 +129,9 @@ void CDVDClock::SetVsyncAdjust(double adjustment)
       adjustment += m_frameTime;
   }
 
+  if (fabs(adjustment - m_vSyncAdjust) > 1000.0) // SYNCDBG
+    CLog::Log(LOGDEBUG, "SYNCDBG vsyncAdjust {:.1f} -> {:.1f} ms (frameTime {:.1f})",
+              m_vSyncAdjust / 1000.0, adjustment / 1000.0, m_frameTime / 1000.0);
   m_vSyncAdjust = adjustment;
 }
 
