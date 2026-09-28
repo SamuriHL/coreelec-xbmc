@@ -920,12 +920,14 @@ void CVideoPlayerAudio::SetSpeed(int speed)
 
 void CVideoPlayerAudio::Flush(bool sync)
 {
+  // Before the Put: the audio thread releases this when it handles the
+  // GENERAL_FLUSH, and an idle thread can do that before a later store lands,
+  // which would leave the abort set for the rest of the session.
+  m_audioSink.AbortCreate(true);
   m_messageQueue.Flush();
   m_messageQueue.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
 
   m_audioSink.AbortAddPackets();
-  // released again by this thread when it handles the GENERAL_FLUSH
-  m_audioSink.AbortCreate(true);
 }
 
 bool CVideoPlayerAudio::AcceptsData() const

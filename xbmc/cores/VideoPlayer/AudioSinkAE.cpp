@@ -59,8 +59,9 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
   // MakeStream() refuses outright while suspended, so a player that opens in
   // that window - playback started within the delay after a stop - gets no
   // stream and stays silent for the whole session. Data for an existing stream
-  // already waits the suspension out (AddPackets); wait for the stream the same
-  // way, bounded, and give up at once on a flush or stop (AbortCreate). Once a
+  // is held while suspended (the engine defers it; AddPackets keeps retrying the
+  // frame); wait for the stream likewise, bounded, and give up at once on a
+  // flush or stop (AbortCreate). Once a
   // wait has run out with the engine still suspended (the device is really
   // gone, not settling), later frames fail at once so video plays on.
   IAE* ae = CServiceBroker::GetActiveAE();
