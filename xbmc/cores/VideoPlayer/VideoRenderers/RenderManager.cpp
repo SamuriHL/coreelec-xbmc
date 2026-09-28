@@ -117,6 +117,7 @@ void CRenderManager::CClockSync::Reset()
   m_error = 0;
   m_ref = 0;
   m_refValid = false;
+  m_adjustSeeded = false;
   m_errCount = 0;
   m_syncOffset = 0;
   m_enabled = false;
@@ -1364,15 +1365,19 @@ void CRenderManager::PrepareNextRender()
     {
       m_clockSync.m_ref = err;
       m_clockSync.m_refValid = true;
-      // Give the audio clock the phase from the first frame instead of zero
-      // until the first window completes (~31 frames): a passthrough start
-      // sync that lands in that gap keeps the missing phase (up to half a
-      // frame) for the rest of playback. Frame selection (m_syncOffset) still
-      // waits for the averaged window.
-      m_dvdClock.SetVsyncAdjust(-err);
     }
     else
       err -= frametime * std::round((err - m_clockSync.m_ref) / frametime);
+    // Give the audio clock the phase from the first playing frame instead of
+    // zero until the first window completes (~31 frames): a passthrough start
+    // sync that lands in that gap keeps the missing phase (up to half a frame)
+    // for the rest of playback. A paused clock or a lost display gives no
+    // phase. Frame selection (m_syncOffset) still waits for the window.
+    if (!m_clockSync.m_adjustSeeded && !isPaused && !m_displayLost)
+    {
+      m_clockSync.m_adjustSeeded = true;
+      m_dvdClock.SetVsyncAdjust(-err);
+    }
     m_clockSync.m_error += err;
     m_clockSync.m_errCount ++;
     if (m_clockSync.m_errCount > 30)
@@ -1395,6 +1400,7 @@ void CRenderManager::PrepareNextRender()
       m_clockSync.m_ref = ref;
 
       m_dvdClock.SetVsyncAdjust(-average);
+      m_clockSync.m_adjustSeeded = true;
     }
     if (!isPaused)
       renderPts += frametime / 2 - m_clockSync.m_syncOffset;
