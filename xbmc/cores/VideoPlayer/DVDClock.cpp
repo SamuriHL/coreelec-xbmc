@@ -261,6 +261,12 @@ void CDVDClock::SetSpeed(int iSpeed)
   int64_t newfreq = m_systemFrequency * DVD_PLAYSPEED_NORMAL / iSpeed;
 
   current = m_videoRefClock->GetTime();
+  // Resuming from a pause shifts the clock by the pause length, and a speed
+  // change rescales it: either way it now stands at another point of the
+  // display's vsync cadence (measured am9pro: the phase moved 4 ms after a
+  // resume, under an audio landing already made against the old one).
+  if (m_pauseClock || newfreq != m_systemUsed)
+    DropVsyncPhase(false);
   if (m_pauseClock)
   {
     m_startClock += current - m_pauseClock;
