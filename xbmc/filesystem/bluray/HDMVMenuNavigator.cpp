@@ -18,6 +18,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <deque>
 #include <map>
@@ -289,6 +290,12 @@ constexpr std::array<uint32_t, 128> MakePsrDefaults()
   psr[19] = 0xffff; // country
   psr[20] = 1; // region A
   psr[21] = 0; // prefer 2D
+  // UHD capability sets and preference: the baseline CDVDInputStreamBluray::
+  // ApplyUHDCapabilities always reports (HDR10 output; UHD + HDR10 display),
+  // until SetPlayerCapabilityPsrs supplies the real ones
+  psr[25] = 0x01;
+  psr[26] = 0x03;
+  psr[27] = 0x01;
   psr[29] = 0x3; // video capability
   psr[30] = 0x1ffff; // TextST capability
   psr[31] = 0x00000200 | (2u << 16); // profile 2 v2.0
@@ -296,6 +303,34 @@ constexpr std::array<uint32_t, 128> MakePsrDefaults()
   return psr;
 }
 constexpr std::array<uint32_t, 128> PSR_DEFAULTS{MakePsrDefaults()};
+
+// Live capability PSRs (SetPlayerCapabilityPsrs); valid once set.
+std::atomic<bool> g_capabilityPsrsValid{false};
+std::atomic<uint32_t> g_psr15{0};
+std::atomic<uint32_t> g_psr25{0};
+std::atomic<uint32_t> g_psr26{0};
+std::atomic<uint32_t> g_psr27{0};
+
+uint32_t ReadPsr(uint32_t n)
+{
+  if (g_capabilityPsrsValid)
+  {
+    switch (n)
+    {
+      case 15:
+        return g_psr15;
+      case 25:
+        return g_psr25;
+      case 26:
+        return g_psr26;
+      case 27:
+        return g_psr27;
+      default:
+        break;
+    }
+  }
+  return PSR_DEFAULTS[n];
+}
 
 struct VmState
 {
@@ -355,7 +390,7 @@ private:
     {
       if (reg & ~(PSR_FLAG | 0x7f))
         return 0;
-      return PSR_DEFAULTS[reg & 0x7f];
+      return ReadPsr(reg & 0x7f);
     }
     if (reg & ~0xfffu)
       return 0;
@@ -1023,6 +1058,18 @@ std::vector<const IgButton*> OrderButtons(const IgPage& page)
   return buttons;
 }
 } // unnamed namespace
+
+void CHDMVMenuNavigator::SetPlayerCapabilityPsrs(uint32_t psr15,
+                                                 uint32_t psr25,
+                                                 uint32_t psr26,
+                                                 uint32_t psr27)
+{
+  g_psr15 = psr15;
+  g_psr25 = psr25;
+  g_psr26 = psr26;
+  g_psr27 = psr27;
+  g_capabilityPsrsValid = true;
+}
 
 CHDMVMenuNavigator::MenuStatedEpisodes CHDMVMenuNavigator::GetMenuStatedEpisodes(
     const CURL& url,
