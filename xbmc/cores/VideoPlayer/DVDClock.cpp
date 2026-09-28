@@ -162,10 +162,26 @@ void CDVDClock::ResetVsyncAdjust()
 void CDVDClock::ClearVsyncAdjust(bool settled)
 {
   std::unique_lock lock(m_critSection);
-  m_vSyncAdjust = 0;
-  m_vSyncAdjustHasPhase = false;
+  DropVsyncPhase(settled);
+}
+
+void CDVDClock::DropVsyncPhase(bool settled)
+{
+  // A phase that is dropped while clock sync may still come back (display
+  // lost, clock reset) is pending again: the renderer re-seeds it from its
+  // next playing frame, and a passthrough start sync must not land before.
   if (settled)
     m_vSyncAdjustPending = false;
+  else if (m_vSyncAdjustHasPhase)
+    m_vSyncAdjustPending = true;
+  m_vSyncAdjust = 0;
+  m_vSyncAdjustHasPhase = false;
+}
+
+bool CDVDClock::HasVsyncAdjustPhase() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_vSyncAdjustHasPhase;
 }
 
 bool CDVDClock::IsVsyncAdjustPending() const
@@ -391,7 +407,7 @@ double CDVDClock::SystemToPlaying(int64_t system)
     m_iDisc = 0;
     m_systemAdjust = 0;
     m_speedAdjust = 0;
-    m_vSyncAdjust = 0;
+    DropVsyncPhase(false);
     m_bReset = false;
   }
 

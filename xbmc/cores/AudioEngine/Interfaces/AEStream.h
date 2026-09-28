@@ -28,6 +28,8 @@ public:
   virtual double GetClockSpeed() { return 1.0; }
   //! the clock's display phase is not known yet (video renderer just reset)
   virtual bool IsClockPhasePending() { return false; }
+  //! the display phase GetClock() carries, in ms
+  virtual double GetClockPhase() { return 0.0; }
 };
 
 class CAESyncInfo

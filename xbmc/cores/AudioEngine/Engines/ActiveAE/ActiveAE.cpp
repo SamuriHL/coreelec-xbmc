@@ -2783,6 +2783,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE &&
            m_mode == MODE_RAW && stream->m_muteWindows < 9 &&
            (stream->m_muteWindows == 0 || stream->m_syncError.LastWindowEmpty() ||
+            std::abs(stream->m_pClock->GetClockPhase() - stream->m_muteLastPhase) > 0.5 ||
             std::abs(error - stream->m_muteLastError) >
                 stream->m_format.m_streamInfo.GetDuration() * errorScale * 0.5 + 1.0))
   {
@@ -2791,7 +2792,11 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // was still filling (the average lags a moving measurement and the walk
     // lands off by that lag). Stay muted until two consecutive windows agree
     // to within the walk's own resolution, for at most a second.
+    // The clock's display phase must also be the same at both windows' ends:
+    // a window the renderer published a new phase into averages the old and
+    // the new clock, and the walk would land off by part of the step.
     stream->m_muteWindows++;
+    stream->m_muteLastPhase = stream->m_pClock->GetClockPhase();
     // a window without samples (stalled sink) reads 0.0: not a measurement
     if (!stream->m_syncError.LastWindowEmpty())
       stream->m_muteLastError = error;
