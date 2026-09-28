@@ -172,6 +172,15 @@ void CDVDClock::ClearVsyncAdjust(bool settled)
   DropVsyncPhase(settled);
 }
 
+void CDVDClock::LoseVsyncAdjust()
+{
+  std::unique_lock lock(m_critSection);
+  DropVsyncPhase(false);
+  // pending even if no phase was held (sync was off before the display went):
+  // the returning display is measured again, or settled if sync stays off
+  m_vSyncAdjustPending = true;
+}
+
 void CDVDClock::DropVsyncPhase(bool settled)
 {
   // A phase that is dropped while clock sync may still come back (display

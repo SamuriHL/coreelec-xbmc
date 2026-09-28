@@ -1635,7 +1635,7 @@ void CRenderManager::CheckEnableClockSync()
 
   // a lost display takes its phase with it; the next one is seeded on return
   if (m_displayLost)
-    m_dvdClock.ClearVsyncAdjust(false);
+    m_dvdClock.LoseVsyncAdjust();
 
   // Only phase-center flips / quantize audio corrections to vsync when the AML
   // hardware-vsync reference clock is actually driving CDVDClock. With the
