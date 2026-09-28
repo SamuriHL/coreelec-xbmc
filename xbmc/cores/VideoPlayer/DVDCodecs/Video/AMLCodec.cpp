@@ -2091,7 +2091,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_abort = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
-  m_probe_idle_start = m_tp_last_frame;
+  m_probe_idle_start = m_probe_last_poll = m_tp_last_frame;
   // Must NOT also be cleared in Reset(): the write-failure recovery calls
   // Reset() itself, so clearing there would restart the give-up deadline on
   // every attempt and it could never expire.
@@ -2899,7 +2899,7 @@ void CAMLCodec::Reset()
   m_buffer_level_ready = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
-  m_probe_idle_start = std::chrono::steady_clock::now();
+  m_probe_idle_start = m_probe_last_poll = std::chrono::steady_clock::now();
   // the stall timeout measures this session, as after OpenDecoder: left stale,
   // the first poll after a flush could take the timeout branch (VC_FLUSHED,
   // twice in a row a full reopen) before the new segment has been fed
@@ -3371,7 +3371,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // (Stream mode only: that is where the 90% start gate exists. Frame-mode
   // menu stills keep the short probe.)
   if (!m_buffer_level_ready && streambuffer)
-    starve_probe_delay = std::max(starve_probe_delay, std::chrono::milliseconds(1000));
+  {
+    // ...but never past the stall timeout: that clock runs from the last
+    // picture (or the Reset), not from the last input, so input that stops
+    // late in a slow fill would otherwise meet the flush below first. The
+    // extension shrinks to what is left of decodertimeout, less 100 ms.
+    const auto untilStallFlush = std::chrono::seconds(m_decoder_timeout) -
+                                 elapsed_since_last_frame - std::chrono::milliseconds(100);
+    starve_probe_delay = std::max(
+        starve_probe_delay,
+        std::min(std::chrono::milliseconds(1000),
+                 std::chrono::duration_cast<std::chrono::milliseconds>(untilStallFlush)));
+  }
   // The clock is wall time since the gate was last open or input last arrived -
   // not the time since the last picture, and not reset by gaps between polls:
   // once input stops, the video thread polls only every ten frame periods, so
@@ -3382,6 +3393,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // because the next input releases the latch. The idle-input park refreshes
   // m_tp_last_frame on every call, so the probe cannot share that clock.
   const auto probe_now = std::chrono::steady_clock::now();
+  // Polling that stopped altogether (a pause, a display-reset pause - neither
+  // is a starved stream) restarts the clock too. The bound sits well above the
+  // player's slowest regular poll (ten frame periods, when input has stopped),
+  // so a genuinely idle stream still reaches the probe; measured on-box, a
+  // probe fired at every resume cost the first frame its EL.
+  const auto poll_gap_limit =
+      std::max(std::chrono::milliseconds(1000), std::chrono::milliseconds(frame_ms * 15));
+  if (probe_now - m_probe_last_poll > poll_gap_limit)
+    m_probe_idle_start = probe_now;
+  m_probe_last_poll = probe_now;
   if (m_probe_input_seq != m_probe_seen_seq)
   {
     m_probe_seen_seq = m_probe_input_seq;
@@ -3593,6 +3614,8 @@ void CAMLCodec::SetSpeed(int speed)
       //m_dll->codec_resume(&am_private->vcodec);
       m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
       m_tp_last_frame = std::chrono::steady_clock::now();
+      // a pause is not a starved stream
+      m_probe_idle_start = m_tp_last_frame;
       break;
     default:
       //m_dll->codec_resume(&am_private->vcodec);

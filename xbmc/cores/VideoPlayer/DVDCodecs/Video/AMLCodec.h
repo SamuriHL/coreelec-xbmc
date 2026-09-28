@@ -180,6 +180,7 @@ private:
   // Starve-probe clock: wall time since the fill gate was last open or input
   // last arrived. New input also releases the probe latch (m_starve_bypass).
   std::chrono::steady_clock::time_point m_probe_idle_start{};
+  std::chrono::steady_clock::time_point m_probe_last_poll{};
   uint64_t        m_probe_input_seq = 0;
   uint64_t        m_probe_seen_seq = 0;
   // Profile-7 FEL: CBitstreamConverter pads a tiny IDR access unit with filler
