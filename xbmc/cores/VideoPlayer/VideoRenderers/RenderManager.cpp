@@ -1399,6 +1399,14 @@ void CRenderManager::PrepareNextRender()
     {
       m_clockSync.m_adjustSeeded = true;
       m_dvdClock.SetVsyncAdjust(-err);
+      m_syncDbgFrames = 40; // SYNCDBG
+    }
+    if (m_syncDbgFrames > 0 && !isPaused) // SYNCDBG
+    {
+      m_syncDbgFrames--;
+      CLog::Log(LOGDEBUG, "SYNCDBG frameErr {:.2f} ms n={} frameOnScreen {:.1f} ref {:.2f}",
+                -err / 1000.0, 40 - m_syncDbgFrames, frameOnScreen / 1000.0,
+                -m_clockSync.m_ref / 1000.0);
     }
     m_clockSync.m_error += err;
     m_clockSync.m_errCount ++;
