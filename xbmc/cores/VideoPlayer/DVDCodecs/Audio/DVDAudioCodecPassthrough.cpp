@@ -493,11 +493,12 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     // the real audio content cancels out of the measurement entirely. The only
     // way to see it is to print it here.
     //
-    // Suspected source is SyncToResyncPts(pts + delay) in VideoPlayerAudio's
+    // The source found was SyncToResyncPts(pts + delay) in VideoPlayerAudio's
     // GENERAL_RESYNC handler: user logs on AC3 titles (10ms threshold, so the
-    // correction fires and is logged) show it seeding this clock -40.9, +30.2,
-    // -37.0, -32.8, -72.4, -34.1, -33.7 and +61.2ms away from the demuxer. On
-    // TrueHD/DTS the 100ms threshold would keep every one of those.
+    // correction fires and is logged) showed it seeding this clock -40.9,
+    // +30.2, -37.0, -32.8, -72.4, -34.1, -33.7 and +61.2ms away from the
+    // demuxer. That seed is now provisional only (see SyncToResyncPts); this
+    // trace stays to catch any other source of a constant offset.
     if (++m_jitterTraceCount >= 100)
     {
       m_jitterTraceCount = 0;
