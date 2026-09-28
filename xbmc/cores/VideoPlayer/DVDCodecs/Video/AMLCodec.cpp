@@ -3279,19 +3279,12 @@ void CAMLCodec::NoteLeadAU(double pts)
 {
   ++m_leadWrites;
   const int64_t idx = m_leadEpochWrites++;
-  // an untracked access unit or a new timeline (a seam) makes the count
-  // unreliable for a while: settle again before the lead may run
+  // counted but not tracked: the lead reads low until it is output
   if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
-  {
-    m_leadDequeues = 0;
     return;
-  }
   const uint64_t p = static_cast<uint64_t>(pts);
   if (!m_leadPending.empty() && p + kLeadPtsJump < m_leadPending.rbegin()->first)
-  {
     m_leadPending.clear();
-    m_leadDequeues = 0;
-  }
   m_leadPending[p] = idx; // a duplicate pts keeps the later write
   if (m_leadPending.size() > kLeadMaxPending)
   {
