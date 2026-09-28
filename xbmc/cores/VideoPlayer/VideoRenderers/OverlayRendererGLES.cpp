@@ -26,6 +26,7 @@
 #include "windowing/WinSystem.h"
 
 #include <cmath>
+#include <memory>
 #include <unordered_map>
 
 // GLES2.0 cant do CLAMP, but can do CLAMP_TO_EDGE.
@@ -144,10 +145,9 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
   return std::make_shared<COverlayTextureGLES>(o, rSource);
 }
 
-inline bool IsImageColored(const std::vector<uint32_t>& rgba)
+inline bool IsImageColored(const uint32_t* rgba, size_t count)
 {
   constexpr uint8_t TOL = 2; // grayscale tolerance
-  const size_t count = rgba.size();
 
   for (size_t i = 0; i < count; ++i)
   {
@@ -274,13 +274,12 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       }
     }
 
-    std::vector<uint32_t> rgba(o.width * o.height);
     m_pma = !!USE_PREMULTIPLIED_ALPHA;
-    convert_rgba(o, m_pma, rgba, paletteOverride);
+    uint32_t lut[256];
+    BuildRGBALut(paletteOverride ? *paletteOverride : o.palette, m_pma, lut);
 
-    m_isColoredPGS = IsImageColored(rgba);
     // a direct back-buffer draw in Render bypasses the composite's
-    // limited-range encode, so apply it to the pixels here (not when the
+    // limited-range encode, so apply it to the palette here (not when the
     // platform routes HDR overlays through the composite, which encodes them)
     //! @todo Move this into the overlay shader once limited-range and
     //! full-range GUI shader variants are kept compiled in parallel and
@@ -289,7 +288,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
         !CServiceBroker::GetWinSystem()->HdrOverlaysComposited() &&
         CServiceBroker::GetWinSystem()->UseLimitedColor())
     {
-      for (uint32_t& px : rgba)
+      for (uint32_t& px : lut)
       {
         const uint32_t a = (px >> PIXEL_ASHIFT) & 0xff;
         const uint32_t r = (px >> PIXEL_RSHIFT) & 0xff;
@@ -301,7 +300,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
       }
     }
 
-    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
+    auto rgba = std::make_unique_for_overwrite<uint32_t[]>(static_cast<size_t>(o.width) * o.height);
+    ConvertIndices(o.pixels.data(), o.linesize, o.width, o.height, lut, rgba.get());
+    // the limited-range encode keeps grey grey, so the scan reads the same
+    m_isColoredPGS = IsImageColored(rgba.get(), static_cast<size_t>(o.width) * o.height);
+    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.get());
   }
 
   glBindTexture(GL_TEXTURE_2D, 0);
