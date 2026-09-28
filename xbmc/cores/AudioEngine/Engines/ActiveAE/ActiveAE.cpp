@@ -43,6 +43,9 @@ constexpr float MAX_WATER_LEVEL = 0.2f; // buffered time after stream stages in 
 constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
 constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
 constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
+// TrueHD passthrough sync errors are measured scaled by this factor (see the
+// sync measurement loop); the engine's accumulator holds scaled ms.
+constexpr double TRUEHD_PASSTHROUGH_ERROR_SCALE = 0.45;
 constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
 
 bool IsDefaultDevice(const AESinkDevice& device)
@@ -74,11 +77,12 @@ void CEngineStats::Reset(unsigned int sampleRate, bool pcm)
   m_sinkDelay.SetDelay(0.0);
   m_sinkSampleRate = sampleRate;
   m_bufferedSamples = 0;
+  m_bufferedRawTime = 0.0;
   m_suspended = false;
   m_pcmOutput = pcm;
 }
 
-void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples)
+void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples, int pauseMs)
 {
   std::unique_lock lock(m_lock);
   m_sinkDelay = status;
@@ -87,13 +91,21 @@ void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples)
     CLog::Log(LOGERROR, "CEngineStats::UpdateSinkDelay - inconsistency in buffer time");
   }
   else
+  {
     m_bufferedSamples -= samples;
+    if (!m_pcmOutput)
+      m_bufferedRawTime = std::max(0.0, m_bufferedRawTime - samples * RawPacketTime(pauseMs));
+  }
 }
 
-void CEngineStats::AddSamples(int samples, const std::list<CActiveAEStream*>& streams)
+void CEngineStats::AddSamples(int samples,
+                              const std::list<CActiveAEStream*>& streams,
+                              int pauseMs)
 {
   std::unique_lock lock(m_lock);
   m_bufferedSamples += samples;
+  if (!m_pcmOutput)
+    m_bufferedRawTime += samples * RawPacketTime(pauseMs);
 
   for (auto stream : streams)
   {
@@ -101,15 +113,30 @@ void CEngineStats::AddSamples(int samples, const std::list<CActiveAEStream*>& st
   }
 }
 
+double CEngineStats::RawPacketTime(int pauseMs) const
+{
+  // a pause burst plays for its own length, which the start-sync walk sets
+  // below a frame and a muted DTS frame truncates to whole ms
+  if (pauseMs > 0)
+    return pauseMs / 1000.0;
+  return m_sinkFormat.m_streamInfo.GetDuration() / 1000;
+}
+
+double CEngineStats::BufferedTime() const
+{
+  // Passthrough counts queued time packet by packet: a packet count times the
+  // frame duration read a queued sub-frame pause burst as a whole frame, and
+  // the start sync landed off by the difference once it had played.
+  if (m_pcmOutput)
+    return static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
+  return m_bufferedRawTime;
+}
+
 void CEngineStats::GetDelay(AEDelayStatus& status)
 {
   std::unique_lock lock(m_lock);
   status = m_sinkDelay;
-  if (m_pcmOutput)
-    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
-  else
-    status.delay +=
-        static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
+  status.delay += BufferedTime();
 }
 
 void CEngineStats::AddStream(unsigned int streamid)
@@ -177,11 +204,7 @@ void CEngineStats::GetDelay(AEDelayStatus& status, CActiveAEStream *stream)
   std::unique_lock lock(m_lock);
   status = m_sinkDelay;
   status.delay += static_cast<double>(m_sinkLatency);
-  if (m_pcmOutput)
-    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
-  else
-    status.delay +=
-        static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
+  status.delay += BufferedTime();
 
   for (auto &str : m_streamStats)
   {
@@ -201,11 +224,7 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
   std::unique_lock lock(m_lock);
   AEDelayStatus status;
   status = m_sinkDelay;
-  if (m_pcmOutput)
-    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
-  else
-    status.delay +=
-        static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
+  status.delay += BufferedTime();
 
   status.delay += static_cast<double>(m_sinkLatency);
 
@@ -218,6 +237,12 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       status.delay += static_cast<double>(buffertime) * str.m_resampleRatio;
       info.delay = status.GetDelay();
       info.error = str.m_syncError;
+      // The player gates and corrects in real ms (its 50 ms gate, ErrorAdjust's
+      // whole-frame step): hand it real ms, not the engine's scaled TrueHD unit,
+      // which made its gate 111 ms real.
+      if (!m_pcmOutput && m_sinkFormat.m_dataFormat == AE_FMT_RAW &&
+          m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+        info.error /= TRUEHD_PASSTHROUGH_ERROR_SCALE;
       info.errortime = str.m_errorTime;
       info.state = str.m_syncState;
       info.rr = str.m_resampleRatio;
@@ -2176,7 +2201,7 @@ bool CActiveAE::RunStages()
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
         if (isTrueHDPassthrough)
-          error *= 0.45;
+          error *= TRUEHD_PASSTHROUGH_ERROR_SCALE;
 
         if (error > maxError)
         {
@@ -2532,7 +2557,8 @@ bool CActiveAE::RunStages()
             busy = true; // run the next walk step now, as a queued buffer would
             continue;
           }
-          m_stats.AddSamples(1, m_streams);
+          m_stats.AddSamples(1, m_streams,
+                             buffer->pkt->nb_samples == 0 ? buffer->pkt->pause_burst_ms : 0);
           m_sinkBuffers->m_inputSamples.push_back(buffer);
         }
       }
@@ -2604,7 +2630,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   const double errorScale =
       (m_mode == MODE_RAW &&
        m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
-          ? 0.45
+          ? TRUEHD_PASSTHROUGH_ERROR_SCALE
           : 1.0;
 
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
