@@ -123,11 +123,21 @@ void CBlurayDiscCache::SetMainPlaylist(const std::string& path, int mainPlaylist
 }
 
 void CBlurayDiscCache::SetMenuStatedEpisodes(const std::string& path,
-                                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes)
+                                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes,
+                                             uint64_t generation)
 {
   std::unique_lock lock(m_cs);
 
+  if (generation != m_menuStatedGeneration)
+    return;
   FindOrCreate(path).menuStatedEpisodes = episodes;
+}
+
+uint64_t CBlurayDiscCache::GetMenuStatedGeneration() const
+{
+  std::unique_lock lock(m_cs);
+
+  return m_menuStatedGeneration;
 }
 
 bool CBlurayDiscCache::GetPlaylistInfo(const std::string& path,
@@ -285,6 +295,7 @@ void CBlurayDiscCache::ClearDisc(const std::string& path)
 void CBlurayDiscCache::ClearMenuStatedEpisodes()
 {
   std::unique_lock lock(m_cs);
+  ++m_menuStatedGeneration;
   for (auto& [path, disc] : m_cache)
     disc.menuStatedEpisodes.reset();
 }

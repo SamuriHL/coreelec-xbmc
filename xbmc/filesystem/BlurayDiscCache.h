@@ -81,8 +81,13 @@ public:
   void SetDiscTitle(const std::string& path, const std::string& title);
   void SetDiscId(const std::string& path, const std::string& id);
 
+  //! Store a disc's menu-stated episodes, unless ClearMenuStatedEpisodes() ran
+  //! since \p generation was read (GetMenuStatedGeneration(), taken before the
+  //! simulation): the result was then simulated with stale capability registers
   void SetMenuStatedEpisodes(const std::string& path,
-                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes);
+                             const CHDMVMenuNavigator::MenuStatedEpisodes& episodes,
+                             uint64_t generation);
+  uint64_t GetMenuStatedGeneration() const;
 
   bool GetPlaylistInfo(const std::string& path,
                        unsigned int playlist,
@@ -164,6 +169,9 @@ private:
 
   //! Ticks on every use, to order the discs by how recently they were used
   mutable uint64_t m_useCounter{0};
+
+  //! Ticks on every ClearMenuStatedEpisodes()
+  uint64_t m_menuStatedGeneration{0};
 
   mutable CCriticalSection m_cs;
 };

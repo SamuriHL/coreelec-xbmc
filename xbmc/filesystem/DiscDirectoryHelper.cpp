@@ -2335,10 +2335,13 @@ bool CDiscDirectoryHelper::GetEpisodePlaylists(
   {
     const std::string& discPath{url.GetHostName()};
     CHDMVMenuNavigator::MenuStatedEpisodes menuStated;
-    if (!CServiceBroker::GetBlurayDiscCache()->GetMenuStatedEpisodes(discPath, menuStated))
+    const auto cache{CServiceBroker::GetBlurayDiscCache()};
+    // read before the simulation snapshots the capability registers
+    const uint64_t generation{cache->GetMenuStatedGeneration()};
+    if (!cache->GetMenuStatedEpisodes(discPath, menuStated))
     {
       menuStated = CHDMVMenuNavigator::GetMenuStatedEpisodes(url, playlists, m_minEpisodeDuration);
-      CServiceBroker::GetBlurayDiscCache()->SetMenuStatedEpisodes(discPath, menuStated);
+      cache->SetMenuStatedEpisodes(discPath, menuStated, generation);
     }
     if (menuStated.valid)
       m_menuStatedEpisodePlaylists = menuStated.episodePlaylists;

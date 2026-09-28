@@ -20,10 +20,10 @@
 #include "utils/log.h"
 
 #include <algorithm>
-#include <atomic>
 #include <array>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -306,27 +306,40 @@ constexpr std::array<uint32_t, 128> MakePsrDefaults()
 }
 constexpr std::array<uint32_t, 128> PSR_DEFAULTS{MakePsrDefaults()};
 
-// Live capability PSRs (SetPlayerCapabilityPsrs); valid once set.
-std::atomic<bool> g_capabilityPsrsValid{false};
-std::atomic<uint32_t> g_psr15{0};
-std::atomic<uint32_t> g_psr25{0};
-std::atomic<uint32_t> g_psr26{0};
-std::atomic<uint32_t> g_psr27{0};
-
-uint32_t ReadPsr(uint32_t n)
+// Live capability PSRs (SetPlayerCapabilityPsrs); valid once set. One
+// simulation reads one snapshot, so it never branches on a mix of old and new
+// values when the player publishes mid-run.
+struct CapabilityPsrs
 {
-  if (g_capabilityPsrsValid)
+  bool valid{false};
+  uint32_t psr15{0};
+  uint32_t psr25{0};
+  uint32_t psr26{0};
+  uint32_t psr27{0};
+};
+std::mutex g_capabilityPsrsLock;
+CapabilityPsrs g_capabilityPsrs;
+
+CapabilityPsrs SnapshotCapabilityPsrs()
+{
+  std::lock_guard lock(g_capabilityPsrsLock);
+  return g_capabilityPsrs;
+}
+
+uint32_t ReadPsr(const CapabilityPsrs& caps, uint32_t n)
+{
+  if (caps.valid)
   {
     switch (n)
     {
       case 15:
-        return g_psr15;
+        return caps.psr15;
       case 25:
-        return g_psr25;
+        return caps.psr25;
       case 26:
-        return g_psr26;
+        return caps.psr26;
       case 27:
-        return g_psr27;
+        return caps.psr27;
       default:
         break;
     }
@@ -361,8 +374,9 @@ class CHdmvVm
 public:
   CHdmvVm(const std::vector<HdmvObject>& objects,
           const HdmvIndex& index,
-          const std::set<unsigned int>& menuPlaylists)
-    : m_objects(objects), m_index(index), m_menuPlaylists(menuPlaylists)
+          const std::set<unsigned int>& menuPlaylists,
+          const CapabilityPsrs& caps)
+    : m_objects(objects), m_index(index), m_menuPlaylists(menuPlaylists), m_caps(caps)
   {
   }
 
@@ -392,7 +406,7 @@ private:
     {
       if (reg & ~(PSR_FLAG | 0x7f))
         return 0;
-      return ReadPsr(reg & 0x7f);
+      return ReadPsr(m_caps, reg & 0x7f);
     }
     if (reg & ~0xfffu)
       return 0;
@@ -718,6 +732,7 @@ private:
   const std::vector<HdmvObject>& m_objects;
   const HdmvIndex& m_index;
   const std::set<unsigned int>& m_menuPlaylists;
+  const CapabilityPsrs m_caps;
 };
 
 // ---------------------------------------------------------------------------
@@ -1066,15 +1081,19 @@ void CHDMVMenuNavigator::SetPlayerCapabilityPsrs(uint32_t psr15,
                                                  uint32_t psr26,
                                                  uint32_t psr27)
 {
-  const bool changed = !g_capabilityPsrsValid || g_psr15 != psr15 || g_psr25 != psr25 ||
-                       g_psr26 != psr26 || g_psr27 != psr27;
-  g_psr15 = psr15;
-  g_psr25 = psr25;
-  g_psr26 = psr26;
-  g_psr27 = psr27;
-  g_capabilityPsrsValid = true;
+  bool changed;
+  {
+    std::lock_guard lock(g_capabilityPsrsLock);
+    CapabilityPsrs& caps{g_capabilityPsrs};
+    changed = !caps.valid || caps.psr15 != psr15 || caps.psr25 != psr25 ||
+              caps.psr26 != psr26 || caps.psr27 != psr27;
+    caps = {true, psr15, psr25, psr26, psr27};
+  }
   // Episode lists simulated with the previous values no longer describe what
-  // the disc's program would do on this player.
+  // the disc's program would do on this player. Cleared after the new values
+  // are in place: a listing that snapshotted the old ones captured the cache
+  // generation before its snapshot, so the clear's generation bump makes the
+  // cache refuse its result.
   if (changed)
   {
     if (auto cache = CServiceBroker::GetBlurayDiscCache())
@@ -1124,7 +1143,7 @@ CHDMVMenuNavigator::MenuStatedEpisodes CHDMVMenuNavigator::GetMenuStatedEpisodes
     if (menuPlaylists.empty())
       return result;
 
-    const CHdmvVm vm(objects, index, menuPlaylists);
+    const CHdmvVm vm(objects, index, menuPlaylists, SnapshotCapabilityPsrs());
 
     // run the disc's own boot path to the menu it parks on
     VmState state;
