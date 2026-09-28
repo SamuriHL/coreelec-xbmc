@@ -3356,8 +3356,13 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // and a stream that is flowing again gets it back.
   const int frame_ms = std::max(
       1, static_cast<int>((am_private->video_rate * 1000 + UNIT_FREQ - 1) / UNIT_FREQ));
+  // Dual-stream DV waits as long as the player's own Stillframe squeeze (ten
+  // frame periods): a shorter probe let an input hiccup (WiFi) dequeue a BL
+  // before the next access unit had arrived, i.e. before its EL could
+  // complete - the miss the 10% floor exists to prevent.
   const auto starve_probe_delay =
-      std::max(std::chrono::milliseconds(100), std::chrono::milliseconds(frame_ms * 4));
+      std::max(std::chrono::milliseconds(100),
+               std::chrono::milliseconds(frame_ms * (m_skipBufferFillGate ? 10 : 4)));
   // The clock is wall time since the gate was last open or input last arrived -
   // not the time since the last picture, and not reset by gaps between polls:
   // once input stops, the video thread polls only every ten frame periods, so
@@ -3395,6 +3400,22 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     if (starve_probe && !m_starve_bypass)
     {
       m_starve_bypass = true;
+      // The session has started now, exactly as if the fill had been reached:
+      // when new input releases the latch, the stream must fall back to the
+      // running floor, not to the 90% START gate (stream mode without the
+      // dual-stream skip), which would freeze video for seconds while audio
+      // plays on.
+      if (!m_buffer_level_ready)
+      {
+        m_buffer_level_ready = true;
+        if (streambuffer)
+        {
+          CSysfsPath pre_decode_buf_level{
+              "/sys/module/amvdec_h265/parameters/pre_decode_buf_level"};
+          if (pre_decode_buf_level.Exists())
+            pre_decode_buf_level.Set(static_cast<uint32_t>(0x1000));
+        }
+      }
       CLog::Log(LOGDEBUG, LOGVIDEO,
                 "CAMLCodec::GetPicture: starve probe dequeued a picture below the fill gate "
                 "[sbuf:{} lvl:{:.1f}% min:{:.1f}% idle:{}ms since_frame:{}ms delay:{}ms]",
