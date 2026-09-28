@@ -122,32 +122,50 @@ void CDVDClock::SetVsyncAdjust(double adjustment)
   //
   // fmod first so a pathological input cannot spin the range reduction.
   //
-  // The representative is the one nearest the value already published (zero
-  // after a reset), not a fixed +-frame/2 cut: a phase sitting near half a
-  // frame otherwise flips sides between windows, and every flip steps the
-  // clock audio is synced against by a whole frame.
+  // Near half a frame the two representatives are equally physical, and a
+  // phase sitting there flips sides between windows - each flip steps the
+  // clock audio is synced against by a whole frame. Keep the side already
+  // published while the value stays within 3/4 of a frame (hysteresis), so
+  // only a phase that really rotates on changes side.
   if (m_frameTime > 0.0)
   {
-    const double ref = m_vSyncAdjustPending ? 0.0 : m_vSyncAdjust;
     adjustment = fmod(adjustment, m_frameTime);
-    adjustment -= m_frameTime * std::round((adjustment - ref) / m_frameTime);
-    if (adjustment > m_frameTime)
+    if (adjustment > m_frameTime / 2)
       adjustment -= m_frameTime;
-    else if (adjustment < -m_frameTime)
+    else if (adjustment <= -m_frameTime / 2)
       adjustment += m_frameTime;
+    if (m_vSyncAdjustHasPhase)
+    {
+      const double other = adjustment > 0 ? adjustment - m_frameTime : adjustment + m_frameTime;
+      if (fabs(other - m_vSyncAdjust) < fabs(adjustment - m_vSyncAdjust) &&
+          fabs(other) <= m_frameTime * 0.75)
+        adjustment = other;
+    }
   }
 
   if (fabs(adjustment - m_vSyncAdjust) > 1000.0) // SYNCDBG
     CLog::Log(LOGDEBUG, "SYNCDBG vsyncAdjust {:.1f} -> {:.1f} ms (frameTime {:.1f})",
               m_vSyncAdjust / 1000.0, adjustment / 1000.0, m_frameTime / 1000.0);
   m_vSyncAdjust = adjustment;
+  m_vSyncAdjustHasPhase = true;
   m_vSyncAdjustPending = false;
 }
 
-void CDVDClock::SetVsyncAdjustPending()
+void CDVDClock::ResetVsyncAdjust()
 {
   std::unique_lock lock(m_critSection);
+  m_vSyncAdjust = 0;
+  m_vSyncAdjustHasPhase = false;
   m_vSyncAdjustPending = true;
+}
+
+void CDVDClock::ClearVsyncAdjust(bool settled)
+{
+  std::unique_lock lock(m_critSection);
+  m_vSyncAdjust = 0;
+  m_vSyncAdjustHasPhase = false;
+  if (settled)
+    m_vSyncAdjustPending = false;
 }
 
 bool CDVDClock::IsVsyncAdjustPending() const
