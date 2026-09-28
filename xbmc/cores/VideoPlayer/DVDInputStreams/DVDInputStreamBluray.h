@@ -16,6 +16,7 @@
 #include "filesystem/UDFContext.h"
 #endif
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <list>
@@ -713,6 +714,9 @@ protected:
     bool OpenStream(CFileItem &item);
     void SetupPlayerSettings();
     void ApplyUHDCapabilities();
+    void PublishCapabilityPsrs();
+    uint32_t m_audioCapPsr = 0;
+    std::array<uint32_t, 3> m_uhdCapPsrs{};
     void ApplyAudioCapability();
     void FreeTitleInfo();
     void FreeClipInfo();

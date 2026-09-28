@@ -23,6 +23,7 @@
 #include "cores/AudioEngine/Interfaces/AESound.h"
 #include "dialogs/GUIDialogKaiToast.h"
 #include "filesystem/BlurayCallback.h"
+#include "filesystem/bluray/HDMVMenuNavigator.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "settings/AdvancedSettings.h"
@@ -3433,8 +3434,19 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, uhdCap);
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, uhdDisplayCap);
     bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, hdrPreference);
+    m_uhdCapPsrs = {uhdCap, uhdDisplayCap, hdrPreference};
+    PublishCapabilityPsrs();
   }
 #endif
+}
+
+void CDVDInputStreamBluray::PublishCapabilityPsrs()
+{
+  // The simplified-menu navigator simulates the disc's HDMV program and must
+  // branch on its capability checks with the values this player reports.
+  if (m_audioCapPsr && m_uhdCapPsrs[0])
+    XFILE::CHDMVMenuNavigator::SetPlayerCapabilityPsrs(m_audioCapPsr, m_uhdCapPsrs[0],
+                                                       m_uhdCapPsrs[1], m_uhdCapPsrs[2]);
 }
 
 void CDVDInputStreamBluray::ApplyAudioCapability()
@@ -3523,6 +3535,8 @@ void CDVDInputStreamBluray::ApplyAudioCapability()
             acap, caps.pcm_ch, caps.truehd_ch, caps.ddp_ch, caps.ac3_ch, caps.dtshd_ch,
             caps.dts_ch);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_AUDIO_CAP, acap);
+  m_audioCapPsr = acap;
+  PublishCapabilityPsrs();
 }
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)

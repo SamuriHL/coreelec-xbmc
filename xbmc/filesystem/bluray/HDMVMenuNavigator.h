@@ -46,6 +46,15 @@ struct PlaylistInformation;
 class CHDMVMenuNavigator
 {
 public:
+  //! The player's real capability registers (PSR15 audio, PSR25/26 UHD sets,
+  //! PSR27 HDR preference), as CDVDInputStreamBluray reports them to libbluray.
+  //! The simulation reads these instead of its defaults once they are known,
+  //! so it branches on a disc's capability checks the way the real VM does.
+  static void SetPlayerCapabilityPsrs(uint32_t psr15,
+                                      uint32_t psr25,
+                                      uint32_t psr26,
+                                      uint32_t psr27);
+
   struct MenuStatedEpisodes
   {
     //! Episode playlists in the order the disc's menu states them
