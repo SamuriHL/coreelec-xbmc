@@ -259,6 +259,20 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   return true;
 }
 
+bool CRenderManager::HasVisibleOverlay() const
+{
+  // m_presentsource is written under m_presentlock by the render thread and
+  // this is called from the GUI and process threads. Copy it under the lock,
+  // then ask the overlay renderer without holding it (the overlay renderer
+  // takes its own lock; never nest the two).
+  int source;
+  {
+    std::unique_lock lock(m_presentlock);
+    source = m_presentsource;
+  }
+  return m_overlays.HasVisibleOverlay(source);
+}
+
 bool CRenderManager::Configure()
 {
   // lock all interfaces
