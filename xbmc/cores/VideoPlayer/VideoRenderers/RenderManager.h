@@ -264,6 +264,7 @@ protected:
     double m_ref = 0.0;
     bool m_refValid = false;
     bool m_adjustSeeded = false;
+    int m_disabledFrames = 0;
     int m_errCount = 0;
     double m_syncOffset = 0.0;
     bool m_enabled = false;
