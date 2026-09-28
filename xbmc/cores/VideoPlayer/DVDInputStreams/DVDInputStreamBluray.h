@@ -524,6 +524,8 @@ protected:
   bool m_menuAtHold = false;
   bool m_seamlessHold = false;
   bool m_seamlessCarry = false;
+  // the carry state in force when the current bd_read_ext() call was made (see Read)
+  bool m_carryAtRead = false;
   bool HoldForEvent();
   bool ArmSeamlessGlide();
   bool IsBdjTitle() const { return m_title && m_title->bdj; }
@@ -583,6 +585,14 @@ protected:
   // read in OverlayFlush on the JVM graphics thread
   std::atomic<bool> m_bgVisible{true};
   std::atomic<bool> m_menuOnlyNativeGraphics{false};
+  //! Whether disc graphics are drawn as PQ now: the menu-only native rule while
+  //! it is set, else the DV disc session / PQ-authored playlist. One rule for the
+  //! HDMV and BD-J paths and for the re-creation in SetMenuOnlyNativeGraphics.
+  bool DiscGraphicsArePQ() const
+  {
+    return m_menuOnlyNativeGraphics ? m_pqAuthoredGraphics.load()
+                                    : (m_dvDiscSession || m_pqAuthoredGraphics);
+  }
   /* BD-J ARGB flush-cadence tracker (guarded by m_overlayLock, written on the
    * JVM graphics thread): a composition that has been re-posted at a sustained
    * high cadence is one whose visibility is maintained by continuous re-posts -
