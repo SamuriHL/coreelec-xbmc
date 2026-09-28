@@ -166,10 +166,9 @@ std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
 
 float CGuiCompositeShaderGLES::PeakFromPQCode(float code)
 {
-  // Delegates to PQGRAPHICS so this composite and CPQGraphicsTransform (its
-  // exact inverse) can never resolve the same setting to different luminances.
-  // Disc menus no longer go through that inverse: PQ-authored menu graphics
-  // are drawn as HDR overlays, outside this composite.
+  // Delegates to PQGRAPHICS::PeakFromPQCode, the single decode of this
+  // setting. (PQ-authored disc graphics are drawn as HDR overlays, outside
+  // this composite.)
   //
   // Semantics are unchanged, and documented at the definition: the legacy
   // Amlogic GUI peak is a PQ CODE, not nits (the scalar-encoded OSD plane is
