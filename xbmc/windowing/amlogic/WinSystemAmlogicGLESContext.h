@@ -63,7 +63,14 @@ public:
   void CompositeGui() override;
   bool BeginHdrOverlayRender() override;
   void EndHdrOverlayRender(bool drawn) override;
-  bool HdrOverlaysComposited() const override { return m_guiCompositing; }
+  //! True only while HDR overlays really go through the HDR FBO and the
+  //! composite. When that FBO cannot be created or bound they are drawn onto
+  //! the back buffer instead, and the overlay textures must then carry the
+  //! limited-range encode themselves.
+  bool HdrOverlaysComposited() const override
+  {
+    return m_guiCompositing && !m_hdrFboUnavailable;
+  }
   bool IsHdrComposite() const override { return m_guiCompositing; }
   void ClearOverlayPlane() override;
 
@@ -96,6 +103,7 @@ private:
   int m_hdrFboWidth{0};
   int m_hdrFboHeight{0};
   bool m_hdrFboHasContent{false};
+  bool m_hdrFboUnavailable{false};
   // GUI frames still to repaint after CreateNewWindow replaced the GBM surface. More than one,
   // because FlipPage cannot report a failed commit and swaps can fail around a mode switch.
   int m_guiRepaintFrames{0};
