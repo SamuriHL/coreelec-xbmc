@@ -3258,66 +3258,77 @@ namespace
 constexpr int kLeadTargetAUs = 4;
 // keep lead writes well away from the 95% "skip add data" zone
 constexpr float kLeadMaxBufferLevel = 20.0f;
-constexpr size_t kLeadMaxPending = 4096;
-// pictures output after a Reset/Open before the lead may run
-constexpr int kLeadArmDequeues = 24;
+constexpr size_t kLeadMaxQueued = 64;
+constexpr int kLeadMaxNoMatch = 8;
 // written and dequeued pts are the same value; allow for rounding only
 constexpr uint64_t kLeadPtsSlack = 5000;
-// a pts this far below the newest counted one is a new timeline
-constexpr uint64_t kLeadPtsJump = 1000000;
 } // namespace
 
 void CAMLCodec::ResetLead()
 {
-  m_leadPending.clear();
-  m_leadEpochWrites = 0;
-  m_leadMaxOut = -1;
-  m_leadDequeues = 0;
+  m_leadPts.clear();
+  m_leadLastPts = 0;
+  m_leadNoMatch = 0;
+  m_leadFault = false;
+  m_leadArmed = false;
+}
+
+void CAMLCodec::LeadFault(const char* reason)
+{
+  if (!m_leadFault)
+    CLog::Log(LOGINFO, "CAMLCodec::{}: input lead off until the next reset - {}", __FUNCTION__,
+              reason);
+  m_leadFault = true;
+  m_leadPts.clear();
 }
 
 void CAMLCodec::NoteLeadAU(double pts)
 {
   ++m_leadWrites;
-  const int64_t idx = m_leadEpochWrites++;
-  // counted but not tracked: the lead reads low until it is output
-  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
+  if (m_leadFault)
     return;
-  const uint64_t p = static_cast<uint64_t>(pts);
-  if (!m_leadPending.empty() && p + kLeadPtsJump < m_leadPending.rbegin()->first)
-    m_leadPending.clear();
-  m_leadPending[p] = idx; // a duplicate pts keeps the later write
-  if (m_leadPending.size() > kLeadMaxPending)
+  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE || pts < 0)
   {
-    m_leadMaxOut = std::max(m_leadMaxOut, m_leadPending.begin()->second);
-    m_leadPending.erase(m_leadPending.begin());
+    LeadFault("access unit without pts");
+    return;
   }
+  const uint64_t p = static_cast<uint64_t>(pts);
+  if (m_leadLastPts && p <= m_leadLastPts)
+  {
+    LeadFault("pts not increasing (reordered stream)");
+    return;
+  }
+  m_leadLastPts = p;
+  m_leadPts.push_back(p);
+  if (m_leadPts.size() > kLeadMaxQueued)
+    LeadFault("written access units are not coming out");
 }
 
 void CAMLCodec::NoteLeadDequeued(uint64_t pts)
 {
-  bool erased = false;
-  while (!m_leadPending.empty() && m_leadPending.begin()->first <= pts + kLeadPtsSlack)
+  if (m_leadFault || m_leadPts.empty())
+    return;
+  bool popped = false;
+  while (!m_leadPts.empty() && m_leadPts.front() <= pts + kLeadPtsSlack)
   {
-    m_leadMaxOut = std::max(m_leadMaxOut, m_leadPending.begin()->second);
-    m_leadPending.erase(m_leadPending.begin());
-    erased = true;
+    m_leadPts.pop_front();
+    popped = true;
   }
-  if (erased && m_leadDequeues < kLeadArmDequeues)
-    ++m_leadDequeues;
+  if (popped)
+  {
+    m_leadNoMatch = 0;
+    m_leadArmed = true;
+  }
+  else if (++m_leadNoMatch >= kLeadMaxNoMatch)
+    LeadFault("dequeued pictures do not match written pts");
 }
 
 int CAMLCodec::GetLeadAUs() const
 {
-  if (m_leadDequeues < kLeadArmDequeues)
+  if (m_leadFault || !m_leadArmed)
     return -1;
-  // EL picture X completes once the access unit after X in decode order is
-  // written; the next kLeadTargetAUs pictures to show need that for each.
-  int64_t high = m_leadMaxOut + kLeadTargetAUs;
-  int n = 0;
-  for (auto it = m_leadPending.begin(); it != m_leadPending.end() && n < kLeadTargetAUs; ++it, ++n)
-    high = std::max(high, it->second);
-  const int64_t lead = m_leadEpochWrites + kLeadTargetAUs - 2 - high;
-  return static_cast<int>(std::max<int64_t>(lead, 0));
+  // the front entry is the picture the next dequeue returns
+  return std::max(static_cast<int>(m_leadPts.size()) - 1, 0);
 }
 
 bool CAMLCodec::WantsInputLead()
@@ -3330,7 +3341,7 @@ bool CAMLCodec::WantsInputLead()
   else if (m_drain || m_speed != DVD_PLAYSPEED_NORMAL)
     off = "drain or trick play";
   else if (GetLeadAUs() < 0)
-    off = "settling after reset";
+    off = m_leadFault ? "faulted" : "waiting for the first counted picture";
   else if (GetBufferLevel(0, data_len, free_len, size) >= kLeadMaxBufferLevel)
     off = "stream buffer above the cap";
   if (off != m_leadOffReason)

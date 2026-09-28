@@ -17,7 +17,6 @@
 #include "utils/Geometry.h"
 
 #include <deque>
-#include <map>
 #include <mutex>
 #include <atomic>
 
@@ -197,23 +196,22 @@ private:
   // benign park into a decoder flush - so the threshold moves with the pad.
   bool            m_felIdrPadding = false;
 
-  // Input lead, in decode order so reordered streams are covered: counted
-  // access units not yet output, keyed by pts, valued by their write index
-  // since the last Reset/Open. Every dequeue erases the pictures up to its pts,
-  // so a picture the decoder drops cannot make the count drift, and every
-  // uncertainty makes the lead read low (more input), never high.
+  // Input lead: pts of the counted access units the decoder has not output
+  // yet, oldest first. Popped as pictures are dequeued, so a picture the
+  // decoder drops cannot make the count drift. Any doubt (no pts, pts going
+  // backwards = reordered stream, overflow, dequeues that match nothing) sets
+  // m_leadFault and turns the lead off until the next Reset/Open.
   void            NoteLeadAU(double pts);
   void            NoteLeadDequeued(uint64_t pts);
+  void            LeadFault(const char* reason);
   void            ResetLead();
-  std::map<uint64_t, int64_t> m_leadPending;
-  // monotonic, never reset: the player budgets writes against it
+  std::deque<uint64_t> m_leadPts;
   uint64_t        m_leadWrites = 0;
-  // write index of the next counted access unit, since the last Reset/Open
-  int64_t         m_leadEpochWrites = 0;
-  // largest write index already output this epoch
-  int64_t         m_leadMaxOut = -1;
-  // dequeues since the last Reset/Open; the lead arms after enough of them
-  int             m_leadDequeues = 0;
+  uint64_t        m_leadLastPts = 0;
+  int             m_leadNoMatch = 0;
+  bool            m_leadFault = false;
+  // false after every Open/Reset until the first counted picture comes out
+  bool            m_leadArmed = false;
   const char*     m_leadOffReason = nullptr;
 
   // Set by a flush so a write loop in progress gives up. Written from the
