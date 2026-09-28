@@ -3327,8 +3327,7 @@ int CAMLCodec::GetLeadAUs() const
 {
   if (m_leadFault || !m_leadArmed)
     return -1;
-  // the front entry is the picture the next dequeue returns
-  return std::max(static_cast<int>(m_leadPts.size()) - 1, 0);
+  return static_cast<int>(m_leadPts.size()) - 1;
 }
 
 bool CAMLCodec::WantsInputLead()

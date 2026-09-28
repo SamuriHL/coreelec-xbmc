@@ -1373,18 +1373,17 @@ void CVideoPlayerVideo::CalcFrameRate()
 
 void CVideoPlayerVideo::SetLeadAllowed(bool allowed)
 {
+  m_leadWanted = allowed;
   if (!allowed)
   {
     m_leadBlocked = true;
-    // invalidate any allow still queued, whatever m_leadAllowQueued says
-    if (m_leadWanted.exchange(false))
+    if (m_leadAllowQueued)
     {
       ++m_leadAllowGen;
       m_leadAllowQueued = false;
     }
     return;
   }
-  m_leadWanted = true;
   // unblock in-band, behind any menu packets still queued
   if (m_leadBlocked && !m_leadAllowQueued && m_messageQueue.IsInited())
   {
