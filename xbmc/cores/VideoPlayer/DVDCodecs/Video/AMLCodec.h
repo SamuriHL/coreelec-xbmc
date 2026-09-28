@@ -200,8 +200,7 @@ private:
   // Input lead, in decode order so reordered streams are covered: counted
   // access units not yet output, keyed by pts, valued by their write index
   // since the last Reset/Open. Every dequeue erases the pictures up to its pts,
-  // so a picture the decoder drops cannot make the count drift, and every
-  // uncertainty makes the lead read low (more input), never high.
+  // so a picture the decoder drops cannot make the count drift.
   void            NoteLeadAU(double pts);
   void            NoteLeadDequeued(uint64_t pts);
   void            ResetLead();
