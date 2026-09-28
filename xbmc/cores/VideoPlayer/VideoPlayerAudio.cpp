@@ -132,6 +132,9 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
 {
   m_pAudioCodec = std::move(codec);
+  // a previous CloseStream left the create-abort set
+  m_audioSink.AbortCreate(false);
+  m_sinkCreateFailed = false;
 
 
   /* store our stream hints */
@@ -201,8 +204,9 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   // send abort message to the audio queue
   m_messageQueue.Abort();
   // and release a sink Create() waiting on a suspended engine, so stop does
-  // not sit out that wait
-  m_audioSink.AbortAddPackets();
+  // not sit out that wait (not AbortAddPackets: that would cut off the frame a
+  // draining close is still writing)
+  m_audioSink.AbortCreate(true);
 
   CLog::Log(LOGINFO, "Waiting for audio thread to exit");
 
@@ -447,6 +451,9 @@ void CVideoPlayerAudio::Process()
     {
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       m_audioSink.Flush();
+      m_audioSink.AbortCreate(false);
+      // a Create() the flush cut short may wait again for the new position
+      m_sinkCreateFailed = false;
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
@@ -704,6 +711,15 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     // we have successfully decoded an audio frame, setup renderer to match
     if (!m_audioSink.IsValidFormat(audioframe))
     {
+      // Still no device after a Create() that already waited: drop frames
+      // until the engine is back instead of rebuilding a sink per frame.
+      if (m_sinkCreateFailed && m_audioSink.IsEngineSuspended())
+      {
+        audioframe.nb_frames = 0;
+        m_pcmResyncTimestamp = true;
+        return false;
+      }
+
       if (m_speed)
         m_audioSink.Drain();
 
@@ -720,6 +736,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
           CLog::Log(LOGERROR, "{} - failed to create audio renderer", __FUNCTION__);
         m_sinkCreateFailed = true;
         audioframe.nb_frames = 0;
+        m_pcmResyncTimestamp = true;
         return false;
       }
       if (m_sinkCreateFailed)
@@ -907,6 +924,8 @@ void CVideoPlayerAudio::Flush(bool sync)
   m_messageQueue.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
 
   m_audioSink.AbortAddPackets();
+  // released again by this thread when it handles the GENERAL_FLUSH
+  m_audioSink.AbortCreate(true);
 }
 
 bool CVideoPlayerAudio::AcceptsData() const
