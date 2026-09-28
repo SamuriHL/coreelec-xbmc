@@ -74,6 +74,8 @@ public:
 protected:
   //! caller holds m_critSection
   void DropVsyncPhase(bool settled);
+  //! a phase reduced to one frame, on the side of the phase held (or last held)
+  double ReduceVsyncAdjust(double adjustment) const;
   //! caller holds m_critSection
   void Rebase(double clock, double absolute);
   double SystemToAbsolute(int64_t system) const;
