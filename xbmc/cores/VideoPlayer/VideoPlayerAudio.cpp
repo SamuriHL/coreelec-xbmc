@@ -200,6 +200,9 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // send abort message to the audio queue
   m_messageQueue.Abort();
+  // and release a sink Create() waiting on a suspended engine, so stop does
+  // not sit out that wait
+  m_audioSink.AbortAddPackets();
 
   CLog::Log(LOGINFO, "Waiting for audio thread to exit");
 
@@ -707,7 +710,21 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       m_audioSink.Destroy(false);
 
       if (!m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE))
-        CLog::Log(LOGERROR, "{} - failed to create audio renderer", __FUNCTION__);
+      {
+        // Drop this frame so the next one tries again. Keeping it would
+        // retry OutputPacket on it forever against a sink that has no stream
+        // (AddPackets returns 0), so no later frame is ever decoded, the sink
+        // is never recreated, and the audio queue fills until the demuxer
+        // starves video too.
+        if (!m_sinkCreateFailed)
+          CLog::Log(LOGERROR, "{} - failed to create audio renderer", __FUNCTION__);
+        m_sinkCreateFailed = true;
+        audioframe.nb_frames = 0;
+        return false;
+      }
+      if (m_sinkCreateFailed)
+        CLog::Log(LOGINFO, "{} - audio renderer created after earlier failures", __FUNCTION__);
+      m_sinkCreateFailed = false;
 
       m_prevsynctype = -1;
 

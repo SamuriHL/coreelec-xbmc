@@ -107,6 +107,8 @@ protected:
   double m_audioClock;
 
   CAudioSinkAE m_audioSink; // audio output device
+  // the last sink Create() failed; the next decoded frame retries it
+  bool m_sinkCreateFailed = false;
   CDVDClock* m_pClock; // dvd master clock
   std::unique_ptr<CDVDAudioCodec> m_pAudioCodec; // audio codec
   BitstreamStats m_audioStats;
