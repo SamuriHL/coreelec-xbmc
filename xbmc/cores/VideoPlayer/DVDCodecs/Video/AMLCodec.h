@@ -177,6 +177,11 @@ private:
   // decode a picture and never reach the gate, stranding it in the v4l queue.
   bool            m_starve_bypass = false;
   bool            m_no_data_since_reset = true;
+  // Starve-probe clock: time the fill gate has been shut while GetPicture was
+  // being polled. Restarted by a dequeue, an open gate, Reset/Open, and any gap
+  // in polling longer than the probe delay (pause, WAITSYNC, display reset).
+  std::chrono::steady_clock::time_point m_probe_idle_start{};
+  std::chrono::steady_clock::time_point m_probe_last_poll{};
   // Profile-7 FEL: CBitstreamConverter pads a tiny IDR access unit with filler
   // data so it clears the parser's fetch quantum. That deliberately pushes a
   // parked still ABOVE the idle-input threshold below, which would turn a

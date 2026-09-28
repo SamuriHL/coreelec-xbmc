@@ -2091,6 +2091,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_abort = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
+  m_probe_idle_start = m_probe_last_poll = m_tp_last_frame;
   // Must NOT also be cleared in Reset(): the write-failure recovery calls
   // Reset() itself, so clearing there would restart the give-up deadline on
   // every attempt and it could never expire.
@@ -2898,6 +2899,7 @@ void CAMLCodec::Reset()
   m_buffer_level_ready = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
+  m_probe_idle_start = m_probe_last_poll = std::chrono::steady_clock::now();
 
   SetSpeed(m_speed);
 
@@ -2918,10 +2920,15 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   {
     if (m_skipBufferFillGate)
     {
-      // Segment-fed dual-stream DV can EOS below any fill threshold — dequeue
-      // immediately.
+      // Segment-fed dual-stream DV can EOS below any fill threshold, so there
+      // is no start gate: dequeue as soon as the stream path's 10% floor is
+      // held. At 0 an easily decoded FEL stream is fed one access unit per
+      // displayed frame and the EL picture completes after its BL is shown
+      // (amdv "not found el"): the EL decoder only finishes a picture once the
+      // next access unit is in the buffer. A tail below the floor is covered by
+      // drain and the starve probe in GetPicture.
       m_buffer_level_ready = true;
-      m_minimum_buffer_level = 0.0f;
+      m_minimum_buffer_level = 10.0f;
 
       CSysfsPath pre_decode_buf_level{"/sys/module/amvdec_h265/parameters/pre_decode_buf_level"};
       if (pre_decode_buf_level.Exists())
@@ -3338,8 +3345,20 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
       1, static_cast<int>((am_private->video_rate * 1000 + UNIT_FREQ - 1) / UNIT_FREQ));
   const auto starve_probe_delay =
       std::max(std::chrono::milliseconds(100), std::chrono::milliseconds(frame_ms * 4));
+  // The probe times how long the gate has been shut while this function was
+  // actually being polled, not the time since the last picture: a display-reset
+  // pause, WAITSYNC (polled every ten frame periods, never fed) or a seek leaves
+  // m_tp_last_frame stale, and a probe that fired on that would latch and drop
+  // the floor for the rest of the segment. The idle-input park refreshes
+  // m_tp_last_frame on every call, so the probe cannot share that clock either.
+  const auto probe_now = std::chrono::steady_clock::now();
+  if (level_gate_open || probe_now - m_probe_last_poll > starve_probe_delay)
+    m_probe_idle_start = probe_now;
+  m_probe_last_poll = probe_now;
+  const auto probe_idle =
+      std::chrono::duration_cast<std::chrono::milliseconds>(probe_now - m_probe_idle_start);
   const bool starve_probe = !level_gate_open && !m_no_data_since_reset &&
-                            (m_starve_bypass || elapsed_since_last_frame > starve_probe_delay);
+                            (m_starve_bypass || probe_idle > starve_probe_delay);
 
   if ((level_gate_open || starve_probe) && (ret = DequeueBuffer()) == 0)
   {
@@ -3348,12 +3367,13 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
       m_starve_bypass = true;
       CLog::Log(LOGDEBUG, LOGVIDEO,
                 "CAMLCodec::GetPicture: starve probe dequeued a picture below the fill gate "
-                "[sbuf:{} lvl:{:.1f}% min:{:.1f}% idle:{}ms delay:{}ms]",
-                streambuffer, buffer_level, m_minimum_buffer_level,
+                "[sbuf:{} lvl:{:.1f}% min:{:.1f}% idle:{}ms since_frame:{}ms delay:{}ms]",
+                streambuffer, buffer_level, m_minimum_buffer_level, probe_idle.count(),
                 elapsed_since_last_frame.count(), static_cast<int>(starve_probe_delay.count()));
     }
 
     pVideoPicture->iFlags = 0;
+    m_probe_idle_start = probe_now;
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
