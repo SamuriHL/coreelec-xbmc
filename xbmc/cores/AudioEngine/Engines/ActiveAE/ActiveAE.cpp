@@ -2630,6 +2630,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     stream->m_syncError.Flush(100ms);
     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
     stream->m_resampleIntegral = 0;
+    stream->m_muteWindows = 0;
     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
     m_syncDbgUntil = std::chrono::steady_clock::now() + std::chrono::seconds(6); // SYNCDBG
   }
@@ -2690,9 +2691,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // 11ms band) was traded for an audible dropout. The multi-frame parks this
     // exists for (45ms) are still caught.
     double confirmBand = 30.0;
-    const double frameMs = stream->m_format.m_streamInfo.GetDuration();
-    if (frameMs > 0.0)
-      confirmBand = std::clamp(frameMs + 1.0, 5.0, 30.0);
+    const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
+    if (frameError > 0.0)
+      confirmBand = std::clamp(frameError + 1.0, 5.0, 30.0);
 
     if (fabs(error) > confirmBand && stream->m_resumeSyncChecks > 0)
     {
@@ -2743,9 +2744,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       // as long as a landing within its band stays clear of the player's
       // correction gate.
       double band = 30.0;
-      const double frameMs = stream->m_format.m_streamInfo.GetDuration();
-      if (frameMs > 0.0)
-        band = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
+      const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
+      if (frameError > 0.0)
+        band = std::clamp(frameError * 0.5 + 1.0, 5.0, 30.0);
       const double gate = CServiceBroker::GetSettingsComponent()
                               ->GetAdvancedSettings()
                               ->m_maxPassthroughOffSyncDuration;
@@ -2759,6 +2760,22 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - {} sync park {:f} ms (limit {:f})",
                   first ? "epoch" : "updated", error, limit);
     }
+  }
+  else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE &&
+           m_mode == MODE_RAW && stream->m_muteWindows < 10 &&
+           (stream->m_muteWindows == 0 ||
+            std::abs(error - stream->m_muteLastError) >
+                stream->m_format.m_streamInfo.GetDuration() * errorScale * 0.5 + 1.0))
+  {
+    // A passthrough walk has no actuator once INSYNC, so it must start from
+    // where the error IS, not from a window average taken while the sink queue
+    // was still filling (the average lags a moving measurement and the walk
+    // lands off by that lag). Stay muted until two consecutive windows agree
+    // to within the walk's own resolution, for at most a second.
+    stream->m_muteWindows++;
+    stream->m_muteLastError = error;
+    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - muted window {} error {:f}, waiting to settle",
+              stream->m_muteWindows, error);
   }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
   {
@@ -2890,26 +2907,20 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
     }
 
-    // Upstream accepts any landing under a flat 30ms. For the RESUME landing
-    // that is too loose: the quantity that matters there is the step away from
-    // the pre-pause park, and a RAW stream has no post-INSYNC actuator to trim
-    // it later. Tighten the band to just past the skip arm's rest bound
-    // (frame/2 + 1: 6.3ms for DTS-HD MA, 11 for TrueHD, 17 for AC3/EAC3) for
-    // the resume landing ONLY - ordinary starts and seeks keep upstream's 30ms
-    // band and its cost profile (this deliberately does NOT reinstate the
-    // reverted global tightening, 077796745f). Termination: the burst arm
-    // inserts sub-frame remainders so it can always reach the band from above,
-    // and the skip arm acts whenever -error > frame/2 < band, so no value is
-    // left where neither the arms nor the accept test can act. The 5ms floor
-    // keeps a tiny reported frame duration from starving the band; the 30
-    // ceiling means very large frames (DTS-2048 low-rate) simply keep
-    // upstream's behavior.
+    // Upstream accepts any landing under a flat 30ms. A passthrough stream has
+    // no actuator once INSYNC, so whatever the walk leaves is permanent: land
+    // to the walk's own resolution instead - just past the skip arm's rest
+    // bound, half a frame + 1 in the measurement's unit (TrueHD 5.5 scaled,
+    // DTS-HD MA 6.3, AC3/E-AC3 17). The burst arm inserts sub-frame
+    // remainders and the skip arm acts whenever -error exceeds half a frame,
+    // so no value is left where neither the arms nor this test can act. The
+    // 5ms floor keeps a tiny reported frame duration from starving the band.
     double acceptError = 30.0;
-    if (m_mode == MODE_RAW && stream->m_useResumeSyncTarget)
+    if (m_mode == MODE_RAW)
     {
-      const double frameMs = stream->m_format.m_streamInfo.GetDuration();
-      if (frameMs > 0.0)
-        acceptError = std::clamp(frameMs * 0.5 + 1.0, 5.0, 30.0);
+      const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
+      if (frameError > 0.0)
+        acceptError = std::clamp(frameError * 0.5 + 1.0, 5.0, 30.0);
     }
 
     if (fabs(error) < acceptError)

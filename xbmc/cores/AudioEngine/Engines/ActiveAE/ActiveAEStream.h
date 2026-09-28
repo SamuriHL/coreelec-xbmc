@@ -279,6 +279,8 @@ protected:
   int m_resumeSyncChecks;           // re-land budget for the post-settle confirmation
   bool m_captureAfterSinkReopen;    // unarmed start-sync after a sink reopen: capture the
                                     // epoch target past the refill transient
+  int m_muteWindows;                // RAW start sync: windows measured while muted
+  double m_muteLastError;           // RAW start sync: previous muted window's error
   bool m_syncWaitSilence;           // the delay walk wants silence but the pool is empty:
                                     // hold the stream's audio until a buffer returns
 };
