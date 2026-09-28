@@ -747,13 +747,10 @@ protected:
   // its own flag. Player thread only.
   bool m_bdStreamReuseVideo = false;
   bool m_bdStreamReuseAudio = false;
-  // BD menu loop wrap: video's own measured timestamp gap, recorded when video
-  // first flags the backward jump (0.0 = unset). With a single global offset
-  // only one stream can be made exactly continuous across the wrap; preferring
-  // the video gap makes the wrap visually gapless and leaves audio a small
-  // residual its sync skew absorbs. Player thread only.
   /* Armed at a Blu-ray seamless playitem boundary, consumed by the first
-   * sub-second FORWARD timestamp step CheckContinuity sees afterwards. The two
+   * sub-second FORWARD timestamp step CheckContinuity sees afterwards - or, on a
+   * glided (cc 5/6) seam (m_seamStepOverlapOk), by the first sub-second
+   * BACKWARD step, which is an overlap closed the same way. The two
    * clips either side of a boundary are timed independently; a forward step is
    * a cut, not elapsed content, and waiting it out is a visible freeze plus an
    * audio dropout long enough to unlock a passthrough sink. The generic
@@ -767,6 +764,11 @@ protected:
    * can be tens of minutes stale on another timeline. */
   double m_seamStepArmedDts = DVD_NOPTS_VALUE;
 
+  // BD menu loop wrap: video's own measured timestamp gap, recorded when video
+  // first flags the backward jump (0.0 = unset). With a single global offset
+  // only one stream can be made exactly continuous across the wrap; preferring
+  // the video gap makes the wrap visually gapless and leaves audio a small
+  // residual its sync skew absorbs. Player thread only.
   double m_menuWrapVideoGap = 0.0;
 
   // Per-jump sequence stamped onto the packet that opens a timeline restart,

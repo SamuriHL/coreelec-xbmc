@@ -1747,7 +1747,11 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   m_videoPlayerRestarts = 0;
   const EBdTransition transition = ClassifyBdTransition();
 
-  SetCaching(CACHESTATE_DONE);
+  // Not on the seamless path: the pipeline survives the boundary, so a refill
+  // in progress (a network stall at the seam) must be allowed to finish rather
+  // than resume on a nearly empty buffer. Every other path rebuilds it.
+  if (transition != EBdTransition::SEAMLESS)
+    SetCaching(CACHESTATE_DONE);
 
   if (transition == EBdTransition::SEAMLESS)
   {
@@ -1757,9 +1761,10 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // re-probes the dual-layer (BL+EL) DV program and breaks BL/EL packet
     // routing (BL delivery dies, decoder starves); closing the streams drops
     // the DV tunnel (re-latch toast / display-change black every segment).
-    // libbluray feeds a continuous transport stream across the boundary and
-    // the DEMUXER_RESET posted for BD_EVENT_DISCONTINUITY absorbs the TS
-    // discontinuity in place. The segment's timeline restart reaches
+    // libbluray feeds a continuous transport stream across the boundary; the
+    // input stream does NOT post the DEMUXER_RESET for BD_EVENT_DISCONTINUITY
+    // here (a re-probe breaks dual-layer routing) and ffmpeg's mpegts demuxer
+    // absorbs the TS discontinuity itself. The segment's timeline restart reaches
     // CheckContinuity as a plain backward jump, which its cross-stream
     // confirmation resolves into exactly one global offset correction - same
     // path a CE21 player takes for these boundaries, proven stable there.
@@ -2087,6 +2092,8 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 
 void CVideoPlayer::Prepare()
 {
+  // a start-pts defer window belongs to the previous open's sync attempt
+  m_syncStartDeferred = false;
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
   m_processInfo->SetSpeed(1.0);
@@ -3209,6 +3216,22 @@ void CVideoPlayer::HandlePlaySpeed()
     const bool deferNoPts = ShouldDeferSync(video && audio && !syncAudio && !syncVideo,
                                             std::chrono::steady_clock::now());
 
+    // Arm the no-start-pts defer window (below) as soon as both streams are
+    // ready, not only once ShouldDeferSync has given up: the two waits then run
+    // side by side (bounded by the longer, 2.5 s) instead of one after the
+    // other (2 s + 2.5 s).
+    const bool videoHasStart =
+        m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
+    const bool audioHasStart =
+        m_CurrentAudio.starttime != DVD_NOPTS_VALUE && m_CurrentAudio.packets > 0;
+    if (video && audio && !syncAudio && !syncVideo && !videoHasStart && !audioHasStart &&
+        !m_syncStartDeferred)
+    {
+      m_syncStartDeferred = true;
+      m_syncStartDeferTimer.Set(2500ms);
+      CLog::Log(LOGDEBUG, "VideoPlayer::Sync - no stream has a start pts yet, deferring sync");
+    }
+
     if (syncAudio)
     {
       CLog::Log(LOGDEBUG, LOGAUDIO, "VideoPlayer::Sync - Audio - Waiting, clock: {:.3f}", m_clock.GetClock());
@@ -3236,20 +3259,10 @@ void CVideoPlayer::HandlePlaySpeed()
       // whose timeline does not start at 0. Defer until a stream reports a
       // usable start pts, bounded so a stream that never delivers one still
       // starts with the old behaviour.
-      const bool videoHasStart =
-          m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
-      const bool audioHasStart =
-          m_CurrentAudio.starttime != DVD_NOPTS_VALUE && m_CurrentAudio.packets > 0;
       bool commit = true;
       if (!videoHasStart && !audioHasStart)
       {
-        if (!m_syncStartDeferred)
-        {
-          m_syncStartDeferred = true;
-          m_syncStartDeferTimer.Set(2500ms);
-          CLog::Log(LOGDEBUG, "VideoPlayer::Sync - no stream has a start pts yet, deferring sync");
-        }
-        commit = m_syncStartDeferTimer.IsTimePast();
+        commit = !m_syncStartDeferred || m_syncStartDeferTimer.IsTimePast();
         if (commit)
           CLog::Log(LOGWARNING,
                     "VideoPlayer::Sync - no start pts within defer window, syncing clock to 0");
