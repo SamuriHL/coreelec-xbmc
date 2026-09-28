@@ -26,6 +26,8 @@ public:
   virtual ~IAEClockCallback() = default;
   virtual double GetClock() = 0;
   virtual double GetClockSpeed() { return 1.0; }
+  //! the clock's display phase is not known yet (video renderer just reset)
+  virtual bool IsClockPhasePending() { return false; }
 };
 
 class CAESyncInfo
