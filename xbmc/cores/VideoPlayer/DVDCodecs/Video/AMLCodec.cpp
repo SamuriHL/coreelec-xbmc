@@ -2909,7 +2909,10 @@ void CAMLCodec::Reset()
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
   if (iSize > 0)
+  {
     m_no_data_since_reset = false;
+    m_probe_input_seq++;
+  }
 
   int data_len, free_len, size;
   int chunk_size = calc_chunk_size(iSize);
@@ -3345,15 +3348,20 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
       1, static_cast<int>((am_private->video_rate * 1000 + UNIT_FREQ - 1) / UNIT_FREQ));
   const auto starve_probe_delay =
       std::max(std::chrono::milliseconds(100), std::chrono::milliseconds(frame_ms * 4));
-  // The probe times how long the gate has been shut while this function was
-  // actually being polled, not the time since the last picture: a display-reset
-  // pause, WAITSYNC (polled every ten frame periods, never fed) or a seek leaves
-  // m_tp_last_frame stale, and a probe that fired on that would latch and drop
-  // the floor for the rest of the segment. The idle-input park refreshes
+  // The probe is for input that has STOPPED below the gate, so it times how long
+  // the gate has been shut with no new input while this function was actually
+  // being polled - not the time since the last picture. Input still arriving
+  // means the floor is being reached (a start fills 1.5 MB in a few hundred ms
+  // and must not be mistaken for a short segment); a display-reset pause,
+  // WAITSYNC (polled every ten frame periods, never fed) or a seek leaves
+  // m_tp_last_frame stale. A probe fired on either would latch and drop the
+  // floor for the rest of the segment. The idle-input park refreshes
   // m_tp_last_frame on every call, so the probe cannot share that clock either.
   const auto probe_now = std::chrono::steady_clock::now();
-  if (level_gate_open || probe_now - m_probe_last_poll > starve_probe_delay)
+  if (level_gate_open || m_probe_input_seq != m_probe_seen_seq ||
+      probe_now - m_probe_last_poll > starve_probe_delay)
     m_probe_idle_start = probe_now;
+  m_probe_seen_seq = m_probe_input_seq;
   m_probe_last_poll = probe_now;
   const auto probe_idle =
       std::chrono::duration_cast<std::chrono::milliseconds>(probe_now - m_probe_idle_start);
