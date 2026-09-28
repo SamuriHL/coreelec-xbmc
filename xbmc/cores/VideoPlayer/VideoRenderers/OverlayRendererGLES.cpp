@@ -315,9 +315,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
 
     int x0 = 0;
     int y0 = 0;
-    int x1 = 0;
-    int y1 = 0;
-    FindVisibleBox(o.pixels.data(), o.linesize, o.width, o.height, lut, x0, y0, x1, y1);
+    int x1 = o.width;
+    int y1 = o.height;
+    // an empty bitmap has no texel to find a box in (the box would be 1x1)
+    if (o.width > 0 && o.height > 0 && !o.pixels.empty())
+      FindVisibleBox(o.pixels.data(), o.linesize, o.width, o.height, lut, x0, y0, x1, y1);
     const int width = x1 - x0;
     const int height = y1 - y0;
     if (width != o.width || height != o.height)
@@ -330,8 +332,9 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     auto rgba = std::make_unique_for_overwrite<uint32_t[]>(static_cast<size_t>(width) * height);
     ConvertIndices(o.pixels.data() + y0 * o.linesize + x0, o.linesize, width, height, lut,
                    rgba.get());
-    // the limited-range encode keeps grey grey, and the margin cropped away is
-    // transparent (black once premultiplied), so the scan reads the same
+    // the margin cropped away is transparent (black once premultiplied); on
+    // the limited-range route the scan reads encoded texels, whose spread is
+    // 219/255 of the source's (a pixel at the tolerance can read grey)
     m_isColoredPGS = IsImageColored(rgba.get(), static_cast<size_t>(width) * height);
     LoadTexture(GL_TEXTURE_2D, width, height, width * 4, &m_u, &m_v, false, rgba.get());
   }
