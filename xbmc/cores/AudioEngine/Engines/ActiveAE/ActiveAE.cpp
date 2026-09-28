@@ -2529,6 +2529,7 @@ bool CActiveAE::RunStages()
           if (buffer->pkt->nb_samples == 0 && buffer->pkt->pause_burst_ms == 0)
           {
             buffer->Return();
+            busy = true; // run the next walk step now, as a queued buffer would
             continue;
           }
           m_stats.AddSamples(1, m_streams);
