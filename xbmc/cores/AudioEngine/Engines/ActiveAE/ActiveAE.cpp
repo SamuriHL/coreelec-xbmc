@@ -2751,10 +2751,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       // Refill bias can settle a park beyond the 30ms accept band. Keep it,
       // as long as a landing within its band stays clear of the player's
       // correction gate.
-      double band = 30.0;
-      const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
-      if (frameError > 0.0)
-        band = std::clamp(frameError * 0.5 + 1.0, 5.0, 30.0);
+      const double band =
+          stream->m_format.m_streamInfo.GetDuration() > 0.0 ? RAW_LANDING_BAND : 30.0;
       const double gate = CServiceBroker::GetSettingsComponent()
                               ->GetAdvancedSettings()
                               ->m_maxPassthroughOffSyncDuration;
@@ -2939,7 +2937,12 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // on the aim. The burst arm inserts sub-frame pauses (whole ms) and the
     // skip arm turns any negative residual into a positive one it can take,
     // so both arms converge to under one real ms.
-    const double acceptError = (m_mode == MODE_RAW) ? RAW_LANDING_BAND : 30.0;
+    // (A codec reporting no frame duration has no arm that can move it: keep
+    // upstream's band there.)
+    const double acceptError =
+        (m_mode == MODE_RAW && stream->m_format.m_streamInfo.GetDuration() > 0.0)
+            ? RAW_LANDING_BAND
+            : 30.0;
 
     if (fabs(error) < acceptError)
     {

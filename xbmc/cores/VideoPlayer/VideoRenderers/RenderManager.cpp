@@ -118,6 +118,7 @@ void CRenderManager::CClockSync::Reset()
   m_ref = 0;
   m_refValid = false;
   m_adjustSeeded = false;
+  m_disabledFrames = 0;
   m_errCount = 0;
   m_syncOffset = 0;
   m_enabled = false;
@@ -198,8 +199,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_bTriggerUpdateResolution = true;
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         m_clockSync.Reset();
-        m_dvdClock.SetVsyncAdjust(0);
-        m_dvdClock.SetVsyncAdjustPending();
+        m_dvdClock.ResetVsyncAdjust();
         m_lateframes = -1;
       }
       return true;
@@ -240,8 +240,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_renderState = STATE_CONFIGURING;
     m_stateEvent.Reset();
     m_clockSync.Reset();
-    m_dvdClock.SetVsyncAdjust(0);
-    m_dvdClock.SetVsyncAdjustPending();
+    m_dvdClock.ResetVsyncAdjust();
     m_pConfigPicture = std::make_unique<VideoPicture>();
     m_pConfigPicture->CopyRef(picture);
 
@@ -354,8 +353,7 @@ bool CRenderManager::Configure()
     m_renderedDebugOverlay = false;
     m_renderDebug = false;
     m_clockSync.Reset();
-    m_dvdClock.SetVsyncAdjust(0);
-    m_dvdClock.SetVsyncAdjustPending();
+    m_dvdClock.ResetVsyncAdjust();
     m_overlays.Reset();
     m_overlays.SetStereoMode(m_picture.stereoMode);
 
@@ -534,6 +532,8 @@ void CRenderManager::PreInit()
 
 void CRenderManager::UnInit()
 {
+  // no renderer, no phase: audio must not wait for one
+  m_dvdClock.ClearVsyncAdjust(true);
   if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
   {
     m_initEvent.Reset();
@@ -1410,7 +1410,8 @@ void CRenderManager::PrepareNextRender()
   }
   else
   {
-    m_dvdClock.SetVsyncAdjust(0);
+    m_clockSync.m_disabledFrames++;
+    m_dvdClock.ClearVsyncAdjust(false);
   }
 
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
@@ -1570,7 +1571,11 @@ void CRenderManager::CheckEnableClockSync()
   else
   {
     m_clockSync.m_enabled = false;
-    m_dvdClock.SetVsyncAdjust(0);
+    // No phase is coming once the reference clock runs and the rates do not
+    // match, or after a window's worth of frames without sync (reference
+    // clock off); a relocking display may still enable it.
+    m_dvdClock.ClearVsyncAdjust(!m_displayLost &&
+                                (refClockRunning || m_clockSync.m_disabledFrames > 31));
   }
 
   m_playerPort->UpdateClockSync(m_clockSync.m_enabled);
