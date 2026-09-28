@@ -50,6 +50,33 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
             audioframe.format.m_sampleRate,
             audioframe.passthrough ? "pass-through" : "no pass-through");
 
+  // A display mode change suspends the engine (DISPLAYLOST) until the HDMI
+  // output settles and DISPLAYRESET arrives - 3.5 s measured on S6 for a
+  // 2160p24 -> 2160p60 switch. MakeStream() refuses outright while suspended,
+  // so a player that opens in that window (playback started within seconds of
+  // a stop) gets no stream and stays silent for the whole session. Data for an
+  // existing stream already waits the suspension out (AddPackets); wait for
+  // the stream the same way, bounded, and give up at once on a flush or stop.
+  // Once a wait has run out with the engine still suspended (the device is
+  // really gone, not settling), later frames fail at once so video plays on.
+  m_bAbort = false;
+  IAE* ae = CServiceBroker::GetActiveAE();
+  if (ae && ae->IsSuspended() && !m_suspendWaitExpired)
+  {
+    const auto start = std::chrono::steady_clock::now();
+    while (ae->IsSuspended() && !m_bAbort &&
+           std::chrono::steady_clock::now() - start < 10s)
+      KODI::TIME::Sleep(20ms);
+    m_suspendWaitExpired = ae->IsSuspended() && !m_bAbort;
+    CLog::Log(LOGINFO, "CAudioSinkAE::Create - audio engine was suspended, waited {} ms{}",
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count(),
+              m_suspendWaitExpired ? " (still suspended, not waiting again)" : "");
+  }
+  else if (ae && !ae->IsSuspended())
+    m_suspendWaitExpired = false;
+
   // if passthrough isset do something else
   std::unique_lock lock(m_critSection);
   unsigned int options = needresampler && !audioframe.passthrough ? AESTREAM_FORCE_RESAMPLE : 0;
