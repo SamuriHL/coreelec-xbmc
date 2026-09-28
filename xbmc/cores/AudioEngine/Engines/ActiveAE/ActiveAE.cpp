@@ -112,6 +112,13 @@ void CEngineStats::GetDelay(AEDelayStatus& status)
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
 }
 
+void CEngineStats::GetDelayParts(double& sinkDelay, int& buffered) // SYNCDBG
+{
+  std::unique_lock lock(m_lock);
+  sinkDelay = m_sinkDelay.delay;
+  buffered = m_bufferedSamples;
+}
+
 void CEngineStats::AddStream(unsigned int streamid)
 {
   StreamStats stream;
@@ -2175,6 +2182,23 @@ bool CActiveAE::RunStages()
         //
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
+        {
+          // SYNCDBG: measurement components for 6 s after a start sync
+          const auto dbgNow = std::chrono::steady_clock::now();
+          if (dbgNow < m_syncDbgUntil && dbgNow - m_syncDbgLast >= std::chrono::milliseconds(100))
+          {
+            m_syncDbgLast = dbgNow;
+            double dbgSink;
+            int dbgBuffered;
+            m_stats.GetDelayParts(dbgSink, dbgBuffered);
+            CLog::Log(LOGDEBUG,
+                      "SYNCDBG state:{} raw:{:.1f} pts:{:.1f} clock:{:.1f} delay:{:.1f} "
+                      "sink:{:.1f} buffered:{} tick:{}",
+                      static_cast<int>((*it)->m_syncState), error, pts,
+                      (*it)->m_pClock->GetClock(), delay, dbgSink * 1000, dbgBuffered,
+                      status.tick);
+          }
+        }
         if (isTrueHDPassthrough)
           error *= 0.45;
 
@@ -2607,6 +2631,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
     stream->m_resampleIntegral = 0;
     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
+    m_syncDbgUntil = std::chrono::steady_clock::now() + std::chrono::seconds(6); // SYNCDBG
   }
 
   double error;
