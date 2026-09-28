@@ -2684,16 +2684,19 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                 error, stream->m_resumeSyncChecks);
     }
   }
-  else if (newerror && m_mode == MODE_RAW && !stream->m_resumeSyncTargetValid &&
+  else if (newerror && m_mode == MODE_RAW && !stream->m_useResumeSyncTarget &&
            stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
   {
-    // Capture this anchor epoch's resume target from the first SETTLED
-    // measurement after the first landing (stream start, or first landing
-    // after a seek/flush) - not from the landing residual itself, which is
-    // booked against a refilling sink and measured ~10ms from the settled
-    // truth. This alignment is what the viewer calibrates to. Mutually
-    // exclusive with the confirmation branch above: an armed flag implies a
-    // valid target.
+    // Track the resume target from every SETTLED in-sync measurement - never
+    // from a landing residual, which is booked against a refilling sink and
+    // measured ~10ms from the settled truth. The target is the alignment the
+    // viewer is watching when the pause (or display reset) comes, so it has to
+    // follow it: captured once per epoch it went stale after any player
+    // ErrorAdjust (which moves the clock a whole frame and with it this error)
+    // or slow drift, and the next resume landed back on the old alignment - a
+    // step of up to a frame, next to the player's correction gate. Mutually
+    // exclusive with the confirmation branch above (not while a landing is
+    // armed).
     if (stream->m_captureAfterSinkReopen)
     {
       // This window started at a landing after a sink reopen and blends in
@@ -2716,10 +2719,14 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                               ->GetAdvancedSettings()
                               ->m_maxPassthroughOffSyncDuration;
       const double limit = std::max(30.0, gate - band - 3.0);
-      stream->m_resumeSyncTarget = std::clamp(error, -limit, limit);
+      const double target = std::clamp(error, -limit, limit);
+      const bool first = !stream->m_resumeSyncTargetValid;
+      const bool moved = first || std::abs(target - stream->m_resumeSyncTarget) > 2.0;
+      stream->m_resumeSyncTarget = target;
       stream->m_resumeSyncTargetValid = true;
-      CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - epoch sync park settled at {:f} ms (limit {:f})",
-                error, limit);
+      if (moved)
+        CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - {} sync park {:f} ms (limit {:f})",
+                  first ? "epoch" : "updated", error, limit);
     }
   }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)

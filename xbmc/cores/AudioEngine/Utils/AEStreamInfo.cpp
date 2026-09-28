@@ -65,10 +65,16 @@ double CAEStreamInfo::GetDuration() const
       duration = 3840.0 / rate;
       break;
     case STREAM_TYPE_DTS_512:
+      duration = 512.0 / m_sampleRate;
+      break;
     case STREAM_TYPE_DTSHD_CORE:
     case STREAM_TYPE_DTSHD:
     case STREAM_TYPE_DTSHD_MA:
-      duration = 512.0 / m_sampleRate;
+      // One burst carries one core frame, whose size the parser read from the
+      // frame header. The fixed 512 was only right for a 512-sample core; with
+      // a 1024-sample core every consumer of this duration - the player's
+      // audio clock, the passthrough codec's internal clock - ran at half speed.
+      duration = (m_dtsFrameSamples ? m_dtsFrameSamples : 512.0) / m_sampleRate;
       break;
     case STREAM_TYPE_DTS_1024:
       duration = 1024.0 / m_sampleRate;
@@ -1140,6 +1146,7 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
       m_syncFunc = &CAEStreamParser::SyncDTS;
       m_info.m_frameSize = m_fsize;
       m_info.m_repeat = 1;
+      m_info.m_dtsFrameSamples = m_dtsBlocks << 5;
 
       if (dataType == CAEStreamInfo::STREAM_TYPE_DTSHD_MA)
       {
