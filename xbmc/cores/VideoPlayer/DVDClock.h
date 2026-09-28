@@ -57,6 +57,8 @@ public:
   void ResetVsyncAdjust();
   //! no phase; settled = none is coming either (clock sync is off)
   void ClearVsyncAdjust(bool settled);
+  //! the display is lost: no phase, and the returning display's is to come
+  void LoseVsyncAdjust();
   //! the renderer was reset and has not published this display's phase yet
   bool IsVsyncAdjustPending() const;
   //! changes whenever the phase is dropped or reset: samples measured under an
