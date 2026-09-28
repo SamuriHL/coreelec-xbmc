@@ -1196,6 +1196,8 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   int retry = 0;
   unsigned int written = 0;
   AEDelayStatus status;
+  // a pause burst leaves the stats' queued time with its own length
+  const int pauseMs = samples->pkt->nb_samples == 0 ? samples->pkt->pause_burst_ms : 0;
 
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
@@ -1246,7 +1248,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       {
         m_sink->AddPause(samples->pkt->pause_burst_ms);
         m_sink->GetDelay(status);
-        m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
+        m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, pauseMs);
         return status.delay * 1000;
       }
     }
@@ -1271,7 +1273,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
         framesOrPackets = frames;
         if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
           framesOrPackets = 1;
-        m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0);
+        m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0, pauseMs);
         return 0;
       }
       else
@@ -1285,7 +1287,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       framesOrPackets = frames;
       if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
         framesOrPackets = 1;
-      m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0);
+      m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0, pauseMs);
       return 0;
     }
     frames -= written;
@@ -1308,7 +1310,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
     // the empty buffer was counted when it entered the sink queue.
     if (status.tick == 0)
       m_sink->GetDelay(status);
-    m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
+    m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, pauseMs);
   }
 
   return status.delay * 1000;
