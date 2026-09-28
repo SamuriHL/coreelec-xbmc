@@ -61,9 +61,10 @@ public:
   void LoseVsyncAdjust();
   //! the renderer was reset and has not published this display's phase yet
   bool IsVsyncAdjustPending() const;
-  //! changes whenever the phase is dropped or reset: samples measured under an
-  //! older generation belong to a phase that no longer holds
-  unsigned int GetVsyncPhaseGeneration() const;
+  //! changes whenever the phase is dropped, reset or carried across a pause:
+  //! samples measured under an older generation belong to a phase that no
+  //! longer holds. hasPhase: a phase is held (carried, or not yet dropped).
+  unsigned int GetVsyncPhaseGeneration(bool& hasPhase) const;
   //! no phase is coming soon (no frame is being played): stop waiting for one
   void SettleVsyncAdjust();
 
