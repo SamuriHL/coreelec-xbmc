@@ -57,6 +57,11 @@ public:
   void Flush();
   void Drain();
   void AbortAddPackets();
+  //! Stop (true), or allow again (false), Create() waiting on a suspended engine.
+  //! Separate from the AddPackets abort, which Create/AddPackets clear on entry and
+  //! which must not cut a draining close short.
+  void AbortCreate(bool abort);
+  bool IsEngineSuspended() const;
 
   double GetClock() override;
   double GetClockSpeed() override;
@@ -83,5 +88,6 @@ protected:
   std::atomic_bool m_bAbort;
   // a Create() wait for a suspended engine ran out; don't block again until it resumes
   bool m_suspendWaitExpired = false;
+  std::atomic_bool m_abortCreate{false};
   CDVDClock *m_pClock;
 };

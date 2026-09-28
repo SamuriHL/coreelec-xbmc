@@ -14,9 +14,12 @@
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AEStreamData.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <mutex>
 
 extern "C"
@@ -50,24 +53,28 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
             audioframe.format.m_sampleRate,
             audioframe.passthrough ? "pass-through" : "no pass-through");
 
-  // A display mode change suspends the engine (DISPLAYLOST) until the HDMI
-  // output settles and DISPLAYRESET arrives - 3.5 s measured on S6 for a
-  // 2160p24 -> 2160p60 switch. MakeStream() refuses outright while suspended,
-  // so a player that opens in that window (playback started within seconds of
-  // a stop) gets no stream and stays silent for the whole session. Data for an
-  // existing stream already waits the suspension out (AddPackets); wait for
-  // the stream the same way, bounded, and give up at once on a flush or stop.
-  // Once a wait has run out with the engine still suspended (the device is
-  // really gone, not settling), later frames fail at once so video plays on.
-  m_bAbort = false;
+  // A display mode change suspends the engine (DISPLAYLOST) until DISPLAYRESET,
+  // which the window system sends once videoscreen.delayrefreshchange has run
+  // out after the mode was set (up to 20 s; chained mode sets re-arm it).
+  // MakeStream() refuses outright while suspended, so a player that opens in
+  // that window - playback started within the delay after a stop - gets no
+  // stream and stays silent for the whole session. Data for an existing stream
+  // already waits the suspension out (AddPackets); wait for the stream the same
+  // way, bounded, and give up at once on a flush or stop (AbortCreate). Once a
+  // wait has run out with the engine still suspended (the device is really
+  // gone, not settling), later frames fail at once so video plays on.
   IAE* ae = CServiceBroker::GetActiveAE();
-  if (ae && ae->IsSuspended() && !m_suspendWaitExpired)
+  if (ae && ae->IsSuspended() && !m_suspendWaitExpired && !m_abortCreate)
   {
+    const auto delay = std::chrono::milliseconds(
+        100 * std::max(0, CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+                              "videoscreen.delayrefreshchange")));
+    const auto limit = std::max<std::chrono::milliseconds>(10s, 2 * delay + 3s);
     const auto start = std::chrono::steady_clock::now();
-    while (ae->IsSuspended() && !m_bAbort &&
-           std::chrono::steady_clock::now() - start < 10s)
+    while (ae->IsSuspended() && !m_abortCreate &&
+           std::chrono::steady_clock::now() - start < limit)
       KODI::TIME::Sleep(20ms);
-    m_suspendWaitExpired = ae->IsSuspended() && !m_bAbort;
+    m_suspendWaitExpired = ae->IsSuspended() && !m_abortCreate;
     CLog::Log(LOGINFO, "CAudioSinkAE::Create - audio engine was suspended, waited {} ms{}",
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - start)
@@ -260,6 +267,17 @@ void CAudioSinkAE::Flush()
 void CAudioSinkAE::AbortAddPackets()
 {
   m_bAbort = true;
+}
+
+void CAudioSinkAE::AbortCreate(bool abort)
+{
+  m_abortCreate = abort;
+}
+
+bool CAudioSinkAE::IsEngineSuspended() const
+{
+  IAE* ae = CServiceBroker::GetActiveAE();
+  return ae && ae->IsSuspended();
 }
 
 bool CAudioSinkAE::IsValidFormat(const DVDAudioFrame &audioframe)
