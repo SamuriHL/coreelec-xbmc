@@ -629,7 +629,8 @@ protected:
   // output plane, unlike the live aml_dv_get_output_mode() which flips across
   // the repeated OpenDecoder calls of a movie-load transition (that flicker
   // baked half of the resume menu washed and half correct).
-  bool m_dvDiscSession = false;
+  // read from the JVM graphics thread (DiscGraphicsArePQ)
+  std::atomic<bool> m_dvDiscSession{false};
 
   /*! \brief True while the CURRENT playitem's video is HDR, i.e. its graphics are
    * authored in BT.2020 ST.2084 (PQ).
@@ -678,6 +679,9 @@ protected:
     SOverlays o;
     int w = 0;
     int h = 0;
+    //! The HDMV palette (YCbCr) the indexed overlays on this plane were last
+    //! built from, so they can be rebuilt when the graphics regime flips.
+    std::vector<BD_PG_PALETTE_ENTRY> rawPalette;
   };
 
   /* index = bd_overlay_plane_e: 0 PG, 1 IG (above PG), 2 BG (behind video,

@@ -1978,6 +1978,11 @@ void CDVDInputStreamBluray::SetMenuOnlyNativeGraphics(bool on)
           continue;
         auto copy = std::make_shared<CDVDOverlayImage>(*o, o->x, o->y, o->width, o->height);
         copy->m_isHDROverlay = hdr;
+        // an indexed (HDMV) overlay's palette was converted for the old regime
+        // (BT.2020 PQ vs BT.601): rebuild it from the plane's raw palette
+        if (!copy->palette.empty() && plane.rawPalette.size() == 256)
+          for (unsigned i = 0; i < 256; i++)
+            copy->palette[i] = build_rgba(plane.rawPalette[i], hdr);
         o = copy;
       }
       any = any || !plane.o.empty();
@@ -2014,6 +2019,7 @@ void CDVDInputStreamBluray::OverlayInit(SPlane& plane, int w, int h)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   plane.o.clear();
+  plane.rawPalette.clear();
   plane.w = w;
   plane.h = h;
 #endif
@@ -2236,6 +2242,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     // recolored copies rather than mutating the shared instances.
     if (ov->palette)
     {
+      plane.rawPalette.assign(ov->palette, ov->palette + 256);
       std::vector<uint32_t> pal(256);
       for (unsigned i = 0; i < 256; i++)
         pal[i] = build_rgba(ov->palette[i], pq);
@@ -2272,6 +2279,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
 
     if (ov->palette)
     {
+      plane.rawPalette.assign(ov->palette, ov->palette + 256);
       overlay->palette.resize(256);
 
       for(unsigned i = 0; i < 256; i++)
