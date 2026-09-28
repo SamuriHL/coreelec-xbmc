@@ -235,7 +235,14 @@ void CDVDMessageQueue::UpdateTimeFront()
     {
       DemuxPacket* packet =
           std::static_pointer_cast<CDVDMsgDemuxerPacket>(item.message)->GetPacket();
-      if (packet)
+      // A Dolby Vision enhancement layer is part of its base layer's access
+      // unit, not a stream with a timeline of its own: it bypasses
+      // CheckContinuity, so across a >1 s seamless step its dts runs ahead of
+      // the base layer, whose packets are blanked until the jump is confirmed.
+      // Counting it made the time level read full on that one packet and the
+      // demuxer stopped reading until the whole queue drained (8.6 s measured
+      // at M3GAN 2.0's +24.9 s seam). The base layer carries the time.
+      if (packet && !packet->isELPackage)
       {
         if (packet->dts != DVD_NOPTS_VALUE)
           m_TimeFront = packet->dts;
@@ -258,7 +265,14 @@ void CDVDMessageQueue::UpdateTimeBack()
     {
       DemuxPacket* packet =
           std::static_pointer_cast<CDVDMsgDemuxerPacket>(item.message)->GetPacket();
-      if (packet)
+      // A Dolby Vision enhancement layer is part of its base layer's access
+      // unit, not a stream with a timeline of its own: it bypasses
+      // CheckContinuity, so across a >1 s seamless step its dts runs ahead of
+      // the base layer, whose packets are blanked until the jump is confirmed.
+      // Counting it made the time level read full on that one packet and the
+      // demuxer stopped reading until the whole queue drained (8.6 s measured
+      // at M3GAN 2.0's +24.9 s seam). The base layer carries the time.
+      if (packet && !packet->isELPackage)
       {
         if (packet->dts != DVD_NOPTS_VALUE)
           m_TimeBack = packet->dts;
