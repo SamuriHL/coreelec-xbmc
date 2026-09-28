@@ -2774,15 +2774,16 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     }
     else
     {
-      // Refill bias can settle a park beyond the 30ms accept band. Keep it,
-      // as long as a landing within its band stays clear of the player's
-      // correction gate.
+      // Keep the park the viewer is watching, as long as a landing within its
+      // band stays clear of the player's correction gate. The gate is real ms
+      // (GetSyncInfo reports real ms); the park and the band are in the
+      // measurement's unit (TrueHD: scaled).
       const double band =
           stream->m_format.m_streamInfo.GetDuration() > 0.0 ? RAW_LANDING_BAND : 30.0;
       const double gate = CServiceBroker::GetSettingsComponent()
                               ->GetAdvancedSettings()
                               ->m_maxPassthroughOffSyncDuration;
-      const double limit = std::max(30.0, gate - band - 3.0);
+      const double limit = std::max(0.0, (gate - 3.0) * errorScale - band);
       const double target = std::clamp(error, -limit, limit);
       const bool first = !stream->m_resumeSyncTargetValid;
       const bool moved = first || std::abs(target - stream->m_resumeSyncTarget) > 2.0;
