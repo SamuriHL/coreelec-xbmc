@@ -351,6 +351,7 @@ void CBlurayIsoCache::QueuePage(int64_t pageIndex)
       return;
     if (!m_prefetchQueuedPages.insert(pageIndex).second)
       return;
+    m_prefetchQueue.push_back(pageIndex);
     // Always the back. The queue is ordered by distance ahead of the player,
     // so the nearest outstanding page must stay at the head - the worker pops
     // the front. push_front had the opposite effect and it was not a priority
