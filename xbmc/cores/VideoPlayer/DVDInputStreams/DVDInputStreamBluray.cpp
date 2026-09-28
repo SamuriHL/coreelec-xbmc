@@ -1249,7 +1249,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
       // clips of one format, wrong across the menu/feature line - M3GAN 2.0
       // entered from its BD-J menu played the whole FEL feature on the menu
       // clip's frame-mode MEL decoder, base layer only.
-      const bool carry = m_seamlessCarry && m_hold == HOLD_DATA;
+      const bool carry = (m_seamlessCarry && m_hold == HOLD_DATA) || m_carryAtRead;
       const bool oldMenuDomain = carry && IsMenuDomainVideo();
       const bool oldHasVideo = carry && m_clip && m_clip->video_stream_count > 0;
       BLURAY_STREAM_INFO oldVideo{};
@@ -1634,7 +1634,13 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
   // is not lost: the caller passes it to ProcessEvent() exactly
   // as a non-held event, and the player collects the
   // transition from TakePendingSeamlessTransition().
-  if (m_seamlessHold && m_seamlessGlideAllowed &&
+  // Only a PLAYITEM advance glides. A same-playlist PLAYLIST wrap is held
+  // (above) but never glided: clips[0].connection_condition is play item 0's
+  // own field and describes how item 0 joins what precedes it in the
+  // playlist, not a loop back to the start, so a cc 5/6 there says nothing
+  // about the wrap and would let a large backward wrap be treated as a seam
+  // overlap.
+  if (m_seamlessHold && m_seamlessGlideAllowed && m_event.event == BD_EVENT_PLAYITEM &&
       ClipConnectionIsSeamless(next) && !ShouldDiscardStreamQueue())
   {
     CLog::Log(LOGDEBUG,
@@ -1714,6 +1720,11 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       if (HoldForEvent())
         return result;
 
+      // bd_read_ext can return data AND an event from one call (bluray.c
+      // _read_ext reads, then takes the next event). The carry guard in
+      // ProcessEvent must judge that event against the carry that was in force
+      // when it was read, not the state this data arrival clears just below.
+      m_carryAtRead = m_seamlessCarry && m_hold == HOLD_DATA;
       if(result > 0)
       {
         m_hold = HOLD_NONE;
@@ -1725,6 +1736,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 
       const uint32_t event = m_event.event;
       ProcessEvent();
+      m_carryAtRead = false;
 
       // nothing to read and nothing happened: the reader is waiting on the
       // BD-J application (end of playlist, no playlist)
@@ -1951,7 +1963,7 @@ void CDVDInputStreamBluray::SetMenuOnlyNativeGraphics(bool on)
   if (m_menuOnlyNativeGraphics.exchange(on) == on)
     return;
 
-  const bool hdr = on ? m_pqAuthoredGraphics.load() : (m_dvDiscSession || m_pqAuthoredGraphics);
+  const bool hdr = DiscGraphicsArePQ();
   bool any = false;
   {
     std::unique_lock lock(m_overlayLock);
@@ -2187,9 +2199,10 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     return;
   }
 
-  // Authored-graphics regime for this disc/playlist, from the same two STABLE
-  // signals the BD-J ARGB path uses (see the note above OverlayClose).
-  const bool pq = m_dvDiscSession || m_pqAuthoredGraphics;
+  // Authored-graphics regime for this disc/playlist - the same rule the BD-J
+  // ARGB path uses, including the menu-only native override (see the note
+  // above OverlayClose).
+  const bool pq = DiscGraphicsArePQ();
 
   if (ov->cmd == BD_OVERLAY_CLEAR)
   {
@@ -2405,8 +2418,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // BD-J graphics on an HDR playlist arrive already BT.2020 PQ: keep them as
     // authored and let the renderer draw them raw on HDR output (see the note
     // above OverlayClose).
-    overlay->m_isHDROverlay =
-        m_menuOnlyNativeGraphics ? m_pqAuthoredGraphics.load() : (m_dvDiscSession || m_pqAuthoredGraphics);
+    overlay->m_isHDROverlay = DiscGraphicsArePQ();
 
     overlay->linesize = ov->stride * 4;
     overlay->x = ov->x;
@@ -3119,6 +3131,11 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
 
   if (!m_bMVCDisabled)
   {
+    // Decided per playlist: a 3D playlist followed by a 2D one must not keep
+    // queueing MVC clips, or OpenMVCDemux indexes ext_sub_path[] of an mpls that
+    // has no such sub-path.
+    m_bMVCPlayback = false;
+    EMPTY_QUEUE(m_clipQueue);
     MPLS_PL * mpls = bd_get_title_mpls(m_bd);
     if (mpls)
     {
@@ -3605,6 +3622,9 @@ bool CDVDInputStreamBluray::SetState(const std::string& xmlstate)
     return false;
   }
 
+  // FreeTitleInfo, not a bare overwrite: the previous title info would leak
+  // and m_clip would keep pointing into it
+  FreeTitleInfo();
   m_titleInfo = bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
   UpdatePqAuthoredGraphics();
   if (!m_titleInfo)
