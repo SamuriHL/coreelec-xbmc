@@ -1295,9 +1295,8 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
-    // A skip-corrected RAW buffer (nb_samples == 0, no pause burst - see
-    // SyncStream's MODE_RAW skip branch) writes nothing, so the loop above
-    // never ran and `status` is still default-constructed: publishing it
+    // A RAW buffer that writes nothing leaves the loop above unrun and
+    // `status` still default-constructed: publishing it
     // would report ZERO sink delay for one stats cycle. That zero flows into
     // playingPts = pts - delay and pushes the measured sync error POSITIVE -
     // telling the servo audio is early at the exact moment it is correcting

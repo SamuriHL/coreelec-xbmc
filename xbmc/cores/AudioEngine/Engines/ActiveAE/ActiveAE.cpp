@@ -2522,6 +2522,15 @@ bool CActiveAE::RunStages()
             buffer = (*it)->m_processingBuffers->m_outputSamples.front();
             (*it)->m_processingBuffers->m_outputSamples.pop_front();
           }
+          // A packet SyncStream skipped (no data, no pause burst) plays for no
+          // time. Queued to the sink it would still count as a full frame of
+          // sink delay until the sink dequeued it, hiding the skip from the
+          // sync measurement for a whole queue depth.
+          if (buffer->pkt->nb_samples == 0 && buffer->pkt->pause_burst_ms == 0)
+          {
+            buffer->Return();
+            continue;
+          }
           m_stats.AddSamples(1, m_streams);
           m_sinkBuffers->m_inputSamples.push_back(buffer);
         }
@@ -2623,11 +2632,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   // shift is a constant on the local decision variable only - the accumulator
   // and its Correction() bookkeeping stay in absolute terms. Same units on
   // both sides: the accumulator and the target both carry the TrueHD
-  // 0.45-scaled currency when it applies. (On TrueHD the landing accuracy is
-  // additionally capped by the parked upstream currency mismatch inside the
-  // ADJUST walk - the local variable is decremented by the physical burst
-  // while Correction() credits the scaled amount - which this change neither
-  // fixes nor worsens.)
+  // 0.45-scaled currency when it applies.
   if (m_mode == MODE_RAW && stream->m_useResumeSyncTarget)
     error -= stream->m_resumeSyncTarget;
 
@@ -2775,12 +2780,16 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         if (m_mode == MODE_RAW)
         {
           ret->pkt->nb_samples = 0;
-          ret->pkt->pause_burst_ms = error;
-          if (error > stream->m_format.m_streamInfo.GetDuration())
+          // `error` is in the measurement's scaled unit; the pause is real time
+          ret->pkt->pause_burst_ms = error / errorScale;
+          if (ret->pkt->pause_burst_ms > stream->m_format.m_streamInfo.GetDuration())
             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
 
           stream->m_syncError.Correction(-ret->pkt->pause_burst_ms * errorScale);
-          error -= ret->pkt->pause_burst_ms;
+          error -= ret->pkt->pause_burst_ms * errorScale;
+          // restart the window: samples measured before this correction
+          // cannot show it yet
+          stream->m_syncError.SetErrorInterval();
         }
         else
         {
@@ -2830,12 +2839,13 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       }
       if (m_mode == MODE_RAW)
       {
-        if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
+        const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
+        if (-error > frameError / 2)
         {
-          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration() *
-                                         errorScale);
-          error += stream->m_format.m_streamInfo.GetDuration();
+          stream->m_syncError.Correction(frameError);
+          error += frameError;
           buf->pkt->nb_samples = 0;
+          stream->m_syncError.SetErrorInterval();
         }
       }
       else
