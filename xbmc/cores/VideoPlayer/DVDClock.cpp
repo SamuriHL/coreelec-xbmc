@@ -92,14 +92,8 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
   return SystemToPlaying(current);
 }
 
-void CDVDClock::SetVsyncAdjust(double adjustment, unsigned int phaseGeneration)
+double CDVDClock::ReduceVsyncAdjust(double adjustment) const
 {
-  std::unique_lock lock(m_critSection);
-
-  // measured before a drop that has happened since: it belongs to the old phase
-  if (phaseGeneration != m_vSyncPhaseGeneration)
-    return;
-
   // ★ RenderManager derives this from fmod(renderPts - nextFramePts, frametime).
   // fmod takes the sign of its DIVIDEND, so the result spans
   // (-frametime, +frametime) - two full frame periods for a quantity that is
@@ -151,7 +145,18 @@ void CDVDClock::SetVsyncAdjust(double adjustment, unsigned int phaseGeneration)
     }
   }
 
-  m_vSyncAdjust = adjustment;
+  return adjustment;
+}
+
+void CDVDClock::SetVsyncAdjust(double adjustment, unsigned int phaseGeneration)
+{
+  std::unique_lock lock(m_critSection);
+
+  // measured before a drop that has happened since: it belongs to the old phase
+  if (phaseGeneration != m_vSyncPhaseGeneration)
+    return;
+
+  m_vSyncAdjust = ReduceVsyncAdjust(adjustment);
   m_vSyncAdjustHasPhase = true;
   m_vSyncAdjustPending = false;
 }
@@ -289,7 +294,21 @@ void CDVDClock::SetSpeed(int iSpeed)
   // change rescales it: either way it now stands at another point of the
   // display's vsync cadence (measured am9pro: the phase moved 4 ms after a
   // resume, under an audio landing already made against the old one).
-  if (m_pauseClock || newfreq != m_systemUsed)
+  if (m_pauseClock && newfreq == m_systemUsed && m_vSyncAdjustHasPhase && m_frameTime > 0.0)
+  {
+    // A plain resume at the same speed with the phase held throughout: the
+    // clock stood still for the pause while the display ran on at its fixed
+    // rate, so the phase moved by exactly the pause length, modulo a frame
+    // (measured am9pro, 9 pauses of 3-9 s: within 0.5 ms of the renderer's
+    // own measurement). Carry it over instead of dropping it, so a resume
+    // need not wait for a new one; the renderer still re-measures (the
+    // generation changes) and replaces it.
+    const double paused =
+        static_cast<double>(current - m_pauseClock) * DVD_TIME_BASE / m_systemFrequency;
+    m_vSyncAdjust = ReduceVsyncAdjust(m_vSyncAdjust + fmod(paused, m_frameTime));
+    m_vSyncPhaseGeneration++;
+  }
+  else if (m_pauseClock || newfreq != m_systemUsed)
     DropVsyncPhase(false);
   if (m_pauseClock)
   {
