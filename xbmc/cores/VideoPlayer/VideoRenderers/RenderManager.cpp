@@ -199,6 +199,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         m_clockSync.Reset();
         m_dvdClock.SetVsyncAdjust(0);
+        m_dvdClock.SetVsyncAdjustPending();
         m_lateframes = -1;
       }
       return true;
@@ -240,6 +241,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_stateEvent.Reset();
     m_clockSync.Reset();
     m_dvdClock.SetVsyncAdjust(0);
+    m_dvdClock.SetVsyncAdjustPending();
     m_pConfigPicture = std::make_unique<VideoPicture>();
     m_pConfigPicture->CopyRef(picture);
 
@@ -353,6 +355,7 @@ bool CRenderManager::Configure()
     m_renderDebug = false;
     m_clockSync.Reset();
     m_dvdClock.SetVsyncAdjust(0);
+    m_dvdClock.SetVsyncAdjustPending();
     m_overlays.Reset();
     m_overlays.SetStereoMode(m_picture.stereoMode);
 

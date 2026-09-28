@@ -2599,6 +2599,13 @@ bool CActiveAE::HasWork()
   return false;
 }
 
+namespace
+{
+// RAW start-sync landing band, in the measurement's unit: the pause burst's
+// whole-ms truncation leaves under one real ms (errorScale <= 1 of this).
+constexpr double RAW_LANDING_BAND = 1.0;
+} // namespace
+
 CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 {
   CSampleBuffer *ret = NULL;
@@ -2631,6 +2638,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
     stream->m_resampleIntegral = 0;
     stream->m_muteWindows = 0;
+    stream->m_mutePhaseWindows = 0;
     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
     m_syncDbgUntil = std::chrono::steady_clock::now() + std::chrono::seconds(6); // SYNCDBG
   }
@@ -2762,6 +2770,19 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     }
   }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE &&
+           m_mode == MODE_RAW && stream->m_mutePhaseWindows < 30 &&
+           stream->m_pClock->IsClockPhasePending())
+  {
+    // The video renderer was just reset (a display reset reconfigures it at
+    // the audio start) and has not published the display phase that the
+    // clock carries: a landing now would miss it for the rest of playback.
+    // Wait for the first playing frame, for at most three seconds.
+    stream->m_mutePhaseWindows++;
+    stream->m_muteWindows = 0;
+    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - muted, waiting for the video clock phase ({})",
+              stream->m_mutePhaseWindows);
+  }
+  else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE &&
            m_mode == MODE_RAW && stream->m_muteWindows < 9 &&
            (stream->m_muteWindows == 0 || stream->m_syncError.LastWindowEmpty() ||
             std::abs(error - stream->m_muteLastError) >
@@ -2884,8 +2905,12 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       }
       if (m_mode == MODE_RAW)
       {
+        // Skip whenever the error is below the landing band, even by less
+        // than half a frame: the burst arm then inserts the sub-frame
+        // remainder, so the walk lands on its aim instead of up to half a
+        // frame short.
         const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
-        if (-error > frameError / 2)
+        if (-error >= RAW_LANDING_BAND)
         {
           stream->m_syncError.Correction(frameError);
           error += frameError;
@@ -2911,19 +2936,10 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 
     // Upstream accepts any landing under a flat 30ms. A passthrough stream has
     // no actuator once INSYNC, so whatever the walk leaves is permanent: land
-    // to the walk's own resolution instead - just past the skip arm's rest
-    // bound, half a frame + 1 in the measurement's unit (TrueHD 5.5 scaled,
-    // DTS-HD MA 6.3, AC3/E-AC3 17). The burst arm inserts sub-frame
-    // remainders and the skip arm acts whenever -error exceeds half a frame,
-    // so no value is left where neither the arms nor this test can act. The
-    // 5ms floor keeps a tiny reported frame duration from starving the band.
-    double acceptError = 30.0;
-    if (m_mode == MODE_RAW)
-    {
-      const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
-      if (frameError > 0.0)
-        acceptError = std::clamp(frameError * 0.5 + 1.0, 5.0, 30.0);
-    }
+    // on the aim. The burst arm inserts sub-frame pauses (whole ms) and the
+    // skip arm turns any negative residual into a positive one it can take,
+    // so both arms converge to under one real ms.
+    const double acceptError = (m_mode == MODE_RAW) ? RAW_LANDING_BAND : 30.0;
 
     if (fabs(error) < acceptError)
     {
@@ -2931,6 +2947,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       {
         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
         stream->m_muteWindows = 0;
+        stream->m_mutePhaseWindows = 0;
         stream->m_syncError.Flush(100ms);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
                   error, stream->m_lastSyncError);

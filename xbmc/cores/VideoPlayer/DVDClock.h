@@ -52,6 +52,9 @@ public:
   bool GetClockInfo(int& MissedVblanks, double& ClockSpeed, double& RefreshRate) const;
   void SetVsyncAdjust(double adjustment);
   double GetVsyncAdjust();
+  //! the renderer was reset and has not published this display's phase yet
+  void SetVsyncAdjustPending();
+  bool IsVsyncAdjustPending() const;
 
   void Pause(bool pause);
   bool IsPaused() const;
@@ -80,6 +83,7 @@ protected:
   int64_t m_lastSystemTime;
   double m_speedAdjust;
   double m_vSyncAdjust;
+  bool m_vSyncAdjustPending = false;
   double m_frameTime;
 
   double m_maxspeedadjust;
