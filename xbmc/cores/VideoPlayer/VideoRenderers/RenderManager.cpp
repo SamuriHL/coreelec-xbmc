@@ -120,6 +120,9 @@ void CRenderManager::CClockSync::Reset()
   m_adjustSeeded = false;
   m_disabledFrames = 0;
   m_idleMoves = 0;
+  m_seedSum = 0;
+  m_seedCount = 0;
+  m_seedPrevValid = false;
   m_errCount = 0;
   m_syncOffset = 0;
   m_enabled = false;
@@ -1371,8 +1374,8 @@ void CRenderManager::PrepareNextRender()
     // make the branch choice a per-window coin flip in the straddle case and
     // flap frame selection by a whole frame every window.
     // See docs/s6_truehd_av_drift.md (samurihl tree, not Kodi's docs/).
-    // The clock drops its phase when sync goes off (display lost), on a seek
-    // or clock reset: seed again from this frame, and start a fresh window and
+    // The clock drops its phase when sync goes off (display lost), on a seek,
+    // pause or clock reset: seed it again, and start a fresh window and
     // reference, since the samples taken before belong to the old phase.
     m_clockSync.m_idleMoves = 0;
     const bool seed = (!m_clockSync.m_adjustSeeded || !m_dvdClock.HasVsyncAdjustPhase()) &&
@@ -1382,6 +1385,13 @@ void CRenderManager::PrepareNextRender()
       m_clockSync.m_error = 0;
       m_clockSync.m_errCount = 0;
       m_clockSync.m_refValid = false;
+      m_clockSync.m_adjustSeeded = false;
+    }
+    if (!seed)
+    {
+      m_clockSync.m_seedSum = 0;
+      m_clockSync.m_seedCount = 0;
+      m_clockSync.m_seedPrevValid = false;
     }
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
     {
@@ -1390,16 +1400,44 @@ void CRenderManager::PrepareNextRender()
     }
     else
       err -= frametime * std::round((err - m_clockSync.m_ref) / frametime);
-    // Give the audio clock the phase from the first playing frame instead of
-    // zero until the first window completes (~31 frames): a passthrough start
-    // sync that lands in that gap keeps the missing phase (up to half a frame)
-    // for the rest of playback. A paused clock or a lost display gives no
-    // phase. Frame selection (m_syncOffset) still waits for the window.
+    // Give the audio clock the phase before the first window completes (~31
+    // frames): a passthrough start sync that lands without it keeps the
+    // missing phase (up to half a frame) for the rest of playback. A paused
+    // clock or a lost display gives no phase. Frame selection (m_syncOffset)
+    // still waits for the window.
+    // The phase moves over the first frames after a start (measured am9pro:
+    // ramps of 3-6 ms over 5-10 frames, then +/-0.5 ms per frame), so seed
+    // once it has settled, by the rule the audio start sync uses: means over
+    // blocks as long as its 100 ms measurement window, two consecutive blocks
+    // agreeing within its 1 ms landing band. A phase that never settles gets
+    // the first window's mean below.
+    bool seeded = false;
     if (seed)
     {
-      m_clockSync.m_adjustSeeded = true;
-      m_dvdClock.SetVsyncAdjust(-err);
-      m_syncDbgFrames = 40; // SYNCDBG
+      if (m_clockSync.m_seedCount == 0 && !m_clockSync.m_seedPrevValid)
+        m_syncDbgFrames = 40; // SYNCDBG
+      const int blockFrames =
+          std::max(2, static_cast<int>(std::ceil(DVD_MSEC_TO_TIME(100) / frametime)));
+      m_clockSync.m_seedSum += err;
+      if (++m_clockSync.m_seedCount >= blockFrames)
+      {
+        const double mean = m_clockSync.m_seedSum / m_clockSync.m_seedCount;
+        m_clockSync.m_seedSum = 0;
+        m_clockSync.m_seedCount = 0;
+        if (m_clockSync.m_seedPrevValid &&
+            std::abs(mean - m_clockSync.m_seedPrev) <= DVD_MSEC_TO_TIME(1))
+        {
+          m_clockSync.m_adjustSeeded = true;
+          m_clockSync.m_seedPrevValid = false;
+          m_dvdClock.SetVsyncAdjust(-mean);
+          seeded = true;
+        }
+        else
+        {
+          m_clockSync.m_seedPrev = mean;
+          m_clockSync.m_seedPrevValid = true;
+        }
+      }
     }
     if (m_syncDbgFrames > 0 && !isPaused) // SYNCDBG
     {
@@ -1410,6 +1448,13 @@ void CRenderManager::PrepareNextRender()
     }
     m_clockSync.m_error += err;
     m_clockSync.m_errCount ++;
+    if (seeded)
+    {
+      // the first window then averages settled samples only, and does not
+      // step the phase the seed gave
+      m_clockSync.m_error = 0;
+      m_clockSync.m_errCount = 0;
+    }
     if (m_clockSync.m_errCount > 30)
     {
       const double average = m_clockSync.m_error / m_clockSync.m_errCount;

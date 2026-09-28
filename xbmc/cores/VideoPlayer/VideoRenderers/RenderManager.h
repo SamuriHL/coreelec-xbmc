@@ -266,6 +266,11 @@ protected:
     bool m_adjustSeeded = false;
     int m_disabledFrames = 0;
     int m_idleMoves = 0; // FrameMoves with sync on and no frame prepared
+    // phase seed: the current block of samples, and the previous block's mean
+    double m_seedSum = 0.0;
+    int m_seedCount = 0;
+    double m_seedPrev = 0.0;
+    bool m_seedPrevValid = false;
     int m_errCount = 0;
     double m_syncOffset = 0.0;
     bool m_enabled = false;
