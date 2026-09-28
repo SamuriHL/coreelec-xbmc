@@ -150,6 +150,10 @@ public:
    */
   void CheckDisc(const std::string& path, const std::string& fingerprint);
 
+  //! Drop every disc's menu-stated episodes: they were simulated with player
+  //! capability registers that have since changed
+  void ClearMenuStatedEpisodes();
+
 private:
   /*!
    \brief Find a disc, recording that it has been used. m_cs must be held.
