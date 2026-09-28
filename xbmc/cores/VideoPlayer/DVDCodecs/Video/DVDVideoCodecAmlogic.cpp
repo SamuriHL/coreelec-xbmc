@@ -1013,12 +1013,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
       else
       {
-        if (packet.isDualStream && !m_leadUnmerged)
-        {
-          CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{} - dual-stream layer written unmerged, "
-                             "input lead off for this session", __FUNCTION__);
+        if (packet.isDualStream)
           m_leadUnmerged = true;
-        }
         if (!m_bitstream->Convert(pData, iSize))
         {
           m_pendingMeta = m_streamMeta;
