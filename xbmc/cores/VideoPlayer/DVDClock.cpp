@@ -92,9 +92,13 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
   return SystemToPlaying(current);
 }
 
-void CDVDClock::SetVsyncAdjust(double adjustment)
+void CDVDClock::SetVsyncAdjust(double adjustment, unsigned int phaseGeneration)
 {
   std::unique_lock lock(m_critSection);
+
+  // measured before a drop that has happened since: it belongs to the old phase
+  if (phaseGeneration != m_vSyncPhaseGeneration)
+    return;
 
   // ★ RenderManager derives this from fmod(renderPts - nextFramePts, frametime).
   // fmod takes the sign of its DIVIDEND, so the result spans
@@ -134,10 +138,14 @@ void CDVDClock::SetVsyncAdjust(double adjustment)
       adjustment -= m_frameTime;
     else if (adjustment <= -m_frameTime / 2)
       adjustment += m_frameTime;
-    if (m_vSyncAdjustHasPhase)
+    // After a drop (pause, seek, display loss) the side is kept from the
+    // phase last held: a resume lands on the park it measured against that
+    // side, and the other would move it by a whole frame.
+    if (m_vSyncAdjustHasPhase || m_vSyncAdjustHintValid)
     {
+      const double previous = m_vSyncAdjustHasPhase ? m_vSyncAdjust : m_vSyncAdjustHint;
       const double other = adjustment > 0 ? adjustment - m_frameTime : adjustment + m_frameTime;
-      if (fabs(other - m_vSyncAdjust) < fabs(adjustment - m_vSyncAdjust) &&
+      if (fabs(other - previous) < fabs(adjustment - previous) &&
           fabs(other) <= m_frameTime * 0.75)
         adjustment = other;
     }
@@ -153,7 +161,9 @@ void CDVDClock::ResetVsyncAdjust()
   std::unique_lock lock(m_critSection);
   m_vSyncAdjust = 0;
   m_vSyncAdjustHasPhase = false;
+  m_vSyncAdjustHintValid = false;
   m_vSyncAdjustPending = true;
+  m_vSyncPhaseGeneration++;
 }
 
 void CDVDClock::ClearVsyncAdjust(bool settled)
@@ -171,8 +181,16 @@ void CDVDClock::DropVsyncPhase(bool settled)
     m_vSyncAdjustPending = false;
   else if (m_vSyncAdjustHasPhase)
     m_vSyncAdjustPending = true;
+  if (m_vSyncAdjustHasPhase)
+  {
+    m_vSyncAdjustHint = m_vSyncAdjust;
+    m_vSyncAdjustHintValid = !settled;
+  }
+  else if (settled)
+    m_vSyncAdjustHintValid = false;
   m_vSyncAdjust = 0;
   m_vSyncAdjustHasPhase = false;
+  m_vSyncPhaseGeneration++;
 }
 
 void CDVDClock::SettleVsyncAdjust()
@@ -181,10 +199,10 @@ void CDVDClock::SettleVsyncAdjust()
   m_vSyncAdjustPending = false;
 }
 
-bool CDVDClock::HasVsyncAdjustPhase() const
+unsigned int CDVDClock::GetVsyncPhaseGeneration() const
 {
   std::unique_lock lock(m_critSection);
-  return m_vSyncAdjustHasPhase;
+  return m_vSyncPhaseGeneration;
 }
 
 bool CDVDClock::IsVsyncAdjustPending() const

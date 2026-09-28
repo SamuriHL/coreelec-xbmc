@@ -271,6 +271,7 @@ protected:
     int m_seedCount = 0;
     double m_seedPrev = 0.0;
     bool m_seedPrevValid = false;
+    unsigned int m_phaseGeneration = 0; // the clock's, when this state was built
     int m_errCount = 0;
     double m_syncOffset = 0.0;
     bool m_enabled = false;

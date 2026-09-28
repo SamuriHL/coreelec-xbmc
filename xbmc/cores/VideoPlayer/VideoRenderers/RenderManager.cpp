@@ -1375,18 +1375,24 @@ void CRenderManager::PrepareNextRender()
     // flap frame selection by a whole frame every window.
     // See docs/s6_truehd_av_drift.md (samurihl tree, not Kodi's docs/).
     // The clock drops its phase when sync goes off (display lost), on a seek,
-    // pause or clock reset: seed it again, and start a fresh window and
-    // reference, since the samples taken before belong to the old phase.
+    // pause or clock reset, and its phase generation changes: seed it again,
+    // and start a fresh window, reference and seed, since the samples taken
+    // before belong to the old phase. A value measured across a drop is
+    // refused by the clock (the generation it carries is stale).
     m_clockSync.m_idleMoves = 0;
-    const bool seed = (!m_clockSync.m_adjustSeeded || !m_dvdClock.HasVsyncAdjustPhase()) &&
-                      !isPaused && !m_displayLost;
-    if (seed && m_clockSync.m_adjustSeeded)
+    const unsigned int phaseGeneration = m_dvdClock.GetVsyncPhaseGeneration();
+    if (phaseGeneration != m_clockSync.m_phaseGeneration)
     {
+      m_clockSync.m_phaseGeneration = phaseGeneration;
       m_clockSync.m_error = 0;
       m_clockSync.m_errCount = 0;
       m_clockSync.m_refValid = false;
       m_clockSync.m_adjustSeeded = false;
+      m_clockSync.m_seedSum = 0;
+      m_clockSync.m_seedCount = 0;
+      m_clockSync.m_seedPrevValid = false;
     }
+    const bool seed = !m_clockSync.m_adjustSeeded && !isPaused && !m_displayLost;
     if (!seed)
     {
       m_clockSync.m_seedSum = 0;
@@ -1427,7 +1433,7 @@ void CRenderManager::PrepareNextRender()
         {
           m_clockSync.m_adjustSeeded = true;
           m_clockSync.m_seedPrevValid = false;
-          m_dvdClock.SetVsyncAdjust(-mean);
+          m_dvdClock.SetVsyncAdjust(-mean, phaseGeneration);
           seeded = true;
         }
         else
@@ -1465,7 +1471,7 @@ void CRenderManager::PrepareNextRender()
         ref -= frametime;
       m_clockSync.m_ref = ref;
 
-      m_dvdClock.SetVsyncAdjust(-average);
+      m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
       m_clockSync.m_adjustSeeded = true;
     }
     if (!isPaused)
