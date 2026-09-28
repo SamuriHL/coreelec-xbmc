@@ -56,6 +56,8 @@ CActiveAEStream::CActiveAEStream(AEAudioFormat* format, unsigned int streamid, C
   m_useResumeSyncTarget = false;
   m_resumeSyncChecks = 0;
   m_captureAfterSinkReopen = false;
+  m_muteWindows = 0;
+  m_muteLastError = 0.0;
   m_syncWaitSilence = false;
 }
 
