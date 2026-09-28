@@ -43,6 +43,7 @@ static inline void aml_set_disc_mode_anchored(bool) {}
 #include "windowing/WinSystem.h"
 
 #include <memory>
+#include <typeinfo>
 #include <mutex>
 
 using namespace std::chrono_literals;
@@ -286,7 +287,19 @@ bool CRenderManager::Configure()
 
   if (m_pRenderer)
   {
-    DeleteRenderer();
+    // A new segment gets a new renderer. When it is the same kind, the process-
+    // wide display state the old one set up (the Amlogic GUI HDR regime) is
+    // carried over and the new renderer's Configure adjusts it; only a change
+    // of kind - e.g. a software-decoded segment falling back to the GLES
+    // renderer - must release it first, or the new renderer would paint into
+    // a regime it knows nothing about.
+    CBaseRenderer* old = m_pRenderer;
+    m_pRenderer = nullptr;
+    CreateRenderer();
+    if (!m_pRenderer || typeid(*m_pRenderer) != typeid(*old))
+      old->EndRenderSession();
+    CLog::Log(LOGDEBUG, "{} - deleting renderer", __FUNCTION__);
+    delete old;
   }
 
   if (!m_pRenderer)
