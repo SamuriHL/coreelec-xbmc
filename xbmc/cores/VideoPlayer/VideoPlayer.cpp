@@ -965,6 +965,7 @@ bool CVideoPlayer::IsPlaying() const
 void CVideoPlayer::OnStartup()
 {
   m_syncStartPtsWait.reset();
+  m_syncStartDeferred = false;
   m_CurrentVideo.Clear();
   m_CurrentAudio.Clear();
   m_CurrentSubtitle.Clear();
@@ -1864,6 +1865,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   CloseDemuxer();
 
   m_syncStartPtsWait.reset();
+  m_syncStartDeferred = false;
 
   const bool reuse = transition == EBdTransition::DISCARD_KEEPALIVE;
   m_bdStreamReuseVideo = reuse;
@@ -1884,13 +1886,13 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
             drain ? "wait for old streams to be finished"
                   : "discarding menu stream remainder (full close)");
 #if defined(HAVE_LIBBLURAY)
-  // The dropped remainder carried the BD-J notifications still held for it,
-  // and the application has already moved past them: release them now, as a
-  // flush does, rather than leave them stamped on a timeline that is gone.
-  if (!drain && m_pInputBluray &&
-      m_pInputBluray->ClassifyStreamQueue(m_CurrentVideo.id >= 0 &&
-                                          m_CurrentVideo.dts != DVD_NOPTS_VALUE) ==
-          CDVDInputStreamBluray::QueueDecision::DISCARD_BDJ_APP_JUMP)
+  // The dropped remainder carried timeline events stamped on it - the BD-J
+  // notifications held for it, and the menu/playlist/title-UI state changes
+  // queued behind them - and none of that data will ever be presented. Apply
+  // them now, as a flush does, for every discard: left in place they block the
+  // FIFO until the new segment's clock happens to reach an old-timeline stamp
+  // (up to the queue depth, or never if the new timeline sits just behind).
+  if (!drain)
     ApplyDiscTimelineEvents(true);
 #endif
   CloseStream(m_CurrentAudio, drain);
@@ -2824,7 +2826,11 @@ void CVideoPlayer::ProcessSubData(CDemuxStream* pStream, DemuxPacket* pPacket)
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
       pPacket->pts == DVD_NOPTS_VALUE && pPacket->dts == DVD_NOPTS_VALUE)
   {
-    pPacket->pts = m_clock.GetClock() + m_State.time_offset;
+    // The player clock is on the packets' pts timeline. m_State.time_offset is
+    // display time minus pts (UpdatePlayState); adding it stamped the anchor in
+    // DISPLAY time, which only matched on discs whose timestamps start at 0 -
+    // on one starting at 4200 s the caption landed 4200 s from where it belongs.
+    pPacket->pts = m_clock.GetClock();
   }
 
   UpdateTimestamps(m_CurrentSubtitle, pPacket);
@@ -3193,10 +3199,18 @@ void CVideoPlayer::HandlePlaySpeed()
     // arrived - the shape a stream player leaves when it has stopped running.
     // Evaluated here, and disarmed on every path that is not it, so the timer
     // below can never be left armed from an earlier, unrelated stall.
+    // Not while the audio engine is suspended (a display mode change, until
+    // videoscreen.delayrefreshchange has run out): then audio is not dead but
+    // waiting for its device - CAudioSinkAE::Create blocks for it - and a flush
+    // would throw away the read-ahead (a resume skips forward by the queue
+    // depth) and restart the same wait. The suspension is bounded, so a thread
+    // that really has stopped is still caught once the engine is back.
+    IAE* const audioEngine = CServiceBroker::GetActiveAE();
     const bool syncStuck = m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 &&
                            !m_VideoPlayerAudio->AcceptsData() &&
                            m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC &&
-                           m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_WAITSYNC;
+                           m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_WAITSYNC &&
+                           !(audioEngine && audioEngine->IsSuspended());
     if (!syncStuck)
       m_syncStuckArmed = false;
 
@@ -3217,9 +3231,10 @@ void CVideoPlayer::HandlePlaySpeed()
                                             std::chrono::steady_clock::now());
 
     // Arm the no-start-pts defer window (below) as soon as both streams are
-    // ready, not only once ShouldDeferSync has given up: the two waits then run
-    // side by side (bounded by the longer, 2.5 s) instead of one after the
-    // other (2 s + 2.5 s).
+    // ready, not only once ShouldDeferSync has given up, so the two waits run
+    // side by side and the window bounds the whole wait at 2.5 s (was 6 s).
+    // Every place a start attempt ends clears it together with
+    // m_syncStartPtsWait, so an armed flag is never left from a dead attempt.
     const bool videoHasStart =
         m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
     const bool audioHasStart =
@@ -3237,6 +3252,7 @@ void CVideoPlayer::HandlePlaySpeed()
       CLog::Log(LOGDEBUG, LOGAUDIO, "VideoPlayer::Sync - Audio - Waiting, clock: {:.3f}", m_clock.GetClock());
       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
+      m_syncStartDeferred = false;
       m_VideoPlayerAudio->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, m_clock.GetClock()), 1);
     }
@@ -3246,10 +3262,16 @@ void CVideoPlayer::HandlePlaySpeed()
       m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
       m_CurrentVideo.starttimePending = false;
+      m_syncStartDeferred = false;
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, m_clock.GetClock()), 1);
     }
-    else if (video && audio && !deferNoPts)
+    // ShouldDeferSync gives up for one call only and then re-arms for another
+    // 2 s, so on its own it would outlast the no-start-pts window below; that
+    // window (armed together with it, above) is the bound, so once it has run
+    // out the commit goes ahead whatever ShouldDeferSync says.
+    else if (video && audio &&
+             (!deferNoPts || (m_syncStartDeferred && m_syncStartDeferTimer.IsTimePast())))
     {
       // A flush during a disc transition clears both streams' start pts while
       // the demuxer may still be seeking to the next segment; if the sync gate
@@ -3315,6 +3337,7 @@ void CVideoPlayer::HandlePlaySpeed()
       }
 
       m_syncStartPtsWait.reset();
+      m_syncStartDeferred = false;
       m_clock.Discontinuity(clock);
       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
@@ -3384,6 +3407,7 @@ void CVideoPlayer::HandlePlaySpeed()
   else
   {
     m_syncStartPtsWait.reset();
+    m_syncStartDeferred = false;
     // Neither player is at the handshake, so nothing can be stuck at it.
     m_syncStuckArmed = false;
   }
@@ -5781,6 +5805,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
 bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 {
   m_syncStartPtsWait.reset();
+  m_syncStartDeferred = false;
   IDVDStreamPlayer* player = GetStreamPlayer(m_CurrentAudio.player);
   if(player == nullptr)
     return false;
@@ -5823,6 +5848,7 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 {
   m_syncStartPtsWait.reset();
+  m_syncStartDeferred = false;
   m_CurrentVideo.starttimePending = false;
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
   {
