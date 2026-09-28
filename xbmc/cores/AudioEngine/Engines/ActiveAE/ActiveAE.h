@@ -187,8 +187,9 @@ class CEngineStats
 {
 public:
   void Reset(unsigned int sampleRate, bool pcm);
-  void UpdateSinkDelay(const AEDelayStatus& status, int samples);
-  void AddSamples(int samples, const std::list<CActiveAEStream*>& streams);
+  //! pauseMs: a passthrough pause burst's length (0 for a data packet)
+  void UpdateSinkDelay(const AEDelayStatus& status, int samples, int pauseMs = 0);
+  void AddSamples(int samples, const std::list<CActiveAEStream*>& streams, int pauseMs = 0);
   void GetDelay(AEDelayStatus& status);
   void AddStream(unsigned int streamid);
   void RemoveStream(unsigned int streamid);
@@ -209,7 +210,10 @@ public:
 protected:
   float m_sinkCacheTotal;
   float m_sinkLatency;
+  double RawPacketTime(int pauseMs) const;
+  double BufferedTime() const;
   int m_bufferedSamples;
+  double m_bufferedRawTime = 0.0; // passthrough: queued playing time, seconds
   unsigned int m_sinkSampleRate;
   AEDelayStatus m_sinkDelay;
   bool m_suspended;
