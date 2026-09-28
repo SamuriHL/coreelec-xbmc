@@ -1443,36 +1443,43 @@ void CRenderManager::PrepareNextRender()
         }
       }
     }
-    m_clockSync.m_error += err;
-    m_clockSync.m_errCount ++;
-    if (seeded)
+    // A paused clock stands still against a running display: its samples
+    // measure how long the pause has lasted, not the display phase. Publishing
+    // them moved the phase while paused (measured am9pro: 2.6 -> -6.8 ms) and
+    // left the resume's side hint on that value.
+    if (!isPaused)
     {
-      // the first window then averages settled samples only, and does not
-      // step the phase the seed gave
-      m_clockSync.m_error = 0;
-      m_clockSync.m_errCount = 0;
-    }
-    if (m_clockSync.m_errCount > 30)
-    {
-      const double average = m_clockSync.m_error / m_clockSync.m_errCount;
-      m_clockSync.m_syncOffset = average;
-      m_clockSync.m_error = 0;
-      m_clockSync.m_errCount = 0;
+      m_clockSync.m_error += err;
+      m_clockSync.m_errCount ++;
+      if (seeded)
+      {
+        // the first window then averages settled samples only, and does not
+        // step the phase the seed gave
+        m_clockSync.m_error = 0;
+        m_clockSync.m_errCount = 0;
+      }
+      if (m_clockSync.m_errCount > 30)
+      {
+        const double average = m_clockSync.m_error / m_clockSync.m_errCount;
+        m_clockSync.m_syncOffset = average;
+        m_clockSync.m_error = 0;
+        m_clockSync.m_errCount = 0;
 
-      // Track the cluster with the reference, wrapped back onto the raw sample
-      // range (-frametime, +frametime) so a slowly rotating phase cannot walk
-      // it (and the unwrapped means with it) arbitrarily far from zero.
-      double ref = average;
-      if (!std::isfinite(ref))
-        ref = 0; // never let a poisoned value stick in the persistent reference
-      else if (ref <= -frametime)
-        ref += frametime;
-      else if (ref > frametime)
-        ref -= frametime;
-      m_clockSync.m_ref = ref;
+        // Track the cluster with the reference, wrapped back onto the raw sample
+        // range (-frametime, +frametime) so a slowly rotating phase cannot walk
+        // it (and the unwrapped means with it) arbitrarily far from zero.
+        double ref = average;
+        if (!std::isfinite(ref))
+          ref = 0; // never let a poisoned value stick in the persistent reference
+        else if (ref <= -frametime)
+          ref += frametime;
+        else if (ref > frametime)
+          ref -= frametime;
+        m_clockSync.m_ref = ref;
 
-      m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
-      m_clockSync.m_adjustSeeded = true;
+        m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
+        m_clockSync.m_adjustSeeded = true;
+      }
     }
     if (!isPaused)
       renderPts += frametime / 2 - m_clockSync.m_syncOffset;
