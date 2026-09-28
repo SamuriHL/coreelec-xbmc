@@ -1190,12 +1190,16 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   {
     m_pendingMeta.Inherit(m_lastMeta);
     m_lastMeta = m_pendingMeta;
-    if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
+    // mergedPts, not packet.pts: when the EL completes a dual-layer pair,
+    // packet is the EL, whose pts can be NOPTS or far stale while the BL's is
+    // the timestamp the decoder was actually given (and the one the picture
+    // will come out with).
+    if (m_hints.ptsinvalid || mergedPts == DVD_NOPTS_VALUE)
       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_pendingMeta);
     else
     {
-      m_metadataSequencer.Commit(packet.pts, m_pendingMeta);
-      m_lastCommitPts = packet.pts;
+      m_metadataSequencer.Commit(mergedPts, m_pendingMeta);
+      m_lastCommitPts = mergedPts;
     }
     m_pendingMeta = m_streamMeta;
   }
@@ -1317,12 +1321,15 @@ void CDVDVideoCodecAmlogic::ResetSegmentState(void)
   // Seamless Blu-ray playitem boundary: drop the DV metadata sequencer's
   // position in the clip that ended.
   //
-  // m_packages is deliberately NOT cleared. This message is one ordered message
-  // behind the packet that opens the restart, so by the time it runs the queue
-  // already holds the incoming clip's own base or enhancement layer waiting for
-  // its partner - the layers alternate which arrives first, so this is about
-  // half of all boundaries. Clearing here freed the incoming keyframe and left
-  // the next access unit to pair blind, which is the stall this exists to stop.
+  // m_packages is deliberately NOT cleared. Where this message lands relative to
+  // the packets depends on the seam: on a held seam it follows the packet that
+  // opens the restart, on a glided seam it is posted at the seam event, ahead of
+  // the incoming clip's packets and possibly behind the outgoing clip's last
+  // frame (the demuxer reads in 6144-byte units). Either way the queue can hold
+  // one layer of an access unit - of either clip - waiting for its partner; the
+  // layers alternate which arrives first. Clearing here freed that layer (at a
+  // held seam, the incoming keyframe) and left the next access unit to pair
+  // blind, which is the stall this exists to stop.
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
 

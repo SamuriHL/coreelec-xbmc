@@ -2900,6 +2900,9 @@ void CAMLCodec::Reset()
   m_starve_bypass = false;
   m_no_data_since_reset = true;
   m_probe_idle_start = m_probe_last_poll = std::chrono::steady_clock::now();
+  // an idle-input park belongs to the session that was just flushed
+  m_park_start = {};
+  m_park_reported = false;
 
   SetSpeed(m_speed);
 
@@ -3423,8 +3426,15 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // no m_buffer_level_ready term: the drain-dequeue above already ignores
   // the fill gates, so a short segment that never crossed the AddData fill
   // threshold must still complete its drain via the VC_EOF contract
-  // (PLAYER_STARTED for SYNC_STARTING waits on it - review finding F6)
-  else if (m_drain && data_len == 0)
+  // (PLAYER_STARTED for SYNC_STARTING waits on it - review finding F6).
+  // But only once this session has been fed: m_drain is the player's control
+  // flag and survives a flush, so a still that latched DRAIN and was then
+  // flushed would otherwise report end of stream on every poll before the
+  // new segment's first packet - and in SYNC_STARTING each VC_EOF is a
+  // PLAYER_STARTED with no picture, which lets the start sync anchor on audio
+  // alone. Upstream got the same effect from m_buffer_level_ready, which a
+  // Reset clears.
+  else if (m_drain && data_len == 0 && !m_no_data_since_reset)
     return CDVDVideoCodec::VC_EOF;
   else if (ret == EAGAIN &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||

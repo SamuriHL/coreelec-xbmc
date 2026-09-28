@@ -1254,8 +1254,9 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     //
     // m_doviIsFEL is only ever set for a profile 4/7 RPU carrying a FEL
     // enhancement layer, so it is the whole gate - no separate profile test.
-    // It is latched from the first RPU this converter parses, so the very
-    // first access unit of a stream is never padded; stills are mid-title.
+    // It is re-tested on every RPU until it reads FEL and then latched (see
+    // processDoviRpu), so it can switch on mid-title; access units before the
+    // first FEL-reading RPU are never padded. Stills are mid-title.
     const bool felPadding = m_doviIsFEL;
     bool sawIrap = false;
 
