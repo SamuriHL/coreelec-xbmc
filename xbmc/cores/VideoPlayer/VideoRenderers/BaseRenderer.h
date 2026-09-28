@@ -62,6 +62,10 @@ public:
   virtual void AddVideoPicture(const VideoPicture &picture, int index) = 0;
   virtual bool IsPictureHW(const VideoPicture& picture) { return false; }
   virtual void UnInit() = 0;
+  //! Video playback is over (not a reconfigure between segments): release any
+  //! process-wide display state the renderer set up. Called on the render thread
+  //! just before the renderer is deleted by CRenderManager::UnInit.
+  virtual void EndRenderSession() {}
   virtual bool Flush(bool saveBuffers) { return false; }
   virtual void SetBufferSize(int numBuffers) { }
   virtual void ReleaseBuffer(int idx) { }

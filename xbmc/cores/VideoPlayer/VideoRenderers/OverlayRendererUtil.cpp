@@ -288,6 +288,20 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
 
   // Convert to sRGB unless the overlay is going to a PQ destination: the HDR
   // composite, or a GUI layer that is output as an HDR signal.
+  //
+  // On Amlogic GetEotf() is always SDR, so this converts exactly when there is
+  // no composite, and each such case is a destination that is not PQ or a PQ
+  // plane that will be encoded once more downstream:
+  //  - HLG output: the scalar path; the VPP encodes the sRGB plane to HLG. Raw
+  //    PQ cannot be carried in an HLG signal, so converting is required.
+  //  - a composite that failed to build: the GUI falls back to the m_sdrPeak
+  //    scalar encode, which is applied to the plane as a whole; raw PQ pixels
+  //    would be encoded twice.
+  //  - a menu-only disc screen at disc start (no renderer): the display is in
+  //    the GUI's SDR mode, the DV engage released (CheckMenuOnlyStart).
+  // A no-playlist screen in the middle of a session keeps the configured
+  // renderer and its composite (the regime is released only when playback
+  // ends, CRendererAML::EndRenderSession), so it takes the raw route.
   const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   const bool destinationIsPQ =
       winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
