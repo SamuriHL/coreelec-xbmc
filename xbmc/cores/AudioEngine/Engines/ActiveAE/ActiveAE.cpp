@@ -3542,7 +3542,9 @@ bool CActiveAE::CompareFormat(const AEAudioFormat& lhs, const AEAudioFormat& rhs
       lhs.m_sampleRate != rhs.m_sampleRate)
     return false;
   else if (lhs.m_dataFormat == AE_FMT_RAW && rhs.m_dataFormat == AE_FMT_RAW &&
-           lhs.m_streamInfo.m_type != rhs.m_streamInfo.m_type)
+           (lhs.m_streamInfo.m_type != rhs.m_streamInfo.m_type ||
+            // a DTS core size change keeps the type but not the burst period
+            lhs.m_streamInfo.m_dtsFrameSamples != rhs.m_streamInfo.m_dtsFrameSamples))
     return false;
   else
     return true;

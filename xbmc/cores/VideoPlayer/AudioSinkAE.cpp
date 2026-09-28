@@ -105,6 +105,7 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
   m_bPassthrough = audioframe.passthrough;
   m_channelLayout = audioframe.format.m_channelLayout;
   m_dataType = audioframe.format.m_streamInfo.m_type;
+  m_dtsFrameSamples = audioframe.format.m_streamInfo.m_dtsFrameSamples;
 
   return true;
 }
@@ -297,6 +298,13 @@ bool CAudioSinkAE::IsValidFormat(const DVDAudioFrame &audioframe)
 
   if (m_bPassthrough &&
       m_dataType != audioframe.format.m_streamInfo.m_type)
+    return false;
+
+  // A DTS core size change mid-stream (512 <-> 1024 samples) keeps the stream
+  // type but changes the burst duration and IEC period: rebuild the sink, or
+  // the player and the engine run on different frame durations and drift.
+  if (m_bPassthrough &&
+      m_dtsFrameSamples != audioframe.format.m_streamInfo.m_dtsFrameSamples)
     return false;
 
   return true;
