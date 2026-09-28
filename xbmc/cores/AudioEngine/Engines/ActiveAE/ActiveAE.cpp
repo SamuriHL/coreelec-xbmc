@@ -2665,6 +2665,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     stream->m_resampleIntegral = 0;
     stream->m_muteWindows = 0;
     stream->m_mutePhaseWindows = 0;
+    stream->m_mutePauseCarry = 0.0;
     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
     m_syncDbgUntil = std::chrono::steady_clock::now() + std::chrono::seconds(6); // SYNCDBG
   }
@@ -2842,8 +2843,16 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     CSampleBuffer *buf = stream->m_processingBuffers->m_outputSamples.front();
     if (m_mode == MODE_RAW)
     {
+      // Each muted frame must pause for exactly its own duration, or the audio
+      // really drifts against the clock while muted and the settle wait sees a
+      // ramp it cannot settle on. A pause is whole ms: carry the fraction (a
+      // DTS-HD frame is 10.67 ms, so its pauses alternate 10 and 11 ms).
+      const double pause =
+          stream->m_processingBuffers->m_inputFormat.m_streamInfo.GetDuration() +
+          stream->m_mutePauseCarry;
       buf->pkt->nb_samples = 0;
-      buf->pkt->pause_burst_ms = stream->m_processingBuffers->m_inputFormat.m_streamInfo.GetDuration();
+      buf->pkt->pause_burst_ms = static_cast<int>(pause);
+      stream->m_mutePauseCarry = pause - buf->pkt->pause_burst_ms;
     }
     else
     {
