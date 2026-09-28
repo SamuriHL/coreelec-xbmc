@@ -198,8 +198,12 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_pRenderer->SetFps(fps);
         m_bTriggerUpdateResolution = true;
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
-        m_clockSync.Reset();
-        m_dvdClock.ResetVsyncAdjust();
+        {
+          // PrepareNextRender publishes under m_presentlock
+          std::unique_lock presentLock(m_presentlock);
+          m_clockSync.Reset();
+          m_dvdClock.ResetVsyncAdjust();
+        }
         m_lateframes = -1;
       }
       return true;
@@ -495,6 +499,8 @@ void CRenderManager::FrameMove()
 
 void CRenderManager::PreInit()
 {
+  // a new file: any phase still pending belongs to the last one
+  m_dvdClock.ClearVsyncAdjust(true);
   {
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
@@ -1410,7 +1416,11 @@ void CRenderManager::PrepareNextRender()
   }
   else
   {
-    m_clockSync.m_disabledFrames++;
+    // frames shown without sync on a live display only
+    if (m_displayLost)
+      m_clockSync.m_disabledFrames = 0;
+    else if (!isPaused)
+      m_clockSync.m_disabledFrames++;
     m_dvdClock.ClearVsyncAdjust(false);
   }
 
@@ -1574,8 +1584,12 @@ void CRenderManager::CheckEnableClockSync()
     // No phase is coming once the reference clock runs and the rates do not
     // match, or after a window's worth of frames without sync (reference
     // clock off); a relocking display may still enable it.
-    m_dvdClock.ClearVsyncAdjust(!m_displayLost &&
-                                (refClockRunning || m_clockSync.m_disabledFrames > 31));
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    const bool refClockOff =
+        settings && !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK);
+    m_dvdClock.ClearVsyncAdjust(refClockOff ||
+                                (!m_displayLost && (refClockRunning ||
+                                                    m_clockSync.m_disabledFrames > 31)));
   }
 
   m_playerPort->UpdateClockSync(m_clockSync.m_enabled);
