@@ -177,12 +177,9 @@ private:
   // decode a picture and never reach the gate, stranding it in the v4l queue.
   bool            m_starve_bypass = false;
   bool            m_no_data_since_reset = true;
-  // Starve-probe clock: time the fill gate has been shut with no new input while
-  // GetPicture was being polled. Restarted by a dequeue, an open gate, new input,
-  // Reset/Open, and any gap in polling longer than the probe delay (pause,
-  // WAITSYNC, display reset).
+  // Starve-probe clock: wall time since the fill gate was last open or input
+  // last arrived. New input also releases the probe latch (m_starve_bypass).
   std::chrono::steady_clock::time_point m_probe_idle_start{};
-  std::chrono::steady_clock::time_point m_probe_last_poll{};
   uint64_t        m_probe_input_seq = 0;
   uint64_t        m_probe_seen_seq = 0;
   // Profile-7 FEL: CBitstreamConverter pads a tiny IDR access unit with filler

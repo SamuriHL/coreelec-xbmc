@@ -2091,7 +2091,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_abort = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
-  m_probe_idle_start = m_probe_last_poll = m_tp_last_frame;
+  m_probe_idle_start = m_tp_last_frame;
   // Must NOT also be cleared in Reset(): the write-failure recovery calls
   // Reset() itself, so clearing there would restart the give-up deadline on
   // every attempt and it could never expire.
@@ -2899,7 +2899,11 @@ void CAMLCodec::Reset()
   m_buffer_level_ready = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
-  m_probe_idle_start = m_probe_last_poll = std::chrono::steady_clock::now();
+  m_probe_idle_start = std::chrono::steady_clock::now();
+  // the stall timeout measures this session, as after OpenDecoder: left stale,
+  // the first poll after a flush could take the timeout branch (VC_FLUSHED,
+  // twice in a row a full reopen) before the new segment has been fed
+  m_tp_last_frame = m_probe_idle_start;
   // an idle-input park belongs to the session that was just flushed
   m_park_start = {};
   m_park_reported = false;
@@ -3342,30 +3346,45 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
       (m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain;
 
   // A segment can decode a picture without ever crossing the fill threshold and
-  // without draining - a short single-stream clip, or a menu segment. The gate
-  // then never opens, so the picture is never dequeued and sits in the v4l
-  // queue while the plane stays black. Probe below the gate once the decoder
-  // has actually been fed and has produced nothing for longer than a few frame
-  // periods, and latch it for the rest of the segment once it pays off.
+  // without draining - a short single-stream clip, a menu segment, or the tail
+  // of a dual-stream segment below the 10% floor. The gate then never opens, so
+  // the picture is never dequeued and sits in the v4l queue while the plane
+  // stays black. Probe below the gate once input has STOPPED - the decoder has
+  // been fed and nothing new has arrived for a few frame periods - and once it
+  // pays off keep dequeuing at the normal pace (the latch) until input resumes.
+  // New input releases the latch: the floor is for a stream that is flowing,
+  // and a stream that is flowing again gets it back.
   const int frame_ms = std::max(
       1, static_cast<int>((am_private->video_rate * 1000 + UNIT_FREQ - 1) / UNIT_FREQ));
   const auto starve_probe_delay =
       std::max(std::chrono::milliseconds(100), std::chrono::milliseconds(frame_ms * 4));
-  // The probe is for input that has STOPPED below the gate, so it times how long
-  // the gate has been shut with no new input while this function was actually
-  // being polled - not the time since the last picture. Input still arriving
-  // means the floor is being reached (a start fills 1.5 MB in a few hundred ms
-  // and must not be mistaken for a short segment); a display-reset pause,
-  // WAITSYNC (polled every ten frame periods, never fed) or a seek leaves
-  // m_tp_last_frame stale. A probe fired on either would latch and drop the
-  // floor for the rest of the segment. The idle-input park refreshes
-  // m_tp_last_frame on every call, so the probe cannot share that clock either.
+  // The clock is wall time since the gate was last open or input last arrived -
+  // not the time since the last picture, and not reset by gaps between polls:
+  // once input stops, the video thread polls only every ten frame periods, so
+  // any per-poll rule never fires. Input still arriving means the floor is
+  // being reached (a start fills 1.5 MB in a few hundred ms and must not be
+  // taken for a short segment). A probe during a pause, a display reset or
+  // WAITSYNC (never fed) costs one picture below the floor and nothing more,
+  // because the next input releases the latch. The idle-input park refreshes
+  // m_tp_last_frame on every call, so the probe cannot share that clock.
   const auto probe_now = std::chrono::steady_clock::now();
-  if (level_gate_open || m_probe_input_seq != m_probe_seen_seq ||
-      probe_now - m_probe_last_poll > starve_probe_delay)
+  if (m_probe_input_seq != m_probe_seen_seq)
+  {
+    m_probe_seen_seq = m_probe_input_seq;
     m_probe_idle_start = probe_now;
-  m_probe_seen_seq = m_probe_input_seq;
-  m_probe_last_poll = probe_now;
+    if (m_starve_bypass)
+    {
+      m_starve_bypass = false;
+      CLog::Log(LOGDEBUG, LOGVIDEO,
+                "CAMLCodec::GetPicture: input resumed, fill gate back in force [lvl:{:.1f}%]",
+                buffer_level);
+    }
+  }
+  if (level_gate_open)
+  {
+    m_probe_idle_start = probe_now;
+    m_starve_bypass = false;
+  }
   const auto probe_idle =
       std::chrono::duration_cast<std::chrono::milliseconds>(probe_now - m_probe_idle_start);
   const bool starve_probe = !level_gate_open && !m_no_data_since_reset &&
@@ -3384,7 +3403,6 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     }
 
     pVideoPicture->iFlags = 0;
-    m_probe_idle_start = probe_now;
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
