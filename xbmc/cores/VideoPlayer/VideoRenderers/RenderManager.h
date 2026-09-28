@@ -265,6 +265,7 @@ protected:
     bool m_refValid = false;
     bool m_adjustSeeded = false;
     int m_disabledFrames = 0;
+    int m_idleMoves = 0; // FrameMoves with sync on and no frame prepared
     int m_errCount = 0;
     double m_syncOffset = 0.0;
     bool m_enabled = false;

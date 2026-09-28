@@ -119,6 +119,7 @@ void CRenderManager::CClockSync::Reset()
   m_refValid = false;
   m_adjustSeeded = false;
   m_disabledFrames = 0;
+  m_idleMoves = 0;
   m_errCount = 0;
   m_syncOffset = 0;
   m_enabled = false;
@@ -1370,6 +1371,18 @@ void CRenderManager::PrepareNextRender()
     // make the branch choice a per-window coin flip in the straddle case and
     // flap frame selection by a whole frame every window.
     // See docs/s6_truehd_av_drift.md (samurihl tree, not Kodi's docs/).
+    // The clock drops its phase when sync goes off (display lost), on a seek
+    // or clock reset: seed again from this frame, and start a fresh window and
+    // reference, since the samples taken before belong to the old phase.
+    m_clockSync.m_idleMoves = 0;
+    const bool seed = (!m_clockSync.m_adjustSeeded || !m_dvdClock.HasVsyncAdjustPhase()) &&
+                      !isPaused && !m_displayLost;
+    if (seed && m_clockSync.m_adjustSeeded)
+    {
+      m_clockSync.m_error = 0;
+      m_clockSync.m_errCount = 0;
+      m_clockSync.m_refValid = false;
+    }
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
     {
       m_clockSync.m_ref = err;
@@ -1382,17 +1395,8 @@ void CRenderManager::PrepareNextRender()
     // sync that lands in that gap keeps the missing phase (up to half a frame)
     // for the rest of playback. A paused clock or a lost display gives no
     // phase. Frame selection (m_syncOffset) still waits for the window.
-    // The clock drops its phase when sync goes off (display lost) or the clock
-    // is reset: seed again, and start a fresh window, since the samples taken
-    // before belong to the old phase.
-    if ((!m_clockSync.m_adjustSeeded || !m_dvdClock.HasVsyncAdjustPhase()) && !isPaused &&
-        !m_displayLost)
+    if (seed)
     {
-      if (m_clockSync.m_adjustSeeded)
-      {
-        m_clockSync.m_error = 0;
-        m_clockSync.m_errCount = 0;
-      }
       m_clockSync.m_adjustSeeded = true;
       m_dvdClock.SetVsyncAdjust(-err);
     }
@@ -1579,6 +1583,10 @@ void CRenderManager::CheckEnableClockSync()
     diff = std::abs(std::round(diff) - diff);
   }
 
+  // a lost display takes its phase with it; the next one is seeded on return
+  if (m_displayLost)
+    m_dvdClock.ClearVsyncAdjust(false);
+
   // Only phase-center flips / quantize audio corrections to vsync when the AML
   // hardware-vsync reference clock is actually driving CDVDClock. With the
   // clock on system time the fmod-phase average in PrepareNextRender is noise
@@ -1586,6 +1594,13 @@ void CRenderManager::CheckEnableClockSync()
   if (refClockRunning && diff < 0.0005)
   {
     m_clockSync.m_enabled = true;
+    // A phase is pending but no frame is being prepared (a still, or no video
+    // queued): nothing will publish it soon, so a passthrough start must not
+    // wait for it. Counted only while pending, from the drop on.
+    if (!m_dvdClock.IsVsyncAdjustPending() || m_displayLost || m_dvdClock.IsPaused())
+      m_clockSync.m_idleMoves = 0;
+    else if (++m_clockSync.m_idleMoves > 31)
+      m_dvdClock.SettleVsyncAdjust();
   }
   else
   {

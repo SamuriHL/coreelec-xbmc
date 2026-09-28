@@ -178,6 +178,12 @@ void CDVDClock::DropVsyncPhase(bool settled)
   m_vSyncAdjustHasPhase = false;
 }
 
+void CDVDClock::SettleVsyncAdjust()
+{
+  std::unique_lock lock(m_critSection);
+  m_vSyncAdjustPending = false;
+}
+
 bool CDVDClock::HasVsyncAdjustPhase() const
 {
   std::unique_lock lock(m_critSection);
@@ -312,7 +318,8 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
   if (adjustment == 0)
     return 0;
 
-  Discontinuity(clock+adjustment, absolute);
+  // a whole-frame step (or no phase at all): the display phase is unchanged
+  Rebase(clock + adjustment, absolute);
 
   CLog::Log(LOGDEBUG, "CDVDClock::ErrorAdjust - {} - error:{:f}, adjusted:{:f}", log, error,
             adjustment);
@@ -322,6 +329,13 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
 void CDVDClock::Discontinuity(double clock, double absolute)
 {
   std::unique_lock lock(m_critSection);
+  Rebase(clock, absolute);
+  // the clock now stands at an arbitrary point of the display's vsync cadence
+  DropVsyncPhase(false);
+}
+
+void CDVDClock::Rebase(double clock, double absolute)
+{
   m_startClock = AbsoluteToSystem(absolute);
   if(m_pauseClock)
     m_pauseClock = m_startClock;
