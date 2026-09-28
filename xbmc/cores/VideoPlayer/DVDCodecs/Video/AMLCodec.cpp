@@ -3360,9 +3360,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // frame periods): a shorter probe let an input hiccup (WiFi) dequeue a BL
   // before the next access unit had arrived, i.e. before its EL could
   // complete - the miss the 10% floor exists to prevent.
-  const auto starve_probe_delay =
+  // Before the session has started (the stream-mode 90% START fill not yet
+  // reached) a probe that pays off also ends that start cushion for good - see
+  // the promotion below - so there it waits for a full second without input:
+  // a still or a short segment has stopped for good by then, while a WiFi/NAS
+  // read gap while the fill builds usually has not.
+  auto starve_probe_delay =
       std::max(std::chrono::milliseconds(100),
                std::chrono::milliseconds(frame_ms * (m_skipBufferFillGate ? 10 : 4)));
+  // (Stream mode only: that is where the 90% start gate exists. Frame-mode
+  // menu stills keep the short probe.)
+  if (!m_buffer_level_ready && streambuffer)
+    starve_probe_delay = std::max(starve_probe_delay, std::chrono::milliseconds(1000));
   // The clock is wall time since the gate was last open or input last arrived -
   // not the time since the last picture, and not reset by gaps between polls:
   // once input stops, the video thread polls only every ten frame periods, so
