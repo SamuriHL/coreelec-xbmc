@@ -1380,14 +1380,18 @@ void CRenderManager::PrepareNextRender()
     // before belong to the old phase. A value measured across a drop is
     // refused by the clock (the generation it carries is stale).
     m_clockSync.m_idleMoves = 0;
-    const unsigned int phaseGeneration = m_dvdClock.GetVsyncPhaseGeneration();
+    bool clockHasPhase = false;
+    const unsigned int phaseGeneration = m_dvdClock.GetVsyncPhaseGeneration(clockHasPhase);
     if (phaseGeneration != m_clockSync.m_phaseGeneration)
     {
       m_clockSync.m_phaseGeneration = phaseGeneration;
       m_clockSync.m_error = 0;
       m_clockSync.m_errCount = 0;
       m_clockSync.m_refValid = false;
-      m_clockSync.m_adjustSeeded = false;
+      // a phase carried across a pause needs no seed (and a seed a moment
+      // after the resume would step it under the audio's landing): the first
+      // window replaces it
+      m_clockSync.m_adjustSeeded = clockHasPhase;
       m_clockSync.m_seedSum = 0;
       m_clockSync.m_seedCount = 0;
       m_clockSync.m_seedPrevValid = false;

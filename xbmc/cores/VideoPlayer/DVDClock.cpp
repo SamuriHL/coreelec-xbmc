@@ -213,9 +213,10 @@ void CDVDClock::SettleVsyncAdjust()
   m_vSyncAdjustPending = false;
 }
 
-unsigned int CDVDClock::GetVsyncPhaseGeneration() const
+unsigned int CDVDClock::GetVsyncPhaseGeneration(bool& hasPhase) const
 {
   std::unique_lock lock(m_critSection);
+  hasPhase = m_vSyncAdjustHasPhase;
   return m_vSyncPhaseGeneration;
 }
 
