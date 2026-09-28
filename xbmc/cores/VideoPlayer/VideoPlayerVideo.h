@@ -126,7 +126,6 @@ protected:
   std::atomic_bool m_leadWanted{false};
   std::atomic_bool m_leadBlocked{true};
   std::atomic_bool m_leadAllowQueued{false};
-  std::atomic_int m_leadAllowGen{0};
   // render saturation, reset at every discontinuity in output
   bool m_leadRenderBlockedOnce = false;
   int m_leadRenderLevel = 0;
