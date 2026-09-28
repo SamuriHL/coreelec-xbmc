@@ -1382,8 +1382,17 @@ void CRenderManager::PrepareNextRender()
     // sync that lands in that gap keeps the missing phase (up to half a frame)
     // for the rest of playback. A paused clock or a lost display gives no
     // phase. Frame selection (m_syncOffset) still waits for the window.
-    if (!m_clockSync.m_adjustSeeded && !isPaused && !m_displayLost)
+    // The clock drops its phase when sync goes off (display lost) or the clock
+    // is reset: seed again, and start a fresh window, since the samples taken
+    // before belong to the old phase.
+    if ((!m_clockSync.m_adjustSeeded || !m_dvdClock.HasVsyncAdjustPhase()) && !isPaused &&
+        !m_displayLost)
     {
+      if (m_clockSync.m_adjustSeeded)
+      {
+        m_clockSync.m_error = 0;
+        m_clockSync.m_errCount = 0;
+      }
       m_clockSync.m_adjustSeeded = true;
       m_dvdClock.SetVsyncAdjust(-err);
     }

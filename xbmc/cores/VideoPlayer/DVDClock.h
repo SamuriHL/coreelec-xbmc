@@ -58,12 +58,16 @@ public:
   void ClearVsyncAdjust(bool settled);
   //! the renderer was reset and has not published this display's phase yet
   bool IsVsyncAdjustPending() const;
+  //! a display phase is published (false after a reset or clear)
+  bool HasVsyncAdjustPhase() const;
 
   void Pause(bool pause);
   bool IsPaused() const;
   void Advance(double time);
 
 protected:
+  //! caller holds m_critSection
+  void DropVsyncPhase(bool settled);
   double SystemToAbsolute(int64_t system) const;
   int64_t AbsoluteToSystem(double absolute) const;
   double SystemToPlaying(int64_t system);
