@@ -282,6 +282,13 @@ void CBlurayDiscCache::ClearDisc(const std::string& path)
   m_cache.erase(GetDiscKey(path));
 }
 
+void CBlurayDiscCache::ClearMenuStatedEpisodes()
+{
+  std::unique_lock lock(m_cs);
+  for (auto& [path, disc] : m_cache)
+    disc.menuStatedEpisodes.reset();
+}
+
 void CBlurayDiscCache::Clear()
 {
   std::unique_lock lock(m_cs);

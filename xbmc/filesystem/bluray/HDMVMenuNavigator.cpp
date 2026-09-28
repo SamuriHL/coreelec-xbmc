@@ -11,7 +11,9 @@
 #include "BitReader.h"
 #include "MPLSParser.h"
 #include "PlaylistStructure.h"
+#include "ServiceBroker.h"
 #include "URL.h"
+#include "filesystem/BlurayDiscCache.h"
 #include "filesystem/DiscDirectoryHelper.h"
 #include "filesystem/File.h"
 #include "utils/URIUtils.h"
@@ -294,7 +296,7 @@ constexpr std::array<uint32_t, 128> MakePsrDefaults()
   // ApplyUHDCapabilities always reports (HDR10 output; UHD + HDR10 display),
   // until SetPlayerCapabilityPsrs supplies the real ones
   psr[25] = 0x01;
-  psr[26] = 0x03;
+  psr[26] = 0x02; // bit 0 (UHD display) only when a 2160p mode exists
   psr[27] = 0x01;
   psr[29] = 0x3; // video capability
   psr[30] = 0x1ffff; // TextST capability
@@ -1064,11 +1066,20 @@ void CHDMVMenuNavigator::SetPlayerCapabilityPsrs(uint32_t psr15,
                                                  uint32_t psr26,
                                                  uint32_t psr27)
 {
+  const bool changed = !g_capabilityPsrsValid || g_psr15 != psr15 || g_psr25 != psr25 ||
+                       g_psr26 != psr26 || g_psr27 != psr27;
   g_psr15 = psr15;
   g_psr25 = psr25;
   g_psr26 = psr26;
   g_psr27 = psr27;
   g_capabilityPsrsValid = true;
+  // Episode lists simulated with the previous values no longer describe what
+  // the disc's program would do on this player.
+  if (changed)
+  {
+    if (auto cache = CServiceBroker::GetBlurayDiscCache())
+      cache->ClearMenuStatedEpisodes();
+  }
 }
 
 CHDMVMenuNavigator::MenuStatedEpisodes CHDMVMenuNavigator::GetMenuStatedEpisodes(
