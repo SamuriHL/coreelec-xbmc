@@ -191,7 +191,6 @@ public:
   void UpdateSinkDelay(const AEDelayStatus& status, int samples, int pauseMs = 0);
   void AddSamples(int samples, const std::list<CActiveAEStream*>& streams, int pauseMs = 0);
   void GetDelay(AEDelayStatus& status);
-  void GetDelayParts(double& sinkDelay, int& buffered); // SYNCDBG
   void AddStream(unsigned int streamid);
   void RemoveStream(unsigned int streamid);
   void UpdateStream(CActiveAEStream *stream);
@@ -383,8 +382,6 @@ protected:
   AEAudioFormat m_inputFormat;
   AudioSettings m_settings;
   CEngineStats m_stats;
-  std::chrono::steady_clock::time_point m_syncDbgUntil{}; // SYNCDBG
-  std::chrono::steady_clock::time_point m_syncDbgLast{}; // SYNCDBG
   IAEEncoder *m_encoder;
   std::string m_currDevice;
   std::string m_openedDevice;
