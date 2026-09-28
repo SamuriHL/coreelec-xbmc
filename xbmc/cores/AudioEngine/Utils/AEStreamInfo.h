@@ -44,6 +44,8 @@ public:
   unsigned int m_channels;
   bool m_dataIsLE = true;
   unsigned int m_dtsPeriod = 0;
+  //! Samples per DTS core frame (32 x the frame's PCM blocks), 0 if unknown.
+  unsigned int m_dtsFrameSamples = 0;
   unsigned int m_repeat = 0;
   unsigned int m_frameSize = 0;
 

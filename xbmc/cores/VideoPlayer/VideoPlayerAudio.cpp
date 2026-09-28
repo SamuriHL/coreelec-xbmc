@@ -964,6 +964,13 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 
   // LAV Audio: configure sync on the freshly created codec (passthrough only)
   ConfigureLavAudioSync();
+  // ...and the PCM jitter tracker, decided at OpenStream from the codec that
+  // was open then: a stream that opened as passthrough and a display reset
+  // switched to decoded PCM would otherwise play without it. The new codec's
+  // clock starts from the next valid timestamp.
+  m_lavStylePcmSyncEnabled =
+      !m_pAudioCodec->NeedPassthrough() && !m_processInfo.IsRealtimeStream();
+  m_pcmResyncTimestamp = true;
 
   return true;
 }
