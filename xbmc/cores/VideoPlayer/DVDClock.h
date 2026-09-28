@@ -60,6 +60,8 @@ public:
   bool IsVsyncAdjustPending() const;
   //! a display phase is published (false after a reset or clear)
   bool HasVsyncAdjustPhase() const;
+  //! no phase is coming soon (no frame is being played): stop waiting for one
+  void SettleVsyncAdjust();
 
   void Pause(bool pause);
   bool IsPaused() const;
@@ -68,6 +70,8 @@ public:
 protected:
   //! caller holds m_critSection
   void DropVsyncPhase(bool settled);
+  //! caller holds m_critSection
+  void Rebase(double clock, double absolute);
   double SystemToAbsolute(int64_t system) const;
   int64_t AbsoluteToSystem(double absolute) const;
   double SystemToPlaying(int64_t system);
