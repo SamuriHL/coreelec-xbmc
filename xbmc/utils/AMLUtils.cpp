@@ -7,6 +7,7 @@
  */
 
 #include <atomic>
+#include <mutex>
 #include <fcntl.h>
 #include <regex>
 #include <string.h>
@@ -646,7 +647,15 @@ bool aml_dv_wire_format_mismatch()
 
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
-static bool s_dv_disc_session = false;
+static std::atomic<bool> s_dv_disc_session{false};
+// Serialises the disc-session engage (GUI thread, from CreateNewWindow) against
+// the release and the session end (player thread). Each is a check followed by
+// ordered sysfs writes; unserialised, a release running inside an engage saw
+// "not engaged yet" and returned, and the engage then finished - forcing DV
+// output and the VSIF hold onto a native HDR10 title (the known black screen),
+// or leaving forced DV behind after the session. Recursive because ending the
+// session runs the release.
+static std::recursive_mutex s_dv_disc_mutex;
 // atomic: written on the CVideoPlayer thread, read from CAMLCodec::Open/CloseDecoder
 // on the CVideoPlayerVideo thread (the in-playback codec-reopen path). Every
 // session guard keys on this read.
@@ -657,6 +666,7 @@ static std::atomic<bool> s_dv_disc_engaged = false;
 static std::atomic<bool> s_dv_disc_engage_pending{false};
 void aml_dv_set_disc_session(bool active)
 {
+  std::unique_lock lock(s_dv_disc_mutex);
   const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
   if (!active)
@@ -764,6 +774,10 @@ void aml_dv_pre_engage_disc_session()
 void aml_dv_engage_pending_disc_session(bool dvPicture)
 {
   if (!s_dv_disc_engage_pending || !dvPicture)
+    return;
+  std::unique_lock lock(s_dv_disc_mutex);
+  // re-check under the lock: a release or session end may have cleared it
+  if (!s_dv_disc_engage_pending)
     return;
   s_dv_disc_engage_pending = false;
   // the stream's own resolved output (CAMLCodec::OpenDecoder) decides: a DV
@@ -882,6 +896,7 @@ void aml_dv_recover_stale_disc_session()
 
 void aml_dv_release_disc_engage()
 {
+  std::unique_lock lock(s_dv_disc_mutex);
   s_dv_disc_engage_pending = false;
   if (!s_dv_disc_engaged)
     return;

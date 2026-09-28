@@ -64,6 +64,10 @@ public:
   virtual void UnInit() = 0;
   //! Called before the renderer is deleted to be replaced by a new one for the same playback.
   virtual void PrepareForReconfigure() {}
+  //! Video playback is over (not a reconfigure between segments): release any
+  //! process-wide display state the renderer set up. Called on the render thread
+  //! just before the renderer is deleted by CRenderManager::UnInit.
+  virtual void EndRenderSession() {}
   virtual bool Flush(bool saveBuffers) { return false; }
   virtual void SetBufferSize(int numBuffers) { }
   virtual void ReleaseBuffer(int idx) { }

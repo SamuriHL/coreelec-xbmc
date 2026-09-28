@@ -78,7 +78,6 @@ public:
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
   bool CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result);
 
-  RESOLUTION GetResolution();
   void UpdateResolution();
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
   void SetViewMode(int iViewMode);

@@ -449,6 +449,7 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
     m_hdrFboWidth = 0;
     m_hdrFboHeight = 0;
     m_hdrFboHasContent = false;
+    m_hdrFboUnavailable = false;
     m_compositeShader.reset();
   }
 
@@ -459,6 +460,13 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
 {
   if (!CRenderSystemGLES::BeginRender())
     return false;
+
+  // The HDR overlay FBO holds content only for the frame whose video pass drew
+  // it (EndHdrOverlayRender sets this again). Without the reset, a window with
+  // no video pass - the user backing out to a skin window without a
+  // videowindow, or RenderWithoutPicture returning early - kept compositing the
+  // last subtitle/menu frame under the GUI until playback stopped.
+  m_hdrFboHasContent = false;
 
   // CApplication::Render runs the video pass (RenderEx) before the GUI here. HDR
   // overlays go to their own FBO when it can be created (BeginHdrOverlayRender)
@@ -587,6 +595,7 @@ bool CWinSystemAmlogicGLESContext::BeginHdrOverlayRender()
       m_hdrFboWidth = 0;
       m_hdrFboHeight = 0;
       m_hdrFboHasContent = false;
+      m_hdrFboUnavailable = true;
       return false;
     }
     m_hdrFboWidth = width;
@@ -596,7 +605,11 @@ bool CWinSystemAmlogicGLESContext::BeginHdrOverlayRender()
   }
 
   if (!m_hdrFbo.BeginRender())
+  {
+    m_hdrFboUnavailable = true;
     return false;
+  }
+  m_hdrFboUnavailable = false;
 
   // the scissor box still holds whatever the previous frame's GUI left
   glDisable(GL_SCISSOR_TEST);

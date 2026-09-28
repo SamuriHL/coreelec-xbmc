@@ -15,6 +15,7 @@ class CRendererAML : public CBaseRenderer
 public:
   CRendererAML();
   virtual ~CRendererAML();
+  void EndRenderSession() override;
 
   // Registration
   static CBaseRenderer* Create(CVideoBuffer *buffer);

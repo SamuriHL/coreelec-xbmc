@@ -35,8 +35,20 @@ CRendererAML::CRendererAML()
 CRendererAML::~CRendererAML()
 {
   Reset();
+}
+
+void CRendererAML::EndRenderSession()
+{
   // GUI returns to sRGB - tear down the HDR FBO composite (if any), clear the
   // per-primitive PQ flag, and restore the matching core2 graphics declaration.
+  //
+  // Only when playback ends, never in the destructor: CRenderManager::Configure
+  // deletes and recreates the renderer for every new video segment, and doing
+  // this there flipped graphic_fmt to SDR and OSD passthrough off mid-session,
+  // freed both GUI FBOs and recompiled the composite, with the last PQ menu or
+  // subtitle frame still on the OSD plane - dimmed on DV, re-encoded on HDR10
+  // until the next Configure put it back. The next segment's Configure sets
+  // the regime it needs; a change of regime is written there.
   CServiceBroker::GetWinSystem()->SetGuiCompositing(0);
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
