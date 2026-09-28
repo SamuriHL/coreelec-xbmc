@@ -297,6 +297,13 @@ void CBlurayDiscCache::CheckDisc(const std::string& path, const std::string& fin
   FindOrCreate(path).fingerprint = fingerprint;
 }
 
+void CBlurayDiscCache::ClearMenuStatedEpisodes()
+{
+  std::unique_lock lock(m_cs);
+  for (auto& [path, disc] : m_cache)
+    disc.menuStatedEpisodes.reset();
+}
+
 void CBlurayDiscCache::Clear()
 {
   std::unique_lock lock(m_cs);
