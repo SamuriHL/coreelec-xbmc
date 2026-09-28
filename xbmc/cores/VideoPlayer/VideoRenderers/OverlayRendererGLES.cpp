@@ -315,9 +315,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
 
     int x0 = 0;
     int y0 = 0;
-    int x1 = 0;
-    int y1 = 0;
-    FindVisibleBox(o.pixels.data(), o.linesize, o.width, o.height, lut, x0, y0, x1, y1);
+    int x1 = o.width;
+    int y1 = o.height;
+    // an empty bitmap has no texel to find a box in (the box would be 1x1)
+    if (o.width > 0 && o.height > 0 && !o.pixels.empty())
+      FindVisibleBox(o.pixels.data(), o.linesize, o.width, o.height, lut, x0, y0, x1, y1);
     const int width = x1 - x0;
     const int height = y1 - y0;
     if (width != o.width || height != o.height)
