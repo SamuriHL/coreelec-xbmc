@@ -97,6 +97,12 @@ bool CAEStreamInfo::operator==(const CAEStreamInfo& info) const
     return false;
   if (m_repeat != info.m_repeat)
     return false;
+  // A DTS core size change mid-stream changes the burst duration and the IEC
+  // period: it is a new format, so the sink is rebuilt rather than the player
+  // and the engine running on different frame durations. Both are 0 for
+  // everything but DTS.
+  if (m_dtsFrameSamples != info.m_dtsFrameSamples || m_dtsPeriod != info.m_dtsPeriod)
+    return false;
   return true;
 }
 
