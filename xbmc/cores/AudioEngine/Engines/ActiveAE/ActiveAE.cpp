@@ -2685,11 +2685,11 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // at the same target - bounded by m_resumeSyncChecks so a genuinely
     // unstable basis degrades to upstream behavior instead of chasing noise.
     // `error` is already shifted by the target here.
-    // The band is a whole frame, not the landing's half frame: this re-land
-    // runs seconds into audible playback and can only move whole frames, so a
-    // sub-frame residual (measured 2026-09-24, TrueHD: 11.8/12.1ms against an
-    // 11ms band) was traded for an audible dropout. The multi-frame parks this
-    // exists for (45ms) are still caught.
+    // The band is a whole frame + 1, not the landing's half frame: this re-land
+    // runs seconds into audible playback and can only move whole frames, so it
+    // acts only when one whole-frame move reduces the residual. Both sides are
+    // in the measurement's unit (TrueHD: 9 scaled per frame, band 10 = 22 ms
+    // real).
     double confirmBand = 30.0;
     const double frameError = stream->m_format.m_streamInfo.GetDuration() * errorScale;
     if (frameError > 0.0)
@@ -2762,8 +2762,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     }
   }
   else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE &&
-           m_mode == MODE_RAW && stream->m_muteWindows < 10 &&
-           (stream->m_muteWindows == 0 ||
+           m_mode == MODE_RAW && stream->m_muteWindows < 9 &&
+           (stream->m_muteWindows == 0 || stream->m_syncError.LastWindowEmpty() ||
             std::abs(error - stream->m_muteLastError) >
                 stream->m_format.m_streamInfo.GetDuration() * errorScale * 0.5 + 1.0))
   {
@@ -2773,7 +2773,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     // lands off by that lag). Stay muted until two consecutive windows agree
     // to within the walk's own resolution, for at most a second.
     stream->m_muteWindows++;
-    stream->m_muteLastError = error;
+    // a window without samples (stalled sink) reads 0.0: not a measurement
+    if (!stream->m_syncError.LastWindowEmpty())
+      stream->m_muteLastError = error;
     CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - muted window {} error {:f}, waiting to settle",
               stream->m_muteWindows, error);
   }
@@ -2928,6 +2930,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       if (stream->m_lastSyncError > threshold * 2)
       {
         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
+        stream->m_muteWindows = 0;
         stream->m_syncError.Flush(100ms);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
                   error, stream->m_lastSyncError);
