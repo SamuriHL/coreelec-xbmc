@@ -39,7 +39,10 @@
 
 #include <linux/fb.h>
 #include <poll.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <xf86drm.h>
 
 #include "system_egl.h"
 
@@ -795,4 +798,29 @@ void CWinSystemAmlogic::Unregister(IDispResource *resource)
   std::vector<IDispResource*>::iterator i = find(m_resources.begin(), m_resources.end(), resource);
   if (i != m_resources.end())
     m_resources.erase(i);
+}
+
+float CWinSystemAmlogic::GetFrameLatencyAdjustment()
+{
+  // Milliseconds since the last hardware vblank. The render manager subtracts
+  // it from the display latency so a frame-phase sample is referenced to the
+  // vblank, not to whenever the render loop reached it.
+  const int fd = GetDRMDeviceFd();
+  const uint32_t crtc = GetDRMCrtcId();
+  if (fd < 0 || crtc == 0)
+    return 0.0f;
+
+  uint64_t sequence = 0;
+  uint64_t vblankNs = 0;
+  if (drmCrtcGetSequence(fd, crtc, &sequence, &vblankNs) != 0)
+    return 0.0f;
+
+  struct timespec now = {};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  const int64_t sinceNs =
+      static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec - static_cast<int64_t>(vblankNs);
+  // a stale sequence (CRTC off, mid mode set) is not a phase
+  if (sinceNs < 0 || sinceNs > 100000000)
+    return 0.0f;
+  return static_cast<float>(sinceNs) / 1000000.0f;
 }

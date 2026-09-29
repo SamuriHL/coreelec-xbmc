@@ -48,6 +48,7 @@ public:
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
   float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
+  float GetFrameLatencyAdjustment() override;
 
   virtual void Register(IDispResource *resource);
   virtual void Unregister(IDispResource *resource);
