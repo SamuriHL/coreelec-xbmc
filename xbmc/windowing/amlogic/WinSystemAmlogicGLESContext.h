@@ -19,6 +19,7 @@
 #include <vector>
 
 class CPresentationCoordinator;
+class CGraphicsPlaneAML;
 struct gbm_bo;
 
 class CGuiCompositeShaderGLES;
@@ -125,6 +126,7 @@ private:
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
 
   std::unique_ptr<CPresentationCoordinator> m_coordinator;
+  std::unique_ptr<CGraphicsPlaneAML> m_graphicsPlane;
   //! GUI buffers locked for the coordinator, not yet released
   int m_guiLocked{0};
   std::vector<gbm_bo*> m_guiReturned;

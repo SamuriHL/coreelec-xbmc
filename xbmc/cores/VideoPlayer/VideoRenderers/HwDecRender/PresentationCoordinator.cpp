@@ -168,7 +168,8 @@ void CPresentationCoordinator::Stop()
 
   {
     std::unique_lock lock(m_uiMutex);
-    Drop(m_ready);
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+      Drop(plane, m_planes[plane].ready);
   }
   close(m_vblankFd);
   close(m_wakeFd);
@@ -213,21 +214,28 @@ void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
   m_videoAttached = false;
 }
 
-uint64_t CPresentationCoordinator::SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence)
+uint64_t CPresentationCoordinator::Submit(
+    int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence)
 {
   uint64_t seq;
   {
     std::unique_lock lock(m_uiMutex);
-    if (m_ready.bo)
+    UiBuffer& ready = m_planes[plane].ready;
+    if (ready.req)
     {
-      Drop(m_ready);
-      m_report.uiReplaced++;
+      Drop(plane, ready);
+      if (plane == PLANE_UI)
+        m_report.uiReplaced++;
     }
-    m_ready.bo = bo;
-    m_ready.req = req;
-    m_ready.fence = fence;
-    m_ready.seq = seq = ++m_submitSeq;
-    m_report.uiSubmits++;
+    ready.bo = bo;
+    ready.fb = fb;
+    ready.req = req;
+    ready.fence = fence;
+    ready.seq = seq = ++m_submitSeq;
+    if (plane == PLANE_UI)
+      m_report.uiSubmits++;
+    else
+      m_report.gfxSubmits++;
   }
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
@@ -238,38 +246,82 @@ uint64_t CPresentationCoordinator::SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req,
 bool CPresentationCoordinator::WaitTaken(uint64_t seq, std::chrono::milliseconds timeout)
 {
   std::unique_lock lock(m_uiMutex);
-  return m_uiCond.wait_for(lock, timeout, [&] { return m_ready.seq != seq; });
+  return m_uiCond.wait_for(lock, timeout, [&] {
+    for (const PlaneState& state : m_planes)
+      if (state.ready.seq == seq)
+        return false;
+    return true;
+  });
 }
 
-void CPresentationCoordinator::TakeReturned(std::vector<gbm_bo*>& returned)
+void CPresentationCoordinator::TakeReturned(int plane, std::vector<gbm_bo*>& returned)
 {
   std::unique_lock lock(m_uiMutex);
-  returned.insert(returned.end(), m_returned.begin(), m_returned.end());
-  m_returned.clear();
+  std::vector<gbm_bo*>& from = m_planes[plane].returned;
+  returned.insert(returned.end(), from.begin(), from.end());
+  from.clear();
 }
 
-void CPresentationCoordinator::DetachUiSurface()
+void CPresentationCoordinator::DetachSurface(int plane)
 {
   // parked, and no flip in flight
   CAmlPresenterHold hold;
   std::unique_lock lock(m_uiMutex);
+  PlaneState& state = m_planes[plane];
   // A commit that outlived a timed-out hold belongs to this surface: its
   // buffer and its flip are dropped, never handed to the next surface.
-  m_uiGeneration++;
-  Drop(m_ready);
-  if (m_inCommit)
-    m_returned.push_back(m_inCommit);
-  if (m_onScreen)
-    m_returned.push_back(m_onScreen);
-  m_inCommit = nullptr;
-  m_inCommitTag = 0;
-  m_onScreen = nullptr;
+  state.generation++;
+  Drop(plane, state.ready);
+  if (state.committedBo)
+    state.returned.push_back(state.committedBo);
+  if (state.onScreen)
+    state.returned.push_back(state.onScreen);
+  state.inCommit = false;
+  state.committedBo = nullptr;
+  state.committedFb = 0;
+  state.onScreen = nullptr;
+  state.onScreenFb = 0;
 }
 
-void CPresentationCoordinator::Drop(UiBuffer& buffer)
+bool CPresentationCoordinator::DisableGraphicsPlane(
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
+{
+  // parked, and no flip in flight: this thread owns the commit
+  CAmlPresenterHold hold;
+  uint32_t primaryFb;
+  {
+    std::unique_lock lock(m_uiMutex);
+    primaryFb = m_planes[PLANE_UI].onScreenFb;
+  }
+  bool done = false;
+  if (drmModeAtomicReqPtr req = build(primaryFb))
+  {
+    done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
+    if (!done)
+      CLog::Log(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
+                strerror(errno));
+    drmModeAtomicFree(req);
+  }
+  std::unique_lock lock(m_uiMutex);
+  PlaneState& state = m_planes[PLANE_GRAPHICS];
+  state.generation++;
+  Drop(PLANE_GRAPHICS, state.ready);
+  if (state.committedBo)
+    state.returned.push_back(state.committedBo);
+  if (state.onScreen)
+    state.returned.push_back(state.onScreen);
+  state.inCommit = false;
+  state.committedBo = nullptr;
+  state.committedFb = 0;
+  state.onScreen = nullptr;
+  state.onScreenFb = 0;
+  return done;
+}
+
+void CPresentationCoordinator::Drop(int plane, UiBuffer& buffer)
 {
   if (buffer.bo)
-    m_returned.push_back(buffer.bo);
+    m_planes[plane].returned.push_back(buffer.bo);
   if (buffer.req)
     drmModeAtomicFree(buffer.req);
   if (buffer.fence >= 0)
@@ -281,7 +333,7 @@ void CPresentationCoordinator::Drop(UiBuffer& buffer)
 bool CPresentationCoordinator::UiInFlight()
 {
   std::unique_lock lock(m_uiMutex);
-  if (!m_inCommit)
+  if (!m_inFlight)
     return false;
   // A flip that never came (CRTC off mid-flight) no longer blocks a hold. Its
   // buffers stay where they are: only its own flip event retires them.
@@ -291,7 +343,7 @@ bool CPresentationCoordinator::UiInFlight()
   {
     m_flipLostLogged = true;
     m_report.uiLostFlips++;
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - no flip event 500 ms after a GUI commit");
+    CLog::Log(LOGWARNING, "CPresentationCoordinator - no flip event 500 ms after a plane commit");
   }
   return false;
 }
@@ -323,23 +375,27 @@ void CPresentationCoordinator::Process()
     if (video)
       QueueVblank(epoch);
 
-    int fence;
-    uint64_t fenceSeq;
+    int fence[PLANE_COUNT];
+    uint64_t fenceSeq[PLANE_COUNT];
     bool inFlight;
     {
       std::unique_lock lock(m_uiMutex);
-      fence = m_ready.fence;
-      fenceSeq = m_ready.seq;
-      inFlight = m_inCommit != nullptr;
+      for (int plane = 0; plane < PLANE_COUNT; plane++)
+      {
+        fence[plane] = m_planes[plane].ready.fence;
+        fenceSeq[plane] = m_planes[plane].ready.seq;
+      }
+      inFlight = m_inFlight;
     }
 
-    struct pollfd fds[4] = {{m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0},
-                            {-1, POLLIN, 0}};
+    struct pollfd fds[3 + PLANE_COUNT] = {
+        {m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0}};
     if (video)
       fds[2].fd = m_vblankFd;
-    fds[3].fd = fence;
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+      fds[3 + plane] = {fence[plane], POLLIN, 0};
     const int timeout = held ? 20 : (video || inFlight ? 50 : -1);
-    if (poll(fds, 4, timeout) < 0 && errno != EINTR)
+    if (poll(fds, 3 + PLANE_COUNT, timeout) < 0 && errno != EINTR)
       CLog::Log(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
     if (m_bStop)
       break;
@@ -351,14 +407,17 @@ void CPresentationCoordinator::Process()
         CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake read failed: {}", strerror(errno));
     }
 
-    if (fds[3].revents & (POLLIN | POLLERR))
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
     {
+      if (!(fds[3 + plane].revents & (POLLIN | POLLERR)))
+        continue;
       std::unique_lock lock(m_uiMutex);
+      UiBuffer& ready = m_planes[plane].ready;
       // the same submit: its fd may have been closed and the number reused
-      if (m_ready.seq == fenceSeq && m_ready.fence == fence)
+      if (ready.seq == fenceSeq[plane] && ready.fence == fence[plane])
       {
-        close(m_ready.fence);
-        m_ready.fence = -1;
+        close(ready.fence);
+        ready.fence = -1;
       }
     }
 
@@ -463,15 +522,38 @@ void CPresentationCoordinator::CommitUi()
 {
   {
     std::unique_lock lock(m_uiMutex);
-    // one commit in flight, and only a buffer the GPU has finished; its flip
-    // can land before the worker is back from the ioctl
-    if (!m_ready.bo || m_ready.fence >= 0 || m_inCommit || m_committing.req)
+    // one commit in flight across both planes; its flip can land before the
+    // worker is back from the ioctl
+    if (m_inFlight || m_committing.req)
+      return;
+    // every plane with a submit whose GPU work is done goes in the one commit;
+    // a plane left out keeps what it shows (R3)
+    Committing commit;
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+    {
+      UiBuffer& ready = m_planes[plane].ready;
+      if (!ready.req || ready.fence >= 0)
+        continue;
+      if (!commit.req)
+        commit.req = ready.req;
+      else
+      {
+        drmModeAtomicMerge(commit.req, ready.req);
+        drmModeAtomicFree(ready.req);
+      }
+      commit.has[plane] = true;
+      commit.bo[plane] = ready.bo;
+      commit.generation[plane] = m_planes[plane].generation;
+      m_planes[plane].inCommit = true;
+      m_planes[plane].committedBo = ready.bo;
+      m_planes[plane].committedFb = ready.bo ? ready.fb : m_planes[plane].onScreenFb;
+      ready = UiBuffer();
+    }
+    if (!commit.req)
       return;
     // in flight from here: the flip event can arrive before the ioctl returns
-    m_committing = m_ready;
-    m_ready = UiBuffer();
-    m_committingGeneration = m_uiGeneration;
-    m_inCommit = m_committing.bo;
+    m_committing = commit;
+    m_inFlight = true;
     m_inCommitTag = ++m_commitTagSeq;
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
@@ -491,34 +573,48 @@ void CPresentationCoordinator::CommitWorker()
       m_uiCond.wait(lock);
       continue;
     }
-    UiBuffer buffer = m_committing;
-    const uint64_t generation = m_committingGeneration;
+    const Committing commit = m_committing;
     const uint64_t tag = m_inCommitTag;
     lock.unlock();
 
     const int64_t start = MonotonicNs();
-    const int ret = drmModeAtomicCommit(m_masterFd, buffer.req,
+    const int ret = drmModeAtomicCommit(m_masterFd, commit.req,
                                         DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
                                         reinterpret_cast<void*>(static_cast<uintptr_t>(tag)));
     const int err = errno;
     const double took = static_cast<double>(MonotonicNs() - start) / 1000.0;
-    drmModeAtomicFree(buffer.req);
+    drmModeAtomicFree(commit.req);
 
     lock.lock();
-    m_committing = UiBuffer();
+    m_committing = Committing();
     m_report.commitMax = std::max(m_report.commitMax, took);
     m_report.commitHist[took < 1000.0 ? 0 : took < 5000.0 ? 1 : took < 20000.0 ? 2 : 3]++;
     if (ret == 0)
-      m_report.uiCommits++;
-    // a failed commit is never shown: back to the render thread, unless its
-    // surface is gone
-    else if (generation == m_uiGeneration && m_inCommitTag == tag)
     {
-      m_inCommit = nullptr;
+      if (commit.has[PLANE_UI])
+        m_report.uiCommits++;
+      if (commit.has[PLANE_GRAPHICS])
+        m_report.gfxCommits++;
+    }
+    // a failed commit is never shown: its buffers go back to their producers,
+    // unless their surface is gone
+    else if (m_inFlight && m_inCommitTag == tag)
+    {
+      m_inFlight = false;
       m_inCommitTag = 0;
-      m_returned.push_back(buffer.bo);
+      for (int plane = 0; plane < PLANE_COUNT; plane++)
+      {
+        PlaneState& state = m_planes[plane];
+        if (!commit.has[plane] || commit.generation[plane] != state.generation)
+          continue;
+        if (state.committedBo)
+          state.returned.push_back(state.committedBo);
+        state.inCommit = false;
+        state.committedBo = nullptr;
+        state.committedFb = 0;
+      }
       if (m_report.uiFailed++ < 3)
-        CLog::Log(LOGWARNING, "CPresentationCoordinator - GUI plane commit failed: {}",
+        CLog::Log(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
                   strerror(err));
     }
     lock.unlock();
@@ -532,12 +628,25 @@ void CPresentationCoordinator::CommitWorker()
 void CPresentationCoordinator::OnFlip(uint64_t tag)
 {
   std::unique_lock lock(m_uiMutex);
-  if (!m_inCommit || tag != m_inCommitTag)
+  if (!m_inFlight || tag != m_inCommitTag)
     return;
-  if (m_onScreen)
-    m_returned.push_back(m_onScreen);
-  m_onScreen = m_inCommit;
-  m_inCommit = nullptr;
+  for (PlaneState& state : m_planes)
+  {
+    if (!state.inCommit)
+      continue;
+    // a property-only commit leaves the buffer on screen where it is
+    if (state.committedBo)
+    {
+      if (state.onScreen)
+        state.returned.push_back(state.onScreen);
+      state.onScreen = state.committedBo;
+    }
+    state.onScreenFb = state.committedFb;
+    state.inCommit = false;
+    state.committedBo = nullptr;
+    state.committedFb = 0;
+  }
+  m_inFlight = false;
   m_inCommitTag = 0;
   const double flip = static_cast<double>(MonotonicNs() - m_commitNs) / 1000.0;
   m_report.uiFlips++;
@@ -680,13 +789,14 @@ void CPresentationCoordinator::LogReport()
             "frames={} repeats={} skipped={} wake mean={:.0f}us max={:.0f}us "
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
             "commits={} failed={} flips={} lost={} commit max={:.0f}us "
-            "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us",
+            "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us "
+            "| graphics submits={} commits={}",
             r.ticks, r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
             r.woke ? r.wakeSum / r.woke : 0.0, r.wakeMax, r.ticks ? r.workSum / r.ticks : 0.0,
             r.workMax, drops >= 0 && m_kernelDrops >= 0 ? drops - m_kernelDrops : -1,
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,
             r.commitMax, r.commitHist[0], r.commitHist[1], r.commitHist[2], r.commitHist[3],
-            r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax);
+            r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax, r.gfxSubmits, r.gfxCommits);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

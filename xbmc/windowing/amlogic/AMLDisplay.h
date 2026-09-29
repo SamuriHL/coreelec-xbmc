@@ -8,6 +8,7 @@
 #include <gbm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include <atomic>
 #include <memory>
 #include <unistd.h>
 #include <utility>
@@ -112,6 +113,16 @@ public:
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
+  // real_player graphics plane (osd1, under the GUI plane)
+  bool HasOverlayPlane();
+  //! while set, GUI flips also order the planes (graphics under the GUI)
+  void SetOverlayActive(bool active);
+  //! the graphics plane showing fb_id (a src_w x src_h buffer) over the whole
+  //! screen; alpha 0 hides it while leaving it enabled
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h, bool visible);
+  //! the graphics plane off; a commit that only disables a plane is refused,
+  //! so it carries the GUI plane's current fb (0: none)
+  drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id);
 
   void SetInFenceFd(int fd) { if (m_inFenceFd != -1) close(m_inFenceFd); m_inFenceFd = fd; }
   int TakeOutFenceFd()
@@ -154,6 +165,8 @@ private:
   drmModeCrtcPtr m_crtc{nullptr};
   drmModeCrtcPtr m_orig_crtc{nullptr};
   drmModePlanePtr m_plane{nullptr};
+  drmModePlanePtr m_overlayPlane{nullptr};
+  std::atomic<bool> m_overlayActive{false};
 
   int m_inFenceFd{-1};
   int m_outFenceFd{-1};
@@ -195,6 +208,16 @@ public:
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id)
   {
     return m_amlDRMUtils->BuildFlipRequest(fb_id);
+  }
+  bool HasOverlayPlane() { return m_amlDRMUtils->HasOverlayPlane(); }
+  void SetOverlayActive(bool active) { m_amlDRMUtils->SetOverlayActive(active); }
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h, bool visible)
+  {
+    return m_amlDRMUtils->BuildOverlayRequest(fb_id, src_w, src_h, visible);
+  }
+  drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id)
+  {
+    return m_amlDRMUtils->BuildOverlayOffRequest(primary_fb_id);
   }
   bool aml_output_wire_stale() { return m_amlDRMUtils->aml_output_wire_stale(); }
   bool aml_set_drmDevice_active(bool active) const

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <mutex>
 #include <thread>
@@ -50,18 +51,39 @@ public:
   //! Returns with no presentation step running.
   void DetachVideo(CRenderManager* renderManager);
 
+  enum Plane
+  {
+    PLANE_UI = 0, //!< the GUI plane (primary)
+    PLANE_GRAPHICS, //!< menus and subtitles (overlay, under the GUI plane)
+    PLANE_COUNT
+  };
+
   /*!
-   * \brief Hand over a locked GUI buffer. The coordinator commits it once its
-   * GPU fence has signalled and no flip is in flight; a newer buffer replaces
-   * one not yet committed. Takes ownership of req and fence.
+   * \brief Hand over a locked buffer for a plane. The coordinator commits it
+   * once its GPU fence has signalled and no flip is in flight, together with
+   * whatever the other plane has ready; a newer submit replaces one not yet
+   * committed. bo may be null for a property-only change (fb is then the one
+   * on screen). Takes ownership of req and fence.
    */
-  uint64_t SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence);
+  uint64_t Submit(int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence);
+  uint64_t SubmitUi(gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence)
+  {
+    return Submit(PLANE_UI, bo, fb, req, fence);
+  }
   //! Waits until that submit leaves the queue: committed, replaced or dropped.
   bool WaitTaken(uint64_t seq, std::chrono::milliseconds timeout);
-  //! Buffers no longer on screen, for the render thread to release.
-  void TakeReturned(std::vector<gbm_bo*>& returned);
-  //! Before the GUI surface goes: every buffer comes back (display fence held).
-  void DetachUiSurface();
+  //! Buffers no longer on screen, for their producer to release.
+  void TakeReturned(int plane, std::vector<gbm_bo*>& returned);
+  void TakeReturned(std::vector<gbm_bo*>& returned) { TakeReturned(PLANE_UI, returned); }
+  //! Before a plane's surface goes: every buffer comes back (display fence held).
+  void DetachSurface(int plane);
+  void DetachUiSurface() { DetachSurface(PLANE_UI); }
+  /*!
+   * \brief Switches the graphics plane off, in a blocking commit built by
+   * build(fb of the GUI plane on screen) while the coordinator is parked, and
+   * takes its buffers back. False when there was nothing to carry it.
+   */
+  bool DisableGraphicsPlane(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
 
 protected:
   void Process() override;
@@ -79,9 +101,30 @@ private:
   struct UiBuffer
   {
     gbm_bo* bo = nullptr;
+    uint32_t fb = 0;
     drmModeAtomicReqPtr req = nullptr;
     int fence = -1;
     uint64_t seq = 0;
+  };
+
+  struct PlaneState
+  {
+    UiBuffer ready;
+    bool inCommit = false; //!< part of the commit in flight
+    gbm_bo* committedBo = nullptr; //!< what that commit puts on screen (null: properties only)
+    uint32_t committedFb = 0;
+    gbm_bo* onScreen = nullptr;
+    uint32_t onScreenFb = 0;
+    std::vector<gbm_bo*> returned;
+    uint64_t generation = 0; //!< surfaces detached so far
+  };
+
+  struct Committing
+  {
+    drmModeAtomicReqPtr req = nullptr;
+    bool has[PLANE_COUNT] = {};
+    gbm_bo* bo[PLANE_COUNT] = {};
+    uint64_t generation[PLANE_COUNT] = {};
   };
 
   void QueueVblank(unsigned int epoch);
@@ -89,7 +132,7 @@ private:
   void CommitUi();
   void CommitWorker();
   void OnFlip(uint64_t tag);
-  void Drop(UiBuffer& buffer); // under m_uiMutex
+  void Drop(int plane, UiBuffer& buffer); // under m_uiMutex
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
   void SetState(State state, unsigned int epoch);
@@ -115,20 +158,16 @@ private:
 
   std::mutex m_uiMutex;
   std::condition_variable m_uiCond;
-  UiBuffer m_ready;
+  PlaneState m_planes[PLANE_COUNT];
   uint64_t m_submitSeq = 0;
-  uint64_t m_uiGeneration = 0; //!< GUI surfaces detached so far
   uint64_t m_commitTagSeq = 0;
-  gbm_bo* m_inCommit = nullptr;
+  bool m_inFlight = false; //!< one commit in flight across both planes (R1)
   uint64_t m_inCommitTag = 0;
-  UiBuffer m_committing; //!< handed to the commit worker, ioctl not yet returned
-  uint64_t m_committingGeneration = 0;
+  Committing m_committing; //!< handed to the commit worker, ioctl not yet returned
   bool m_commitStop = false;
   std::thread m_commitThread;
   bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
-  gbm_bo* m_onScreen = nullptr;
-  std::vector<gbm_bo*> m_returned;
 
   struct Report
   {
@@ -148,6 +187,7 @@ private:
     double commitMax = 0.0; //!< us in the commit ioctl
     int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
+    int gfxSubmits = 0, gfxCommits = 0; //!< graphics plane
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart

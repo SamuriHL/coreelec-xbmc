@@ -468,6 +468,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int  m_videoDecoderTimeout;
     // real_player: release video frames from the presentation coordinator thread
     bool m_videoPresentationCoordinator;
+    // real_player: graphics plane (osd1) - 0 off, 1 on, 2 on with a test pattern
+    int m_videoGraphicsPlane;
 
   private:
     void Initialize();

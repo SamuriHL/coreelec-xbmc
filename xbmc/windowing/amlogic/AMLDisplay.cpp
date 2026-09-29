@@ -272,6 +272,12 @@ void CAMLDRMUtils::CleanAndClose()
     m_plane = nullptr;
   }
 
+  if (m_overlayPlane)
+  {
+    drmModeFreePlane(m_overlayPlane);
+    m_overlayPlane = nullptr;
+  }
+
   m_connection = DRM_MODE_DISCONNECTED;
 }
 
@@ -340,6 +346,22 @@ void CAMLDRMUtils::aml_init_drmDevice()
 
     drmModeFreePlane(m_plane);
     m_plane = NULL;
+  }
+  // real_player graphics plane: the first overlay plane that can reach the
+  // primary's CRTC (osd1 on S6 and G12B)
+  for (uint32_t i = 0; m_plane && i < planeResources->count_planes; i++)
+  {
+    drmModePlanePtr plane = drmModeGetPlane(m_fd, planeResources->planes[i]);
+    if (!plane)
+      continue;
+    if (get_drmProp(plane->plane_id, "type", DRM_MODE_OBJECT_PLANE) == DRM_PLANE_TYPE_OVERLAY &&
+        (plane->possible_crtcs & m_plane->possible_crtcs) &&
+        SupportsFormat(plane, DRM_FORMAT_ABGR8888))
+    {
+      m_overlayPlane = plane;
+      break;
+    }
+    drmModeFreePlane(plane);
   }
   drmModeFreePlaneResources(planeResources);
   if (!m_plane)
@@ -1104,6 +1126,76 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(uint32_t fb_id)
   set_drmProp(m_plane->plane_id, "CRTC_Y", DRM_MODE_OBJECT_PLANE , 0, req);
   set_drmProp(m_plane->plane_id, "CRTC_W", DRM_MODE_OBJECT_PLANE , m_ScreenWidth, req);
   set_drmProp(m_plane->plane_id, "CRTC_H", DRM_MODE_OBJECT_PLANE , m_ScreenHeight, req);
+  // both planes range 65-128, and osd1 comes up above osd0: swap them
+  if (m_overlayActive)
+    set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
+  return req;
+}
+
+bool CAMLDRMUtils::HasOverlayPlane()
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  return m_overlayPlane != nullptr;
+}
+
+void CAMLDRMUtils::SetOverlayActive(bool active)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  m_overlayActive = active;
+}
+
+drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
+                                                      int src_w,
+                                                      int src_h,
+                                                      bool visible)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  if (!aml_get_drmDevice_connected() || !m_plane || !m_overlayPlane || !m_crtc || !fb_id)
+    return nullptr;
+
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req)
+    return nullptr;
+
+  const uint32_t id = m_overlayPlane->plane_id;
+  set_drmProp(id, "FB_ID", DRM_MODE_OBJECT_PLANE, fb_id, req);
+  set_drmProp(id, "CRTC_ID", DRM_MODE_OBJECT_PLANE, m_crtc->crtc_id, req);
+  set_drmProp(id, "SRC_X", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(id, "SRC_Y", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(id, "SRC_W", DRM_MODE_OBJECT_PLANE, src_w << 16, req);
+  set_drmProp(id, "SRC_H", DRM_MODE_OBJECT_PLANE, src_h << 16, req);
+  set_drmProp(id, "CRTC_X", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(id, "CRTC_Y", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(id, "CRTC_W", DRM_MODE_OBJECT_PLANE, m_ScreenWidth, req);
+  set_drmProp(id, "CRTC_H", DRM_MODE_OBJECT_PLANE, m_ScreenHeight, req);
+  // under the GUI plane, whichever of the two commits first
+  set_drmProp(id, "zpos", DRM_MODE_OBJECT_PLANE, 65, req);
+  set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
+  set_drmProp(id, "alpha", DRM_MODE_OBJECT_PLANE, visible ? 0xffff : 0, req);
+  // blend the way the GUI plane does: its content is produced the same way
+  const int blend = get_drmProp(m_plane->plane_id, "pixel blend mode", DRM_MODE_OBJECT_PLANE);
+  if (blend >= 0)
+    set_drmProp(id, "pixel blend mode", DRM_MODE_OBJECT_PLANE, blend, req);
+  return req;
+}
+
+drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayOffRequest(uint32_t primary_fb_id)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  if (!m_overlayPlane || !m_plane || !m_crtc || !primary_fb_id)
+    return nullptr;
+
+  // back to the planes' own order (the caller cleared SetOverlayActive first)
+  drmModeAtomicReqPtr req = BuildFlipRequest(primary_fb_id);
+  if (!req)
+    return nullptr;
+  // the driver takes a disable only with FB, CRTC and both rects zeroed
+  const uint32_t id = m_overlayPlane->plane_id;
+  for (const char* name : {"FB_ID", "CRTC_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X",
+                           "CRTC_Y", "CRTC_W", "CRTC_H"})
+    set_drmProp(id, name, DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 65, req);
+  set_drmProp(id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
   return req;
 }
 

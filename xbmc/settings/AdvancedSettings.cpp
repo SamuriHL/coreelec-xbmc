@@ -240,6 +240,7 @@ void CAdvancedSettings::Initialize()
 
   m_videoDecoderTimeout = 5;
   m_videoPresentationCoordinator = true;
+  m_videoGraphicsPlane = 0;
 
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
@@ -889,6 +890,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
     XMLUtils::GetBoolean(pElement, "presentationcoordinator", m_videoPresentationCoordinator);
+    XMLUtils::GetInt(pElement, "graphicsplane", m_videoGraphicsPlane, 0, 2);
     XMLUtils::GetFloat(pElement, "menudomainqueuetimesize", m_videoMenuDomainQueueTimeSize, 0.0f,
                        16.0f);
     XMLUtils::GetBoolean(pElement, "discsessionmodehold", m_videoDiscSessionModeHold);

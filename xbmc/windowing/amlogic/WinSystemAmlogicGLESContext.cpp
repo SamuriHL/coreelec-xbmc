@@ -8,6 +8,7 @@
 
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
+#include "GraphicsPlaneAML.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "settings/AdvancedSettings.h"
 #include "platform/linux/SysfsPath.h"
@@ -97,11 +98,29 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
       m_coordinator.reset();
   }
 
+  const int graphicsPlane =
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoGraphicsPlane;
+  if (m_coordinator && graphicsPlane > 0)
+  {
+    m_graphicsPlane = std::make_unique<CGraphicsPlaneAML>(
+        GetEGLDisplay(), m_amlGBMUtils->GetDevice(), m_amlDisplay->aml_get_Device_handle(),
+        m_amlDisplay.get(), m_coordinator.get(), graphicsPlane == 2);
+    if (!m_graphicsPlane->Start())
+      m_graphicsPlane.reset();
+  }
+
   return true;
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  // off while the coordinator runs and the GUI plane is still up to carry it
+  if (m_graphicsPlane)
+  {
+    m_graphicsPlane->Stop();
+    m_graphicsPlane.reset();
+  }
+
   if (m_coordinator)
   {
     DetachGuiSurface();
@@ -414,7 +433,7 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   }
 
   m_guiLocked++;
-  const uint64_t seq = m_coordinator->SubmitUi(bo, req, fence);
+  const uint64_t seq = m_coordinator->SubmitUi(bo, fbId, req, fence);
   if (m_guiRepaintFrames > 0)
     m_guiRepaintFrames--;
 
