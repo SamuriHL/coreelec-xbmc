@@ -1669,6 +1669,22 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     combined = true;
   }
 
+  // The presenter releases straight to the video plane: no queue absorbs a
+  // frame released late or early, it is shown late or early. Once selection
+  // is centred on audio's phase, a due frame has half a frame of margin either
+  // side, so the newest due frame is shown at once and none before it is due
+  // (measured am9pro: a one-vsync display hold left the picture a frame
+  // behind the audio for 7 vsyncs; at 25p on 50 Hz the early release below
+  // put every frame on screen a display period, 20 ms, ahead of the audio).
+  bool centred = false;
+  if (m_presenterMode && m_clockSync.m_enabled && !isPaused)
+  {
+    bool published = false;
+    m_dvdClock.GetVsyncPhaseGeneration(published);
+    centred = published &&
+              std::abs(m_clockSync.m_syncOffset + m_dvdClock.GetVsyncAdjust()) < frametime / 4;
+  }
+
   if (renderPts >= nextFramePts || m_forceNext)
   {
     // see if any future queued frames are already due
@@ -1682,20 +1698,8 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     // get. Skipping a frame is easier than having decoder dropping one (lateframes > 10)
     // m_lateframes is not modified in the loop below, so the relaxation is hoisted.
     constexpr double lateWindow = 0.98;
-    double x = (m_lateframes <= 6) ? lateWindow : 0;
-    // The presenter releases straight to the video plane, where no queue
-    // absorbs lateness: a frame shown late is shown late (measured am9pro: a
-    // one-vsync display hold left the picture a frame behind the audio for 7
-    // vsyncs). Once selection is centred on audio's phase, a due frame gets
-    // half a frame of margin either side, so show the newest one at once.
-    if (m_presenterMode && m_clockSync.m_enabled && !isPaused)
-    {
-      bool published = false;
-      m_dvdClock.GetVsyncPhaseGeneration(published);
-      if (published &&
-          std::abs(m_clockSync.m_syncOffset + m_dvdClock.GetVsyncAdjust()) < frametime / 4)
-        x = 0;
-    }
+    // a frame shown late is shown late on the presenter's plane (see centred)
+    const double x = centred ? 0 : (m_lateframes <= 6) ? lateWindow : 0;
 
     while (iter != m_queued.end())
     {
@@ -1751,7 +1755,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
 
     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   }
-  else if (!combined && renderPts > (nextFramePts - frametime))
+  else if (!combined && !centred && renderPts > (nextFramePts - frametime))
   {
     m_lateframes = 0;
     m_presentstep = PRESENT_FLIP;
