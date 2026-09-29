@@ -1512,6 +1512,21 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     // before belong to the old phase. A value measured across a drop is
     // refused by the clock (the generation it carries is stale).
     m_clockSync.m_idleMoves = 0;
+    // The clock publishes the phase to audio reduced to within about half a
+    // frame, so audio may hold it a whole frame from the renderer's unwrapped
+    // value: every value frame selection uses goes on audio's branch, or the
+    // picture runs a frame early or late against the audio (measured am9pro:
+    // -33.4 ms against audio's +8.3 ms after a resume, the picture 42 ms ahead
+    // until the next pause).
+    const auto onAudioBranch = [&](double value)
+    {
+      bool published = false;
+      m_dvdClock.GetVsyncPhaseGeneration(published);
+      if (!published)
+        return value;
+      return value -
+             frametime * std::round((value + m_dvdClock.GetVsyncAdjust()) / frametime);
+    };
     bool clockHasPhase = false;
     const unsigned int phaseGeneration = m_dvdClock.GetVsyncPhaseGeneration(clockHasPhase);
     if (phaseGeneration != m_clockSync.m_phaseGeneration)
@@ -1535,16 +1550,12 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       m_clockSync.m_seedCount = 0;
       m_clockSync.m_seedPrevValid = false;
     }
-    // A phase the clock carried (across a pause) seeds the reference on the
-    // branch audio holds it on: seeded from the first sample instead, the
-    // unwrap can settle a whole frame away, and every frame is then shown a
-    // frame early or late against the audio (measured am9pro: -33.4 ms against
-    // audio's +8.3 ms after a resume, the picture 42 ms ahead until the next
-    // pause).
+    // a phase the clock carried (across a pause) seeds the reference
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid && clockHasPhase)
     {
       m_clockSync.m_ref = -m_dvdClock.GetVsyncAdjust();
       m_clockSync.m_refValid = true;
+      m_clockSync.m_syncOffset = onAudioBranch(m_clockSync.m_syncOffset);
     }
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
     {
@@ -1583,6 +1594,8 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
           m_clockSync.m_seedPrevValid = false;
           m_dvdClock.SetVsyncAdjust(-mean, phaseGeneration);
           seeded = true;
+          m_clockSync.m_ref = onAudioBranch(m_clockSync.m_ref);
+          m_clockSync.m_syncOffset = onAudioBranch(m_clockSync.m_syncOffset);
         }
         else
         {
@@ -1610,12 +1623,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       {
         double average = m_clockSync.m_error / m_clockSync.m_errCount;
         m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
-        // The clock publishes the phase reduced to within about half a frame,
-        // so audio may hold it a whole frame from this mean: select frames by
-        // the same branch, or the picture runs a frame off the audio.
-        bool published = false;
-        if (m_dvdClock.GetVsyncPhaseGeneration(published) == phaseGeneration && published)
-          average -= frametime * std::round((average + m_dvdClock.GetVsyncAdjust()) / frametime);
+        average = onAudioBranch(average);
         m_clockSync.m_syncOffset = average;
         m_clockSync.m_error = 0;
         m_clockSync.m_errCount = 0;
