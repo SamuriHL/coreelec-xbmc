@@ -137,6 +137,8 @@ bool CPresentationCoordinator::Start()
   m_report = Report();
   m_kernelDrops = ReadKernelDrops();
   aml_presenter_set_wake_fd(m_wakeFd);
+  m_commitStop = false;
+  m_commitThread = std::thread(&CPresentationCoordinator::CommitWorker, this);
   Create();
   s_instance = this;
   CLog::Log(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
@@ -155,6 +157,12 @@ void CPresentationCoordinator::Stop()
     CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   StopThread(true);
   aml_presenter_set_wake_fd(-1);
+  {
+    std::unique_lock lock(m_uiMutex);
+    m_commitStop = true;
+  }
+  m_uiCond.notify_all();
+  m_commitThread.join();
 
   {
     std::unique_lock lock(m_uiMutex);
@@ -448,48 +456,72 @@ void CPresentationCoordinator::HandleEvents(int fd,
 
 void CPresentationCoordinator::CommitUi()
 {
-  UiBuffer buffer;
-  uint64_t generation;
-  uint64_t tag;
   {
     std::unique_lock lock(m_uiMutex);
-    // one commit in flight, and only a buffer the GPU has finished
-    if (!m_ready.bo || m_ready.fence >= 0 || m_inCommit)
+    // one commit in flight, and only a buffer the GPU has finished; its flip
+    // can land before the worker is back from the ioctl
+    if (!m_ready.bo || m_ready.fence >= 0 || m_inCommit || m_committing.req)
       return;
-    buffer = m_ready;
+    // in flight from here: the flip event can arrive before the ioctl returns
+    m_committing = m_ready;
     m_ready = UiBuffer();
-    generation = m_uiGeneration;
-    tag = ++m_commitTagSeq;
+    m_committingGeneration = m_uiGeneration;
+    m_inCommit = m_committing.bo;
+    m_inCommitTag = ++m_commitTagSeq;
+    m_flipLostLogged = false;
+    m_commitNs = MonotonicNs();
   }
   m_uiCond.notify_all();
+}
 
-  const int64_t start = MonotonicNs();
-  // the tag identifies this commit's flip event
-  const int ret = drmModeAtomicCommit(m_masterFd, buffer.req,
-                                      DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
-                                      reinterpret_cast<void*>(static_cast<uintptr_t>(tag)));
-  const int err = errno;
-  const int64_t end = MonotonicNs();
-  drmModeAtomicFree(buffer.req);
-
+void CPresentationCoordinator::CommitWorker()
+{
+  // The meson commit ioctl can block for a vsync (and, in the worst case,
+  // seconds) on the previous commit's cleanup: never on the coordinator.
   std::unique_lock lock(m_uiMutex);
-  if (generation != m_uiGeneration)
-    return; // its surface is gone
-  if (ret == 0)
+  while (!m_commitStop)
   {
-    m_inCommit = buffer.bo;
-    m_inCommitTag = tag;
-    m_flipLostLogged = false;
-    m_commitNs = end;
-    m_report.uiCommits++;
-    m_report.commitMax = std::max(m_report.commitMax, static_cast<double>(end - start) / 1000.0);
-    return;
+    if (!m_committing.req)
+    {
+      m_uiCond.wait(lock);
+      continue;
+    }
+    UiBuffer buffer = m_committing;
+    const uint64_t generation = m_committingGeneration;
+    const uint64_t tag = m_inCommitTag;
+    lock.unlock();
+
+    const int64_t start = MonotonicNs();
+    const int ret = drmModeAtomicCommit(m_masterFd, buffer.req,
+                                        DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+                                        reinterpret_cast<void*>(static_cast<uintptr_t>(tag)));
+    const int err = errno;
+    const double took = static_cast<double>(MonotonicNs() - start) / 1000.0;
+    drmModeAtomicFree(buffer.req);
+
+    lock.lock();
+    m_committing = UiBuffer();
+    m_report.commitMax = std::max(m_report.commitMax, took);
+    m_report.commitHist[took < 1000.0 ? 0 : took < 5000.0 ? 1 : took < 20000.0 ? 2 : 3]++;
+    if (ret == 0)
+      m_report.uiCommits++;
+    // a failed commit is never shown: back to the render thread, unless its
+    // surface is gone
+    else if (generation == m_uiGeneration && m_inCommitTag == tag)
+    {
+      m_inCommit = nullptr;
+      m_inCommitTag = 0;
+      m_returned.push_back(buffer.bo);
+      if (m_report.uiFailed++ < 3)
+        CLog::Log(LOGWARNING, "CPresentationCoordinator - GUI plane commit failed: {}",
+                  strerror(err));
+    }
+    lock.unlock();
+    const uint64_t one = 1;
+    if (write(m_wakeFd, &one, sizeof(one)) < 0)
+      CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    lock.lock();
   }
-  // never shown: back to the render thread
-  m_returned.push_back(buffer.bo);
-  if (m_report.uiFailed++ < 3)
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - GUI plane commit failed: {}",
-              strerror(err));
 }
 
 void CPresentationCoordinator::OnFlip(uint64_t tag)
@@ -595,13 +627,14 @@ void CPresentationCoordinator::LogReport()
             "real_player coordinator: ticks={} missed={} synthetic={} stale={} held={} "
             "frames={} repeats={} skipped={} wake mean={:.0f}us max={:.0f}us "
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
-            "commits={} failed={} flips={} lost={} commit max={:.0f}us flip mean={:.0f}us "
-            "max={:.0f}us",
+            "commits={} failed={} flips={} lost={} commit max={:.0f}us "
+            "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us",
             r.ticks, r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
             r.woke ? r.wakeSum / r.woke : 0.0, r.wakeMax, r.ticks ? r.workSum / r.ticks : 0.0,
             r.workMax, drops >= 0 && m_kernelDrops >= 0 ? drops - m_kernelDrops : -1,
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,
-            r.commitMax, r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax);
+            r.commitMax, r.commitHist[0], r.commitHist[1], r.commitHist[2], r.commitHist[3],
+            r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax);
   m_kernelDrops = drops;
   m_report = Report();
 }

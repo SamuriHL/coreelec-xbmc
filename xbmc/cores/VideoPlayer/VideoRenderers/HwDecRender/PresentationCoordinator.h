@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 class CRenderManager;
@@ -86,6 +87,7 @@ private:
   void QueueVblank(unsigned int epoch);
   void HandleEvents(int fd, SPresentTick& tick, bool& gotTick, unsigned int epoch);
   void CommitUi();
+  void CommitWorker();
   void OnFlip(uint64_t tag);
   void Drop(UiBuffer& buffer); // under m_uiMutex
   bool UiInFlight();
@@ -119,6 +121,10 @@ private:
   uint64_t m_commitTagSeq = 0;
   gbm_bo* m_inCommit = nullptr;
   uint64_t m_inCommitTag = 0;
+  UiBuffer m_committing; //!< handed to the commit worker, ioctl not yet returned
+  uint64_t m_committingGeneration = 0;
+  bool m_commitStop = false;
+  std::thread m_commitThread;
   bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
   gbm_bo* m_onScreen = nullptr;
@@ -140,6 +146,7 @@ private:
     int uiSubmits = 0, uiReplaced = 0, uiCommits = 0, uiFailed = 0, uiFlips = 0,
         uiLostFlips = 0;
     double commitMax = 0.0; //!< us in the commit ioctl
+    int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
   } m_report;
   int m_kernelDrops = -1;
