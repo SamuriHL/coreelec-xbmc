@@ -42,6 +42,9 @@ static inline void aml_set_disc_mode_anchored(bool) {}
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <memory>
 #include <typeinfo>
 #include <mutex>
@@ -1329,6 +1332,31 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   return m_queued.size() + m_discard.size();
 }
 
+void CRenderManager::CSampleOffsetStats::Add(double us, bool guiRendered)
+{
+  Bucket& b = m_bucket[guiRendered ? 1 : 0];
+  if (!b.n || us < b.min)
+    b.min = us;
+  if (!b.n || us > b.max)
+    b.max = us;
+  b.n++;
+  b.sum += us;
+  b.sumSq += us * us;
+  if (++m_total < 1200)
+    return;
+  auto fmt = [](const Bucket& k) {
+    if (!k.n)
+      return std::string("n=0");
+    const double mean = k.sum / k.n;
+    const double sd = std::sqrt(std::max(0.0, k.sumSq / k.n - mean * mean));
+    return StringUtils::Format("n={} mean={:.0f}us sd={:.0f}us min={:.0f}us max={:.0f}us", k.n,
+                               mean, sd, k.min, k.max);
+  };
+  CLog::Log(LOGINFO, "real_player X (poll return -> clock sample): gui idle [{}] | gui rendered [{}]",
+            fmt(m_bucket[0]), fmt(m_bucket[1]));
+  *this = CSampleOffsetStats();
+}
+
 void CRenderManager::PrepareNextRender()
 {
   if (m_queued.empty())
@@ -1343,6 +1371,16 @@ void CRenderManager::PrepareNextRender()
     return;
 
   const double frameOnScreen = m_dvdClock.GetClock();
+  if (const int64_t pollUs = aml_poll_return_us())
+  {
+    const double x = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count() -
+        pollUs);
+    if (x >= 0.0 && x < 60000.0)
+      m_sampleOffset.Add(x, aml_last_present_rendered());
+  }
   const double frametime =
       1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
       DVD_TIME_BASE;

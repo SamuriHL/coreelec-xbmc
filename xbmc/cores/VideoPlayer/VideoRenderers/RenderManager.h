@@ -278,6 +278,21 @@ protected:
   };
   CClockSync m_clockSync;
 
+  // real_player Phase 0: X = vsync-wait return -> clock sample, split by
+  // whether the previous loop swapped a GUI frame
+  struct CSampleOffsetStats
+  {
+    void Add(double us, bool guiRendered);
+    struct Bucket
+    {
+      int n = 0;
+      double sum = 0.0, sumSq = 0.0, min = 0.0, max = 0.0;
+    };
+    Bucket m_bucket[2];
+    int m_total = 0;
+  };
+  CSampleOffsetStats m_sampleOffset;
+
   // steady_clock: differenced only to bound the wait for the video layer to
   // start, so a wall-clock step must not be able to expire it early.
   std::chrono::time_point<std::chrono::steady_clock> m_videostarted;

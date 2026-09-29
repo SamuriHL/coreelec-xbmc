@@ -2263,6 +2263,39 @@ bool aml_dv_l5_overlay_visible()
   return s_dvOsdVisible.load() || s_dvSubsVisible.load();
 }
 
+namespace
+{
+std::atomic<int64_t> s_pollReturnUs{0};
+std::atomic<bool> s_lastPresentRendered{false};
+
+int64_t steady_us()
+{
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+} // namespace
+
+void aml_note_poll_return()
+{
+  s_pollReturnUs = steady_us();
+}
+
+int64_t aml_poll_return_us()
+{
+  return s_pollReturnUs.load();
+}
+
+void aml_note_present(bool rendered)
+{
+  s_lastPresentRendered = rendered;
+}
+
+bool aml_last_present_rendered()
+{
+  return s_lastPresentRendered.load();
+}
+
 bool aml_video_started()
 {
   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};

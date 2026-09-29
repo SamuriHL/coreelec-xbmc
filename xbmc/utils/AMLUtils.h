@@ -234,5 +234,11 @@ void aml_dv_set_osd_visible(bool visible);
 void aml_dv_set_subtitles_visible(bool visible);
 bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
+// real_player Phase 0 measurement: the vsync-wait return time (steady_clock us)
+// and whether the last present swapped a GUI frame.
+void aml_note_poll_return();
+int64_t aml_poll_return_us();
+void aml_note_present(bool rendered);
+bool aml_last_present_rendered();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);

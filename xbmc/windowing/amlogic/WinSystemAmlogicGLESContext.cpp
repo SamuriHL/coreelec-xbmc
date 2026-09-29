@@ -291,6 +291,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (m_guiRepaintFrames > 0)
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 
+  aml_note_present(rendered);
   SetVSync(true);
   if (rendered)
   {

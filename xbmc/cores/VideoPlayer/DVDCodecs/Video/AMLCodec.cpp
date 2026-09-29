@@ -3204,6 +3204,7 @@ int CAMLCodec::PollFrame()
   codec_poll_fd[0].events = POLLOUT;
 
   poll(codec_poll_fd, 1, 50);
+  aml_note_poll_return();
   g_aml_sync_event.Set();
   int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count();
   CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
