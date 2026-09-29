@@ -183,6 +183,7 @@ public:
 protected:
 
   void RenderWithoutPicture(bool gui, bool configured);
+  void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
 
   void PresentSingle(bool clear, DWORD flags, DWORD alpha);
   void PresentFields(bool clear, DWORD flags, DWORD alpha);

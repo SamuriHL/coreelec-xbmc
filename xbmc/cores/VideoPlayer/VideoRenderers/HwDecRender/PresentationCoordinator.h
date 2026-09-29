@@ -84,6 +84,8 @@ public:
    * takes its buffers back. False when there was nothing to carry it.
    */
   bool DisableGraphicsPlane(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
+  //! the driver refused a commit carrying the graphics plane
+  bool GraphicsRefused() const { return m_graphicsRejected; }
 
 protected:
   void Process() override;
@@ -172,7 +174,8 @@ private:
   bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
   bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
-  bool m_graphicsRejected = false; //!< a commit carrying it failed: left out from then on
+  //! a commit carrying it failed: left out from then on
+  std::atomic<bool> m_graphicsRejected{false};
 
   struct Report
   {

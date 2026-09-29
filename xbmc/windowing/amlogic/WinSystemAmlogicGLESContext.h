@@ -77,6 +77,8 @@ public:
     return m_guiCompositing && !m_hdrFboUnavailable;
   }
   bool IsHdrComposite() const override { return m_guiCompositing; }
+  bool HdrGraphicsOnPlane() const override;
+  void PresentHdrGraphics(const SHdrGraphics& graphics) override;
   void ClearOverlayPlane() override;
 
   EGLDisplay GetEGLDisplay() const;
@@ -127,6 +129,8 @@ private:
 
   std::unique_ptr<CPresentationCoordinator> m_coordinator;
   std::unique_ptr<CGraphicsPlaneAML> m_graphicsPlane;
+  bool m_hdrGraphicsThisFrame{false}; //!< the video pass handed them over this GUI frame
+  bool m_hdrGraphicsShown{false}; //!< the plane was last given something to show
   //! GUI buffers locked for the coordinator, not yet released
   int m_guiLocked{0};
   std::vector<gbm_bo*> m_guiReturned;

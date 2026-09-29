@@ -128,6 +128,9 @@ namespace OVERLAY {
     // True if RenderHDROverlays would draw anything for this buffer
     bool HasHDROverlays(int idx) const;
 
+    // the images RenderHDROverlays would draw, bottom first
+    void CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const;
+
     /*!
      * \brief Pre-walk hook: render libass output for the present slot.
      *  Called once per frame on the GUI/main thread before the GUI walk-skip
@@ -188,6 +191,7 @@ namespace OVERLAY {
     void SetOverlayContainer(CDVDOverlayContainer* container) { m_pOverlayContainer = container; }
 
   protected:
+    static bool IsHDRImage(const CDVDOverlay& o);
     /*!
      * \brief Reset the subtitle position to default value
      */

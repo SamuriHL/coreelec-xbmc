@@ -8,16 +8,23 @@
 
 #pragma once
 
+#include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
+#include "threads/CriticalSection.h"
 #include "threads/Event.h"
 #include "threads/Thread.h"
 
+#include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
+
+#include <GLES2/gl2.h>
 
 #include <EGL/egl.h>
 
 class CAMLDisplay;
+class CDVDOverlayImage;
 class CPresentationCoordinator;
 struct gbm_bo;
 struct gbm_device;
@@ -35,8 +42,8 @@ class CEGLFence;
  * GUI's EGLDisplay, into a fixed 1920x1080 GBM surface, and hands finished
  * buffers to the presentation coordinator, which commits them with the GUI
  * plane. It releases its own buffers and never holds more than four (R5).
- * Step 5a: no content yet; the plane idles enabled at alpha 0, or shows a
- * test pattern.
+ * It shows the HDR disc graphics the GUI's video pass hands over (step 5b),
+ * or a test pattern; with nothing to show it idles enabled at alpha 0.
  */
 class CGraphicsPlaneAML : private CThread
 {
@@ -55,13 +62,33 @@ public:
   //! Switches the plane off while the GUI plane still shows a buffer to carry
   //! the commit; the next frame switches it on again.
   void SwitchOff();
+  //! true once it can take graphics over from the GUI plane
+  bool CanShow() const;
+  //! shows these graphics from the next frame on (an empty set hides the plane)
+  void Show(SHdrGraphics graphics);
 
 protected:
   void Process() override;
 
 private:
+  struct STexture
+  {
+    std::shared_ptr<CDVDOverlay> image; //!< keeps the key alive
+    GLuint texture = 0;
+    int width = 0; //!< of the texture: the visible box of the image
+    int height = 0;
+    CRect crop; //!< that box in the image, empty when it is the whole image
+  };
+
   bool InitGL();
   void DeinitGL();
+  bool InitProgram();
+  //! true when there was a new set to take
+  bool TakeShown();
+  void UpdateTextures();
+  void DrawGraphics();
+  //! where the image goes on the plane, in plane pixels
+  CRect Place(const CDVDOverlayImage& image, const STexture& texture) const;
   //! draws and submits a frame; false when it could not be handed over
   bool SubmitFrame(bool visible, int64_t nowNs);
   //! re-commits what is on screen with the current geometry (R6)
@@ -87,6 +114,17 @@ private:
   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_fence;
 
   CEvent m_wake;
+  mutable CCriticalSection m_showSection;
+  SHdrGraphics m_next; //!< under m_showSection
+  bool m_hasNext = false; //!< under m_showSection
+  SHdrGraphics m_shown; //!< what the plane shows, this thread only
+  bool m_redraw = false; //!< m_shown not on the plane yet
+  std::map<const CDVDOverlay*, STexture> m_textures;
+  bool m_texturesLimited = false;
+  GLuint m_program = 0;
+  GLint m_posLoc = -1;
+  GLint m_texLoc = -1;
+  std::atomic<bool> m_ready{false};
   int m_locked = 0;
   std::vector<gbm_bo*> m_returned;
   uint32_t m_lastFb = 0; //!< the fb last submitted

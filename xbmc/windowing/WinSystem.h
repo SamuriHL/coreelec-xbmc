@@ -51,6 +51,7 @@ struct REFRESHRATE
 };
 
 class CDPMSSupport;
+struct SHdrGraphics;
 class CGraphicContext;
 class CRenderSystemBase;
 class IRenderLoop;
@@ -285,6 +286,11 @@ public:
   // True when HDR overlays reach the output through CompositeGui, which then also
   // owns their limited-range encode.
   virtual bool HdrOverlaysComposited() const { return false; }
+  // True while a platform plane shows the HDR overlays apart from the GUI: the
+  // video pass then hands them over with PresentHdrGraphics instead of drawing
+  // them. A GUI frame that hands nothing over clears the plane.
+  virtual bool HdrGraphicsOnPlane() const { return false; }
+  virtual void PresentHdrGraphics(const SHdrGraphics& graphics) {}
 
   // Force the OSD/overlay plane to a cleared (opaque black) state right now by
   // presenting cleared buffers through the platform present path. Used at

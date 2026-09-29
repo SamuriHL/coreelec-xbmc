@@ -9,6 +9,7 @@
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "GraphicsPlaneAML.h"
+#include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "settings/AdvancedSettings.h"
 #include "platform/linux/SysfsPath.h"
@@ -334,6 +335,9 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
   aml_note_present(rendered);
   SetVSync(true);
+  // a frame without a video pass (or without the graphics) takes them off
+  if (rendered && !m_hdrGraphicsThisFrame && m_hdrGraphicsShown)
+    PresentHdrGraphics(SHdrGraphics());
   bool paced = false;
   if (m_coordinator)
   {
@@ -477,8 +481,27 @@ void CWinSystemAmlogicGLESContext::DetachGuiSurface()
 // swap chain, paced on vblank so each NONBLOCK atomic commit settles before the
 // next buffer is reused. Caller guarantees the rendering thread + current
 // context.
+bool CWinSystemAmlogicGLESContext::HdrGraphicsOnPlane() const
+{
+  return m_guiCompositing && m_graphicsPlane && m_graphicsPlane->CanShow();
+}
+
+void CWinSystemAmlogicGLESContext::PresentHdrGraphics(const SHdrGraphics& graphics)
+{
+  if (!m_graphicsPlane)
+    return;
+  SHdrGraphics shown = graphics;
+  shown.limited = UseLimitedColor();
+  m_hdrGraphicsThisFrame = true;
+  m_hdrGraphicsShown = !shown.images.empty();
+  m_graphicsPlane->Show(std::move(shown));
+}
+
 void CWinSystemAmlogicGLESContext::ClearOverlayPlane()
 {
+  if (m_hdrGraphicsShown)
+    PresentHdrGraphics(SHdrGraphics());
+
   if (!m_pGLContext || !m_amlGBMUtils)
     return;
 
@@ -581,6 +604,7 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   // videowindow, or RenderWithoutPicture returning early - kept compositing the
   // last subtitle/menu frame under the GUI until playback stopped.
   m_hdrFboHasContent = false;
+  m_hdrGraphicsThisFrame = false;
 
   // CApplication::Render runs the video pass (RenderEx) before the GUI here. HDR
   // overlays go to their own FBO when it can be created (BeginHdrOverlayRender)

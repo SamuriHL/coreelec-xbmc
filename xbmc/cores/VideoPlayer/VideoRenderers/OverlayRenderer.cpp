@@ -200,6 +200,9 @@ void CRenderer::Render(int idx, float depth)
       if (!e.overlay_dvd)
         continue;
 
+      if (hdrComposite && IsHDRImage(*e.overlay_dvd))
+        continue;
+
       std::shared_ptr<COverlay> o = Convert(e);
       if (!o)
         continue;
@@ -208,8 +211,7 @@ void CRenderer::Render(int idx, float depth)
                                                              stereoView, m_stereomode))
         continue;
 
-      if (!(hdrComposite && o->m_isHDROverlay))
-        Render(o.get());
+      Render(o.get());
     }
   }
 
@@ -258,6 +260,12 @@ void CRenderer::RenderHDROverlays(int idx)
   ReleaseUnused();
 }
 
+bool CRenderer::IsHDRImage(const CDVDOverlay& o)
+{
+  return o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+         static_cast<const CDVDOverlayImage&>(o).m_isHDROverlay;
+}
+
 bool CRenderer::HasHDROverlays(int idx) const
 {
   if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
@@ -273,12 +281,29 @@ bool CRenderer::HasHDROverlays(int idx) const
       continue;
     for (const auto& e : *list)
     {
-      if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
-          static_cast<const CDVDOverlayImage&>(*e.overlay_dvd).m_isHDROverlay)
+      if (e.overlay_dvd && IsHDRImage(*e.overlay_dvd))
         return true;
     }
   }
   return false;
+}
+
+void CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const
+{
+  std::unique_lock lock(m_section);
+  const std::vector<SElement>* const buffer =
+      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+
+  for (const std::vector<SElement>* list : {buffer, &m_presentLatest})
+  {
+    if (!list)
+      continue;
+    for (const auto& e : *list)
+    {
+      if (e.overlay_dvd && IsHDRImage(*e.overlay_dvd))
+        images.push_back(e.overlay_dvd);
+    }
+  }
 }
 
 void CRenderer::Render(COverlay* o)

@@ -10,6 +10,7 @@
 
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
+#include "HdrGraphics.h"
 #include "RenderFactory.h"
 #include "RenderFlags.h"
 #include "ServiceBroker.h"
@@ -814,8 +815,13 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
 
   if (!gui)
   {
+    if (configured && winSystem->HdrGraphicsOnPlane())
+    {
+      PresentHdrGraphics(-1, view, view, view);
+      winSystem->EndHdrOverlayRender(false);
+    }
     // the HDR composite only exists once a renderer is configured
-    if (configured && m_overlays.HasHDROverlays(-1))
+    else if (configured && m_overlays.HasHDROverlays(-1))
     {
       m_overlays.SetVideoRect(view, view, view);
       const bool offscreen = winSystem->BeginHdrOverlayRender();
@@ -834,6 +840,23 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
 
   m_overlays.SetVideoRect(view, view, view);
   m_overlays.Render(-1);
+}
+
+void CRenderManager::PresentHdrGraphics(int idx,
+                                        const CRect& source,
+                                        const CRect& dest,
+                                        const CRect& view)
+{
+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+  SHdrGraphics graphics;
+  m_overlays.CollectHDROverlays(idx, graphics.images);
+  graphics.source = source;
+  graphics.dest = dest;
+  graphics.view = view;
+  graphics.width = static_cast<float>(winSystem->GetGfxContext().GetWidth());
+  graphics.height = static_cast<float>(winSystem->GetGfxContext().GetHeight());
+  graphics.pts = idx >= 0 ? m_Queue[idx].pts : DVD_NOPTS_VALUE;
+  winSystem->PresentHdrGraphics(graphics);
 }
 
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
@@ -889,7 +912,12 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // Off-screen when the platform composites them (see BeginHdrOverlayRender),
     // straight onto the back buffer otherwise.
     CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-    if (m_overlays.HasHDROverlays(source))
+    if (winSystem->HdrGraphicsOnPlane())
+    {
+      PresentHdrGraphics(source, src, dst, view);
+      winSystem->EndHdrOverlayRender(false);
+    }
+    else if (m_overlays.HasHDROverlays(source))
     {
       const bool offscreen = winSystem->BeginHdrOverlayRender();
       m_overlays.RenderHDROverlays(source);
