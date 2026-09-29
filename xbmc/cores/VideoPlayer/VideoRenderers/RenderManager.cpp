@@ -1535,6 +1535,17 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       m_clockSync.m_seedCount = 0;
       m_clockSync.m_seedPrevValid = false;
     }
+    // A phase the clock carried (across a pause) seeds the reference on the
+    // branch audio holds it on: seeded from the first sample instead, the
+    // unwrap can settle a whole frame away, and every frame is then shown a
+    // frame early or late against the audio (measured am9pro: -33.4 ms against
+    // audio's +8.3 ms after a resume, the picture 42 ms ahead until the next
+    // pause).
+    if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid && clockHasPhase)
+    {
+      m_clockSync.m_ref = -m_dvdClock.GetVsyncAdjust();
+      m_clockSync.m_refValid = true;
+    }
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
     {
       m_clockSync.m_ref = err;
@@ -1597,7 +1608,14 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       }
       if (m_clockSync.m_errCount > 30)
       {
-        const double average = m_clockSync.m_error / m_clockSync.m_errCount;
+        double average = m_clockSync.m_error / m_clockSync.m_errCount;
+        m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
+        // The clock publishes the phase reduced to within about half a frame,
+        // so audio may hold it a whole frame from this mean: select frames by
+        // the same branch, or the picture runs a frame off the audio.
+        bool published = false;
+        if (m_dvdClock.GetVsyncPhaseGeneration(published) == phaseGeneration && published)
+          average -= frametime * std::round((average + m_dvdClock.GetVsyncAdjust()) / frametime);
         m_clockSync.m_syncOffset = average;
         m_clockSync.m_error = 0;
         m_clockSync.m_errCount = 0;
@@ -1613,8 +1631,6 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
         else if (ref > frametime)
           ref -= frametime;
         m_clockSync.m_ref = ref;
-
-        m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
         m_clockSync.m_adjustSeeded = true;
       }
     }
