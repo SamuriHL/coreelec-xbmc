@@ -81,6 +81,13 @@ struct SPresentResult
   bool newFrame = false;
   double pts = 0.0;
   int skipped = 0; //!< queued frames discarded unshown this vsync
+  //! Phase 4 shadow: the clock audio syncs to (clock + vsyncAdjust) minus the
+  //! presentation reference (the released frame's pts advanced from its vblank,
+  //! less the display latency the renderer selects frames by), DVD time
+  bool shadow = false;
+  double shadowDiff = 0.0;
+  double shadowAdjust = 0.0; //!< the vsyncAdjust in it
+  double frametime = 0.0;
 };
 
 class CRenderManager
@@ -200,6 +207,7 @@ protected:
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);
+  void ShadowReference(const SPresentTick& tick, SPresentResult& result);
   void StartCoordinator();
   void StopCoordinator();
 
@@ -343,4 +351,10 @@ protected:
   std::atomic<float> m_timingFps{60.0f};
   std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
   std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in
+  //! Phase 4 shadow: the last frame released while playing, and its vblank
+  //! (coordinator thread only)
+  bool m_shadowValid = false;
+  double m_shadowPts = 0.0;
+  int64_t m_shadowReleaseNs = 0;
+  unsigned int m_shadowGeneration = 0;
 };

@@ -148,6 +148,12 @@ private:
     double commitMax = 0.0; //!< us in the commit ioctl
     int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
+    //! Phase 4 shadow, ms: audio's reference minus the presentation reference
+    int shadowN = 0;
+    int shadowFolds = 0; //!< samples more than half a frame apart
+    double shadowSum = 0.0, shadowSumSq = 0.0, shadowMin = 0.0, shadowMax = 0.0;
+    double shadowAdjustSum = 0.0;
   } m_report;
+  int m_shadowFrames = 0; //!< whole frames between the references, last sample
   int m_kernelDrops = -1;
 };

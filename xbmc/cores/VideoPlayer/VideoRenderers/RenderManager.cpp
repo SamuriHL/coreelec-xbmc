@@ -1837,6 +1837,47 @@ void CRenderManager::StopCoordinator()
 #endif
 }
 
+void CRenderManager::ShadowReference(const SPresentTick& tick, SPresentResult& result)
+{
+  // Phase 4 shadow (docs/presentation_planes_design.md, samurihl tree): what
+  // audio would sync to if it followed the screen - the frame released last,
+  // advanced from its vblank - against what it syncs to, clock + vsyncAdjust.
+  // Measured only; nothing reads it back.
+  // The anchor goes with the clock's phase: a pause, seek, display loss or
+  // reset drops it, and the next released frame sets it again.
+  bool hasPhase = false;
+  const unsigned int generation = m_dvdClock.GetVsyncPhaseGeneration(hasPhase);
+  const double speed = m_dvdClock.GetClockSpeed();
+  if (!result.playing || generation != m_shadowGeneration || speed < 0.9 || speed > 1.1)
+  {
+    m_shadowValid = false;
+    m_shadowGeneration = generation;
+  }
+  if (!result.playing || speed < 0.9 || speed > 1.1)
+    return;
+  if (result.newFrame)
+  {
+    m_shadowPts = result.pts;
+    m_shadowReleaseNs = tick.vblankNs ? tick.vblankNs : tick.wokeNs;
+    m_shadowValid = true;
+  }
+  if (!m_shadowValid)
+    return;
+
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  const int64_t nowNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  const double adjust = m_dvdClock.GetVsyncAdjust();
+  const double clock = m_dvdClock.GetClock();
+  const double presented =
+      m_shadowPts + static_cast<double>(nowNs - m_shadowReleaseNs) / 1000000000.0 * DVD_TIME_BASE -
+      DVD_MSEC_TO_TIME(m_timingLatencyMs.load() - m_videoDelay);
+  result.shadow = true;
+  result.shadowDiff = clock + adjust - presented;
+  result.shadowAdjust = adjust;
+  result.frametime = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
+}
+
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
 {
   std::unique_lock lock(m_statelock);
@@ -1900,6 +1941,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   if (result.newFrame)
     m_pRenderer->PresentFrame(m_presentsource);
+
+  ShadowReference(tick, result);
 
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   m_presentevent.notifyAll();

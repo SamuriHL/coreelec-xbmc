@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -604,13 +605,43 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
   r.workSum += work;
   r.workMax = std::max(r.workMax, work);
   r.skipped += result.skipped;
+  if (result.shadow)
+  {
+    const double diff = result.shadowDiff / 1000.0;
+    if (!r.shadowN)
+      r.shadowMin = r.shadowMax = diff;
+    r.shadowN++;
+    r.shadowSum += diff;
+    r.shadowSumSq += diff * diff;
+    r.shadowMin = std::min(r.shadowMin, diff);
+    r.shadowMax = std::max(r.shadowMax, diff);
+    r.shadowAdjustSum += result.shadowAdjust / 1000.0;
+    const double frame = result.frametime / 1000.0;
+    if (frame > 0.0)
+    {
+      if (std::abs(diff) > frame / 2)
+        r.shadowFolds++;
+      // audio's reference moved by whole frames against the screen
+      const int frames = static_cast<int>(std::lround(diff / frame));
+      if (frames != m_shadowFrames)
+      {
+        CLog::Log(LOGINFO,
+                  "real_player shadow: audio reference {:+d} frames from the screen (was {:+d}): "
+                  "diff={:.2f}ms vsyncAdjust={:.2f}ms",
+                  frames, m_shadowFrames, diff, result.shadowAdjust / 1000.0);
+        m_shadowFrames = frames;
+      }
+    }
+  }
+
   if (result.newFrame)
   {
     r.frames++;
     CLog::LogFC(LOGDEBUG, LOGAVTIMING,
-                "CPresentationCoordinator - released pts:{:.3f} seq:{} wake:{:.0f}us",
+                "CPresentationCoordinator - released pts:{:.3f} seq:{} wake:{:.0f}us shadow:{}",
                 result.pts / 1000000.0, tick.seq,
-                tick.vblankNs ? static_cast<double>(tick.wokeNs - tick.vblankNs) / 1000.0 : -1.0);
+                tick.vblankNs ? static_cast<double>(tick.wokeNs - tick.vblankNs) / 1000.0 : -1.0,
+                result.shadow ? fmt::format("{:.3f}ms", result.shadowDiff / 1000.0) : "-");
   }
   else if (result.playing)
     r.repeats++;
@@ -638,6 +669,16 @@ void CPresentationCoordinator::LogReport()
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,
             r.commitMax, r.commitHist[0], r.commitHist[1], r.commitHist[2], r.commitHist[3],
             r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax);
+  if (r.shadowN)
+  {
+    const double mean = r.shadowSum / r.shadowN;
+    CLog::Log(LOGINFO,
+              "real_player shadow: n={} audio-minus-screen mean={:.2f}ms sd={:.2f}ms "
+              "min={:.2f}ms max={:.2f}ms folds={} vsyncAdjust mean={:.2f}ms",
+              r.shadowN, mean,
+              std::sqrt(std::max(0.0, r.shadowSumSq / r.shadowN - mean * mean)), r.shadowMin,
+              r.shadowMax, r.shadowFolds, r.shadowAdjustSum / r.shadowN);
+  }
   m_kernelDrops = drops;
   m_report = Report();
 }
