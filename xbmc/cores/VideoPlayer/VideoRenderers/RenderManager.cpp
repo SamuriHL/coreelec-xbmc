@@ -1490,8 +1490,14 @@ void CRenderManager::PrepareNextRender()
       {
         double average = m_clockSync.m_error / m_clockSync.m_errCount;
         m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
+        const double measured = average;
         average = onAudioBranch(average);
         m_clockSync.m_syncOffset = average;
+        // a whole frame between measured and selected is the branch fix acting
+        CLog::Log(LOGDEBUG,
+                  "CRenderManager - clock sync window: selection phase {:.2f} ms (measured "
+                  "{:.2f} ms), audio phase {:.2f} ms",
+                  average / 1000.0, measured / 1000.0, -m_dvdClock.GetVsyncAdjust() / 1000.0);
         m_clockSync.m_error = 0;
         m_clockSync.m_errCount = 0;
 
