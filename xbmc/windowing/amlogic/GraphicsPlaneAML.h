@@ -52,6 +52,9 @@ public:
   bool Start();
   //! Switches the plane off and frees its surface; the coordinator must still run.
   void Stop();
+  //! Switches the plane off while the GUI plane still shows a buffer to carry
+  //! the commit; the next frame switches it on again.
+  void SwitchOff();
 
 protected:
   void Process() override;
@@ -62,7 +65,7 @@ private:
   //! draws and submits a frame; false when it could not be handed over
   bool SubmitFrame(bool visible, int64_t nowNs);
   //! re-commits what is on screen with the current geometry (R6)
-  void SubmitGeometry();
+  bool SubmitGeometry();
   void ReleaseReturned();
   uint32_t FbFromBo(gbm_bo* bo);
 

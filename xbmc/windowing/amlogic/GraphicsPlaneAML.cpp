@@ -23,6 +23,7 @@
 #include <gbm.h>
 #include <time.h>
 #include <unistd.h>
+#include <drm_fourcc.h>
 #include <xf86drmMode.h>
 
 using namespace std::chrono_literals;
@@ -125,8 +126,13 @@ bool CGraphicsPlaneAML::InitGL()
     return false;
   }
 
-  m_gbmSurface = gbm_surface_create(m_device, WIDTH, HEIGHT, m_format,
-                                    GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+  // linear, as the GUI plane's surface
+  const uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+  m_gbmSurface =
+      gbm_surface_create_with_modifiers(m_device, WIDTH, HEIGHT, m_format, &modifier, 1);
+  if (!m_gbmSurface)
+    m_gbmSurface = gbm_surface_create(m_device, WIDTH, HEIGHT, m_format,
+                                      GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
   if (!m_gbmSurface)
   {
     CLog::Log(LOGERROR, "CGraphicsPlaneAML - no GBM surface");
@@ -198,10 +204,15 @@ uint32_t CGraphicsPlaneAML::FbFromBo(gbm_bo* bo)
   const uint32_t handles[4] = {gbm_bo_get_handle(bo).u32};
   const uint32_t strides[4] = {gbm_bo_get_stride(bo)};
   const uint32_t offsets[4] = {};
+  const uint64_t modifier = gbm_bo_get_modifier(bo);
+  const uint64_t modifiers[4] = {modifier};
+  const uint32_t flags =
+      modifier && modifier != DRM_FORMAT_MOD_INVALID ? DRM_MODE_FB_MODIFIERS : 0;
   auto* fb = new PlaneFb;
   fb->fd = m_drmFd;
-  if (drmModeAddFB2(m_drmFd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), gbm_bo_get_format(bo),
-                    handles, strides, offsets, &fb->id, 0) != 0)
+  if (drmModeAddFB2WithModifiers(m_drmFd, gbm_bo_get_width(bo), gbm_bo_get_height(bo),
+                                 gbm_bo_get_format(bo), handles, strides, offsets, modifiers,
+                                 &fb->id, flags) != 0)
   {
     CLog::Log(LOGERROR, "CGraphicsPlaneAML - no framebuffer: {}", strerror(errno));
     delete fb;
@@ -281,11 +292,18 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs)
   return true;
 }
 
-void CGraphicsPlaneAML::SubmitGeometry()
+void CGraphicsPlaneAML::SwitchOff()
+{
+  if (!m_coordinator->DisableGraphicsPlane([this](uint32_t primaryFb)
+                                           { return m_amlDisplay->BuildOverlayOffRequest(primaryFb); }))
+    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
+}
+
+bool CGraphicsPlaneAML::SubmitGeometry()
 {
   // a fresh frame rather than a property-only commit on a buffer this thread
   // may already have been handed back
-  SubmitFrame(m_lastVisible, MonotonicNs());
+  return SubmitFrame(m_lastVisible, MonotonicNs());
 }
 
 void CGraphicsPlaneAML::Process()
@@ -296,8 +314,6 @@ void CGraphicsPlaneAML::Process()
     return;
   }
 
-  // the GUI plane orders itself above this one from its next flip on
-  m_amlDisplay->SetOverlayActive(true);
   m_epoch = aml_presenter_epoch();
   // establishes the plane, enabled and transparent (R4: idle is alpha 0,
   // never a disable)
@@ -309,12 +325,8 @@ void CGraphicsPlaneAML::Process()
     // a display transaction moved or rescaled the CRTC: the plane still has
     // the old rect until committed again (R6)
     const unsigned int epoch = aml_presenter_epoch();
-    if (epoch != m_epoch)
-    {
+    if (epoch != m_epoch && (m_testPattern || SubmitGeometry()))
       m_epoch = epoch;
-      if (!m_testPattern)
-        SubmitGeometry();
-    }
     if (m_testPattern)
     {
       if (!SubmitFrame(true, MonotonicNs()))
@@ -324,14 +336,7 @@ void CGraphicsPlaneAML::Process()
       m_wake.Wait(100ms);
   }
 
-  const bool off = m_coordinator->DisableGraphicsPlane(
-      [this](uint32_t primaryFb)
-      {
-        m_amlDisplay->SetOverlayActive(false);
-        return m_amlDisplay->BuildOverlayOffRequest(primaryFb);
-      });
-  if (!off)
-    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
+  SwitchOff();
   ReleaseReturned();
   DeinitGL();
   CLog::Log(LOGINFO, "CGraphicsPlaneAML - stopped");

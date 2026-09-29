@@ -267,6 +267,72 @@ void CPresentationCoordinator::DetachSurface(int plane)
   // parked, and no flip in flight
   CAmlPresenterHold hold;
   std::unique_lock lock(m_uiMutex);
+  AbandonLostCommit(plane);
+  ReclaimPlane(plane);
+}
+
+bool CPresentationCoordinator::DisableGraphicsPlane(
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
+{
+  // parked, and no flip in flight: this thread owns the commit
+  CAmlPresenterHold hold;
+  uint32_t primaryFb;
+  bool on;
+  {
+    std::unique_lock lock(m_uiMutex);
+    AbandonLostCommit(PLANE_GRAPHICS);
+    primaryFb = m_planes[PLANE_UI].onScreenFb;
+    on = m_graphicsOn;
+  }
+  bool done = !on;
+  if (on)
+  {
+    if (drmModeAtomicReqPtr req = build(primaryFb))
+    {
+      done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
+      if (!done)
+        CLog::Log(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
+                  strerror(errno));
+      drmModeAtomicFree(req);
+    }
+  }
+  std::unique_lock lock(m_uiMutex);
+  if (done)
+    m_graphicsOn = false;
+  ReclaimPlane(PLANE_GRAPHICS);
+  return done;
+}
+
+void CPresentationCoordinator::AbandonLostCommit(int detached)
+{
+  // The hold was acknowledged, so a commit still marked in flight lost its
+  // flip (CRTC off mid-flight). Nothing else would ever clear it: the next
+  // surface could never commit. The detached plane's buffer goes back with the
+  // rest; the other plane's is taken as shown, since it may be on screen and
+  // must not be drawn into.
+  if (!m_inFlight)
+    return;
+  m_inFlight = false;
+  m_inCommitTag = 0;
+  for (int plane = 0; plane < PLANE_COUNT; plane++)
+  {
+    PlaneState& state = m_planes[plane];
+    if (!state.inCommit)
+      continue;
+    if (plane != detached && state.committedBo)
+    {
+      if (state.onScreen)
+        state.returned.push_back(state.onScreen);
+      state.onScreen = state.committedBo;
+      state.onScreenFb = state.committedFb;
+      state.committedBo = nullptr;
+    }
+    state.inCommit = false;
+  }
+}
+
+void CPresentationCoordinator::ReclaimPlane(int plane)
+{
   PlaneState& state = m_planes[plane];
   // A commit that outlived a timed-out hold belongs to this surface: its
   // buffer and its flip are dropped, never handed to the next surface.
@@ -281,41 +347,6 @@ void CPresentationCoordinator::DetachSurface(int plane)
   state.committedFb = 0;
   state.onScreen = nullptr;
   state.onScreenFb = 0;
-}
-
-bool CPresentationCoordinator::DisableGraphicsPlane(
-    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
-{
-  // parked, and no flip in flight: this thread owns the commit
-  CAmlPresenterHold hold;
-  uint32_t primaryFb;
-  {
-    std::unique_lock lock(m_uiMutex);
-    primaryFb = m_planes[PLANE_UI].onScreenFb;
-  }
-  bool done = false;
-  if (drmModeAtomicReqPtr req = build(primaryFb))
-  {
-    done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
-    if (!done)
-      CLog::Log(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
-                strerror(errno));
-    drmModeAtomicFree(req);
-  }
-  std::unique_lock lock(m_uiMutex);
-  PlaneState& state = m_planes[PLANE_GRAPHICS];
-  state.generation++;
-  Drop(PLANE_GRAPHICS, state.ready);
-  if (state.committedBo)
-    state.returned.push_back(state.committedBo);
-  if (state.onScreen)
-    state.returned.push_back(state.onScreen);
-  state.inCommit = false;
-  state.committedBo = nullptr;
-  state.committedFb = 0;
-  state.onScreen = nullptr;
-  state.onScreenFb = 0;
-  return done;
 }
 
 void CPresentationCoordinator::Drop(int plane, UiBuffer& buffer)
@@ -534,11 +565,25 @@ void CPresentationCoordinator::CommitUi()
       UiBuffer& ready = m_planes[plane].ready;
       if (!ready.req || ready.fence >= 0)
         continue;
+      if (plane == PLANE_GRAPHICS)
+      {
+        // a plane the driver refused would take every GUI frame down with it
+        if (m_graphicsRejected)
+        {
+          Drop(plane, ready);
+          continue;
+        }
+        // only over a GUI plane that shows something: the plane is switched
+        // off with the GUI plane's buffer, and must never be the only one up
+        if (!m_planes[PLANE_UI].onScreenFb && !commit.has[PLANE_UI])
+          continue;
+      }
       if (!commit.req)
         commit.req = ready.req;
       else
       {
-        drmModeAtomicMerge(commit.req, ready.req);
+        if (drmModeAtomicMerge(commit.req, ready.req) < 0)
+          continue;
         drmModeAtomicFree(ready.req);
       }
       commit.has[plane] = true;
@@ -594,7 +639,10 @@ void CPresentationCoordinator::CommitWorker()
       if (commit.has[PLANE_UI])
         m_report.uiCommits++;
       if (commit.has[PLANE_GRAPHICS])
+      {
         m_report.gfxCommits++;
+        m_graphicsOn = true;
+      }
     }
     // a failed commit is never shown: its buffers go back to their producers,
     // unless their surface is gone
@@ -616,6 +664,13 @@ void CPresentationCoordinator::CommitWorker()
       if (m_report.uiFailed++ < 3)
         CLog::Log(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
                   strerror(err));
+      if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
+      {
+        m_graphicsRejected = true;
+        CLog::Log(LOGERROR, "CPresentationCoordinator - the graphics plane was refused ({}), "
+                            "committing the GUI plane alone from now on",
+                  strerror(err));
+      }
     }
     lock.unlock();
     const uint64_t one = 1;

@@ -289,6 +289,10 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  // the GUI plane still shows its last buffer, which carries the off commit;
+  // at a mode switch the plane comes back with the next graphics frame
+  if (m_graphicsPlane)
+    m_graphicsPlane->SwitchOff();
   DetachGuiSurface();
   m_pGLContext->DestroySurface();
   return CWinSystemAmlogic::DestroyWindow();

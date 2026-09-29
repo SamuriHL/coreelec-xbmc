@@ -133,6 +133,9 @@ private:
   void CommitWorker();
   void OnFlip(uint64_t tag);
   void Drop(int plane, UiBuffer& buffer); // under m_uiMutex
+  //! under a hold: a commit still marked in flight lost its flip (under m_uiMutex)
+  void AbandonLostCommit(int detached);
+  void ReclaimPlane(int plane); // under m_uiMutex
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
   void SetState(State state, unsigned int epoch);
@@ -168,6 +171,8 @@ private:
   std::thread m_commitThread;
   bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
+  bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
+  bool m_graphicsRejected = false; //!< a commit carrying it failed: left out from then on
 
   struct Report
   {

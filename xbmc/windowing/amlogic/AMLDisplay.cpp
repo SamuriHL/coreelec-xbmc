@@ -1138,12 +1138,6 @@ bool CAMLDRMUtils::HasOverlayPlane()
   return m_overlayPlane != nullptr;
 }
 
-void CAMLDRMUtils::SetOverlayActive(bool active)
-{
-  std::unique_lock<CCriticalSection> lock(m_drmSection);
-  m_overlayActive = active;
-}
-
 drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
                                                       int src_w,
                                                       int src_h,
@@ -1157,6 +1151,8 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
   if (!req)
     return nullptr;
 
+  // GUI flips order the planes from here on
+  m_overlayActive = true;
   const uint32_t id = m_overlayPlane->plane_id;
   set_drmProp(id, "FB_ID", DRM_MODE_OBJECT_PLANE, fb_id, req);
   set_drmProp(id, "CRTC_ID", DRM_MODE_OBJECT_PLANE, m_crtc->crtc_id, req);
@@ -1185,7 +1181,8 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayOffRequest(uint32_t primary_fb_id)
   if (!m_overlayPlane || !m_plane || !m_crtc || !primary_fb_id)
     return nullptr;
 
-  // back to the planes' own order (the caller cleared SetOverlayActive first)
+  // back to the planes' own order
+  m_overlayActive = false;
   drmModeAtomicReqPtr req = BuildFlipRequest(primary_fb_id);
   if (!req)
     return nullptr;
