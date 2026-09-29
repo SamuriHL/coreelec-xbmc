@@ -39,6 +39,7 @@ class CCaptureBlit;
 } // namespace KODI
 
 class CDVDOverlayContainer;
+class CPresentationCoordinator;
 struct VideoPicture;
 
 class CWinRenderer;
@@ -63,8 +64,29 @@ protected:
   virtual CVideoSettings GetVideoSettings() const = 0;
 };
 
+// real_player: one vsync as the presentation coordinator woke on it
+struct SPresentTick
+{
+  uint64_t seq = 0;
+  int64_t vblankNs = 0; //!< CLOCK_MONOTONIC hardware time; 0 = timer fallback tick
+  int64_t wokeNs = 0;
+  unsigned int epoch = 0; //!< display epoch (aml_presenter_epoch)
+};
+
+struct SPresentResult
+{
+  bool configured = false;
+  bool playing = false; //!< clock running, display not lost
+  bool displayLost = false;
+  bool newFrame = false;
+  double pts = 0.0;
+  int skipped = 0; //!< queued frames discarded unshown this vsync
+};
+
 class CRenderManager
 {
+  friend CPresentationCoordinator;
+
 public:
   CRenderManager(CDVDClock &clock, IRenderMsg *player);
   virtual ~CRenderManager();
@@ -158,7 +180,9 @@ protected:
   void PresentFields(bool clear, DWORD flags, DWORD alpha);
   void PresentBlend(bool clear, DWORD flags, DWORD alpha);
 
-  void PrepareNextRender();
+  //! vblankNs: the hardware vblank the coordinator woke on (0 = none), or
+  //! -1 on the render thread, which asks the win system
+  void PrepareNextRender(int64_t vblankNs);
   bool IsPresenting();
   bool IsGuiLayer();
 
@@ -171,6 +195,13 @@ protected:
 
   void UpdateLatencyTweak();
   void CheckEnableClockSync();
+  //! render thread: the display timing PrepareNextRender uses, for either thread
+  void PublishDisplayTiming();
+
+  // real_player: the presentation coordinator's per-vsync step
+  void PresentTick(const SPresentTick& tick, SPresentResult& result);
+  void StartCoordinator();
+  void StopCoordinator();
 
   CBaseRenderer *m_pRenderer = nullptr;
   //! Owns the video tap's private FBO; render-thread only, reset in UnInit
@@ -301,4 +332,11 @@ protected:
   // start, so a wall-clock step must not be able to expire it early.
   std::chrono::time_point<std::chrono::steady_clock> m_videostarted;
   std::atomic<bool> m_displayReset{false};
+
+  CPresentationCoordinator* m_coordinator = nullptr; // AML builds only
+  //! the coordinator releases the video frames; set in Configure() under all locks
+  bool m_presenterMode = false;
+  std::atomic<float> m_timingFps{60.0f};
+  std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
+  std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in
 };

@@ -70,6 +70,11 @@ public:
   virtual void SetBufferSize(int numBuffers) { }
   virtual void ReleaseBuffer(int idx) { }
   virtual bool NeedBuffer(int idx) { return false; }
+  // real_player: a hardware-plane renderer whose frame release can run on the
+  // presentation coordinator; RenderUpdate then keeps only the geometry
+  virtual bool SupportsOffThreadPresent() const { return false; }
+  virtual void SetOffThreadPresent(bool enable) {}
+  virtual void PresentFrame(int index) {}
   virtual bool IsGuiLayer() { return true; }
   //! True when video never reaches the framebuffer: a DRM plane, an Android
   //! SurfaceView, the Amlogic video layer. Such a renderer must produce its

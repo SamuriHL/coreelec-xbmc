@@ -10,6 +10,11 @@
 
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 
+#include <memory>
+#include <mutex>
+
+class CAMLCodec;
+
 class CRendererAML : public CBaseRenderer
 {
 public:
@@ -30,6 +35,9 @@ public:
   virtual void UnInit() override {};
   virtual void Update() override {};
   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
+  bool SupportsOffThreadPresent() const override { return true; }
+  void SetOffThreadPresent(bool enable) override { m_offThreadPresent = enable; }
+  void PresentFrame(int index) override;
   virtual bool SupportsMultiPassRendering()override { return false; };
   virtual bool Flush(bool saveBuffers) override;
 
@@ -84,4 +92,10 @@ private:
 
   uint64_t m_prevVPts;
   bool m_bConfigured;
+
+  bool m_offThreadPresent{false};
+  // the codec of the last frame the coordinator released, for the render
+  // thread's SetVideoRect
+  std::mutex m_rectMutex;
+  std::shared_ptr<CAMLCodec> m_rectCodec;
 };

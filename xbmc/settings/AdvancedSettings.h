@@ -466,6 +466,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_nfsRetries;
 
     int  m_videoDecoderTimeout;
+    // real_player: release video frames from the presentation coordinator thread
+    bool m_videoPresentationCoordinator;
 
   private:
     void Initialize();

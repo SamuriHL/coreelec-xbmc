@@ -42,8 +42,10 @@ if(CORE_SYSTEM_NAME STREQUAL darwin_embedded)
 endif()
 
 if(TARGET ${APP_NAME_LC}::AML)
-  list(APPEND SOURCES RendererAML.cpp)
-  list(APPEND HEADERS RendererAML.h)
+  list(APPEND SOURCES RendererAML.cpp
+                      PresentationCoordinator.cpp)
+  list(APPEND HEADERS RendererAML.h
+                      PresentationCoordinator.h)
 endif()
 
 if(CORE_SYSTEM_NAME STREQUAL android)

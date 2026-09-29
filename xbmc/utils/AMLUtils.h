@@ -240,5 +240,27 @@ void aml_note_poll_return();
 int64_t aml_poll_return_us();
 void aml_note_present(bool rendered);
 bool aml_last_present_rendered();
+// real_player Phase 2: the presentation coordinator's display fence. The display
+// executor holds it across a display transaction (a mode set, the DV engage);
+// the coordinator parks - no frame selection, no QBUF - until it is released.
+// Acquire returns once the coordinator has acknowledged (bounded); every
+// acquire and release starts a new display epoch.
+void aml_presenter_hold_acquire();
+void aml_presenter_hold_release();
+struct CAmlPresenterHold
+{
+  CAmlPresenterHold() { aml_presenter_hold_acquire(); }
+  ~CAmlPresenterHold() { aml_presenter_hold_release(); }
+  CAmlPresenterHold(const CAmlPresenterHold&) = delete;
+  CAmlPresenterHold& operator=(const CAmlPresenterHold&) = delete;
+};
+// coordinator side: true while held (acknowledging the hold); epoch = the
+// current display epoch
+bool aml_presenter_check_hold(unsigned int& epoch);
+unsigned int aml_presenter_epoch();
+void aml_presenter_set_running(bool running);
+// true while a coordinator releases the video plane, so the GUI loop paces
+// itself instead of relying on the video release's vsync wait
+bool aml_video_presenter_active();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);

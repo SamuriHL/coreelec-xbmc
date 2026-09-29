@@ -25,6 +25,9 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "utils/log.h"
+#if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
+#endif
 
 #include <cassert>
 #include <mutex>
@@ -409,6 +412,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   RESOLUTION lastRes = m_Resolution;
 #if defined(HAS_LIBAMCODEC)
   forceUpdate = true;
+  // before the lock and before m_Resolution changes: the presentation
+  // coordinator releases no video until the display transaction is over
+  CAmlPresenterHold presenterHold;
 #endif
 
   // If the user asked us to guess, go with desktop

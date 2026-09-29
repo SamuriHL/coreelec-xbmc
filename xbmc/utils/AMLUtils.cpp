@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
@@ -2294,6 +2295,87 @@ void aml_note_present(bool rendered)
 bool aml_last_present_rendered()
 {
   return s_lastPresentRendered.load();
+}
+
+namespace
+{
+std::mutex s_holdMutex;
+std::condition_variable s_holdCond;
+int s_holdDepth = 0;
+bool s_presenterRunning = false;
+unsigned int s_parkedEpoch = 0;
+std::atomic<unsigned int> s_displayEpoch{1};
+} // namespace
+
+void aml_presenter_hold_acquire()
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  s_holdDepth++;
+  const unsigned int epoch = ++s_displayEpoch;
+  if (!s_presenterRunning)
+    return;
+  // The coordinator never waits on this thread, so it acknowledges within one
+  // iteration (a vsync, 50 ms without vblanks). The bound only guards a hang:
+  // a display transaction that never runs is worse than one that races a QBUF.
+  const auto start = std::chrono::steady_clock::now();
+  bool warned = false;
+  while (s_presenterRunning && s_parkedEpoch != epoch)
+  {
+    s_holdCond.wait_for(lock, std::chrono::milliseconds(20));
+    const auto waited = std::chrono::steady_clock::now() - start;
+    if (!warned && waited > std::chrono::milliseconds(100))
+    {
+      CLog::Log(LOGWARNING, "aml_presenter_hold_acquire - coordinator slow to park (epoch {})",
+                epoch);
+      warned = true;
+    }
+    if (waited > std::chrono::seconds(2))
+    {
+      CLog::Log(LOGERROR, "aml_presenter_hold_acquire - coordinator did not park in 2 s, "
+                          "proceeding (epoch {})", epoch);
+      return;
+    }
+  }
+}
+
+void aml_presenter_hold_release()
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  if (s_holdDepth > 0)
+    s_holdDepth--;
+  ++s_displayEpoch;
+}
+
+bool aml_presenter_check_hold(unsigned int& epoch)
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  epoch = s_displayEpoch.load();
+  if (s_holdDepth == 0)
+    return false;
+  if (s_parkedEpoch != epoch)
+  {
+    s_parkedEpoch = epoch;
+    s_holdCond.notify_all();
+  }
+  return true;
+}
+
+unsigned int aml_presenter_epoch()
+{
+  return s_displayEpoch.load();
+}
+
+void aml_presenter_set_running(bool running)
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  s_presenterRunning = running;
+  s_holdCond.notify_all();
+}
+
+bool aml_video_presenter_active()
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  return s_presenterRunning;
 }
 
 bool aml_video_started()

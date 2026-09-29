@@ -363,6 +363,18 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
 {
   ManageRenderArea();
 
+  if (m_offThreadPresent)
+  {
+    std::shared_ptr<CAMLCodec> codec;
+    {
+      std::lock_guard<std::mutex> lock(m_rectMutex);
+      codec = std::move(m_rectCodec);
+    }
+    if (codec)
+      codec->SetVideoRect(m_sourceRect, m_destRect);
+    return;
+  }
+
   CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
   if(amli && amli->m_amlCodec)
   {
@@ -377,4 +389,23 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
     }
   }
   CAMLCodec::PollFrame();
+}
+
+void CRendererAML::PresentFrame(int index)
+{
+  CAMLVideoBuffer* amli = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
+  if (!amli || !amli->m_amlCodec)
+    return;
+
+  uint64_t pts = amli->m_omxPts;
+  if (pts == m_prevVPts)
+    return;
+
+  amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE,
+                                 amli->m_sessionGen);
+  {
+    std::lock_guard<std::mutex> lock(m_rectMutex);
+    m_rectCodec = std::move(amli->m_amlCodec); // also marks the frame processed
+  }
+  m_prevVPts = pts;
 }

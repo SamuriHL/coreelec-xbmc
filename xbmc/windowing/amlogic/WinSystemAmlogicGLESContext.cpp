@@ -330,7 +330,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
         m_guiRepaintFrames--;
     }
   }
-  else if (!videoLayer)
+  else if (!videoLayer || aml_video_presenter_active())
   {
     m_amlDisplay->aml_drmDevice_vsync();
   }
