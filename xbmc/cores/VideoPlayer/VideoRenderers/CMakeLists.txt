@@ -10,6 +10,7 @@ set(SOURCES BaseRenderer.cpp
 set(HEADERS BaseRenderer.h
             ColorManager.h
             DebugInfo.h
+            HdrGraphics.h
             OverlayRenderer.h
             OverlayRendererUtil.h
             RenderFactory.h
