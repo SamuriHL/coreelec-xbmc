@@ -2101,7 +2101,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_park_start = {};
   m_park_reported = false;
   m_park_last_data_len = -1;
-  m_sessionGen++;
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    m_sessionGen++;
+  }
 
   if (!OpenAmlVideo(hints))
   {
@@ -2859,6 +2862,12 @@ void CAMLCodec::Reset()
   m_park_last_data_len = -1;
   SetPollDevice(-1);
 
+  // frames decoded before the reset must not be queued into the reset decoder
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    m_sessionGen++;
+  }
+
   // set the system blackout_policy to leave the last frame showing
   int blackout_policy = 0;
   CSysfsPath video_blackout_policy{"/sys/class/video/blackout_policy"};
@@ -3214,11 +3223,10 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   vbuf.index = index;
 
-  PosixFilePtr amlVideoFile;
-  {
-    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
-    amlVideoFile = m_amlVideoFile;
-  }
+  // held across the generation check and the QBUF, so a concurrent reset or
+  // reopen cannot slip in between them
+  std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+  const PosixFilePtr& amlVideoFile = m_amlVideoFile;
 
   // runs on the render thread; the generation check refuses to QBUF a buffer
   // decoded in a PREVIOUS session into the new v4l session (a stale on-screen
