@@ -1040,16 +1040,28 @@ void CRenderManager::UpdateResolution()
       }
       else if (aml_video_started() || elapsed > std::chrono::seconds(m_render_timeout))
       {
+        // Consume the trigger with the parameters it was raised for; a trigger
+        // raised while the mode switch below runs is kept for the next pass.
+        float fps;
+        int width, height;
+        std::string stereoMode;
+        StreamHdrType hdrType;
+        {
+          std::unique_lock lock(m_statelock);
+          fps = m_fps;
+          width = m_picture.iWidth;
+          height = m_picture.iHeight;
+          stereoMode = m_picture.stereoMode;
+          hdrType = m_picture.hdrType;
+          m_bTriggerUpdateResolution = false;
+        }
+
         const RenderStereoMode user_stereo_mode =
           CServiceBroker::GetGUI()->GetStereoscopicsManager().GetStereoModeByUser();
         STEREOSCOPIC_PLAYBACK_MODE playbackMode =
           static_cast<STEREOSCOPIC_PLAYBACK_MODE>(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE));
-        if (!m_picture.stereoMode.empty() &&
-            playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
-            user_stereo_mode == RenderStereoMode::UNDEFINED)
-          m_bTriggerUpdateResolution = false;
-
-        if (m_bTriggerUpdateResolution)
+        if (stereoMode.empty() || playbackMode != STEREOSCOPIC_PLAYBACK_MODE_ASK ||
+            user_stereo_mode != RenderStereoMode::UNDEFINED)
         {
           // Whether we may CHOOSE a different display mode. Separate from whether
           // the window update runs at all: on Amlogic the HDMI colour attributes
@@ -1067,7 +1079,7 @@ void CRenderManager::UpdateResolution()
           const bool mayChooseMode =
               CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
                   CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF &&
-              m_fps > 0.0f;
+              fps > 0.0f;
 
           // Keeping the incumbent resolution makes this a no-op for everyone
           // else: CreateNewWindow still returns "no need to create a new window"
@@ -1087,27 +1099,25 @@ void CRenderManager::UpdateResolution()
                   ? CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()
                   : (aml_disc_mode_hold()
                          ? ChooseHeldResolution(
-                               m_fps,
+                               fps,
                                CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(),
-                               !m_picture.stereoMode.empty(), m_picture.iWidth, m_picture.iHeight)
+                               !stereoMode.empty(), width, height)
                          : CResolutionUtils::ChooseBestResolution(
-                               m_fps, m_picture.iWidth, m_picture.iHeight,
-                               !m_picture.stereoMode.empty()));
+                               fps, width, height, !stereoMode.empty()));
           // A segment that chose its own resolution - the feature, when the
           // disc started there (a resume, or a title started directly) - is
           // the session's anchor too: otherwise the first menu opened later
           // anchors on the menu's own resolution (1080p on a UHD disc) and the
           // session pays a re-clock down and another back up. Cleared at player
           // teardown, so plain file playback is unaffected.
-          if (mayChooseMode && !held && m_picture.iWidth > 0 && m_picture.iHeight > 0)
+          if (mayChooseMode && !held && width > 0 && height > 0)
             aml_set_disc_mode_anchored(true);
-          CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
+          CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
           if (m_pRenderer)
             m_pRenderer->Update();
         }
-        m_bTriggerUpdateResolution = false;
         m_playerPort->VideoParamsChange();
       }
     }
@@ -1116,6 +1126,7 @@ void CRenderManager::UpdateResolution()
 
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
 {
+  std::unique_lock lock(m_statelock);
   if (width)
   {
     m_fps = fps;
@@ -1560,11 +1571,10 @@ void CRenderManager::PrepareNextRender()
       }
     }
 
-    if (m_displayReset)
+    if (m_displayReset.exchange(false))
     {
       m_QueueSkip = 0;
       m_lateframes = 0;
-      m_displayReset = false;
     }
 
     if (lateframes)

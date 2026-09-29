@@ -533,7 +533,7 @@ AMLHdmiAudioCaps aml_get_hdmi_audio_caps()
 }
 
 // VS10 output mode resolved at stream-open and consumed in CAMLCodec::OpenDecoder.
-static unsigned int s_vs10_pending_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+static std::atomic<unsigned int> s_vs10_pending_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
 void aml_dv_set_vs10_pending(unsigned int mode) { s_vs10_pending_mode = mode; }
 unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 

@@ -3637,8 +3637,11 @@ void CAMLCodec::SetSpeed(int speed)
 
 void CAMLCodec::ShowMainVideo(const bool show)
 {
+  // called from the decoder and the render threads
+  static std::mutex mutex;
   static int saved_disable_video = -1;
 
+  std::lock_guard<std::mutex> lock(mutex);
   int disable_video = show ? 0:1;
   if (saved_disable_video == disable_video)
     return;
