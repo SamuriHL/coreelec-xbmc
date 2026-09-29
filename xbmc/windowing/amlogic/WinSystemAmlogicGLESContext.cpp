@@ -8,6 +8,8 @@
 
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
+#include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
+#include "settings/AdvancedSettings.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
 #include "guilib/GUIComponent.h"
@@ -87,11 +89,26 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     m_eglFence = std::make_unique<KODI::UTILS::EGL::CEGLFence>(GetEGLDisplay());
   }
 
+  if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoPresentationCoordinator)
+  {
+    m_coordinator =
+        std::make_unique<CPresentationCoordinator>(m_amlDisplay->aml_get_Device_handle());
+    if (!m_coordinator->Start())
+      m_coordinator.reset();
+  }
+
   return true;
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  if (m_coordinator)
+  {
+    DetachGuiSurface();
+    m_coordinator->Stop();
+    m_coordinator.reset();
+  }
+
   if (IsPresentationReady())
   {
     SetPresentationReady(false);
@@ -253,6 +270,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  DetachGuiSurface();
   m_pGLContext->DestroySurface();
   return CWinSystemAmlogic::DestroyWindow();
 }
@@ -293,7 +311,13 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
   aml_note_present(rendered);
   SetVSync(true);
-  if (rendered)
+  if (m_coordinator)
+  {
+    ReleaseReturnedGuiBuffers();
+    if (rendered)
+      SubmitGuiFrame();
+  }
+  else if (rendered)
   {
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
     if (m_eglFence)
@@ -330,11 +354,14 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
         m_guiRepaintFrames--;
     }
   }
-  else if (!videoLayer || aml_video_presenter_active())
+  // The loop paces on the vblank unless the video release's poll does: a
+  // coordinator commit does not stall the next frame the way the render
+  // thread's own flip did.
+  if ((m_coordinator || !rendered) && (!videoLayer || aml_video_presenter_active()))
   {
     // no vblank to wait on (disconnected, CRTC off): pace as the video
     // release's 50 ms poll did, not at 100% CPU
-    if (!m_amlDisplay->aml_drmDevice_vsync() && aml_video_presenter_active())
+    if (!m_amlDisplay->aml_drmDevice_vsync() && (m_coordinator || aml_video_presenter_active()))
       KODI::TIME::Sleep(50ms);
   }
 
@@ -346,6 +373,67 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
       (*i)->OnResetDisplay();
   }
+}
+
+void CWinSystemAmlogicGLESContext::SubmitGuiFrame()
+{
+  // R5: an exhausted Mali surface crashes libMali; keep this frame in the
+  // back buffer and draw it again
+  constexpr int GUI_LOCK_CAP = 4;
+  if (m_guiLocked >= GUI_LOCK_CAP)
+  {
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+    return;
+  }
+
+  int fence = -1;
+#if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
+  if (m_eglFence)
+    m_eglFence->CreateGPUFence();
+#endif
+
+  // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
+  // there is probably nothing we can do about it
+  m_pGLContext->TrySwapBuffers();
+
+#if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
+  if (m_eglFence)
+    fence = m_eglFence->FlushFence();
+#endif
+
+  uint32_t fbId = 0;
+  gbm_bo* bo = m_amlGBMUtils->LockFront(m_amlDisplay->aml_get_Device_handle(), fbId);
+  drmModeAtomicReqPtr req = bo ? m_amlDisplay->BuildFlipRequest(fbId) : nullptr;
+  if (!req)
+  {
+    if (bo)
+      m_amlGBMUtils->Release(bo);
+    if (fence >= 0)
+      close(fence);
+    return;
+  }
+
+  m_guiLocked++;
+  m_coordinator->SubmitUi(bo, req, fence);
+  if (m_guiRepaintFrames > 0)
+    m_guiRepaintFrames--;
+}
+
+void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()
+{
+  m_coordinator->TakeReturned(m_guiReturned);
+  for (gbm_bo* bo : m_guiReturned)
+    m_amlGBMUtils->Release(bo);
+  m_guiLocked -= static_cast<int>(m_guiReturned.size());
+  m_guiReturned.clear();
+}
+
+void CWinSystemAmlogicGLESContext::DetachGuiSurface()
+{
+  if (!m_coordinator)
+    return;
+  m_coordinator->DetachUiSurface();
+  ReleaseReturnedGuiBuffers();
 }
 
 // Clear the OSD/overlay plane to opaque black at playback teardown. On this

@@ -37,6 +37,7 @@ static inline bool aml_disc_mode_hold() { return false; }
 static inline bool aml_disc_mode_anchored() { return true; }
 static inline void aml_set_disc_mode_anchored(bool) {}
 static inline unsigned int aml_presenter_epoch() { return 0; }
+static inline void aml_set_video_presenter_active(bool) {}
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -348,13 +349,14 @@ bool CRenderManager::Configure()
     m_pRenderer->SetBufferSize(m_QueueSize);
     m_pRenderer->Update();
 
-    const bool presenterMode = m_coordinator && m_coordinator->IsActive() &&
-                               m_pRenderer->SupportsOffThreadPresent();
+    const bool presenterMode =
+        m_coordinator && m_coordinatorDelivers && m_pRenderer->SupportsOffThreadPresent();
     if (presenterMode != m_presenterMode)
       CLog::Log(LOGINFO, "CRenderManager::Configure - video frames released by the {}",
                 presenterMode ? "presentation coordinator" : "render thread");
     m_presenterMode = presenterMode;
     m_pRenderer->SetOffThreadPresent(m_presenterMode);
+    aml_set_video_presenter_active(m_presenterMode);
 
     m_playerPort->UpdateRenderInfo(info);
     m_playerPort->UpdateGuiRender(true);
@@ -1810,11 +1812,11 @@ void CRenderManager::CheckEnableClockSync()
 void CRenderManager::StartCoordinator()
 {
 #if defined(HAS_LIBAMCODEC)
-  if (!CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoPresentationCoordinator)
+  if (m_coordinator)
     return;
-  if (!m_coordinator)
-    m_coordinator = new CPresentationCoordinator(*this);
-  m_coordinator->Start();
+  m_coordinator = CPresentationCoordinator::Get();
+  if (m_coordinator)
+    m_coordinatorDelivers = m_coordinator->AttachVideo(this);
 #endif
 }
 
@@ -1822,9 +1824,10 @@ void CRenderManager::StopCoordinator()
 {
 #if defined(HAS_LIBAMCODEC)
   if (m_coordinator)
-    m_coordinator->Stop();
-  delete m_coordinator;
+    m_coordinator->DetachVideo(this);
   m_coordinator = nullptr;
+  m_coordinatorDelivers = false;
+  aml_set_video_presenter_active(false);
 #endif
 }
 

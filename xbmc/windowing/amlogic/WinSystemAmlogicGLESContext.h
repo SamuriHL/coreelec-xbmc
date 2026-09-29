@@ -16,6 +16,10 @@
 #include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
 
 #include <memory>
+#include <vector>
+
+class CPresentationCoordinator;
+struct gbm_bo;
 
 class CGuiCompositeShaderGLES;
 
@@ -83,6 +87,11 @@ protected:
   void PresentRenderImpl(bool rendered) override {};
 
 private:
+  // real_player: the presentation coordinator commits the GUI plane
+  void SubmitGuiFrame();
+  void ReleaseReturnedGuiBuffers();
+  void DetachGuiSurface();
+
   std::unique_ptr<CEGLContextUtils> m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
 
@@ -113,6 +122,11 @@ private:
   int m_guiCompositeTransfer{0};
   float m_guiCompositePeak{-1.0f};
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+
+  std::unique_ptr<CPresentationCoordinator> m_coordinator;
+  //! GUI buffers locked for the coordinator, not yet released
+  int m_guiLocked{0};
+  std::vector<gbm_bo*> m_guiReturned;
 };
 
 }

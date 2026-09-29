@@ -154,6 +154,26 @@ struct drm_fb* CAMLGBMUtils::GetFBFromBo(int fd, struct gbm_bo* bo)
   return fb;
 }
 
+struct gbm_bo* CAMLGBMUtils::LockFront(int fd, uint32_t& fb_id)
+{
+  struct gbm_bo* bo = gbm_surface_lock_front_buffer(GetSurface());
+  if (!bo)
+    return nullptr;
+  struct drm_fb* fb = GetFBFromBo(fd, bo);
+  if (!fb)
+  {
+    gbm_surface_release_buffer(GetSurface(), bo);
+    return nullptr;
+  }
+  fb_id = fb->fb_id;
+  return bo;
+}
+
+void CAMLGBMUtils::Release(struct gbm_bo* bo)
+{
+  gbm_surface_release_buffer(GetSurface(), bo);
+}
+
 bool CAMLGBMUtils::LockFrontBuffer(int fd)
 {
   m_drm_fb = nullptr;
@@ -1062,17 +1082,17 @@ bool CAMLDRMUtils::SupportsFormat(drmModePlane *plane, uint32_t format)
   return false;
 }
 
-void CAMLDRMUtils::FlipPage(uint32_t fb_id)
+drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(uint32_t fb_id)
 {
   if (!aml_get_drmDevice_connected())
-    return;
+    return nullptr;
 
   if (!m_plane || !m_crtc)
-    return;
+    return nullptr;
 
   drmModeAtomicReqPtr req = drmModeAtomicAlloc();
   if (!req)
-    return;
+    return nullptr;
 
   set_drmProp(m_plane->plane_id, "FB_ID", DRM_MODE_OBJECT_PLANE , fb_id, req);
   set_drmProp(m_plane->plane_id, "CRTC_ID", DRM_MODE_OBJECT_PLANE , m_crtc->crtc_id, req);
@@ -1084,6 +1104,14 @@ void CAMLDRMUtils::FlipPage(uint32_t fb_id)
   set_drmProp(m_plane->plane_id, "CRTC_Y", DRM_MODE_OBJECT_PLANE , 0, req);
   set_drmProp(m_plane->plane_id, "CRTC_W", DRM_MODE_OBJECT_PLANE , m_ScreenWidth, req);
   set_drmProp(m_plane->plane_id, "CRTC_H", DRM_MODE_OBJECT_PLANE , m_ScreenHeight, req);
+  return req;
+}
+
+void CAMLDRMUtils::FlipPage(uint32_t fb_id)
+{
+  drmModeAtomicReqPtr req = BuildFlipRequest(fb_id);
+  if (!req)
+    return;
 
   if (m_inFenceFd != -1)
   {

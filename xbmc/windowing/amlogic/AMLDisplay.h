@@ -33,6 +33,10 @@ public:
   bool CreateSurface(int width, int height, uint32_t format);
   uint32_t GetFBId() { return m_drm_fb->fb_id; }
   bool LockFrontBuffer(int fd);
+  // real_player: the GUI plane buffers the presentation coordinator commits.
+  // Locked and released on the render thread; fb_id stays valid while locked.
+  struct gbm_bo* LockFront(int fd, uint32_t& fb_id);
+  void Release(struct gbm_bo* bo);
 private:
   struct drm_fb* GetFBFromBo(int fd, struct gbm_bo* bo);
 
@@ -106,6 +110,8 @@ public:
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   bool aml_output_wire_stale();
   void FlipPage(uint32_t fb_id);
+  //! the GUI plane flip without fences; nullptr when there is nothing to flip to
+  drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
 
   void SetInFenceFd(int fd) { if (m_inFenceFd != -1) close(m_inFenceFd); m_inFenceFd = fd; }
   int TakeOutFenceFd()
@@ -186,6 +192,10 @@ public:
   void aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value)
     { m_amlDRMUtils->aml_set_drmProperty(name, obj_type, value); }
   void FlipPage(uint32_t fb_id) { m_amlDRMUtils->FlipPage(fb_id); }
+  drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id)
+  {
+    return m_amlDRMUtils->BuildFlipRequest(fb_id);
+  }
   bool aml_output_wire_stale() { return m_amlDRMUtils->aml_output_wire_stale(); }
   bool aml_set_drmDevice_active(bool active) const
     { return m_amlDRMUtils->aml_set_drmDevice_active(

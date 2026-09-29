@@ -254,13 +254,16 @@ struct CAmlPresenterHold
   CAmlPresenterHold(const CAmlPresenterHold&) = delete;
   CAmlPresenterHold& operator=(const CAmlPresenterHold&) = delete;
 };
-// coordinator side: true while held (acknowledging the hold); epoch = the
-// current display epoch
-bool aml_presenter_check_hold(unsigned int& epoch);
+// coordinator side: true while held; acknowledges the hold when park is set
+// (nothing of its own in flight); epoch = the current display epoch
+bool aml_presenter_check_hold(unsigned int& epoch, bool park = true);
 unsigned int aml_presenter_epoch();
 void aml_presenter_set_running(bool running);
+//! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
+void aml_presenter_set_wake_fd(int fd);
 // true while a coordinator releases the video plane, so the GUI loop paces
 // itself instead of relying on the video release's vsync wait
+void aml_set_video_presenter_active(bool active);
 bool aml_video_presenter_active();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);

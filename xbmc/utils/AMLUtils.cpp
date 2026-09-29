@@ -40,6 +40,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
@@ -2305,6 +2306,8 @@ int s_holdDepth = 0;
 bool s_presenterRunning = false;
 unsigned int s_parkedEpoch = 0;
 std::atomic<unsigned int> s_displayEpoch{1};
+std::atomic<bool> s_videoPresenter{false};
+int s_wakeFd = -1;
 } // namespace
 
 void aml_presenter_hold_acquire()
@@ -2314,6 +2317,12 @@ void aml_presenter_hold_acquire()
   const unsigned int epoch = ++s_displayEpoch;
   if (!s_presenterRunning)
     return;
+  if (s_wakeFd >= 0)
+  {
+    const uint64_t one = 1;
+    if (write(s_wakeFd, &one, sizeof(one)) < 0)
+      CLog::Log(LOGDEBUG, "aml_presenter_hold_acquire - wake failed: {}", strerror(errno));
+  }
   // The coordinator never waits on this thread, so it acknowledges within one
   // iteration (a vsync, 50 ms without vblanks). The bound only guards a hang:
   // a display transaction that never runs is worse than one that races a QBUF.
@@ -2346,13 +2355,13 @@ void aml_presenter_hold_release()
   ++s_displayEpoch;
 }
 
-bool aml_presenter_check_hold(unsigned int& epoch)
+bool aml_presenter_check_hold(unsigned int& epoch, bool park)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   epoch = s_displayEpoch.load();
   if (s_holdDepth == 0)
     return false;
-  if (s_parkedEpoch != epoch)
+  if (park && s_parkedEpoch != epoch)
   {
     s_parkedEpoch = epoch;
     s_holdCond.notify_all();
@@ -2372,10 +2381,20 @@ void aml_presenter_set_running(bool running)
   s_holdCond.notify_all();
 }
 
-bool aml_video_presenter_active()
+void aml_presenter_set_wake_fd(int fd)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
-  return s_presenterRunning;
+  s_wakeFd = fd;
+}
+
+void aml_set_video_presenter_active(bool active)
+{
+  s_videoPresenter = active;
+}
+
+bool aml_video_presenter_active()
+{
+  return s_videoPresenter;
 }
 
 bool aml_video_started()

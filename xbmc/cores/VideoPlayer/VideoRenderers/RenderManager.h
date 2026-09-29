@@ -333,7 +333,8 @@ protected:
   std::chrono::time_point<std::chrono::steady_clock> m_videostarted;
   std::atomic<bool> m_displayReset{false};
 
-  CPresentationCoordinator* m_coordinator = nullptr; // AML builds only
+  CPresentationCoordinator* m_coordinator = nullptr; // the win system's; AML builds only
+  bool m_coordinatorDelivers = false; //!< its vblank events arrive
   //! the coordinator releases the video frames; set in Configure() under all locks
   bool m_presenterMode = false;
   //! the source the render thread snapshotted in FrameMove; not freed until
