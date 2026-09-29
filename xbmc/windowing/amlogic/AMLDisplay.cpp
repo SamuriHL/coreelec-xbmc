@@ -432,15 +432,16 @@ void CAMLDRMUtils::aml_set_framebuffer_resolution(unsigned int width,
   }
 }
 
-void CAMLDRMUtils::aml_drmDevice_vsync()
+bool CAMLDRMUtils::aml_drmDevice_vsync()
 {
   if (m_fd != -1 && aml_get_drmDevice_connected())
   {
     drmVBlank vbl = {};
     vbl.request.type = DRM_VBLANK_RELATIVE;
     vbl.request.sequence = 1;
-    drmWaitVBlank(m_fd, &vbl);
+    return drmWaitVBlank(m_fd, &vbl) == 0;
   }
+  return false;
 }
 
 // get drmDevice

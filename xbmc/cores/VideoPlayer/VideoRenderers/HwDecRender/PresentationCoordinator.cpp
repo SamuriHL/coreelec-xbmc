@@ -108,6 +108,25 @@ bool CPresentationCoordinator::Start()
     return false;
   }
 
+  // take over only from a source that delivers: one vblank event
+  uint64_t target = 0;
+  struct pollfd pfd = {m_fd, POLLIN, 0};
+  drmEventContext context = {};
+  context.version = 4;
+  context.sequence_handler = OnSequence;
+  t_event.got = false;
+  if (drmCrtcQueueSequence(m_fd, m_crtc, DRM_CRTC_SEQUENCE_RELATIVE, 1, &target, 0) == 0 &&
+      poll(&pfd, 1, 100) > 0)
+    drmHandleEvent(m_fd, &context);
+  if (!t_event.got)
+  {
+    CLog::Log(LOGWARNING, "CPresentationCoordinator - no vblank event from crtc {}, "
+                          "video stays on the render thread", m_crtc);
+    close(m_fd);
+    m_fd = -1;
+    return false;
+  }
+
   m_eventPending = false;
   m_lastSeq = 0;
   m_state = State::IDLE;
@@ -188,8 +207,6 @@ bool CPresentationCoordinator::WaitVblank(SPresentTick& tick, unsigned int epoch
       m_eventPending = true;
       m_queuedNs = now;
     }
-    else if (auto winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
-      m_crtc = winSystem->GetDRMCrtcId();
   }
 
   struct pollfd pfd = {m_fd, POLLIN, 0};

@@ -332,7 +332,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   }
   else if (!videoLayer || aml_video_presenter_active())
   {
-    m_amlDisplay->aml_drmDevice_vsync();
+    // no vblank to wait on (disconnected, CRTC off): pace as the video
+    // release's 50 ms poll did, not at 100% CPU
+    if (!m_amlDisplay->aml_drmDevice_vsync() && aml_video_presenter_active())
+      KODI::TIME::Sleep(50ms);
   }
 
   if (m_delayDispReset && m_dispResetTimer.IsTimePast())
