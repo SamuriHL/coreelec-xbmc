@@ -1555,7 +1555,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     {
       m_clockSync.m_ref = -m_dvdClock.GetVsyncAdjust();
       m_clockSync.m_refValid = true;
-      m_clockSync.m_syncOffset = onAudioBranch(m_clockSync.m_syncOffset);
+      m_clockSync.m_syncOffset = m_clockSync.m_ref;
     }
     if (m_clockSync.m_errCount == 0 && !m_clockSync.m_refValid)
     {
@@ -1569,7 +1569,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     // frames): a passthrough start sync that lands without it keeps the
     // missing phase (up to half a frame) for the rest of playback. A paused
     // clock or a lost display gives no phase. Frame selection (m_syncOffset)
-    // still waits for the window.
+    // takes the seed too, so it selects on the phase audio lands against.
     // The phase moves over the first frames after a start (measured am9pro:
     // ramps of 3-6 ms over 5-10 frames, then +/-0.5 ms per frame), so seed
     // once it has settled, by the rule the audio start sync uses: means over
@@ -1595,7 +1595,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
           m_dvdClock.SetVsyncAdjust(-mean, phaseGeneration);
           seeded = true;
           m_clockSync.m_ref = onAudioBranch(m_clockSync.m_ref);
-          m_clockSync.m_syncOffset = onAudioBranch(m_clockSync.m_syncOffset);
+          m_clockSync.m_syncOffset = onAudioBranch(mean);
         }
         else
         {
