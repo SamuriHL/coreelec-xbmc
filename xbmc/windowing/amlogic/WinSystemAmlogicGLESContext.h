@@ -88,7 +88,8 @@ protected:
 
 private:
   // real_player: the presentation coordinator commits the GUI plane
-  void SubmitGuiFrame();
+  //! true when it waited for the frame's commit, which paces the loop
+  bool SubmitGuiFrame();
   void ReleaseReturnedGuiBuffers();
   void DetachGuiSurface();
 

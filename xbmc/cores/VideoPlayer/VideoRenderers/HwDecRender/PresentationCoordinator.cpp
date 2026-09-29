@@ -56,6 +56,7 @@ struct SequenceEvent
 };
 thread_local SequenceEvent t_event;
 thread_local bool t_flipped = false;
+thread_local uint64_t t_flipTag = 0;
 
 void OnSequence(int fd, uint64_t sequence, uint64_t ns, uint64_t userData)
 {
@@ -73,6 +74,7 @@ void OnPageFlip(int fd,
                 void* userData)
 {
   t_flipped = true;
+  t_flipTag = reinterpret_cast<uintptr_t>(userData);
 }
 
 int ReadKernelDrops()
@@ -137,7 +139,7 @@ bool CPresentationCoordinator::Start()
   aml_presenter_set_wake_fd(m_wakeFd);
   Create();
   s_instance = this;
-  CLog::Log(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc);
+  CLog::Log(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
   return true;
 }
 
@@ -181,13 +183,14 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
     CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 
-  // presenting needs a vblank source that delivers
+  // presenting needs a vblank source that delivers: a vblank after this
+  // point, not an event left queued by an earlier attach
   std::unique_lock lock(m_vblankMutex);
   const bool delivering = m_vblankCond.wait_for(lock, std::chrono::milliseconds(150),
                                                 [&] { return m_lastVblankNs > start; });
   if (!delivering)
     CLog::Log(LOGWARNING, "CPresentationCoordinator - no vblank event from crtc {}, "
-                          "video stays on the render thread", m_crtc);
+                          "video stays on the render thread", m_crtc.load());
   return delivering;
 }
 
@@ -200,8 +203,9 @@ void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
   m_videoAttached = false;
 }
 
-void CPresentationCoordinator::SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence)
+uint64_t CPresentationCoordinator::SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence)
 {
+  uint64_t seq;
   {
     std::unique_lock lock(m_uiMutex);
     if (m_ready.bo)
@@ -212,11 +216,19 @@ void CPresentationCoordinator::SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int
     m_ready.bo = bo;
     m_ready.req = req;
     m_ready.fence = fence;
+    m_ready.seq = seq = ++m_submitSeq;
     m_report.uiSubmits++;
   }
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
     CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+  return seq;
+}
+
+bool CPresentationCoordinator::WaitTaken(uint64_t seq, std::chrono::milliseconds timeout)
+{
+  std::unique_lock lock(m_uiMutex);
+  return m_uiCond.wait_for(lock, timeout, [&] { return m_ready.seq != seq; });
 }
 
 void CPresentationCoordinator::TakeReturned(std::vector<gbm_bo*>& returned)
@@ -231,12 +243,16 @@ void CPresentationCoordinator::DetachUiSurface()
   // parked, and no flip in flight
   CAmlPresenterHold hold;
   std::unique_lock lock(m_uiMutex);
+  // A commit that outlived a timed-out hold belongs to this surface: its
+  // buffer and its flip are dropped, never handed to the next surface.
+  m_uiGeneration++;
   Drop(m_ready);
   if (m_inCommit)
     m_returned.push_back(m_inCommit);
   if (m_onScreen)
     m_returned.push_back(m_onScreen);
   m_inCommit = nullptr;
+  m_inCommitTag = 0;
   m_onScreen = nullptr;
 }
 
@@ -249,12 +265,25 @@ void CPresentationCoordinator::Drop(UiBuffer& buffer)
   if (buffer.fence >= 0)
     close(buffer.fence);
   buffer = UiBuffer();
+  m_uiCond.notify_all();
 }
 
 bool CPresentationCoordinator::UiInFlight()
 {
   std::unique_lock lock(m_uiMutex);
-  return m_inCommit != nullptr;
+  if (!m_inCommit)
+    return false;
+  // A flip that never came (CRTC off mid-flight) no longer blocks a hold. Its
+  // buffers stay where they are: only its own flip event retires them.
+  if (MonotonicNs() - m_commitNs <= FLIP_LOST_NS)
+    return true;
+  if (!m_flipLostLogged)
+  {
+    m_flipLostLogged = true;
+    m_report.uiLostFlips++;
+    CLog::Log(LOGWARNING, "CPresentationCoordinator - no flip event 500 ms after a GUI commit");
+  }
+  return false;
 }
 
 void CPresentationCoordinator::Process()
@@ -272,6 +301,8 @@ void CPresentationCoordinator::Process()
     {
       SetState(State::HELD, epoch);
       m_report.held++;
+      // no timer ticks to catch up on once it is released
+      m_lastTickNs = MonotonicNs();
     }
     else
       CommitUi();
@@ -281,10 +312,12 @@ void CPresentationCoordinator::Process()
       QueueVblank(epoch);
 
     int fence;
+    uint64_t fenceSeq;
     bool inFlight;
     {
       std::unique_lock lock(m_uiMutex);
       fence = m_ready.fence;
+      fenceSeq = m_ready.seq;
       inFlight = m_inCommit != nullptr;
     }
 
@@ -309,7 +342,8 @@ void CPresentationCoordinator::Process()
     if (fds[3].revents & (POLLIN | POLLERR))
     {
       std::unique_lock lock(m_uiMutex);
-      if (m_ready.fence == fence)
+      // the same submit: its fd may have been closed and the number reused
+      if (m_ready.seq == fenceSeq && m_ready.fence == fence)
       {
         close(m_ready.fence);
         m_ready.fence = -1;
@@ -324,15 +358,6 @@ void CPresentationCoordinator::Process()
       HandleEvents(m_vblankFd, tick, gotTick, epoch);
 
     const int64_t now = MonotonicNs();
-    {
-      std::unique_lock lock(m_uiMutex);
-      if (m_inCommit && now - m_commitNs > FLIP_LOST_NS)
-        m_report.uiLostFlips++;
-      else
-        inFlight = false;
-    }
-    if (inFlight)
-      OnFlip();
 
     if (!video)
     {
@@ -396,16 +421,17 @@ void CPresentationCoordinator::HandleEvents(int fd,
   drmHandleEvent(fd, &context);
 
   if (t_flipped)
-    OnFlip();
+    OnFlip(t_flipTag);
 
   if (!t_event.got)
     return;
   m_eventPending = false;
   // queued before a display transaction: its time may be the CRTC switching
-  // off, not a vsync
+  // off, not a vsync; the source is alive, so no timer tick either
   if (t_event.epoch != epoch)
   {
     m_report.stale++;
+    m_lastTickNs = MonotonicNs();
     return;
   }
   tick.seq = t_event.seq;
@@ -415,7 +441,7 @@ void CPresentationCoordinator::HandleEvents(int fd,
   gotTick = true;
   {
     std::unique_lock lock(m_vblankMutex);
-    m_lastVblankNs = tick.wokeNs;
+    m_lastVblankNs = tick.vblankNs;
   }
   m_vblankCond.notify_all();
 }
@@ -423,6 +449,8 @@ void CPresentationCoordinator::HandleEvents(int fd,
 void CPresentationCoordinator::CommitUi()
 {
   UiBuffer buffer;
+  uint64_t generation;
+  uint64_t tag;
   {
     std::unique_lock lock(m_uiMutex);
     // one commit in flight, and only a buffer the GPU has finished
@@ -430,19 +458,28 @@ void CPresentationCoordinator::CommitUi()
       return;
     buffer = m_ready;
     m_ready = UiBuffer();
+    generation = m_uiGeneration;
+    tag = ++m_commitTagSeq;
   }
+  m_uiCond.notify_all();
 
   const int64_t start = MonotonicNs();
+  // the tag identifies this commit's flip event
   const int ret = drmModeAtomicCommit(m_masterFd, buffer.req,
-                                      DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT, this);
+                                      DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+                                      reinterpret_cast<void*>(static_cast<uintptr_t>(tag)));
   const int err = errno;
   const int64_t end = MonotonicNs();
   drmModeAtomicFree(buffer.req);
 
   std::unique_lock lock(m_uiMutex);
+  if (generation != m_uiGeneration)
+    return; // its surface is gone
   if (ret == 0)
   {
     m_inCommit = buffer.bo;
+    m_inCommitTag = tag;
+    m_flipLostLogged = false;
     m_commitNs = end;
     m_report.uiCommits++;
     m_report.commitMax = std::max(m_report.commitMax, static_cast<double>(end - start) / 1000.0);
@@ -455,15 +492,16 @@ void CPresentationCoordinator::CommitUi()
               strerror(err));
 }
 
-void CPresentationCoordinator::OnFlip()
+void CPresentationCoordinator::OnFlip(uint64_t tag)
 {
   std::unique_lock lock(m_uiMutex);
-  if (!m_inCommit)
+  if (!m_inCommit || tag != m_inCommitTag)
     return;
   if (m_onScreen)
     m_returned.push_back(m_onScreen);
   m_onScreen = m_inCommit;
   m_inCommit = nullptr;
+  m_inCommitTag = 0;
   const double flip = static_cast<double>(MonotonicNs() - m_commitNs) / 1000.0;
   m_report.uiFlips++;
   m_report.flipSum += flip;
@@ -474,7 +512,10 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 {
   // a hold that landed during the wait is acknowledged before any release
   if (aml_presenter_check_hold(tick.epoch, !UiInFlight()))
+  {
+    m_lastTickNs = tick.wokeNs;
     return;
+  }
 
   std::unique_lock lock(m_videoMutex);
   if (!m_video)

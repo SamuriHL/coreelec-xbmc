@@ -311,11 +311,12 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
   aml_note_present(rendered);
   SetVSync(true);
+  bool paced = false;
   if (m_coordinator)
   {
     ReleaseReturnedGuiBuffers();
     if (rendered)
-      SubmitGuiFrame();
+      paced = SubmitGuiFrame();
   }
   else if (rendered)
   {
@@ -354,10 +355,9 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
         m_guiRepaintFrames--;
     }
   }
-  // The loop paces on the vblank unless the video release's poll does: a
-  // coordinator commit does not stall the next frame the way the render
-  // thread's own flip did.
-  if ((m_coordinator || !rendered) && (!videoLayer || aml_video_presenter_active()))
+  // The loop paces on the vblank unless the video release's poll or the wait
+  // for the GUI frame's commit does.
+  if (!paced && (m_coordinator || !rendered) && (!videoLayer || aml_video_presenter_active()))
   {
     // no vblank to wait on (disconnected, CRTC off): pace as the video
     // release's 50 ms poll did, not at 100% CPU
@@ -375,7 +375,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   }
 }
 
-void CWinSystemAmlogicGLESContext::SubmitGuiFrame()
+bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 {
   // R5: an exhausted Mali surface crashes libMali; keep this frame in the
   // back buffer and draw it again
@@ -383,7 +383,7 @@ void CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   if (m_guiLocked >= GUI_LOCK_CAP)
   {
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
-    return;
+    return false;
   }
 
   int fence = -1;
@@ -410,13 +410,19 @@ void CWinSystemAmlogicGLESContext::SubmitGuiFrame()
       m_amlGBMUtils->Release(bo);
     if (fence >= 0)
       close(fence);
-    return;
+    return false;
   }
 
   m_guiLocked++;
-  m_coordinator->SubmitUi(bo, req, fence);
+  const uint64_t seq = m_coordinator->SubmitUi(bo, req, fence);
   if (m_guiRepaintFrames > 0)
     m_guiRepaintFrames--;
+
+  // At most one frame ahead: this one is committed once the previous flip
+  // lands, as the render thread's own flip used to wait for it. Rendering the
+  // next frame overlaps that flip.
+  m_coordinator->WaitTaken(seq, 50ms);
+  return true;
 }
 
 void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()
@@ -434,6 +440,8 @@ void CWinSystemAmlogicGLESContext::DetachGuiSurface()
     return;
   m_coordinator->DetachUiSurface();
   ReleaseReturnedGuiBuffers();
+  // anything still counted belongs to the old surface and never comes back
+  m_guiLocked = 0;
 }
 
 // Clear the OSD/overlay plane to opaque black at playback teardown. On this

@@ -1817,6 +1817,11 @@ void CRenderManager::StartCoordinator()
   m_coordinator = CPresentationCoordinator::Get();
   if (m_coordinator)
     m_coordinatorDelivers = m_coordinator->AttachVideo(this);
+  if (m_coordinator && !m_coordinatorDelivers)
+  {
+    m_coordinator->DetachVideo(this);
+    m_coordinator = nullptr;
+  }
 #endif
 }
 
@@ -1827,7 +1832,8 @@ void CRenderManager::StopCoordinator()
     m_coordinator->DetachVideo(this);
   m_coordinator = nullptr;
   m_coordinatorDelivers = false;
-  aml_set_video_presenter_active(false);
+  if (m_presenterMode)
+    aml_set_video_presenter_active(false);
 #endif
 }
 

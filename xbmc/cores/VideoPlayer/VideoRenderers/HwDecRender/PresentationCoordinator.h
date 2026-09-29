@@ -11,6 +11,7 @@
 #include "threads/Thread.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -53,7 +54,9 @@ public:
    * GPU fence has signalled and no flip is in flight; a newer buffer replaces
    * one not yet committed. Takes ownership of req and fence.
    */
-  void SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence);
+  uint64_t SubmitUi(gbm_bo* bo, drmModeAtomicReqPtr req, int fence);
+  //! Waits until that submit leaves the queue: committed, replaced or dropped.
+  bool WaitTaken(uint64_t seq, std::chrono::milliseconds timeout);
   //! Buffers no longer on screen, for the render thread to release.
   void TakeReturned(std::vector<gbm_bo*>& returned);
   //! Before the GUI surface goes: every buffer comes back (display fence held).
@@ -77,12 +80,13 @@ private:
     gbm_bo* bo = nullptr;
     drmModeAtomicReqPtr req = nullptr;
     int fence = -1;
+    uint64_t seq = 0;
   };
 
   void QueueVblank(unsigned int epoch);
   void HandleEvents(int fd, SPresentTick& tick, bool& gotTick, unsigned int epoch);
   void CommitUi();
-  void OnFlip();
+  void OnFlip(uint64_t tag);
   void Drop(UiBuffer& buffer); // under m_uiMutex
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
@@ -93,7 +97,7 @@ private:
   const int m_masterFd;
   int m_vblankFd = -1;
   int m_wakeFd = -1;
-  uint32_t m_crtc = 0;
+  std::atomic<uint32_t> m_crtc{0};
   bool m_eventPending = false;
   int64_t m_queuedNs = 0;
   uint64_t m_lastSeq = 0;
@@ -108,8 +112,14 @@ private:
   int64_t m_lastVblankNs = 0;
 
   std::mutex m_uiMutex;
+  std::condition_variable m_uiCond;
   UiBuffer m_ready;
+  uint64_t m_submitSeq = 0;
+  uint64_t m_uiGeneration = 0; //!< GUI surfaces detached so far
+  uint64_t m_commitTagSeq = 0;
   gbm_bo* m_inCommit = nullptr;
+  uint64_t m_inCommitTag = 0;
+  bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
   gbm_bo* m_onScreen = nullptr;
   std::vector<gbm_bo*> m_returned;
