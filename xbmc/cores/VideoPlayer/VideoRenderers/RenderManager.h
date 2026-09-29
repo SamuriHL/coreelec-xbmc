@@ -87,6 +87,7 @@ struct SPresentResult
   bool shadow = false;
   double shadowDiff = 0.0;
   double shadowAdjust = 0.0; //!< the vsyncAdjust in it
+  bool shadowSynced = false; //!< clock sync on (off: no phase, raw lateness)
   double frametime = 0.0;
 };
 
@@ -207,7 +208,7 @@ protected:
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);
-  void ShadowReference(const SPresentTick& tick, SPresentResult& result);
+  void ShadowReference(SPresentResult& result, bool forced);
   void StartCoordinator();
   void StopCoordinator();
 
@@ -356,5 +357,6 @@ protected:
   bool m_shadowValid = false;
   double m_shadowPts = 0.0;
   int64_t m_shadowReleaseNs = 0;
+  int64_t m_prepareAnchorNs = 0; //!< the vblank time PrepareNextRender selected by
   unsigned int m_shadowGeneration = 0;
 };

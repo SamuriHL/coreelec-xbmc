@@ -153,7 +153,10 @@ private:
     int shadowFolds = 0; //!< samples more than half a frame apart
     double shadowSum = 0.0, shadowSumSq = 0.0, shadowMin = 0.0, shadowMax = 0.0;
     double shadowAdjustSum = 0.0;
+    int shadowUnsynced = 0; //!< samples with clock sync off, not in the stats
   } m_report;
-  int m_shadowFrames = 0; //!< whole frames between the references, last sample
+  int m_shadowFrames = 0; //!< whole frames between the references, as last logged
+  int m_shadowCandidate = 0; //!< a different whole-frame count, and how long it held
+  int m_shadowCandidateN = 0;
   int m_kernelDrops = -1;
 };

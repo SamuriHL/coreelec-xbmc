@@ -1454,14 +1454,17 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     frameLatencyAdjustment =
         static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment());
   }
-  else if (vblankNs > 0)
+  else
   {
     struct timespec now = {};
     clock_gettime(CLOCK_MONOTONIC, &now);
-    const int64_t sinceNs =
-        static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec - vblankNs;
-    if (sinceNs >= 0 && sinceNs <= 100000000)
+    const int64_t nowNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+    const int64_t sinceNs = nowNs - vblankNs;
+    // the vblank time frame selection assumed: the shadow reference anchors on it
+    m_prepareAnchorNs = nowNs;
+    if (vblankNs > 0 && sinceNs >= 0 && sinceNs <= 100000000)
     {
+      m_prepareAnchorNs = vblankNs;
       frameLatencyAdjustment = static_cast<double>(sinceNs) / 1000000.0;
       m_sampleOffset.Add(static_cast<double>(sinceNs) / 1000.0, aml_last_present_rendered());
     }
@@ -1837,7 +1840,7 @@ void CRenderManager::StopCoordinator()
 #endif
 }
 
-void CRenderManager::ShadowReference(const SPresentTick& tick, SPresentResult& result)
+void CRenderManager::ShadowReference(SPresentResult& result, bool forced)
 {
   // Phase 4 shadow (docs/presentation_planes_design.md, samurihl tree): what
   // audio would sync to if it followed the screen - the frame released last,
@@ -1845,20 +1848,23 @@ void CRenderManager::ShadowReference(const SPresentTick& tick, SPresentResult& r
   // Measured only; nothing reads it back.
   // The anchor goes with the clock's phase: a pause, seek, display loss or
   // reset drops it, and the next released frame sets it again.
+  // A frame forced out by a reconfigure is released without regard to the
+  // clock: no anchor until the next one released by it. The presentation
+  // reference advances at wall rate, so only normal speed is compared.
   bool hasPhase = false;
   const unsigned int generation = m_dvdClock.GetVsyncPhaseGeneration(hasPhase);
-  const double speed = m_dvdClock.GetClockSpeed();
-  if (!result.playing || generation != m_shadowGeneration || speed < 0.9 || speed > 1.1)
+  const bool normalSpeed = std::abs(m_dvdClock.GetClockSpeed() - 1.0) <= 0.01;
+  if (!result.playing || generation != m_shadowGeneration || !normalSpeed || forced)
   {
     m_shadowValid = false;
     m_shadowGeneration = generation;
   }
-  if (!result.playing || speed < 0.9 || speed > 1.1)
+  if (!result.playing || !normalSpeed || forced)
     return;
   if (result.newFrame)
   {
     m_shadowPts = result.pts;
-    m_shadowReleaseNs = tick.vblankNs ? tick.vblankNs : tick.wokeNs;
+    m_shadowReleaseNs = m_prepareAnchorNs;
     m_shadowValid = true;
   }
   if (!m_shadowValid)
@@ -1875,6 +1881,7 @@ void CRenderManager::ShadowReference(const SPresentTick& tick, SPresentResult& r
   result.shadow = true;
   result.shadowDiff = clock + adjust - presented;
   result.shadowAdjust = adjust;
+  result.shadowSynced = m_clockSync.m_enabled;
   result.frametime = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
 }
 
@@ -1912,6 +1919,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   }
 
   const int skipped = m_QueueSkip;
+  const bool forced = m_forceNext;
   if (m_presentstep == PRESENT_READY)
     PrepareNextRender(tick.vblankNs);
   result.skipped = std::max(0, m_QueueSkip - skipped);
@@ -1942,7 +1950,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   if (result.newFrame)
     m_pRenderer->PresentFrame(m_presentsource);
 
-  ShadowReference(tick, result);
+  ShadowReference(result, forced && result.newFrame);
 
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   m_presentevent.notifyAll();

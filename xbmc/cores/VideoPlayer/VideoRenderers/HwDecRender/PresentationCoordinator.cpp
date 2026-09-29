@@ -33,6 +33,7 @@
 namespace
 {
 constexpr int REPORT_TICKS = 1200;
+constexpr int SHADOW_HOLD_SAMPLES = 24;
 constexpr int64_t SYNTHETIC_TICK_NS = 50000000;
 // a queued vblank event the CRTC never delivered (it went off): queue another
 constexpr int64_t EVENT_LOST_NS = 100000000;
@@ -605,7 +606,12 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
   r.workSum += work;
   r.workMax = std::max(r.workMax, work);
   r.skipped += result.skipped;
-  if (result.shadow)
+  // each file starts from no offset
+  if (!result.configured)
+    m_shadowFrames = m_shadowCandidateN = 0;
+  if (result.shadow && !result.shadowSynced)
+    r.shadowUnsynced++;
+  else if (result.shadow)
   {
     const double diff = result.shadowDiff / 1000.0;
     if (!r.shadowN)
@@ -621,15 +627,27 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
     {
       if (std::abs(diff) > frame / 2)
         r.shadowFolds++;
-      // audio's reference moved by whole frames against the screen
+      // audio's reference moved by whole frames against the screen, and stayed
+      // there for a second of samples (a start or seek passes through a few)
       const int frames = static_cast<int>(std::lround(diff / frame));
-      if (frames != m_shadowFrames)
+      if (frames == m_shadowFrames)
+        m_shadowCandidateN = 0;
+      else
       {
-        CLog::Log(LOGINFO,
-                  "real_player shadow: audio reference {:+d} frames from the screen (was {:+d}): "
-                  "diff={:.2f}ms vsyncAdjust={:.2f}ms",
-                  frames, m_shadowFrames, diff, result.shadowAdjust / 1000.0);
-        m_shadowFrames = frames;
+        if (frames != m_shadowCandidate)
+        {
+          m_shadowCandidate = frames;
+          m_shadowCandidateN = 0;
+        }
+        if (++m_shadowCandidateN == SHADOW_HOLD_SAMPLES)
+        {
+          CLog::Log(LOGINFO,
+                    "real_player shadow: audio reference {:+d} frames from the screen (was "
+                    "{:+d}): diff={:.2f}ms vsyncAdjust={:.2f}ms",
+                    frames, m_shadowFrames, diff, result.shadowAdjust / 1000.0);
+          m_shadowFrames = frames;
+          m_shadowCandidateN = 0;
+        }
       }
     }
   }
@@ -674,11 +692,15 @@ void CPresentationCoordinator::LogReport()
     const double mean = r.shadowSum / r.shadowN;
     CLog::Log(LOGINFO,
               "real_player shadow: n={} audio-minus-screen mean={:.2f}ms sd={:.2f}ms "
-              "min={:.2f}ms max={:.2f}ms folds={} vsyncAdjust mean={:.2f}ms",
+              "min={:.2f}ms max={:.2f}ms beyond half a frame={} vsyncAdjust mean={:.2f}ms "
+              "unsynced={}",
               r.shadowN, mean,
               std::sqrt(std::max(0.0, r.shadowSumSq / r.shadowN - mean * mean)), r.shadowMin,
-              r.shadowMax, r.shadowFolds, r.shadowAdjustSum / r.shadowN);
+              r.shadowMax, r.shadowFolds, r.shadowAdjustSum / r.shadowN, r.shadowUnsynced);
   }
+  else if (r.shadowUnsynced)
+    CLog::Log(LOGINFO, "real_player shadow: clock sync off, {} samples not compared",
+              r.shadowUnsynced);
   m_kernelDrops = drops;
   m_report = Report();
 }
