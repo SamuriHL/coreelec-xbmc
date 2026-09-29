@@ -1682,7 +1682,20 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     // get. Skipping a frame is easier than having decoder dropping one (lateframes > 10)
     // m_lateframes is not modified in the loop below, so the relaxation is hoisted.
     constexpr double lateWindow = 0.98;
-    const double x = (m_lateframes <= 6) ? lateWindow : 0;
+    double x = (m_lateframes <= 6) ? lateWindow : 0;
+    // The presenter releases straight to the video plane, where no queue
+    // absorbs lateness: a frame shown late is shown late (measured am9pro: a
+    // one-vsync display hold left the picture a frame behind the audio for 7
+    // vsyncs). Once selection is centred on audio's phase, a due frame gets
+    // half a frame of margin either side, so show the newest one at once.
+    if (m_presenterMode && m_clockSync.m_enabled && !isPaused)
+    {
+      bool published = false;
+      m_dvdClock.GetVsyncPhaseGeneration(published);
+      if (published &&
+          std::abs(m_clockSync.m_syncOffset + m_dvdClock.GetVsyncAdjust()) < frametime / 4)
+        x = 0;
+    }
 
     while (iter != m_queued.end())
     {
