@@ -309,8 +309,10 @@ void CPresentationCoordinator::Process()
     {
       SetState(State::HELD, epoch);
       m_report.held++;
-      // no timer ticks to catch up on once it is released
+      // no timer ticks to catch up on once it is released, and the vblanks
+      // of the transaction are not missed ones
       m_lastTickNs = MonotonicNs();
+      m_lastSeq = 0;
     }
     else
       CommitUi();
@@ -369,6 +371,7 @@ void CPresentationCoordinator::Process()
 
     if (!video)
     {
+      m_lastSeq = 0;
       if (!held)
         SetState(State::IDLE, epoch);
       int flips;
