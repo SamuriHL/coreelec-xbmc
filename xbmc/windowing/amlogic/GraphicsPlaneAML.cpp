@@ -59,6 +59,8 @@ void DestroyPlaneFb(gbm_bo* bo, void* data)
 
 bool SameGraphics(const SHdrGraphics& a, const SHdrGraphics& b)
 {
+  if (a.images.empty() && b.images.empty())
+    return true;
   return a.images == b.images && a.source == b.source && a.dest == b.dest && a.view == b.view &&
          a.width == b.width && a.height == b.height && a.limited == b.limited;
 }
