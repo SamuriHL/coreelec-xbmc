@@ -336,6 +336,9 @@ protected:
   CPresentationCoordinator* m_coordinator = nullptr; // AML builds only
   //! the coordinator releases the video frames; set in Configure() under all locks
   bool m_presenterMode = false;
+  //! the source the render thread snapshotted in FrameMove; not freed until
+  //! the next FrameMove
+  int m_renderSource = -1;
   std::atomic<float> m_timingFps{60.0f};
   std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
   std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in

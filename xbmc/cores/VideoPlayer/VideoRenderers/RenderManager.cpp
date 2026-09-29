@@ -291,7 +291,8 @@ bool CRenderManager::HasVisibleOverlay() const
   int source;
   {
     std::unique_lock lock(m_presentlock);
-    source = m_presentsource;
+    // with the coordinator: the source FrameMove pinned
+    source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
   return m_overlays.HasVisibleOverlay(source);
 }
@@ -363,6 +364,7 @@ bool CRenderManager::Configure()
     m_discard.clear();
     m_free.clear();
     m_presentsource = -1;
+    m_renderSource = -1;
     m_presentsourcePast = -1;
     for (int i = 0; i < m_QueueSize; i++)
       m_free.push_back(i);
@@ -476,6 +478,7 @@ void CRenderManager::FrameMove()
     std::unique_lock lock2(m_presentlock);
     m_bRenderGUI = true;
     source = m_presentsource;
+    m_renderSource = source;
   }
   else
   {
@@ -649,6 +652,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
         m_discard.clear();
         m_free.clear();
         m_presentsource = -1;
+        m_renderSource = -1;
         m_presentsourcePast = -1;
         m_presentstep = PRESENT_IDLE;
         for (int i = 0; i < m_QueueSize; i++)
@@ -837,7 +841,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   int source;
   {
     std::unique_lock lock(m_presentlock);
-    source = m_presentsource;
+    // with the coordinator: the source FrameMove pinned
+    source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
 
   {
@@ -1870,10 +1875,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   // Drops go to the decoder before the new frame shows. Their overlays are
   // released by WaitForBuffer before the buffer is reused: the overlay lock
-  // is held across the render thread's overlay pass.
+  // is held across the render thread's overlay pass. The source the render
+  // thread is drawing overlays for is freed after it moves on.
   for (auto it = m_discard.begin(); it != m_discard.end();)
   {
-    if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
+    if (*it != m_renderSource && (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI))
     {
       m_pRenderer->ReleaseBuffer(*it);
       m_free.push_back(*it);
