@@ -125,6 +125,7 @@ private:
   GLint m_posLoc = -1;
   GLint m_texLoc = -1;
   std::atomic<bool> m_ready{false};
+  bool m_refusedOff = false; //!< switched off after the driver refused the plane
   int m_locked = 0;
   std::vector<gbm_bo*> m_returned;
   uint32_t m_lastFb = 0; //!< the fb last submitted

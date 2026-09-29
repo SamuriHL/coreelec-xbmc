@@ -662,6 +662,17 @@ void CGraphicsPlaneAML::Process()
   while (!m_bStop)
   {
     ReleaseReturned();
+    // its submits are dropped from now on, so what it last showed would stay
+    if (m_coordinator->GraphicsRefused())
+    {
+      if (!m_refusedOff)
+      {
+        SwitchOff();
+        m_refusedOff = true;
+      }
+      m_wake.Wait(100ms);
+      continue;
+    }
     // a display transaction moved or rescaled the CRTC: the plane still has
     // the old rect until committed again (R6)
     const unsigned int epoch = aml_presenter_epoch();
