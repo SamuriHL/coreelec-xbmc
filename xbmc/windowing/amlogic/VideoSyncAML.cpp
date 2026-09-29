@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <time.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
@@ -56,6 +57,16 @@ constexpr double RATE_MISMATCH_MAX = 0.005;
 // 23.9988 on a true 23.976 panel, which then armed a 50ms/min A/V drift)
 // cannot agree with the settled window that follows it.
 constexpr double RATE_CONFIRM_AGREE = 0.0001;
+
+// CLOCK_MONOTONIC (the DRM vblank timestamps) -> CurrentHostCounter()
+// (CLOCK_MONOTONIC_RAW), read back to back so no vblank read latency is in it
+int64_t MonotonicToHostOffset()
+{
+  struct timespec mono = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  const int64_t host = CurrentHostCounter();
+  return host - (static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec);
+}
 } // namespace
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
@@ -120,12 +131,8 @@ bool CVideoSyncAML::Setup()
     m_fd = -1;
     return false;
   }
-  // Two-sample anchor: the pair above describes the LAST vblank - 0..1 frame
-  // stale (up to ~42ms at 23.976). Anchoring the offset on it parks GetTime
-  // up to a frame in the future, and the 1ms/vblank slew then takes ~1-2s to
-  // walk it back - exactly inside the post-transition window the DISCON
-  // settle gates protect. Wait for the NEXT vblank and anchor fresh; bounded,
-  // keeps the stale anchor if the display stalls (review finding).
+  // Start counting from a fresh vblank, not one up to a frame old; bounded,
+  // keeps the stale sequence if the display stalls.
   const uint64_t firstSeq = m_sequence;
   for (int attempt = 0; attempt < 60 && !m_abort; attempt++)
   {
@@ -133,16 +140,15 @@ bool CVideoSyncAML::Setup()
     if (drmCrtcGetSequence(m_fd, m_crtcId, &seq2, &ns2) == 0 && seq2 != firstSeq)
     {
       m_sequence = seq2;
-      ns = ns2;
       break;
     }
     usleep(1000);
   }
-  // ns is CLOCK_MONOTONIC; CurrentHostCounter() is CLOCK_MONOTONIC_RAW on
+  // Vblank times are CLOCK_MONOTONIC; CurrentHostCounter() is CLOCK_MONOTONIC_RAW on
   // Linux — nearly the same domain, but NTP slew (tens of ppm) accumulates
-  // between them. The offset is re-based at every Setup, which bounds the
-  // divergence to one clock-run's worth.
-  m_offset = CurrentHostCounter() - static_cast<int64_t>(ns);
+  // between them. Measured directly, so the vblank times handed to the clock
+  // are the hardware ones rather than when this thread happened to read them.
+  m_offset = MonotonicToHostOffset();
 
   CLog::Log(LOGINFO, "CVideoSyncAML: using DRM vblank (fd:{} crtc:{} seq:{})",
             m_fd, m_crtcId, m_sequence);
@@ -178,11 +184,10 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
     // missed-vblank bookkeeping discards the negative remainder - a
     // feedback loop that locks the master clock ~2x fast (observed: audio
     // 1s+ behind and skipping ~2min after boot). Track the true offset
-    // continuously instead, sliding at most 1ms per vblank so poll-latency
-    // spikes cannot yank it while any real slew (20us/frame) is followed
-    // with huge margin.
+    // continuously instead, sliding at most 1ms per vblank; any real slew
+    // (20us/frame) is followed with huge margin.
     {
-      const int64_t drift = (CurrentHostCounter() - static_cast<int64_t>(ns)) - m_offset;
+      const int64_t drift = MonotonicToHostOffset() - m_offset;
       m_offset += std::clamp(drift, static_cast<int64_t>(-1000000), static_cast<int64_t>(1000000));
     }
 
