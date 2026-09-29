@@ -226,6 +226,8 @@ uint64_t CPresentationCoordinator::Submit(
       Drop(plane, ready);
       if (plane == PLANE_UI)
         m_report.uiReplaced++;
+      else
+        m_report.gfxReplaced++;
     }
     ready.bo = bo;
     ready.fb = fb;
@@ -845,13 +847,14 @@ void CPresentationCoordinator::LogReport()
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
             "commits={} failed={} flips={} lost={} commit max={:.0f}us "
             "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us "
-            "| graphics submits={} commits={}",
+            "| graphics submits={} replaced={} commits={}",
             r.ticks, r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
             r.woke ? r.wakeSum / r.woke : 0.0, r.wakeMax, r.ticks ? r.workSum / r.ticks : 0.0,
             r.workMax, drops >= 0 && m_kernelDrops >= 0 ? drops - m_kernelDrops : -1,
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,
             r.commitMax, r.commitHist[0], r.commitHist[1], r.commitHist[2], r.commitHist[3],
-            r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax, r.gfxSubmits, r.gfxCommits);
+            r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax, r.gfxSubmits, r.gfxReplaced,
+            r.gfxCommits);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

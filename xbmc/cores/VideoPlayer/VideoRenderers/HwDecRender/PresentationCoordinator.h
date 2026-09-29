@@ -192,7 +192,7 @@ private:
     double commitMax = 0.0; //!< us in the commit ioctl
     int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
-    int gfxSubmits = 0, gfxCommits = 0; //!< graphics plane
+    int gfxSubmits = 0, gfxReplaced = 0, gfxCommits = 0; //!< graphics plane
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart
