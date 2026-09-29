@@ -283,13 +283,17 @@ protected:
   struct CSampleOffsetStats
   {
     void Add(double us, bool guiRendered);
+    void AddPhase(double err); // the unwrapped phase sample the vsync adjust averages
     struct Bucket
     {
       int n = 0;
       double sum = 0.0, sumSq = 0.0, min = 0.0, max = 0.0;
+      int phaseN = 0;
+      double phaseSum = 0.0;
     };
     Bucket m_bucket[2];
     int m_total = 0;
+    int m_last = 0;
   };
   CSampleOffsetStats m_sampleOffset;
 

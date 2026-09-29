@@ -1334,7 +1334,8 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
 
 void CRenderManager::CSampleOffsetStats::Add(double us, bool guiRendered)
 {
-  Bucket& b = m_bucket[guiRendered ? 1 : 0];
+  m_last = guiRendered ? 1 : 0;
+  Bucket& b = m_bucket[m_last];
   if (!b.n || us < b.min)
     b.min = us;
   if (!b.n || us > b.max)
@@ -1349,12 +1350,19 @@ void CRenderManager::CSampleOffsetStats::Add(double us, bool guiRendered)
       return std::string("n=0");
     const double mean = k.sum / k.n;
     const double sd = std::sqrt(std::max(0.0, k.sumSq / k.n - mean * mean));
-    return StringUtils::Format("n={} mean={:.0f}us sd={:.0f}us min={:.0f}us max={:.0f}us", k.n,
-                               mean, sd, k.min, k.max);
+    return StringUtils::Format("n={} mean={:.0f}us sd={:.0f}us min={:.0f}us max={:.0f}us phase={:.2f}ms",
+                               k.n, mean, sd, k.min, k.max,
+                               k.phaseN ? k.phaseSum / k.phaseN / 1000.0 : 0.0);
   };
   CLog::Log(LOGINFO, "real_player X (poll return -> clock sample): gui idle [{}] | gui rendered [{}]",
             fmt(m_bucket[0]), fmt(m_bucket[1]));
   *this = CSampleOffsetStats();
+}
+
+void CRenderManager::CSampleOffsetStats::AddPhase(double err)
+{
+  m_bucket[m_last].phaseN++;
+  m_bucket[m_last].phaseSum += err;
 }
 
 void CRenderManager::PrepareNextRender()
@@ -1459,6 +1467,7 @@ void CRenderManager::PrepareNextRender()
     }
     else
       err -= frametime * std::round((err - m_clockSync.m_ref) / frametime);
+    m_sampleOffset.AddPhase(err);
     // Give the audio clock the phase before the first window completes (~31
     // frames): a passthrough start sync that lands without it keeps the
     // missing phase (up to half a frame) for the rest of playback. A paused
