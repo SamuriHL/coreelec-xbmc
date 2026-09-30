@@ -2119,7 +2119,7 @@ void CAMLCodec::WriteDrainPadding()
     else
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  CLog::Log(LOGINFO, "CAMLCodec::SetDrain - wrote {} of {} bytes of drain padding", written,
+  CLog::Log(LOGINFO, "CAMLCodec::WriteDrainPadding - wrote {} of {} bytes", written,
             pad.size());
 }
 
@@ -3377,15 +3377,31 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // running; only a STABLE small buffer is idle input (review finding A4)
   const int prev_data_len = m_park_last_data_len;
   m_park_last_data_len = data_len;
-  // a drain's input settles over time, not between two back-to-back polls
-  if (m_drain && data_len != prev_data_len)
-    m_drainInputMoved = std::chrono::steady_clock::now();
+  // a drain's input settles over time, not between two back-to-back polls, and
+  // only while it is being polled: a gap (the output held by a paused clock)
+  // says nothing about the tail
+  if (m_drain)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (data_len != prev_data_len || now - m_drainLastPoll > std::chrono::milliseconds(100))
+      m_drainInputMoved = now;
+    m_drainLastPoll = now;
+  }
   // an ending stream starved at its tail - input stopped moving and less than
   // a fetch quantum's worth left (a stall with the output held keeps far more
   // queued): the parser holds the last access units
-  if (m_drainEos && m_drain && !m_drainPadded && data_len < 65536 &&
-      std::chrono::steady_clock::now() - m_drainInputMoved >= std::chrono::milliseconds(100))
-    WriteDrainPadding();
+  // (after 300 ms, whatever is left: a tail whose last access unit is larger
+  // than that, e.g. a FEL unit, is starved too)
+  if (m_drainEos && m_drain && !m_drainPadded)
+  {
+    const auto still = std::chrono::steady_clock::now() - m_drainInputMoved;
+    if ((data_len < 65536 && still >= std::chrono::milliseconds(100)) ||
+        still >= std::chrono::milliseconds(300))
+    {
+      CLog::Log(LOGDEBUG, "CAMLCodec::GetPicture - drain starved with {} bytes left", data_len);
+      WriteDrainPadding();
+    }
+  }
   const bool drainInputSettled =
       m_drain && std::chrono::steady_clock::now() - m_drainInputMoved >= std::chrono::milliseconds(500);
 

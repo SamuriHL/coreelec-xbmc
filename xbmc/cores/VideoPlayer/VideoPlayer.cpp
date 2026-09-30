@@ -6165,13 +6165,19 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (hint.codec == AV_CODEC_ID_MPEG2VIDEO || hint.codec == AV_CODEC_ID_H264)
       m_pCCDemuxer.reset();
 
+    const bool freshPlayer = !player->IsInited();
     if (!player->OpenStream(hint))
       return false;
 
     // a fresh player's queue is empty: a segment marker queued in the old one
-    // may have gone with it
-    m_renderManager.SetIncomingSegmentGen(m_segmentGen);
-    m_segmentGenPublished = m_segmentGen;
+    // may have gone with it (a running one takes STREAMCHANGE in order instead)
+    if (freshPlayer)
+    {
+      m_renderManager.SetIncomingSegmentGen(m_segmentGen);
+      if (m_segmentGenPublished != m_segmentGen && m_menuPageWaiting)
+        m_menuPageWaitSince = std::chrono::steady_clock::now();
+      m_segmentGenPublished = m_segmentGen;
+    }
 
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 

@@ -1724,7 +1724,12 @@ void CDVDInputStreamBluray::FinishReadOverlays()
   {
     // a read that ends holding a boundary started the page's playlist ahead of
     // the transition that opens it; otherwise that segment is already open
-    m_deferredPage->m_pageWait = m_samePlaylistWrapInRead ? CDVDOverlay::PAGE_AT_ONCE
+    // a same-playlist wrap is usually held: its PLAYLIST event is still in
+    // m_event (NextStream processes it), m_playlist not yet moved
+    const bool heldWrap = IsHoldingBoundary() && m_event.event == BD_EVENT_PLAYLIST &&
+                          m_event.param == m_playlist && m_titleInfo;
+    m_deferredPage->m_pageWait = (m_samePlaylistWrapInRead || heldWrap)
+                                     ? CDVDOverlay::PAGE_AT_ONCE
                                  : IsHoldingBoundary()    ? CDVDOverlay::PAGE_NEXT_SEGMENT
                                                           : CDVDOverlay::PAGE_CURRENT_SEGMENT;
     std::shared_ptr<CDVDOverlayGroup> page = std::move(m_deferredPage);

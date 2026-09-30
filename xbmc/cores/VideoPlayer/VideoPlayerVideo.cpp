@@ -603,6 +603,13 @@ void CVideoPlayerVideo::Process()
     {
       while (!m_bStop && m_pVideoCodec && !m_drainAbort)
       {
+        // a paused clock (a display mode change) holds the output; the tail
+        // has not ended, and the decoder is not starved
+        if (m_pClock->IsPaused())
+        {
+          CThread::Sleep(20ms);
+          continue;
+        }
         m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_DRAIN_EOS);
         if (ProcessDecoderOutput(frametime, pts))
           continue;

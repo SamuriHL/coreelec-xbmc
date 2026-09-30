@@ -192,6 +192,7 @@ private:
   bool            m_drainPadded = false; //!< this drain's padding is written
   bool            m_drainEos = false; //!< the drain ends the stream (no input follows)
   std::chrono::steady_clock::time_point m_drainInputMoved; //!< last data_len change after the pad
+  std::chrono::steady_clock::time_point m_drainLastPoll; //!< stillness counts only while polled
 
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.
