@@ -563,7 +563,7 @@ void CVideoPlayerVideo::Process()
     {
       while (!m_bStop && m_pVideoCodec)
       {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_DRAIN_EOS);
         if (!ProcessDecoderOutput(frametime, pts))
           break;
       }

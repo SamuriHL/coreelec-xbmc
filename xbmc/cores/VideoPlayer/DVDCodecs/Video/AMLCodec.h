@@ -85,7 +85,7 @@ public:
   void          SetFelIdrPadding(bool enabled) { m_felIdrPadding = enabled; }
 
   void          SetSpeed(int speed);
-  void          SetDrain(bool drain);
+  void          SetDrain(bool drain, bool endOfStream = false);
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
   void          SetVideoRate(int videoRate);
   uint64_t      GetOMXPts() const { return m_cur_pts; }
@@ -189,6 +189,7 @@ private:
   // benign park into a decoder flush - so the threshold moves with the pad.
   bool            m_felIdrPadding = false;
   bool            m_e2DrainPadding = false; //!< phase 0 E2 flag file, read at open
+  bool            m_e2Padded = false; //!< this drain's padding is written
 
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.

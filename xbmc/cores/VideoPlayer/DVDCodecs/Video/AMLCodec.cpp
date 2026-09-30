@@ -2074,13 +2074,15 @@ int CAMLCodec::GetAmlDuration() const
 // Phase 0 E2 (docs/real_player_disc_session_design.md 4.1): the stream parser
 // completes an access unit only once the next one starts, and fetches in
 // quanta, so a segment's last pictures stay inside the decoder when no more
-// input comes. On a drain, start one more (empty) access unit - an access unit
-// delimiter - and push it past the fetch quantum with filler data.
-void CAMLCodec::SetDrain(bool drain)
+// input comes. On a drain that ends the stream (a close; never the stillframe
+// squeeze, after which input may resume), start one more (empty) access unit -
+// an access unit delimiter - and push it past the fetch quantum with filler.
+void CAMLCodec::SetDrain(bool drain, bool endOfStream)
 {
-  const bool rising = drain && !m_drain;
   m_drain = drain;
-  if (!rising || !m_e2DrainPadding || !m_opened || !am_private ||
+  if (!drain)
+    m_e2Padded = false;
+  if (!drain || !endOfStream || m_e2Padded || !m_e2DrainPadding || !m_opened || !am_private ||
       am_private->gcodec.dec_mode != STREAM_TYPE_STREAM || am_private->video_format != VFORMAT_HEVC)
     return;
 
@@ -2096,6 +2098,7 @@ void CAMLCodec::SetDrain(bool drain)
   pad.insert(pad.end(), fillerPayload, 0xFF);
   pad.push_back(0x80);
 
+  m_e2Padded = true;
   size_t written = 0;
   for (int tries = 0; written < pad.size() && tries < 50; ++tries)
   {
@@ -2115,6 +2118,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_e2DrainPadding = XFILE::CFile::Exists("special://profile/e2_drainpad");
+  m_e2Padded = false;
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
@@ -3620,6 +3624,15 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // path in this function uses. Paused is exempt unconditionally: there the
   // decoder is meant to produce nothing, and a flush would discard the held
   // frame (which wedges Dolby Vision dual-layer decode outright).
+  // E2 (4.1): a latched drain with input the decoder is not consuming holds
+  // nothing it can report. VC_NONE here reads as progress to the video thread,
+  // which then only takes priority messages - so the stream's own VIDEO_DRAIN
+  // (priority 0), the one that would end the stream, is never read. Report
+  // idle instead, inside the decoder timeout.
+  else if (m_e2DrainPadding && m_drain && ret == EAGAIN && data_len == prev_data_len &&
+           m_speed != DVD_PLAYSPEED_PAUSE &&
+           elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout))
+    return CDVDVideoCodec::VC_BUFFER;
   else if (((m_drain && m_buffer_level_ready) ||
             (buffer_level > (streambuffer ? 100.0f : 10.0f))) &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||

@@ -95,6 +95,7 @@ private:
 #define DVP_FLAG_INTERLACED         0x00000008  //< Set to indicate that this frame is interlaced
 #define DVP_FLAG_DROPPED            0x00000010  //< indicate that this picture has been dropped in decoder stage, will have no data
 
+#define DVD_CODEC_CTRL_DRAIN_EOS    0x00800000  //< with DRAIN: no more input follows (a stream close)
 #define DVD_CODEC_CTRL_SKIPDEINT    0x01000000  //< request to skip a deinterlacing cycle, if possible
 #define DVD_CODEC_CTRL_NO_POSTPROC  0x02000000  //< see GetCodecStats
 #define DVD_CODEC_CTRL_HURRY        0x04000000  //< see GetCodecStats
