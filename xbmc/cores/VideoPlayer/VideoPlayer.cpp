@@ -868,10 +868,14 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // codec thread where g_application.CurrentFile() is not yet set.
   aml_dv_detect_set_file(file.GetPath());
 
-  // real_player E1 experiment: start held until the output mode is final
-  m_heldStartEnabled = options.fullscreen && XFILE::CFile::Exists("special://profile/e1_heldstart");
-  if (m_heldStartEnabled)
-    CLog::Log(LOGINFO, "VideoPlayer: E1 held start enabled");
+  // real_player: a start is held until the output mode is final (disc session
+  // design 3); the debug flag turns it off for A/B runs
+  m_heldStartEnabled = options.fullscreen;
+  if (XFILE::CFile::Exists("special://profile/heldstart_off"))
+  {
+    m_heldStartEnabled = false;
+    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
+  }
   m_bdjKeepAliveDebug = XFILE::CFile::Exists("special://profile/bdj_keepalive");
   if (m_bdjKeepAliveDebug)
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG BD-J keep-alive transitions enabled");
