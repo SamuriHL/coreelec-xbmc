@@ -43,7 +43,8 @@ class CEGLFence;
  * buffers to the presentation coordinator, which commits them with the GUI
  * plane. It releases its own buffers and never holds more than four (R5).
  * It shows the HDR disc graphics the GUI's video pass hands over (step 5b),
- * or a test pattern; with nothing to show it idles enabled at alpha 0.
+ * or a test pattern; with nothing to show it idles enabled with a cleared
+ * (transparent) buffer.
  */
 class CGraphicsPlaneAML : private CThread
 {

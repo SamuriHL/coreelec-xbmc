@@ -375,7 +375,7 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs)
 
   gbm_bo* bo = gbm_surface_lock_front_buffer(m_gbmSurface);
   const uint32_t fb = bo ? FbFromBo(bo) : 0;
-  drmModeAtomicReqPtr req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT, visible)
+  drmModeAtomicReqPtr req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT)
                                : nullptr;
   if (!req)
   {
@@ -656,8 +656,8 @@ void CGraphicsPlaneAML::Process()
   }
 
   m_epoch = aml_presenter_epoch();
-  // establishes the plane, enabled and transparent (R4: idle is alpha 0,
-  // never a disable)
+  // establishes the plane, enabled with a cleared buffer (R4: idle is never
+  // a disable, nor alpha 0)
   SubmitFrame(m_testPattern, MonotonicNs());
   m_ready = true;
 

@@ -1140,8 +1140,7 @@ bool CAMLDRMUtils::HasOverlayPlane()
 
 drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
                                                       int src_w,
-                                                      int src_h,
-                                                      bool visible)
+                                                      int src_h)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   if (!aml_get_drmDevice_connected() || !m_plane || !m_overlayPlane || !m_crtc || !fb_id)
@@ -1167,7 +1166,9 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
   // under the GUI plane, whichever of the two commits first
   set_drmProp(id, "zpos", DRM_MODE_OBJECT_PLANE, 65, req);
   set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
-  set_drmProp(id, "alpha", DRM_MODE_OBJECT_PLANE, visible ? 0xffff : 0, req);
+  // hidden by a transparent buffer, never by alpha: on S6 an overlay at
+  // alpha 0 blacks out the GUI plane over it
+  set_drmProp(id, "alpha", DRM_MODE_OBJECT_PLANE, 0xffff, req);
   // blend the way the GUI plane does: its content is produced the same way
   const int blend = get_drmProp(m_plane->plane_id, "pixel blend mode", DRM_MODE_OBJECT_PLANE);
   if (blend >= 0)

@@ -117,8 +117,8 @@ public:
   bool HasOverlayPlane();
   //! the graphics plane showing fb_id (a src_w x src_h buffer) over the whole
   //! screen, under the GUI plane (GUI flips keep that order until it is
-  //! switched off); alpha 0 hides it while leaving it enabled
-  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h, bool visible);
+  //! switched off)
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h);
   //! the graphics plane off; a commit that only disables a plane is refused,
   //! so it carries the GUI plane's current fb (0: none)
   drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id);
@@ -209,9 +209,9 @@ public:
     return m_amlDRMUtils->BuildFlipRequest(fb_id);
   }
   bool HasOverlayPlane() { return m_amlDRMUtils->HasOverlayPlane(); }
-  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h, bool visible)
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h)
   {
-    return m_amlDRMUtils->BuildOverlayRequest(fb_id, src_w, src_h, visible);
+    return m_amlDRMUtils->BuildOverlayRequest(fb_id, src_w, src_h);
   }
   drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id)
   {
