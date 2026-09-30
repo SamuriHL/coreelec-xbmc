@@ -475,6 +475,7 @@ public:
   BLURAY_TITLE_INFO* GetTitleLongest();
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
   bool DiscHasDolbyVision();
+  bool DiscVideoIs2160p23976();
 
   /*! \brief Refresh m_pqAuthoredGraphics from the current playitem's STN table.
    * Player thread only; call wherever m_clip changes. */
