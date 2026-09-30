@@ -16,6 +16,7 @@
 #include "IVideoPlayer.h"
 #include "PTSTracker.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+#include "threads/Event.h"
 #include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
@@ -136,6 +137,7 @@ protected:
   int m_speed;
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
+  CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder
   std::atomic_bool m_rewindStalled;
   bool m_paused;

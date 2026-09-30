@@ -25,7 +25,6 @@
 #include "utils/AMLUtils.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
-#include "filesystem/File.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
@@ -2071,7 +2070,7 @@ int CAMLCodec::GetAmlDuration() const
   return am_private ? (am_private->video_rate * PTS_FREQ) / UNIT_FREQ : 0;
 };
 
-// Phase 0 E2 (docs/real_player_disc_session_design.md 4.1): the stream parser
+// docs/real_player_disc_session_design.md 4.1: the stream parser
 // completes an access unit only once the next one starts, and fetches in
 // quanta, so a segment's last pictures stay inside the decoder when no more
 // input comes. On a drain that ends the stream (a close; never the stillframe
@@ -2081,8 +2080,8 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
 {
   m_drain = drain;
   if (!drain)
-    m_e2Padded = false;
-  if (!drain || !endOfStream || m_e2Padded || !m_e2DrainPadding || !m_opened || !am_private ||
+    m_drainPadded = false;
+  if (!drain || !endOfStream || m_drainPadded || !m_opened || !am_private ||
       am_private->gcodec.dec_mode != STREAM_TYPE_STREAM || am_private->video_format != VFORMAT_HEVC)
     return;
 
@@ -2098,8 +2097,8 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   pad.insert(pad.end(), fillerPayload, 0xFF);
   pad.push_back(0x80);
 
-  m_e2Padded = true;
-  m_e2InputMoved = std::chrono::steady_clock::now();
+  m_drainPadded = true;
+  m_drainInputMoved = std::chrono::steady_clock::now();
   size_t written = 0;
   for (int tries = 0; written < pad.size() && tries < 50; ++tries)
   {
@@ -2110,7 +2109,7 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
     else
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  CLog::Log(LOGINFO, "CAMLCodec::SetDrain - E2: wrote {} of {} bytes of drain padding", written,
+  CLog::Log(LOGINFO, "CAMLCodec::SetDrain - wrote {} of {} bytes of drain padding", written,
             pad.size());
 }
 
@@ -2118,8 +2117,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
-  m_e2DrainPadding = XFILE::CFile::Exists("special://profile/e2_drainpad");
-  m_e2Padded = false;
+  m_drainPadded = false;
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
@@ -3560,16 +3558,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // Reset clears.
   else if (m_drain && data_len == 0 && !m_no_data_since_reset)
     return CDVDVideoCodec::VC_EOF;
-  // E2: the padded tail is still being parsed. The drain loop polls back to
+  // The padded tail is still being parsed. The drain loop polls back to
   // back and ends on the first idle report, which would close the decoder
   // before the tail comes out; stay busy until the input settles.
-  else if (m_e2Padded && m_drain && ret == EAGAIN &&
+  else if (m_drainPadded && m_drain && ret == EAGAIN &&
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout) &&
            (data_len != prev_data_len ||
-            std::chrono::steady_clock::now() - m_e2InputMoved < std::chrono::milliseconds(500)))
+            std::chrono::steady_clock::now() - m_drainInputMoved < std::chrono::milliseconds(500)))
   {
     if (data_len != prev_data_len)
-      m_e2InputMoved = std::chrono::steady_clock::now();
+      m_drainInputMoved = std::chrono::steady_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
   }
@@ -3638,12 +3636,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // path in this function uses. Paused is exempt unconditionally: there the
   // decoder is meant to produce nothing, and a flush would discard the held
   // frame (which wedges Dolby Vision dual-layer decode outright).
-  // E2 (4.1): a latched drain with input the decoder is not consuming holds
+  // A latched drain with input the decoder is not consuming holds
   // nothing it can report. VC_NONE here reads as progress to the video thread,
   // which then only takes priority messages - so the stream's own VIDEO_DRAIN
   // (priority 0), the one that would end the stream, is never read. Report
   // idle instead, inside the decoder timeout.
-  else if (m_e2DrainPadding && m_drain && ret == EAGAIN && data_len == prev_data_len &&
+  else if (m_drain && ret == EAGAIN && data_len == prev_data_len &&
            m_speed != DVD_PLAYSPEED_PAUSE &&
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout))
     return CDVDVideoCodec::VC_BUFFER;

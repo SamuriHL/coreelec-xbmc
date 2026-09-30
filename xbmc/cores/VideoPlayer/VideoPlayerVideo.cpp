@@ -250,9 +250,26 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   // wait until buffers are empty
   if (bWaitForBuffers && m_speed > 0)
   {
+    m_drained.Reset();
     SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
     // a display mode change pauses the clock mid-drain; that is not a stall
     m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
+
+    // The queue empties when the drain message is taken, while the segment's
+    // last pictures are still inside the decoder: wait for the drain itself.
+    XbmcThreads::EndTime<> timer(3000ms);
+    while (!m_drained.Wait(20ms))
+    {
+      if (m_messageQueue.ReceivedAbortRequest() || !IsRunning())
+        break;
+      if (m_pClock->IsPaused())
+        timer.Set(3000ms);
+      else if (timer.IsTimePast())
+      {
+        CLog::Log(LOGWARNING, "CVideoPlayerVideo::CloseStream - drain not finished after 3s");
+        break;
+      }
+    }
   }
 
   m_messageQueue.Abort();
@@ -567,6 +584,7 @@ void CVideoPlayerVideo::Process()
         if (!ProcessDecoderOutput(frametime, pts))
           break;
       }
+      m_drained.Set();
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
