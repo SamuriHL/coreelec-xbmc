@@ -2412,6 +2412,7 @@ void CVideoPlayer::Process()
       // the disc's graphics until it starts one (see Prepare)
       if (const int waitState = DiscWaitState(true))
       {
+        m_renderManager.SetAwaitingVideo(false);
         UpdatePlayState(200);
         CheckMenuOnlyStart(waitState == 1);
         CThread::Sleep(20ms);
@@ -2425,6 +2426,7 @@ void CVideoPlayer::Process()
       if (m_pInputStream->IsEOF())
         break;
 
+      m_renderManager.SetAwaitingVideo(true);
       if (OpenDemuxStream() == false)
       {
         m_bAbortRequest = true;
@@ -2439,6 +2441,8 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
+      if (m_CurrentVideo.id < 0)
+        m_renderManager.SetAwaitingVideo(false);
 
 #if defined(HAVE_LIBBLURAY)
       // stream reopens keep non-flushable menu overlays alive, but repost the
