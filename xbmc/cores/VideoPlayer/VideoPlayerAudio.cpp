@@ -192,13 +192,15 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 
 void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 {
-  bool bWait = bWaitForBuffers && m_speed > 0 && !CServiceBroker::GetActiveAE()->IsSuspended();
+  bool bWait = bWaitForBuffers && m_speed > 0;
 
   // wait until buffers are empty
   if (bWait)
   {
-    // a display mode change pauses the clock mid-drain; that is not a stall
-    m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
+    // a display mode change pauses the clock mid-drain, and suspends the
+    // engine from before the player hears of it; neither is a stall
+    m_messageQueue.WaitUntilEmpty(
+        [this] { return m_pClock->IsPaused() || CServiceBroker::GetActiveAE()->IsSuspended(); });
   }
 
   // send abort message to the audio queue
