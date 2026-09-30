@@ -1713,7 +1713,19 @@ bool CVideoPlayer::WaitStartAtBoundary()
 #endif
   // E1: a start held for the output mode has its players paused, so a draining
   // close could not play the segment out; the held start has its own bound
-  if (held && !m_bAbortRequest && m_startHeld)
+  // ...and until the players have really resumed: the release reaches them as
+  // speed messages, and a close that reads a player's speed before its thread
+  // has taken that message skips the drain
+  if (m_startReleasedClock != DVD_NOPTS_VALUE)
+  {
+    const double clock = m_clock.GetClock();
+    // resumed, or a new timeline (the clock moved back)
+    if (clock >= m_startReleasedClock + DVD_MSEC_TO_TIME(200) ||
+        clock < m_startReleasedClock - DVD_MSEC_TO_TIME(1000))
+      m_startReleasedClock = DVD_NOPTS_VALUE;
+  }
+  const bool resuming = m_startReleasedClock != DVD_NOPTS_VALUE;
+  if (held && !m_bAbortRequest && (m_startHeld || resuming))
   {
     m_boundaryStartWaitSince = {};
     return true;
@@ -1968,6 +1980,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
 void CVideoPlayer::HoldStart()
 {
   m_startHeld = true;
+  m_startReleasedClock = DVD_NOPTS_VALUE;
   m_startHeldDecisions = m_renderManager.GetResolutionDecisions();
   m_startHeldSince = std::chrono::steady_clock::now();
   m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
@@ -1995,6 +2008,7 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   const double held =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
   m_startHeld = false;
+  m_startReleasedClock = m_clock.GetClock();
   m_VideoPlayerVideo->SetStartHeld(false);
   m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
@@ -6364,6 +6378,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   if (m_startHeld)
     ReleaseHeldStart("flush");
+  m_startReleasedClock = DVD_NOPTS_VALUE;
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
 

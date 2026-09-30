@@ -795,6 +795,7 @@ protected:
   bool m_startHeld = false;
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
+  double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release
   std::chrono::steady_clock::time_point m_startHeldSince;
   // playback started on a disc screen with no stream behind it (BD-J screen
   // with no playlist); HasVideo() reports it so the fullscreen video window
