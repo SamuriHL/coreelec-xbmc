@@ -887,9 +887,10 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_audioSessionHold = true;
     CLog::Log(LOGINFO, "VideoPlayer: audio session hold on");
   }
-  m_keepFrameEnabled = XFILE::CFile::Exists("special://profile/keepframe");
-  if (m_keepFrameEnabled)
-    CLog::Log(LOGINFO, "VideoPlayer: kept picture across disc reinits enabled (debug flag)");
+  // design 4.3: a disc join keeps the last picture; the debug flag turns it off
+  m_keepFrameEnabled = !XFILE::CFile::Exists("special://profile/keepframe_off");
+  if (!m_keepFrameEnabled)
+    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG kept picture across disc reinits disabled");
   m_bdjKeepAliveDebug = XFILE::CFile::Exists("special://profile/bdj_keepalive");
   if (m_bdjKeepAliveDebug)
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG BD-J keep-alive transitions enabled");
