@@ -346,6 +346,9 @@ public:
    * that stamp. BD-J titles only: HDMV titles and file playback never hold. */
   void ReleaseBdjEvents(uint32_t seq);
   void ReleaseAllBdjEvents();
+  //! the player held its clock for seconds after playback started: the BD-J
+  //! application's media clock must not have run on (libbluray patch 16)
+  void ShiftBdjMediaClock(double seconds);
   /* While the player's queues are full it does not read, and the events the
    * BD-J application queues (a playlist stop after a key press) would wait
    * behind up to the whole buffer. Consume them without reading data. */

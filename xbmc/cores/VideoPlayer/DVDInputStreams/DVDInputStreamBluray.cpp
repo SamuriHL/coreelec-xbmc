@@ -1561,6 +1561,14 @@ void CDVDInputStreamBluray::ReleaseAllBdjEvents()
 #endif
 }
 
+void CDVDInputStreamBluray::ShiftBdjMediaClock(double seconds)
+{
+#if defined(BD_BDJ_MEDIA_CLOCK_SHIFT)
+  if (m_bd && IsBdjTitle() && seconds > 0.0)
+    bd_bdj_shift_media_clock(m_bd, static_cast<uint32_t>(std::lround(seconds * 90000.0)));
+#endif
+}
+
 void CDVDInputStreamBluray::PollEvents()
 {
 #if defined(BD_BDJ_PRESENTATION_TIMING)

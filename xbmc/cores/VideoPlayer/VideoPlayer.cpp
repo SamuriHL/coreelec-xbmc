@@ -2063,6 +2063,11 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
   m_startHeld = false;
   m_startReleasedClock = m_clock.GetClock();
+#if defined(HAVE_LIBBLURAY)
+  // a BD-J application's media clock ran on during the hold (design 3.6)
+  if (m_pInputBluray)
+    m_pInputBluray->ShiftBdjMediaClock(held);
+#endif
   m_VideoPlayerVideo->SetStartHeld(false);
   m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
