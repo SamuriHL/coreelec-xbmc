@@ -1695,15 +1695,18 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
  * a draining transition plays the queued segment out. */
 bool CVideoPlayer::WaitStartAtBoundary()
 {
-  const auto starting = [](const CCurrentStream& current)
-  { return current.id >= 0 && current.syncState != IDVDStreamPlayer::SYNC_INSYNC; };
+  // a stream still starting, with queued data the start can complete on (a
+  // flush in the window leaves nothing, and nothing more is read while held)
+  const auto starting = [](const CCurrentStream& current, bool hasData)
+  { return current.id >= 0 && current.syncState != IDVDStreamPlayer::SYNC_INSYNC && hasData; };
 
 #if defined(HAVE_LIBBLURAY)
   const bool held = m_pInputBluray && m_pInputBluray->IsHoldingBoundary();
 #else
   const bool held = false;
 #endif
-  if (!held || m_bAbortRequest || !(starting(m_CurrentAudio) || starting(m_CurrentVideo)))
+  if (!held || m_bAbortRequest || !(starting(m_CurrentAudio, m_VideoPlayerAudio->HasData()) ||
+        starting(m_CurrentVideo, m_VideoPlayerVideo->HasData())))
   {
     m_boundaryStartWaitSince = {};
     return false;

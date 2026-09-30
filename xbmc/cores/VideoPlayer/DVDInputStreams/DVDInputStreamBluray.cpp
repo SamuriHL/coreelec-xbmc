@@ -1285,6 +1285,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
           m_seamlessCarry = false;
           m_menuAtHold = m_menu;
           m_hold = HOLD_HELD;
+          m_holdIsBoundary = true;
         }
       }
     }
@@ -1676,6 +1677,7 @@ bool CDVDInputStreamBluray::HoldForEvent()
         if (ArmSeamlessGlide())
           break;
         m_hold = HOLD_HELD;
+        m_holdIsBoundary = true;
         return true;
       }
       break;
@@ -1684,7 +1686,10 @@ bool CDVDInputStreamBluray::HoldForEvent()
       if(m_hold == HOLD_STILL)
         m_event.event = 0; /* Consume duplicate still event */
       else
+      {
         m_hold = HOLD_HELD;
+        m_holdIsBoundary = false;
+      }
       return true;
 
     default:
@@ -3087,6 +3092,7 @@ void CDVDInputStreamBluray::SkipStill()
   if ( m_hold == HOLD_STILL)
   {
     m_hold = HOLD_HELD;
+    m_holdIsBoundary = false;
     bd_read_skip_still(m_bd);
 
     /* process all queued up events */
