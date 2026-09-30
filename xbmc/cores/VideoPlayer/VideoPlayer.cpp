@@ -1711,6 +1711,13 @@ bool CVideoPlayer::WaitStartAtBoundary()
 #else
   const bool held = false;
 #endif
+  // E1: a start held for the output mode has its players paused, so a draining
+  // close could not play the segment out; the held start has its own bound
+  if (held && !m_bAbortRequest && m_startHeld)
+  {
+    m_boundaryStartWaitSince = {};
+    return true;
+  }
   if (!held || m_bAbortRequest || !(starting(m_CurrentAudio, m_VideoPlayerAudio->HasData()) ||
         starting(m_CurrentVideo, m_VideoPlayerVideo->HasData())))
   {
