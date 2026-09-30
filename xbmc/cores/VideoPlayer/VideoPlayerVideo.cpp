@@ -610,7 +610,10 @@ void CVideoPlayerVideo::Process()
           CThread::Sleep(20ms);
           continue;
         }
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_DRAIN_EOS);
+        // only a closing stream ends: the end-of-file path also sends VIDEO_DRAIN
+        // at a transient empty read (a seek), after which input resumes
+        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN |
+                                       (m_drainStarted ? DVD_CODEC_CTRL_DRAIN_EOS : 0));
         if (ProcessDecoderOutput(frametime, pts))
           continue;
         // a paused clock (a display mode change) holds the tail; it has not ended
