@@ -3615,17 +3615,18 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
   const double clock = m_clock.GetClock();
   const auto joinCorrection = [&](double end) -> double
   {
+    // decided once per jump: the stream that flags it first moves its own end
+    // ahead of the clock, which would fail the test for the confirming stream
+    if (m_stillJoinCorrection != DVD_NOPTS_VALUE)
+      return m_stillJoinCorrection;
     // every stream ran out a second before the clock got here
     if (clock == DVD_NOPTS_VALUE || clock < maxdts + DVD_MSEC_TO_TIME(1000))
       return pPacket->dts - end;
-    if (m_stillJoinCorrection == DVD_NOPTS_VALUE)
-    {
-      m_stillJoinCorrection = pPacket->dts - (clock + DVD_MSEC_TO_TIME(500));
-      CLog::Log(LOGDEBUG,
-                "CVideoPlayer::CheckContinuity - the clock ran {:.3f}s past the old stream's end: "
-                "joining ahead of the clock",
-                (clock - maxdts) / DVD_TIME_BASE);
-    }
+    m_stillJoinCorrection = pPacket->dts - (clock + DVD_MSEC_TO_TIME(500));
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::CheckContinuity - the clock ran {:.3f}s past the old stream's end: "
+              "joining ahead of the clock",
+              (clock - maxdts) / DVD_TIME_BASE);
     return m_stillJoinCorrection;
   };
   if( pPacket->dts > maxdts + DVD_MSEC_TO_TIME(1000))
