@@ -2042,6 +2042,7 @@ void CVideoPlayer::HoldStart()
   m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
   m_VideoPlayerVideo->SetStartHeld(true);
+  m_renderManager.SetStartHeld(true);
   CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {})",
             m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions);
 }
@@ -2070,6 +2071,7 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
     m_pInputBluray->ShiftBdjMediaClock(held);
 #endif
   m_VideoPlayerVideo->SetStartHeld(false);
+  m_renderManager.SetStartHeld(false);
   m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);

@@ -140,6 +140,9 @@ public:
   //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
   unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
   bool IsResolutionUpdatePending() const { return m_bTriggerUpdateResolution; }
+  //! real_player E1: the player holds the start for the output mode; its first
+  //! picture is decoded, so the mode decision need not wait for it on screen
+  void SetStartHeld(bool held) { m_startHeld = held; }
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
 
@@ -189,6 +192,7 @@ protected:
 
   void RenderWithoutPicture(bool gui, bool configured);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
+  bool GraphicsWithheld();
 
   void PresentSingle(bool clear, DWORD flags, DWORD alpha);
   void PresentFields(bool clear, DWORD flags, DWORD alpha);
@@ -235,6 +239,8 @@ protected:
   std::atomic_bool m_showVideo = {false};
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
+  std::atomic_bool m_startHeld{false};
+  std::atomic_bool m_sessionModeDecided{false}; //!< this file's first output mode is set
   std::atomic<unsigned int> m_incomingSegmentGen{0}; //!< generation of the pictures queued next
 
   enum EPRESENTSTEP

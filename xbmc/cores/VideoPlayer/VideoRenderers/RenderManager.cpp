@@ -544,6 +544,8 @@ void CRenderManager::PreInit()
 {
   // a new file: any phase still pending belongs to the last one
   m_dvdClock.ClearVsyncAdjust(true);
+  m_sessionModeDecided = false;
+  m_startHeld = false;
   {
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
@@ -827,7 +829,7 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
       winSystem->EndHdrOverlayRender(false);
     }
     // the HDR composite only exists once a renderer is configured
-    else if (configured && m_overlays.HasHDROverlays(-1))
+    else if (configured && !GraphicsWithheld() && m_overlays.HasHDROverlays(-1))
     {
       m_overlays.SetVideoRect(view, view, view);
       const bool offscreen = winSystem->BeginHdrOverlayRender();
@@ -844,8 +846,23 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
     return;
   }
 
+  if (GraphicsWithheld())
+    return;
   m_overlays.SetVideoRect(view, view, view);
   m_overlays.Render(-1);
+}
+
+// The session's first output mode is still being decided: a real player sends
+// nothing before the mode is set, graphics included (a BD-J resume prompt drawn
+// ahead of the first picture showed in the GUI's mode, then again after the
+// switch). Bounded like the held start, in case the decision never runs.
+bool CRenderManager::GraphicsWithheld()
+{
+  if (!m_bTriggerUpdateResolution || m_sessionModeDecided ||
+      !CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
+    return false;
+  std::unique_lock lock(m_statelock);
+  return std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
 }
 
 void CRenderManager::PresentHdrGraphics(int idx,
@@ -855,7 +872,7 @@ void CRenderManager::PresentHdrGraphics(int idx,
 {
   CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   SHdrGraphics graphics;
-  const bool timed = m_overlays.CollectHDROverlays(idx, graphics.images);
+  const bool timed = !GraphicsWithheld() && m_overlays.CollectHDROverlays(idx, graphics.images);
   graphics.source = source;
   graphics.dest = dest;
   graphics.view = view;
@@ -923,7 +940,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       PresentHdrGraphics(source, src, dst, view);
       winSystem->EndHdrOverlayRender(false);
     }
-    else if (m_overlays.HasHDROverlays(source))
+    else if (!GraphicsWithheld() && m_overlays.HasHDROverlays(source))
     {
       const bool offscreen = winSystem->BeginHdrOverlayRender();
       m_overlays.RenderHDROverlays(source);
@@ -945,13 +962,15 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
-    m_overlays.Render(source);
+    const bool withheld = GraphicsWithheld();
+    if (!withheld)
+      m_overlays.Render(source);
 
     // DV L5 "osdst": report whether a subtitle/overlay is actually painted this
     // frame - per-frame accurate (forced subs + in-window regular subs only, NOT
     // mere track enablement), so the DV L5 path un-masks the letterbox bars only
     // while text is really on screen. See CBitstreamConverter::processDoviRpu.
-    aml_dv_set_subtitles_visible(m_overlays.HasVisibleOverlay(source));
+    aml_dv_set_subtitles_visible(!withheld && m_overlays.HasVisibleOverlay(source));
 
     if (m_renderDebug)
     {
@@ -1134,7 +1153,11 @@ void CRenderManager::UpdateResolution()
         m_amdv_wait_delay--;
         return;
       }
-      else if (aml_video_started() || elapsed > std::chrono::seconds(m_render_timeout))
+      // a held start (E1) has decoded its first picture and paused the clock,
+      // so the decoder may never report video started before the mode is set
+      // (Superman UHD: the decision waited out the 5 s render timeout)
+      else if (aml_video_started() || m_startHeld ||
+               elapsed > std::chrono::seconds(m_render_timeout))
       {
         // Consume the trigger with the parameters it was raised for; a trigger
         // raised while the mode switch below runs is kept for the next pass.
@@ -1216,6 +1239,7 @@ void CRenderManager::UpdateResolution()
         }
         // after the mode set: a real change has already run OnLostDisplay
         ++m_resolutionDecisions;
+        m_sessionModeDecided = true;
         m_playerPort->VideoParamsChange();
       }
     }
