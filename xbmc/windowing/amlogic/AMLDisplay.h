@@ -144,7 +144,7 @@ private:
                   void* data = nullptr,
                   int* data_len = nullptr);
   void apply_dv_wire_format();
-  void commit_dv_wire_format(bool player_led);
+  bool commit_dv_wire_format(bool player_led);
   bool leaving_dv_wire() const;
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);

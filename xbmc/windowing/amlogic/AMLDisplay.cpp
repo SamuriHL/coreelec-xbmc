@@ -787,12 +787,11 @@ void CAMLDRMUtils::aml_engage_dv_wire()
   const bool space_ok = player_led ? cfg.find("Colourspace: YUV422") != std::string::npos
                                    : (cfg.find("Colourspace: YUV444") != std::string::npos ||
                                       cfg.find("Colourspace: RGB") != std::string::npos);
-  if (!depth_ok || !space_ok)
-    commit_dv_wire_format(player_led);
-  m_wireDvTunnel = true;
+  if ((depth_ok && space_ok) || commit_dv_wire_format(player_led))
+    m_wireDvTunnel = true;
 }
 
-void CAMLDRMUtils::commit_dv_wire_format(bool player_led)
+bool CAMLDRMUtils::commit_dv_wire_format(bool player_led)
 {
   // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
   constexpr unsigned int HDMI_CS_YUV422 = 1;
@@ -813,13 +812,15 @@ void CAMLDRMUtils::commit_dv_wire_format(bool player_led)
   if (!req)
   {
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to allocate atomic request", __FUNCTION__);
-    return;
+    return false;
   }
   set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, req);
   set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, req);
-  if (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) != 0)
+  const bool ok = drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0;
+  if (!ok)
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to commit the DV wire format", __FUNCTION__);
   drmModeAtomicFree(req);
+  return ok;
 }
 
 // A disc session holding DV keeps the sink's Dolby VSIF latched across its segment

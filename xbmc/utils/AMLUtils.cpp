@@ -653,6 +653,8 @@ bool aml_dv_wire_format_mismatch()
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static std::atomic<bool> s_dv_disc_session{false};
+// the early engage's post generation (design 13.v, below)
+static std::atomic<unsigned int> s_dv_early_gen{0};
 // Serialises the disc-session engage (GUI thread, from CreateNewWindow) against
 // the release and the session end (player thread). Each is a check followed by
 // ordered sysfs writes; unserialised, a release running inside an engage saw
@@ -674,6 +676,8 @@ void aml_dv_set_disc_session(bool active)
   std::unique_lock lock(s_dv_disc_mutex);
   const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
+  // an early engage posted for the previous session must not land in this one
+  ++s_dv_early_gen;
   if (!active)
     s_dv_disc_engage_pending = false;
   // Session over with the DV output engage still applied (e.g. stopped on a
@@ -804,7 +808,6 @@ bool aml_dv_disc_engage_pending() { return s_dv_disc_engage_pending.load(); }
 // reference player, instead of during the first seconds of the first clip.
 // Engaged on the app thread (it owns DRM and the GUI transform), posted from
 // the player thread; a generation voids a post the session no longer wants.
-static std::atomic<unsigned int> s_dv_early_gen{0};
 // engaged at load; consumed by the first picture's mode decision
 static std::atomic<bool> s_dv_early_engaged{false};
 // GUI switched to PQ at load, before any renderer; app thread only
@@ -897,9 +900,9 @@ bool aml_dv_early_covers_picture(bool dvPicture)
   if (!dvPicture || !s_dv_disc_engaged ||
       (mode != DOLBY_VISION_OUTPUT_MODE_IPT && mode != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL))
   {
-    CLog::Log(LOGINFO, "aml_dv_early_engage: the first picture outputs mode {}, not DV - released",
+    // the per-segment rules (CVideoPlayer::OpenStream) already ran for it
+    CLog::Log(LOGINFO, "aml_dv_early_engage: the first picture outputs mode {}, not the load's DV",
               mode);
-    aml_dv_release_disc_engage();
     return false;
   }
   // a short load: the first picture waits for the box's own link lock, as the
