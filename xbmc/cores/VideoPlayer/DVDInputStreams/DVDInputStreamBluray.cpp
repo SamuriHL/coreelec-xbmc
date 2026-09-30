@@ -3264,6 +3264,12 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
   // BD_EVENT_PLAYITEM refines it per clip afterwards.
   UpdatePqAuthoredGraphics();
   LogTitleAppInfo();
+  // 13.u: where each clip's presentation starts, against the demuxed pts
+  if (m_titleInfo)
+    for (uint32_t c = 0; c < m_titleInfo->clip_count && c < 4; c++)
+      CLog::Log(LOGINFO, "CDVDInputStreamBluray - playlist {} clip {}: IN {:.3f} OUT {:.3f}",
+                playitem, c, m_titleInfo->clips[c].in_time / 90000.0,
+                m_titleInfo->clips[c].out_time / 90000.0);
 
   // bootstrap only: the very first playlist has no pipeline in front of it,
   // so present it synchronously (the player queue would apply it on the next

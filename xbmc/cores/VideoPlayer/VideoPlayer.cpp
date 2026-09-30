@@ -2985,6 +2985,11 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
   CheckStreamChanges(m_CurrentAudio, pStream);
 
+  // 13.u: the first audio pts of a stream, against its clip's IN time
+  if (m_CurrentAudio.dts == DVD_NOPTS_VALUE)
+    CLog::Log(LOGINFO, "CVideoPlayer::ProcessAudioData - first audio packet pts {:.3f}",
+              pPacket->pts / DVD_TIME_BASE);
+
   bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
   UpdateTimestamps(m_CurrentAudio, pPacket);
 
