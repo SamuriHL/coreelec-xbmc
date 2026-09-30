@@ -2422,7 +2422,16 @@ bool aml_keep_frame_take_arm()
 
 void aml_set_frame_kept(bool kept)
 {
-  s_frameKept = kept;
+  static std::chrono::steady_clock::time_point keptSince;
+  if (s_frameKept.exchange(kept) == kept)
+    return;
+  if (kept)
+    keptSince = std::chrono::steady_clock::now();
+  else
+    CLog::Log(LOGINFO, "aml_set_frame_kept: kept picture replaced by the new decoder after {} ms",
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - keptSince)
+                  .count());
 }
 
 bool aml_frame_kept()
