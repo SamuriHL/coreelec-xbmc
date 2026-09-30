@@ -35,13 +35,10 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "filesystem/File.h"
-#include "messaging/ApplicationMessenger.h"
-#include "windowing/GraphicContext.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <condition_variable>
 #include <cerrno>
 #include <cstdint>
@@ -653,8 +650,6 @@ bool aml_dv_wire_format_mismatch()
 // Disc-session DV latch (see AMLUtils.h). Set/cleared by CDVDInputStreamBluray
 // open/close, consumed by CVideoPlayer::OpenStream when resolving VS10.
 static std::atomic<bool> s_dv_disc_session{false};
-// the early engage's post generation (design 13.v, below)
-static std::atomic<unsigned int> s_dv_early_gen{0};
 // Serialises the disc-session engage (GUI thread, from CreateNewWindow) against
 // the release and the session end (player thread). Each is a check followed by
 // ordered sysfs writes; unserialised, a release running inside an engage saw
@@ -676,8 +671,6 @@ void aml_dv_set_disc_session(bool active)
   std::unique_lock lock(s_dv_disc_mutex);
   const bool wasActive = s_dv_disc_session;
   s_dv_disc_session = active;
-  // an early engage posted for the previous session must not land in this one
-  ++s_dv_early_gen;
   if (!active)
     s_dv_disc_engage_pending = false;
   // Session over with the DV output engage still applied (e.g. stopped on a
@@ -804,128 +797,6 @@ void aml_dv_engage_pending_disc_session(bool dvPicture)
 
 bool aml_dv_disc_engage_pending() { return s_dv_disc_engage_pending.load(); }
 
-// Early engage (design 13.v): the TV locks to DV while the disc loads, as on a
-// reference player, instead of during the first seconds of the first clip.
-// Engaged on the app thread (it owns DRM and the GUI transform), posted from
-// the player thread; a generation voids a post the session no longer wants.
-// engaged at load; consumed by the first picture's mode decision
-static std::atomic<bool> s_dv_early_engaged{false};
-// GUI switched to PQ at load, before any renderer; app thread only
-static bool s_dv_early_gui_pq{false};
-static std::chrono::steady_clock::time_point s_dv_early_commit;
-
-static void aml_dv_set_gui_pq(bool pq)
-{
-  // the GUI and the DV graphics core must agree (see CRendererAML::Configure)
-  CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
-  const bool composite = pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084);
-  if (!pq)
-    winSystem->SetGuiCompositing(0);
-  winSystem->GetGfxContext().SetTransferPQ(pq && !composite);
-}
-
-static void aml_dv_early_engage_on_app_thread(void* userptr)
-{
-  const unsigned int gen = static_cast<unsigned int>(reinterpret_cast<uintptr_t>(userptr));
-  std::unique_lock lock(s_dv_disc_mutex);
-  if (gen != s_dv_early_gen || !s_dv_disc_session || !s_dv_disc_engage_pending ||
-      s_dv_disc_engaged)
-    return;
-  // the graphics format first: it must not change once the DV core starts
-  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 9 /* FORMAT_HDR8 */);
-  aml_dv_set_gui_pq(true);
-  s_dv_early_gui_pq = true;
-  s_dv_disc_engage_pending = false;
-  aml_dv_engage_disc_session_now();
-  static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-      ->GetAmlDisplay()
-      ->aml_engage_dv_wire();
-  s_dv_early_commit = std::chrono::steady_clock::now();
-  s_dv_early_engaged = true;
-  CLog::Log(LOGINFO, "aml_dv_early_engage: DV engaged at disc load");
-}
-
-static void aml_dv_early_gui_undo_on_app_thread(void*)
-{
-  if (!s_dv_early_gui_pq)
-    return;
-  s_dv_early_gui_pq = false;
-  aml_dv_set_gui_pq(false);
-  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
-  CLog::Log(LOGINFO, "aml_dv_early_engage: GUI back to SDR (no picture took the engage)");
-}
-
-// called under s_dv_disc_mutex by the release
-static void aml_dv_early_void()
-{
-  ++s_dv_early_gen;
-  s_dv_early_engaged = false;
-  static KODI::MESSAGING::ThreadMessageCallback undo{&aml_dv_early_gui_undo_on_app_thread, nullptr};
-  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1, static_cast<void*>(&undo));
-}
-
-void aml_dv_early_engage_disc_session(bool dvOutput, bool clip2160p23976)
-{
-  if (!XFILE::CFile::Exists("special://profile/dvearly"))
-    return;
-  std::unique_lock lock(s_dv_disc_mutex);
-  if (!s_dv_disc_session || !s_dv_disc_engage_pending || s_dv_disc_engaged)
-    return;
-  // no mode set before the first frame: only when the first clip's own mode is
-  // the one already on the wire
-  RESOLUTION_INFO cur{};
-  const bool modeMatches =
-      clip2160p23976 &&
-      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-          ->GetAmlDisplay()
-          ->aml_get_native_resolution(&cur) &&
-      cur.iScreenHeight == 2160 && std::abs(cur.fRefreshRate - 23.976f) < 0.01f;
-  if (!dvOutput || !modeMatches)
-  {
-    CLog::Log(LOGINFO, "aml_dv_early_engage: not at load ({}) - DV engages at the first picture",
-              !dvOutput ? "first clip does not output DV" : "first clip changes the mode");
-    return;
-  }
-  const unsigned int gen = ++s_dv_early_gen;
-  static KODI::MESSAGING::ThreadMessageCallback engage{&aml_dv_early_engage_on_app_thread, nullptr};
-  engage.userptr = reinterpret_cast<void*>(static_cast<uintptr_t>(gen));
-  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1, static_cast<void*>(&engage));
-}
-
-bool aml_dv_early_covers_picture(bool dvPicture)
-{
-  if (!s_dv_early_engaged.exchange(false))
-    return false;
-  const unsigned int mode = aml_dv_get_output_mode();
-  if (!dvPicture || !s_dv_disc_engaged ||
-      (mode != DOLBY_VISION_OUTPUT_MODE_IPT && mode != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL))
-  {
-    // the per-segment rules (CVideoPlayer::OpenStream) already ran for it
-    CLog::Log(LOGINFO, "aml_dv_early_engage: the first picture outputs mode {}, not the load's DV",
-              mode);
-    return false;
-  }
-  // a short load: the first picture waits for the box's own link lock, as the
-  // mode set it replaces would have
-  const auto deadline = s_dv_early_commit + std::chrono::milliseconds(1500);
-  int locked = 0;
-  while (locked < 2 && std::chrono::steady_clock::now() < deadline)
-  {
-    locked = aml_hdmi_sink_locked() == 1 ? locked + 1 : 0;
-    if (locked < 2)
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-  CLog::Log(LOGINFO, "aml_dv_early_engage: first picture on the load's DV link, {} ms after the "
-            "commit", std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - s_dv_early_commit).count());
-  return true;
-}
-
-void aml_dv_early_gui_claimed()
-{
-  s_dv_early_gui_pq = false;
-}
-
 // The ordered DV teardown. Shared by the disc-session release and by the
 // stale-session recovery at startup, because getting this order wrong is what
 // leaves a sink latched in DV over SDR pixels with no way back but a reboot.
@@ -1029,7 +900,6 @@ void aml_dv_release_disc_engage()
 {
   std::unique_lock lock(s_dv_disc_mutex);
   s_dv_disc_engage_pending = false;
-  aml_dv_early_void();
   if (!s_dv_disc_engaged)
     return;
   s_dv_disc_engaged = false;
