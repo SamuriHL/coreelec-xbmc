@@ -21,7 +21,6 @@
 #include "windowing/Resolution.h"
 
 #include <atomic>
-#include <chrono>
 #include <deque>
 #include <list>
 #include <memory>
@@ -138,10 +137,6 @@ public:
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
   void ShowVideo(bool enable);
   void SetDisplayLost(bool lost) { m_displayLost = lost; }
-  //! A segment's video is on its way (true), or none is coming (false). Until
-  //! a picture queued after that is presented, the disc's graphics wait for it
-  //! instead of showing over black or the previous segment's last picture.
-  void SetAwaitingVideo(bool awaiting);
   //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
   unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
   bool IsResolutionUpdatePending() const { return m_bTriggerUpdateResolution; }
@@ -190,9 +185,7 @@ public:
 
 protected:
 
-  void RenderWithoutPicture(bool gui, bool configured, bool holdGraphics);
-  //! under m_presentlock: the disc's graphics wait for a new segment's first picture
-  bool HoldGraphicsFor(int source, bool& released);
+  void RenderWithoutPicture(bool gui, bool configured);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
 
   void PresentSingle(bool clear, DWORD flags, DWORD alpha);
@@ -239,10 +232,7 @@ protected:
   XbmcThreads::EndTime<> m_debugTimer;
   std::atomic_bool m_showVideo = {false};
   std::atomic_bool m_displayLost = {false};
-  bool m_awaitingVideo = false; // m_presentlock
   std::atomic<unsigned int> m_resolutionDecisions{0};
-  int m_awaitIdx = -1; //!< the first picture queued while awaiting (m_presentlock)
-  std::chrono::steady_clock::time_point m_awaitSince; // m_presentlock
 
   enum EPRESENTSTEP
   {

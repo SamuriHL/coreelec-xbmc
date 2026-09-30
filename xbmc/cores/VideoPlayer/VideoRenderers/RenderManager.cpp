@@ -577,7 +577,6 @@ void CRenderManager::PreInit()
 
 void CRenderManager::UnInit()
 {
-  SetAwaitingVideo(false);
   // no renderer, no phase: audio must not wait for one
   m_dvdClock.ClearVsyncAdjust(true);
   if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
@@ -802,7 +801,7 @@ void CRenderManager::SetViewMode(int iViewMode)
 // the disc's graphics over black here, so draw the presentation-time
 // composition over the full screen (the fullscreen window has already cleared
 // to black). Nothing else in the video path applies without a picture.
-void CRenderManager::RenderWithoutPicture(bool gui, bool configured, bool holdGraphics)
+void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
 {
   CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   auto& gfx = winSystem->GetGfxContext();
@@ -816,9 +815,7 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured, bool holdGr
 
   if (!gui)
   {
-    if (configured && holdGraphics)
-      winSystem->EndHdrOverlayRender(false);
-    else if (configured && winSystem->HdrGraphicsOnPlane())
+    if (configured && winSystem->HdrGraphicsOnPlane())
     {
       PresentHdrGraphics(-1, view, view, view);
       winSystem->EndHdrOverlayRender(false);
@@ -841,46 +838,8 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured, bool holdGr
     return;
   }
 
-  if (holdGraphics)
-    return;
   m_overlays.SetVideoRect(view, view, view);
   m_overlays.Render(-1);
-}
-
-void CRenderManager::SetAwaitingVideo(bool awaiting)
-{
-  std::unique_lock lock(m_presentlock);
-  const bool changed = awaiting != m_awaitingVideo;
-  m_awaitingVideo = awaiting;
-  m_awaitIdx = -1;
-  m_awaitSince = std::chrono::steady_clock::now();
-  if (changed)
-    CLog::Log(LOGDEBUG, "CRenderManager - disc graphics {}",
-            awaiting ? "wait for the next picture" : "no longer wait for a picture");
-}
-
-// A preloaded menu page is posted as soon as its playlist starts, before the
-// video decoder has even opened: shown at once it sits over black (or the
-// last segment's picture) for the whole decoder start.
-bool CRenderManager::HoldGraphicsFor(int source, bool& released)
-{
-  if (!m_awaitingVideo)
-    return false;
-  const auto now = std::chrono::steady_clock::now();
-  // the players are paused while the display is lost: no picture can come
-  if (m_displayLost)
-    m_awaitSince = now;
-  const bool pictureShown = source != -1 && source == m_awaitIdx;
-  if (pictureShown || now - m_awaitSince >= 3s)
-  {
-    CLog::Log(LOGDEBUG, "CRenderManager - disc graphics released ({})",
-              pictureShown ? "first picture" : "no picture in 3s");
-    m_awaitingVideo = false;
-    m_awaitIdx = -1;
-    released = true;
-    return false;
-  }
-  return true;
 }
 
 void CRenderManager::PresentHdrGraphics(int idx,
@@ -905,18 +864,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   CSingleExit exitLock(CServiceBroker::GetWinSystem()->GetGfxContext());
 
   int source;
-  bool holdGraphics;
-  bool graphicsReleased = false;
   {
     std::unique_lock lock(m_presentlock);
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
-    holdGraphics = HoldGraphicsFor(source, graphicsReleased);
   }
-  // the GUI layer redraws only when dirty, and a held composition spent its
-  // one dirty frame while held
-  if (graphicsReleased)
-    OVERLAY::MarkDirty();
 
   {
     std::unique_lock lock(m_statelock);
@@ -924,7 +876,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     {
       const bool configured = m_renderState == STATE_CONFIGURED;
       lock.unlock();
-      RenderWithoutPicture(gui, configured, holdGraphics);
+      RenderWithoutPicture(gui, configured);
       return;
     }
   }
@@ -960,9 +912,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // Off-screen when the platform composites them (see BeginHdrOverlayRender),
     // straight onto the back buffer otherwise.
     CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-    if (holdGraphics)
-      winSystem->EndHdrOverlayRender(false);
-    else if (winSystem->HdrGraphicsOnPlane())
+    if (winSystem->HdrGraphicsOnPlane())
     {
       PresentHdrGraphics(source, src, dst, view);
       winSystem->EndHdrOverlayRender(false);
@@ -989,8 +939,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
-    if (!holdGraphics)
-      m_overlays.Render(source);
+    m_overlays.Render(source);
 
     // DV L5 "osdst": report whether a subtitle/overlay is actually painted this
     // frame - per-frame accurate (forced subs + in-window regular subs only, NOT
@@ -1316,9 +1265,6 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 
     m_pRenderer->AddVideoPicture(picture, index);
   }
-
-  if (m_awaitingVideo && m_awaitIdx < 0)
-    m_awaitIdx = index;
 
 
   // set fieldsync if picture is interlaced
