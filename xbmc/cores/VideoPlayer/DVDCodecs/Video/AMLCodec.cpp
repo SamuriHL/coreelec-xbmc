@@ -2081,6 +2081,7 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   if (drain && !m_drain)
     m_drainInputMoved = std::chrono::steady_clock::now();
   m_drain = drain;
+  m_drainEos = drain && (endOfStream || m_drainEos);
   if (!drain)
     m_drainPadded = false;
   if (!drain || !endOfStream || m_drainPadded || !m_opened || !am_private ||
@@ -3565,10 +3566,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // Reset clears.
   else if (m_drain && data_len == 0 && !m_no_data_since_reset)
     return CDVDVideoCodec::VC_EOF;
-  // The padded tail is still being parsed. The drain loop polls back to
-  // back and ends on the first idle report, which would close the decoder
-  // before the tail comes out; stay busy until the input settles.
-  else if (m_drainPadded && m_drain && ret == EAGAIN &&
+  // The tail of a stream that is ending is still being decoded (padded or
+  // not). The drain loop polls back to back and ends on the first idle
+  // report, which would close the decoder before the tail comes out; stay
+  // busy until the input settles. A stillframe drain (not the end of the
+  // stream) keeps its immediate park below.
+  else if (m_drainEos && m_drain && ret == EAGAIN &&
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout) &&
            !drainInputSettled)
   {
@@ -3654,7 +3657,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
             (buffer_level > (streambuffer ? 100.0f : 10.0f))) &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||
             elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout)))
+  {
+    // a drain polls back to back: do not spin on the ioctl
+    if (m_drain)
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
+  }
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR,

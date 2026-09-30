@@ -300,7 +300,6 @@ void CVideoPlayerVideo::BeginDrain()
 {
   if (m_drainStarted.exchange(true))
     return;
-  m_drainAbort = false;
   m_drained.Reset();
   SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
 }
