@@ -780,6 +780,9 @@ protected:
   //! the one correction of a timeline jump joined ahead of the clock after a still
   double m_stillJoinCorrection = DVD_NOPTS_VALUE;
   std::chrono::steady_clock::time_point m_boundaryStartWaitSince{};
+  //! E1: a full audio queue waiting on the video's first picture (bounded)
+  std::chrono::steady_clock::time_point m_firstPictureWaitSince{};
+  bool m_firstPictureWaitExpired = false;
 
   // Per-jump sequence stamped onto the packet that opens a timeline restart,
   // and a latch so only the first packet of a jump is stamped - the unconfirmed

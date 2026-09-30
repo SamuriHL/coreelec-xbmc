@@ -3416,9 +3416,38 @@ void CVideoPlayer::HandlePlaySpeed()
     if (!syncStuck)
       m_syncStuckArmed = false;
 
+    // A full audio queue stops the demuxer, so a video decoder that needs more
+    // input would never deliver its first picture: the start then goes ahead
+    // on audio. E1 takes the output mode from that first picture, and a start
+    // committed ahead of it is not held (Superman UHD: committed 80 ms before
+    // its first picture configured the renderer). Give it a bounded wait; the
+    // deadlock the shortcut breaks still breaks, 1 s later.
+    bool audioFullVideoStarving =
+        !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10;
+    if (audioFullVideoStarving && m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
+        m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING)
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (m_firstPictureWaitSince == std::chrono::steady_clock::time_point{})
+      {
+        m_firstPictureWaitSince = now;
+        CLog::Log(LOGDEBUG, "VideoPlayer::Sync - audio queue full, waiting for the first picture");
+      }
+      else if (now - m_firstPictureWaitSince >= 1s && !m_firstPictureWaitExpired)
+      {
+        m_firstPictureWaitExpired = true;
+        CLog::Log(LOGINFO, "VideoPlayer::Sync - no first picture in 1s, starting on audio");
+      }
+      audioFullVideoStarving = m_firstPictureWaitExpired;
+    }
+    else
+    {
+      m_firstPictureWaitSince = {};
+      m_firstPictureWaitExpired = false;
+    }
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentVideo.packets == 0 && m_CurrentAudio.packets > threshold) ||
-                 (!m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10);
+                 audioFullVideoStarving;
     bool audio = m_CurrentAudio.id < 0 || (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentAudio.packets == 0 && m_CurrentVideo.packets > threshold) ||
                  (!m_VideoPlayerVideo->AcceptsData() && m_VideoPlayerAudio->GetLevel() < 10);
