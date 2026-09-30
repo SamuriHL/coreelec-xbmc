@@ -850,12 +850,12 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured, bool holdGr
 void CRenderManager::SetAwaitingVideo(bool awaiting)
 {
   std::unique_lock lock(m_presentlock);
-  if (awaiting == m_awaitingVideo)
-    return;
+  const bool changed = awaiting != m_awaitingVideo;
   m_awaitingVideo = awaiting;
   m_awaitIdx = -1;
   m_awaitSince = std::chrono::steady_clock::now();
-  CLog::Log(LOGDEBUG, "CRenderManager - disc graphics {}",
+  if (changed)
+    CLog::Log(LOGDEBUG, "CRenderManager - disc graphics {}",
             awaiting ? "wait for the next picture" : "no longer wait for a picture");
 }
 

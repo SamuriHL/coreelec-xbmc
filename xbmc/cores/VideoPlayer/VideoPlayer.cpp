@@ -2223,6 +2223,7 @@ void CVideoPlayer::Prepare()
     m_renderManager.SetAwaitingVideo(true);
     if (!OpenDemuxStream())
     {
+      m_renderManager.SetAwaitingVideo(false);
       m_bAbortRequest = true;
       m_error = true;
       return;
