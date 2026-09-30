@@ -782,9 +782,21 @@ void CAMLDRMUtils::apply_dv_wire_format()
             "the connector colour properties", __FUNCTION__,
             player_led ? "YUV422 12-bit" : "YUV444 8-bit");
 
-  set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, NULL);
-  set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, NULL);
-  set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
+  // One commit, one link re-train: a color_depth write sets the kernel's
+  // color_force, which already forces a mode set carrying the new attributes, so
+  // a separate UPDATE (connectors_changed) would re-train a second time and the
+  // sink locks twice at every DV start.
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req)
+  {
+    CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to allocate atomic request", __FUNCTION__);
+    return;
+  }
+  set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, req);
+  set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, req);
+  if (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) != 0)
+    CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to commit the DV wire format", __FUNCTION__);
+  drmModeAtomicFree(req);
 }
 
 // A disc session holding DV keeps the sink's Dolby VSIF latched across its segment
