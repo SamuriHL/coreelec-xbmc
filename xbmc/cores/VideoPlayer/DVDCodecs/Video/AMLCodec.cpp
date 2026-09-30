@@ -2091,6 +2091,10 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   if (!drain)
   {
     m_drainPadded = false;
+    // input resumes without a flush (a growing recording, a stream that comes
+    // back): the stopped decoder needs a reset before it is written to
+    if (m_decoderEos)
+      m_resetAfterEos = true;
     ClearDecoderEos();
   }
 }
@@ -2100,13 +2104,18 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
 // without that a segment's last pictures (Halo S2: four) never come out.
 void CAMLCodec::SignalDecoderEos()
 {
-  if (m_decoderEos || !m_opened || !am_private)
+  // the HEVC stream path only, as the padding: other decoders and the frame
+  // path are not verified with it
+  if (m_decoderEos || !m_opened || !am_private ||
+      am_private->gcodec.dec_mode != STREAM_TYPE_STREAM || am_private->video_format != VFORMAT_HEVC)
     return;
   m_decoderEos = true;
   m_dll->codec_set_eos(&am_private->vcodec, 1);
   CLog::Log(LOGDEBUG, "CAMLCodec::SignalDecoderEos - end of input signalled");
 }
 
+// Book-keeping only: a decoder that has reached its end of stream stays
+// stopped (vh265 hevc->eos) until it is reinitialised, which a Reset does.
 void CAMLCodec::ClearDecoderEos()
 {
   if (!m_decoderEos || !m_opened || !am_private)
@@ -2942,6 +2951,7 @@ void CAMLCodec::Reset()
 
   // a flush brings more input; the decoder must not think it has ended
   ClearDecoderEos();
+  m_resetAfterEos = false;
 
   m_park_last_data_len = -1;
   SetPollDevice(-1);
@@ -3008,6 +3018,12 @@ void CAMLCodec::Reset()
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
+  if (m_resetAfterEos)
+  {
+    m_resetAfterEos = false;
+    CLog::Log(LOGDEBUG, "CAMLCodec::AddData - input after end of stream: resetting the decoder");
+    Reset();
+  }
   if (iSize > 0)
   {
     m_no_data_since_reset = false;

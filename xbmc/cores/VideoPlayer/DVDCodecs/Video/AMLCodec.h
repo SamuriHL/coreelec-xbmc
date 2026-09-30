@@ -193,6 +193,7 @@ private:
   bool            m_felIdrPadding = false;
   bool            m_drainPadded = false; //!< this drain's padding is written
   bool            m_decoderEos = false; //!< end of input signalled to the decoder
+  bool            m_resetAfterEos = false; //!< input resumed after one: the decoder must be reinit
   bool            m_drainEos = false; //!< the drain ends the stream (no input follows)
   std::chrono::steady_clock::time_point m_drainInputMoved; //!< last data_len change after the pad
   std::chrono::steady_clock::time_point m_drainLastPoll; //!< stillness counts only while polled
