@@ -140,6 +140,8 @@ public:
   //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
   unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
   bool IsResolutionUpdatePending() const { return m_bTriggerUpdateResolution; }
+  //! the pictures queued from now on belong to this disc segment generation
+  void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
 
   /*!
    * \brief True if any subtitle/overlay is visible on the current presented
@@ -233,6 +235,7 @@ protected:
   std::atomic_bool m_showVideo = {false};
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
+  std::atomic<unsigned int> m_incomingSegmentGen{0}; //!< generation of the pictures queued next
 
   enum EPRESENTSTEP
   {
@@ -272,6 +275,7 @@ protected:
   struct SPresent
   {
     double         pts;
+    unsigned int   segmentGen; //!< disc segment generation of the picture (6.1)
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
   } m_Queue[NUM_BUFFERS]{};

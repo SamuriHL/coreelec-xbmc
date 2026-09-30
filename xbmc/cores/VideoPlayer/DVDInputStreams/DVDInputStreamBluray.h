@@ -24,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <queue>
 #include <vector>
 
@@ -35,6 +36,8 @@ extern "C"
 #include <libbluray/overlay.h>
 #include <libbluray/player_settings.h>
 #include "DVDInputStreamFile.h"
+
+class CDVDOverlayGroup;
 }
 
 #define MAX_PLAYLIST_ID 99999
@@ -489,7 +492,19 @@ protected:
   struct SPlane;
 
   void OverlayFlush(int64_t pts, bool keepAliveEligible = false);
-  void OverlayClose();
+  //! hdmv: the HDMV graphics controller's CLOSE (deferrable inside a read)
+  void OverlayClose(bool hdmv = false);
+  //! a disc menu page posted inside a read goes out at its end (6.1): a first
+  //! display waits for its segment's first picture, and a CLOSE followed by a
+  //! page in the same read is folded into the page instead of blanking
+  void FinishReadOverlays();
+  void PostMenuGroup(const std::shared_ptr<CDVDOverlayGroup>& group);
+  int ReadNav(uint8_t* buf, int buf_size);
+  bool OnReadThread() const { return m_inRead && std::this_thread::get_id() == m_readThread; }
+  bool m_inRead = false;
+  std::thread::id m_readThread;
+  bool m_deferredClosePost = false;
+  std::shared_ptr<CDVDOverlayGroup> m_deferredPage;
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
   bool ProcessItem(int playitem);

@@ -575,7 +575,7 @@ void CRenderer::CreateSubtitlesStyle()
   m_overlayStyle->lineSpacing = settings->GetLineSpacing();
 }
 
-void CRenderer::PrepareOverlays(int idx)
+void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
 {
   // Query the container BEFORE taking m_section. This ordering is LOAD-BEARING:
   // ProcessOverlays holds the container lock then takes m_section (via AddOverlay),
@@ -584,6 +584,11 @@ void CRenderer::PrepareOverlays(int idx)
   // m_section - the two are never co-held on this thread. Do NOT move this query
   // below the m_section lock.
   const bool containerEmpty = m_pOverlayContainer && !m_pOverlayContainer->HasDrawableOverlay();
+
+  // A menu page waiting for its segment's first picture (6.1) becomes current
+  // on this picture if it is of that segment. Same ordering rule.
+  if (m_pOverlayContainer && segmentGen != 0)
+    m_pOverlayContainer->NotePresentedSegment(segmentGen);
 
   // Same ordering rule: the presentation-time menu composition is fetched from
   // the container before m_section is taken.

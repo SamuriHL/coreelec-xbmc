@@ -1700,6 +1700,46 @@ bool CDVDInputStreamBluray::HoldForEvent()
 
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
+  m_readThread = std::this_thread::get_id();
+  m_inRead = true;
+  const int result = ReadNav(buf, buf_size);
+  m_inRead = false;
+  FinishReadOverlays();
+  return result;
+}
+
+void CDVDInputStreamBluray::PostMenuGroup(const std::shared_ptr<CDVDOverlayGroup>& group)
+{
+  std::shared_ptr<CDVDOverlay> overlay = group;
+  m_player->OnDiscNavResult(static_cast<void*>(&overlay), BD_EVENT_MENU_OVERLAY);
+}
+
+void CDVDInputStreamBluray::FinishReadOverlays()
+{
+  std::unique_lock lock(m_overlayLock);
+  if (m_deferredPage)
+  {
+    // a read that ends holding a boundary started the page's playlist ahead of
+    // the transition that opens it; otherwise that segment is already open
+    m_deferredPage->m_pageWait = IsHoldingBoundary() ? CDVDOverlay::PAGE_NEXT_SEGMENT
+                                                     : CDVDOverlay::PAGE_CURRENT_SEGMENT;
+    std::shared_ptr<CDVDOverlayGroup> page = std::move(m_deferredPage);
+    m_deferredPage.reset();
+    m_deferredClosePost = false;
+    PostMenuGroup(page);
+  }
+  else if (m_deferredClosePost)
+  {
+    m_deferredClosePost = false;
+    auto group = std::make_shared<CDVDOverlayGroup>();
+    group->bForced = true;
+    group->SetOverlayContainerFlushable(false);
+    PostMenuGroup(group);
+  }
+}
+
+int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
+{
   int result = 0;
   m_dispTimeBeforeRead = static_cast<int>((bd_tell_time(m_bd) / 90));
   if(m_navmode)
@@ -1921,18 +1961,27 @@ static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e, bool pqAuthored)
 // Known limitation: an SDR-authored BD-J menu on a DV disc would be treated as
 // PQ; not seen on tested discs.
 
-void CDVDInputStreamBluray::OverlayClose()
+void CDVDInputStreamBluray::OverlayClose(bool hdmv)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   std::unique_lock lock(m_overlayLock);
   for(SPlane& plane : m_planes)
     plane.o.clear();
-  auto group = std::make_shared<CDVDOverlayGroup>();
-  group->bForced = true;
-  // menu overlays belong to disc navigation, not to a demux stream: they must
-  // survive the overlay-container flushes done on stream close/switch
-  group->SetOverlayContainerFlushable(false);
-  m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+  if (hdmv && OnReadThread())
+  {
+    // posted at the end of the read, unless a page follows in it (6.1)
+    m_deferredClosePost = true;
+    m_deferredPage.reset();
+  }
+  else
+  {
+    auto group = std::make_shared<CDVDOverlayGroup>();
+    group->bForced = true;
+    // menu overlays belong to disc navigation, not to a demux stream: they must
+    // survive the overlay-container flushes done on stream close/switch
+    group->SetOverlayContainerFlushable(false);
+    m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+  }
   m_hasOverlay = false;
   // overlay session over: the next composition starts a fresh cadence streak,
   // and nothing may inherit the closed session's keep-alive stamp
@@ -2165,7 +2214,20 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
       group->m_overlays.push_back(o);
   }
 
-  m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+#if defined(BD_OVERLAY_PTS_WITH_NEXT_VIDEO)
+  const bool firstDisplay = pts == BD_OVERLAY_PTS_WITH_NEXT_VIDEO;
+#else
+  const bool firstDisplay = false;
+#endif
+  // the first display of a preloaded page, and whatever follows it in the same
+  // read, goes out at the end of the read (FinishReadOverlays)
+  if (OnReadThread() && (firstDisplay || m_deferredPage))
+  {
+    m_deferredPage = group;
+    m_deferredClosePost = false;
+  }
+  else
+    m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   // content-based, not latched-true: a HIDE (or a flush of fully-cleared
   // planes) must drop the "overlay up" state or menu-domain classification
   // and IsInMenu() stay stuck after the composition is gone. The background
@@ -2179,7 +2241,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   if(ov == nullptr || ov->cmd == BD_OVERLAY_CLOSE)
   {
-    OverlayClose();
+    OverlayClose(true);
     return;
   }
 

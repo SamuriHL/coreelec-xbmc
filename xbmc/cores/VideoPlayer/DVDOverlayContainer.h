@@ -53,6 +53,12 @@ public:
    * menu composition in the container, so this is always the latest.
    */
   std::shared_ptr<CDVDOverlay> GetPresentLatestOverlay();
+  //! a picture of this segment generation is being presented: menu pages that
+  //! waited for it (6.1) become current
+  void NotePresentedSegment(unsigned int gen);
+  //! every menu page still waiting for its picture becomes current
+  void ReleasePendingMenu();
+  bool HasPendingMenu();
 
   void Clear(); // clear the fifo and delete all overlays
 
@@ -72,4 +78,5 @@ private:
   VecOverlays::iterator Remove(VecOverlays::iterator itOverlay); // removes a specific overlay
 
   VecOverlays m_overlays;
+  unsigned int m_releasedSegment = 0; //!< pages of this generation or older are current
 };

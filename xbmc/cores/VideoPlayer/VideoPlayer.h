@@ -796,6 +796,13 @@ protected:
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
   double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release
+  //! disc segment generation (6.1): advances at every BdSegmentTransition
+  unsigned int m_segmentGen = 0;
+  unsigned int m_segmentGenPublished = 0;
+  void PublishSegmentGen();
+  bool m_menuPageWaiting = false;
+  std::chrono::steady_clock::time_point m_menuPageWaitSince;
+  void CheckMenuPageWait();
   std::chrono::steady_clock::time_point m_startHeldSince;
   // playback started on a disc screen with no stream behind it (BD-J screen
   // with no playlist); HasVideo() reports it so the fullscreen video window

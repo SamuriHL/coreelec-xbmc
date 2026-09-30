@@ -48,6 +48,8 @@ public:
     m_stereoView = DVDOverlayStereoView::BOTH;
     m_keepAliveTick = 0;
     m_presentLatest = false;
+    m_pageWait = PAGE_AT_ONCE;
+    m_segmentGen = 0;
   }
 
   CDVDOverlay(const CDVDOverlay& src) : std::enable_shared_from_this<CDVDOverlay>(src)
@@ -65,6 +67,8 @@ public:
     m_stereoView = src.m_stereoView;
     m_keepAliveTick = src.m_keepAliveTick;
     m_presentLatest = src.m_presentLatest;
+    m_pageWait = src.m_pageWait;
+    m_segmentGen = src.m_segmentGen;
   }
 
   virtual ~CDVDOverlay() = default;
@@ -142,6 +146,19 @@ public:
   // decoded frames instead sampled a menu animation up to ~0.7s early, at the
   // decoder's bursty output cadence - a visibly choppy slide-in.
   bool m_presentLatest;
+
+  //! A disc menu page that belongs with the first picture of a segment
+  //! (docs/real_player_disc_session_design.md 6.1): the input stream says which
+  //! segment, the player turns that into a generation.
+  enum PageWait
+  {
+    PAGE_AT_ONCE = 0,
+    PAGE_CURRENT_SEGMENT, //!< the segment now open, before its first picture
+    PAGE_NEXT_SEGMENT, //!< the segment the held boundary is about to open
+  };
+  PageWait m_pageWait;
+  //! shown once a picture of this segment generation is presented (0: at once)
+  unsigned int m_segmentGen;
   unsigned long m_textureid;
   DVDOverlayStereoView m_stereoView;
 

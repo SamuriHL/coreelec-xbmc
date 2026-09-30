@@ -1814,6 +1814,9 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // this bound exists to stop.
   m_audioPlayerRestarts = 0;
   m_videoPlayerRestarts = 0;
+  // pictures after this boundary are a new segment (6.1); published to the
+  // renderer from the process loop, in order with the packets that follow
+  ++m_segmentGen;
   const EBdTransition transition = ClassifyBdTransition();
 
   // Not on the seamless path: the pipeline survives the boundary, so a refill
@@ -1983,6 +1986,41 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
   m_stillJoinCorrection = DVD_NOPTS_VALUE;
+}
+
+void CVideoPlayer::PublishSegmentGen()
+{
+  if (m_segmentGenPublished == m_segmentGen)
+    return;
+  m_segmentGenPublished = m_segmentGen;
+  // a running video player takes it in order with the packets that follow;
+  // a closed one's next pictures come from a player opened after now
+  if (m_CurrentVideo.id >= 0 && m_VideoPlayerVideo->IsInited())
+    m_VideoPlayerVideo->SendMessage(
+        std::make_shared<CDVDMsgInt>(CDVDMsg::GENERAL_SEGMENT_GEN, static_cast<int>(m_segmentGen)), 0);
+  else
+    m_renderManager.SetIncomingSegmentGen(m_segmentGen);
+}
+
+void CVideoPlayer::CheckMenuPageWait()
+{
+  if (!m_menuPageWaiting)
+    return;
+  if (!m_overlayContainer.HasPendingMenu())
+  {
+    m_menuPageWaiting = false;
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  // a held start's first picture is on its way
+  if (m_startHeld)
+    m_menuPageWaitSince = now;
+  else if (now - m_menuPageWaitSince > 3s)
+  {
+    CLog::Log(LOGDEBUG, "CVideoPlayer: menu page shown without its picture (3s)");
+    m_overlayContainer.ReleasePendingMenu();
+    m_menuPageWaiting = false;
+  }
 }
 
 void CVideoPlayer::HoldStart()
@@ -2289,6 +2327,11 @@ void CVideoPlayer::Prepare()
   // would park this thread in the input stream's idle loop: no key would
   // reach the disc and nothing would be presented. Defer the demuxer to the
   // main loop, which opens it once the disc starts a playlist.
+  // the file's first segment is a generation of its own (6.1)
+  ++m_segmentGen;
+  m_segmentGenPublished = m_segmentGen;
+  m_renderManager.SetIncomingSegmentGen(m_segmentGen);
+
   const bool deferDemux = DiscWaitState(false) != 0;
   if (deferDemux)
     CLog::Log(LOGINFO, "VideoPlayer: disc shows a screen with no playlist, deferring the demuxer");
@@ -2440,6 +2483,9 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      // nor can a menu page waiting for its picture
+      if (m_menuPageWaiting)
+        m_menuPageWaitSince = std::chrono::steady_clock::now();
       // the players are paused: a start held at a boundary cannot progress
       if (m_boundaryStartWaitSince != std::chrono::steady_clock::time_point{})
         m_boundaryStartWaitSince = std::chrono::steady_clock::now();
@@ -2486,6 +2532,12 @@ void CVideoPlayer::Process()
       // the disc's graphics until it starts one (see Prepare)
       if (const int waitState = DiscWaitState(true))
       {
+        // a screen with no playlist: no picture will come for a waiting page
+        if (m_menuPageWaiting)
+        {
+          m_overlayContainer.ReleasePendingMenu();
+          m_menuPageWaiting = false;
+        }
         UpdatePlayState(200);
         CheckMenuOnlyStart(waitState == 1);
         CThread::Sleep(20ms);
@@ -2513,6 +2565,12 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
+      // a segment without video: no picture will come for a waiting page
+      if (m_menuPageWaiting && m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
+      {
+        m_overlayContainer.ReleasePendingMenu();
+        m_menuPageWaiting = false;
+      }
 
 #if defined(HAVE_LIBBLURAY)
       // stream reopens keep non-flushable menu overlays alive, but repost the
@@ -2530,6 +2588,8 @@ void CVideoPlayer::Process()
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
     CheckHeldStart();
+    PublishSegmentGen();
+    CheckMenuPageWait();
 
     // update player state
     UpdatePlayState(200);
@@ -6372,6 +6432,12 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  // a flush or seek leaves no picture for a waiting menu page to go with
+  if (m_menuPageWaiting)
+  {
+    m_overlayContainer.ReleasePendingMenu();
+    m_menuPageWaiting = false;
+  }
   if (m_startHeld)
     ReleaseHeldStart("flush");
   m_startReleasedClock = DVD_NOPTS_VALUE;
@@ -6506,9 +6572,25 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     switch (iMessage)
     {
     case BD_EVENT_MENU_OVERLAY:
-      m_overlayContainer.ProcessAndAddOverlayIfValid(
-          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
+    {
+      const std::shared_ptr<CDVDOverlay>& overlay =
+          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData);
+      if (overlay && overlay->m_pageWait != CDVDOverlay::PAGE_AT_ONCE)
+      {
+        // a first display of a preloaded page (6.1): with its segment's first
+        // picture; the player thread posts these (the read that produced it)
+        overlay->m_segmentGen =
+            m_segmentGen + (overlay->m_pageWait == CDVDOverlay::PAGE_NEXT_SEGMENT ? 1 : 0);
+        if (!m_menuPageWaiting)
+          m_menuPageWaitSince = std::chrono::steady_clock::now();
+        m_menuPageWaiting = true;
+        CLog::Log(LOGDEBUG, "CVideoPlayer: menu page waits for segment {} (now {}, {})",
+                  overlay->m_segmentGen, m_segmentGen,
+                  overlay->m_pageWait == CDVDOverlay::PAGE_NEXT_SEGMENT ? "next" : "current");
+      }
+      m_overlayContainer.ProcessAndAddOverlayIfValid(overlay);
       break;
+    }
     case BD_EVENT_MENU:
     {
       const uint32_t menuState = *static_cast<uint32_t*>(pData);

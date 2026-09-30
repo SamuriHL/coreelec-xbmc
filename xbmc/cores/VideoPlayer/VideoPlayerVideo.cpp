@@ -523,6 +523,11 @@ void CVideoPlayerVideo::Process()
       m_renderManager.ShowVideo(false);
       m_rewindStalled = false;
     }
+    else if (pMsg->IsType(CDVDMsg::GENERAL_SEGMENT_GEN))
+    {
+      m_renderManager.SetIncomingSegmentGen(
+          static_cast<unsigned int>(std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value));
+    }
     else if (pMsg->IsType(CDVDMsg::GENERAL_SEGMENT_RESET))
     {
       // Light counterpart of GENERAL_RESET for a seamless segment boundary:

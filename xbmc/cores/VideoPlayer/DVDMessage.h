@@ -30,6 +30,7 @@ public:
     GENERAL_FLUSH,                  // flush all buffers
     GENERAL_RESET,                  // reset codecs for new data
     GENERAL_SEGMENT_RESET,          // drop per-segment codec state, keep the decoder running
+    GENERAL_SEGMENT_GEN,            // CDVDMsgInt: pictures from here on belong to this disc segment generation
     GENERAL_PAUSE,
     GENERAL_STREAMCHANGE,           //
     GENERAL_SYNCHRONIZE,            //

@@ -140,7 +140,8 @@ namespace OVERLAY {
      *  re-entering libass. Calls MarkDirty internally when libass reports
      *  a visible or changed subtitle.
      */
-    void PrepareOverlays(int idx);
+    //! segmentGen: disc segment generation of the picture at idx (0: none)
+    void PrepareOverlays(int idx, unsigned int segmentGen = 0);
 
     /*!
      * \brief Release resources

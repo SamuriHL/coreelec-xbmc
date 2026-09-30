@@ -12,6 +12,7 @@
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -32,9 +33,22 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
   // overlays are exempt from the stop-markup below and from stream flushes)
   if (!pOverlay->IsOverlayContainerFlushable())
   {
+    // A page that waits for its segment's first picture (6.1) replaces only
+    // the pages still waiting; the current page stays up until then. A page
+    // posted while one waits (highlight, animation, a repost) waits with it,
+    // so nothing overtakes the page it follows.
+    unsigned int pendingGen = 0;
+    for (const auto& o : m_overlays)
+      if (!o->IsOverlayContainerFlushable() && o->m_segmentGen > m_releasedSegment)
+        pendingGen = std::max(pendingGen, o->m_segmentGen);
+    if (pOverlay->m_segmentGen <= m_releasedSegment && pendingGen > 0)
+      pOverlay->m_segmentGen = pendingGen;
+    const bool waits = pOverlay->m_segmentGen > m_releasedSegment;
+
     for (auto it = m_overlays.begin(); it != m_overlays.end();)
     {
-      if (!(*it)->IsOverlayContainerFlushable())
+      if (!(*it)->IsOverlayContainerFlushable() &&
+          (!waits || (*it)->m_segmentGen > m_releasedSegment))
         it = m_overlays.erase(it);
       else
         ++it;
@@ -172,10 +186,33 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetPresentLatestOverlay()
   std::unique_lock lock(*this);
   for (auto it = m_overlays.rbegin(); it != m_overlays.rend(); ++it)
   {
-    if ((*it)->m_presentLatest && !(*it)->IsOverlayContainerFlushable())
+    if ((*it)->m_presentLatest && !(*it)->IsOverlayContainerFlushable() &&
+        (*it)->m_segmentGen <= m_releasedSegment)
       return *it;
   }
   return nullptr;
+}
+
+void CDVDOverlayContainer::NotePresentedSegment(unsigned int gen)
+{
+  std::unique_lock lock(*this);
+  m_releasedSegment = std::max(m_releasedSegment, gen);
+}
+
+void CDVDOverlayContainer::ReleasePendingMenu()
+{
+  std::unique_lock lock(*this);
+  for (const auto& o : m_overlays)
+    m_releasedSegment = std::max(m_releasedSegment, o->m_segmentGen);
+}
+
+bool CDVDOverlayContainer::HasPendingMenu()
+{
+  std::unique_lock lock(*this);
+  for (const auto& o : m_overlays)
+    if (!o->IsOverlayContainerFlushable() && o->m_segmentGen > m_releasedSegment)
+      return true;
+  return false;
 }
 
 bool CDVDOverlayContainer::HasDrawableOverlay()

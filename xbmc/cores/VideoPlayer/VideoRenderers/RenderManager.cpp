@@ -531,7 +531,13 @@ void CRenderManager::FrameMove()
   // Run libass for the current PTS and cache the output for ConvertLibass
   // to use during the render pass. PrepareOverlays MarkDirty's on libass
   // changes and on PGS/DVB/SPU arrival/disappearance.
-  m_overlays.PrepareOverlays(source);
+  unsigned int segmentGen = 0;
+  if (source >= 0 && source < NUM_BUFFERS)
+  {
+    std::unique_lock lock(m_presentlock);
+    segmentGen = m_Queue[source].segmentGen;
+  }
+  m_overlays.PrepareOverlays(source, segmentGen);
 }
 
 void CRenderManager::PreInit()
@@ -1308,6 +1314,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 
 
   SPresent& m = m_Queue[index];
+  m.segmentGen = m_incomingSegmentGen;
   m.presentfield = displayField;
   m.presentmethod = presentmethod;
   m.pts = picture.pts;
