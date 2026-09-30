@@ -1151,6 +1151,8 @@ bool CVideoPlayer::OpenDemuxStream()
 
 void CVideoPlayer::CloseDemuxer()
 {
+  // held ELs belong to this demuxer's clip; a clip after it can reuse its timestamps
+  ClearPendingElPackets();
   m_pDemuxer.reset();
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
 
@@ -2964,6 +2966,9 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
       m_pendingElPackets.push_back(pPacket);
       if (m_pendingElPackets.size() > 48)
       {
+        CLog::Log(LOGWARNING, "CVideoPlayer: more than 48 EL packets before the video stream "
+                  "opened, the oldest ({:.3f}) is dropped",
+                  m_pendingElPackets.front()->dts / DVD_TIME_BASE);
         CDVDDemuxUtils::FreeDemuxPacket(m_pendingElPackets.front());
         m_pendingElPackets.pop_front();
       }
@@ -2987,7 +2992,7 @@ void CVideoPlayer::SendPendingElPackets(const DemuxPacket* firstBl)
   for (DemuxPacket* el : m_pendingElPackets)
   {
     const double elTime = el->dts != DVD_NOPTS_VALUE ? el->dts : el->pts;
-    // only this clip's: an EL left from the previous clip is on another timeline
+    // only those on the first BL's timeline
     if (blTime != DVD_NOPTS_VALUE && elTime != DVD_NOPTS_VALUE &&
         elTime >= blTime - DVD_MSEC_TO_TIME(100) && elTime <= blTime + DVD_MSEC_TO_TIME(2000))
     {
@@ -6511,11 +6516,11 @@ bool CVideoPlayer::OpenAudioID3Stream(CDVDStreamInfo& hint)
 
 bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 {
-  if (current.id < 0)
-    return false;
-
   if (&current == &m_CurrentVideo)
     ClearPendingElPackets();
+
+  if (current.id < 0)
+    return false;
 
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
 
