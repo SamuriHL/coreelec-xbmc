@@ -2366,6 +2366,9 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      // the players are paused: a start held at a boundary cannot progress
+      if (m_boundaryStartWaitSince != std::chrono::steady_clock::time_point{})
+        m_boundaryStartWaitSince = std::chrono::steady_clock::now();
       CThread::Sleep(50ms);
       continue;
     }
