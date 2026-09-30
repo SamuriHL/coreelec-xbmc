@@ -857,7 +857,7 @@ static void aml_dv_early_void()
 {
   ++s_dv_early_gen;
   s_dv_early_engaged = false;
-  static ThreadMessageCallback undo{&aml_dv_early_gui_undo_on_app_thread, nullptr};
+  static KODI::MESSAGING::ThreadMessageCallback undo{&aml_dv_early_gui_undo_on_app_thread, nullptr};
   CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1, static_cast<void*>(&undo));
 }
 
@@ -884,7 +884,7 @@ void aml_dv_early_engage_disc_session(bool dvOutput, bool clip2160p23976)
     return;
   }
   const unsigned int gen = ++s_dv_early_gen;
-  static ThreadMessageCallback engage{&aml_dv_early_engage_on_app_thread, nullptr};
+  static KODI::MESSAGING::ThreadMessageCallback engage{&aml_dv_early_engage_on_app_thread, nullptr};
   engage.userptr = reinterpret_cast<void*>(static_cast<uintptr_t>(gen));
   CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1, static_cast<void*>(&engage));
 }
