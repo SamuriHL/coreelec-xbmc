@@ -2202,12 +2202,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     return false;
   }
 
-  // an enhancement-layer composite needs both layers brought up from a full
-  // reset: VD0 carried over by the keeper is never re-enabled for it and the
-  // DV output stays black (M3GAN intro MEL -> FEL menu). Tear down as a plain
-  // close does and let this join go black.
+  // a FEL composite needs the video layer switched on afresh (disable_video
+  // 1 -> 0); under a kept picture the layer stays on, ShowMainVideo(true) hits
+  // its cache and the DV output stays black (M3GAN intro MEL -> FEL menu).
+  // Dual-stream MEL joins take the keep fine (M3GAN's screensaver clip). Tear
+  // down as a plain close does and let this join go black.
   if (aml_frame_kept() && (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7) &&
-      (doviIsFEL || (isDualStream && !hints.stills)))
+      doviIsFEL)
   {
     aml_drop_kept_frame("the next stream composites an enhancement layer");
     auto* display =
@@ -2955,7 +2956,8 @@ void CAMLCodec::CloseDecoder()
   }
 
   // the core stays as it is under a kept picture: the next OpenDecoder sets
-  // the layers again, and an unmap here would drop the kept frame's DV path
+  // the layers again (a FEL open resets them in full first), and an unmap
+  // here would drop the kept frame's DV path
   if (!keepFrame)
   {
     AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");

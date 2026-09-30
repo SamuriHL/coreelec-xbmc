@@ -760,10 +760,10 @@ int CAMLDRMUtils::get_drmProp(
 // both perfectly healthy. Deterministic from a cold boot, where the GUI comes up
 // 422,12bit (measured on an AM9 Pro 2026-08-30).
 //
-// Rather than force a modeset for it - which is exactly the re-clock the BD-J
-// black fix exists to prevent - use the connector properties the kernel provides
-// for this: writing color_depth sets its color_force flag, so the attr we ask for
-// is applied verbatim, and UPDATE makes it take effect without a mode change.
+// The connector properties the kernel provides fix it: writing color_depth sets
+// its color_force flag, which forces one mode set (a link re-train) that applies
+// the attr we ask for verbatim. Only while the wire mismatches, so the BD-J
+// no-re-clock rule still holds everywhere else.
 // TV-led DV tunnels as YUV444 8-bit, LLDV as YUV422 12-bit.
 void CAMLDRMUtils::apply_dv_wire_format()
 {
