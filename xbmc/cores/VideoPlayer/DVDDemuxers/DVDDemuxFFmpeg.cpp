@@ -776,6 +776,8 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
 
 void CDVDDemuxFFmpeg::Dispose()
 {
+  CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::Dispose - demuxer {} ({})", GetDemuxerId(),
+            fmt::ptr(this));
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
 

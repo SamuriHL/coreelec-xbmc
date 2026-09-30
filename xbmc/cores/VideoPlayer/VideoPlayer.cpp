@@ -872,6 +872,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_heldStartEnabled = options.fullscreen && XFILE::CFile::Exists("special://profile/e1_heldstart");
   if (m_heldStartEnabled)
     CLog::Log(LOGINFO, "VideoPlayer: E1 held start enabled");
+  m_bdjKeepAliveDebug = XFILE::CFile::Exists("special://profile/bdj_keepalive");
+  if (m_bdjKeepAliveDebug)
+    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG BD-J keep-alive transitions enabled");
 
   if (IsRunning())
   {
@@ -1790,8 +1793,10 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
       // BD-J discs take the full close: the keep-alive jump crashes in
       // avformat teardown under the JVM's signal handlers (SIGSEGV in
       // avio_close -> JVM abort) and keeps stock behavior until understood.
-      return bluray->HasBDJTitles() ? EBdTransition::DISCARD_CLOSE
-                                    : EBdTransition::DISCARD_KEEPALIVE;
+      if (m_bdjKeepAliveDebug && bluray->HasBDJTitles())
+        CLog::Log(LOGWARNING, "VideoPlayer: DEBUG BD-J keep-alive transition");
+      return bluray->HasBDJTitles() && !m_bdjKeepAliveDebug ? EBdTransition::DISCARD_CLOSE
+                                                            : EBdTransition::DISCARD_KEEPALIVE;
     }
 
     // Only take the seamless path from a stable pipeline. Menu entry bursts

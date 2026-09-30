@@ -792,6 +792,9 @@ protected:
 
   std::atomic<bool> m_displayLost;
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
+  //! debug (flag file): BD-J discs take the keep-alive transition, to reproduce
+  //! the crash that excludes them (disc session design 4.2)
+  bool m_bdjKeepAliveDebug = false;
   bool m_startHeld = false;
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
