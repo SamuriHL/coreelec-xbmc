@@ -2054,6 +2054,11 @@ void CVideoPlayer::CheckHeldStart()
   const auto held = std::chrono::steady_clock::now() - m_startHeldSince;
   if (m_renderManager.GetResolutionDecisions() != m_startHeldDecisions)
     ReleaseHeldStart("output mode decided");
+  // held before the first picture configured the renderer, which then asked
+  // for no mode decision (nothing changed)
+  else if (m_VideoPlayerVideo->HasConfiguredRenderer() &&
+           !m_renderManager.IsResolutionUpdatePending())
+    ReleaseHeldStart("no mode change");
   else if (held > 12s)
     ReleaseHeldStart("no mode decision in 12s");
 }
@@ -3505,7 +3510,10 @@ void CVideoPlayer::HandlePlaySpeed()
       const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
                              m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
                              m_CurrentVideo.packets > 0 &&
-                             m_renderManager.IsResolutionUpdatePending();
+                             // the first picture may not have configured the
+                             // renderer yet: its mode decision is still to come
+                             (m_renderManager.IsResolutionUpdatePending() ||
+                              !m_VideoPlayerVideo->HasConfiguredRenderer());
       if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
           (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
       {

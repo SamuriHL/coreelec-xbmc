@@ -70,6 +70,7 @@ public:
   void SetSubtitleDelay(double delay) override { m_iSubtitleDelay = delay; }
   bool IsStalled() const override { return m_stalled; }
   void SetStartHeld(bool held) override { m_startHeld = held; }
+  bool HasConfiguredRenderer() const override { return m_rendererConfigured; }
   void BeginDrain() override;
   void AbortDrain() override;
   bool IsRewindStalled() const override { return m_rewindStalled; }
@@ -139,6 +140,7 @@ protected:
   int m_speed;
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
+  std::atomic_bool m_rendererConfigured = false; //!< by this stream's first picture
   CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   std::atomic_bool m_drainStarted{false};
   std::atomic_bool m_drainAbort{false};
