@@ -6098,6 +6098,16 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   // one-shot (see OpenVideoStream)
   m_bdStreamReuseAudio = false;
 
+  if (m_closedAudioValid)
+  {
+    m_closedAudioValid = false;
+    const std::string diff = m_closedAudioHint.Differences(
+        hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenAudioStream - join: {}",
+              m_closedAudioHint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID)
+                  ? "same format as the closed stream"
+                  : "differs from the closed stream: " + diff);
+  }
   if(!reuse && (m_CurrentAudio.id < 0 ||
      m_CurrentAudio.hint != hint))
   {
@@ -6218,6 +6228,16 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   // flags cannot be cleared on a fixed point in the reopen path)
   m_bdStreamReuseVideo = false;
 
+  if (m_closedVideoValid)
+  {
+    m_closedVideoValid = false;
+    const std::string diff = m_closedVideoHint.Differences(
+        hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenVideoStream - join: {}",
+              m_closedVideoHint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID)
+                  ? "same format as the closed stream"
+                  : "differs from the closed stream: " + diff);
+  }
   if(!reuse && (m_CurrentVideo.id < 0 ||
      m_CurrentVideo.hint != hint))
   {
@@ -6413,6 +6433,20 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
         m_bAbortRequest)
       bWaitForBuffers = false;
     player->CloseStream(bWaitForBuffers);
+  }
+
+  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+  {
+    if (current.type == StreamType::VIDEO)
+    {
+      m_closedVideoHint = current.hint;
+      m_closedVideoValid = true;
+    }
+    else if (current.type == StreamType::AUDIO)
+    {
+      m_closedAudioHint = current.hint;
+      m_closedAudioValid = true;
+    }
   }
 
   current.Clear();

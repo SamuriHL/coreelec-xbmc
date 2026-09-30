@@ -624,6 +624,11 @@ protected:
 
   CCurrentStream m_CurrentAudio;
   CCurrentStream m_CurrentVideo;
+  //! SPLICE survey: a disc stream's format at its close, compared at the next open
+  CDVDStreamInfo m_closedVideoHint;
+  CDVDStreamInfo m_closedAudioHint;
+  bool m_closedVideoValid = false;
+  bool m_closedAudioValid = false;
   CCurrentStream m_CurrentSubtitle;
   CCurrentStream m_CurrentTeletext;
   CCurrentStream m_CurrentRadioRDS;
