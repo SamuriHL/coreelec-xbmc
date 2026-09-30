@@ -110,9 +110,6 @@ double CVideoPlayerVideo::GetOutputDelay()
 
 bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
 {
-  // cleared here, on the player thread, so a start committed before the codec
-  // change reaches the video thread already sees it
-  m_rendererConfigured = false;
   if (hint.flags & AV_DISPOSITION_ATTACHED_PIC)
     return false;
   if (!hint.extradata)
@@ -1138,7 +1135,6 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
     return OUTPUT_ABORT;
   }
-  m_rendererConfigured = true;
 
   //try to calculate the framerate
   m_ptsTracker.Add(pPicture->pts);

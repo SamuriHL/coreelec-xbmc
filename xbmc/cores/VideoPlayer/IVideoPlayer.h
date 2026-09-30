@@ -115,9 +115,6 @@ public:
   virtual bool IsRewindStalled() const { return false; }
   //! real_player E1: the start is held with the clock paused; not a still
   virtual void SetStartHeld(bool held) {}
-  //! real_player E1: this stream's first picture has configured the renderer,
-  //! so any output-mode change it needs has been raised
-  virtual bool HasConfiguredRenderer() const { return true; }
   //! start playing the queued segment out ahead of a draining close
   virtual void BeginDrain() {}
   //! a draining close must not wait any longer (the player is stopping)
