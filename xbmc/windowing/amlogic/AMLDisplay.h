@@ -110,6 +110,8 @@ public:
     const RenderStereoMode stereo_mode, bool active);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   bool aml_output_wire_stale();
+  //! the DV tunnel wire committed ahead of the first DV picture (disc load)
+  void aml_engage_dv_wire();
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
@@ -142,6 +144,7 @@ private:
                   void* data = nullptr,
                   int* data_len = nullptr);
   void apply_dv_wire_format();
+  void commit_dv_wire_format(bool player_led);
   bool leaving_dv_wire() const;
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
@@ -218,6 +221,7 @@ public:
     return m_amlDRMUtils->BuildOverlayOffRequest(primary_fb_id);
   }
   bool aml_output_wire_stale() { return m_amlDRMUtils->aml_output_wire_stale(); }
+  void aml_engage_dv_wire() { m_amlDRMUtils->aml_engage_dv_wire(); }
   bool aml_set_drmDevice_active(bool active) const
     { return m_amlDRMUtils->aml_set_drmDevice_active(
       m_amlDRMUtils->aml_get_drmDevice_mode(),

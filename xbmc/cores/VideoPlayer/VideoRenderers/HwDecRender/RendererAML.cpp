@@ -209,6 +209,7 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // on gui_is_pq. If its shader/LUTs fail to build, fall back to the
   // per-primitive encode so a DV GUI stays visible rather than black.
   CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
+  aml_dv_early_gui_claimed();
   const bool composite(core_is_pq && winSystem->SetGuiCompositing(AVCOL_TRC_SMPTE2084));
   if (!core_is_pq)
     winSystem->SetGuiCompositing(0);

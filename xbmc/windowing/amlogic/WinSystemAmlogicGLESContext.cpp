@@ -156,6 +156,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
+  // the disc load already put the link into DV (design 13.v): no second re-train
+  if (force_mode_switch_by_hdr &&
+      aml_dv_early_covers_picture(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
+  {
+    m_hdrType = hdrType;
+    force_mode_switch_by_hdr = false;
+  }
   bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);
   bool force_mode_switch_by_fractional_rate = (cur_fractional_rate != fractional_rate);
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();

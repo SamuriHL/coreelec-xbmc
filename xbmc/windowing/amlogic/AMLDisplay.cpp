@@ -770,11 +770,34 @@ void CAMLDRMUtils::apply_dv_wire_format()
   if (!aml_dv_wire_format_mismatch())
     return;
 
+  commit_dv_wire_format(aml_dv_wire_format_is_lldv());
+}
+
+// Ahead of any decoder the published output mode is still BYPASS, so this checks
+// the wire itself, colour space included (a 422 12-bit GUI link already passes
+// the depth test for LLDV).
+void CAMLDRMUtils::aml_engage_dv_wire()
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  const bool player_led = aml_dv_wire_format_is_lldv();
+  CSysfsPath config{"/sys/class/amhdmitx/amhdmitx0/config"};
+  const std::string cfg = config.Exists() ? config.Get<std::string>().value_or("") : "";
+  const bool depth_ok = cfg.find(player_led ? "Colour depth: 12-bit" : "Colour depth: 8-bit") !=
+                        std::string::npos;
+  const bool space_ok = player_led ? cfg.find("Colourspace: YUV422") != std::string::npos
+                                   : (cfg.find("Colourspace: YUV444") != std::string::npos ||
+                                      cfg.find("Colourspace: RGB") != std::string::npos);
+  if (!depth_ok || !space_ok)
+    commit_dv_wire_format(player_led);
+  m_wireDvTunnel = true;
+}
+
+void CAMLDRMUtils::commit_dv_wire_format(bool player_led)
+{
   // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
   constexpr unsigned int HDMI_CS_YUV422 = 1;
   constexpr unsigned int HDMI_CS_YUV444 = 2;
 
-  const bool player_led = aml_dv_wire_format_is_lldv();
   const unsigned int cs = player_led ? HDMI_CS_YUV422 : HDMI_CS_YUV444;
   const unsigned int bd = player_led ? 12 : 8;
 

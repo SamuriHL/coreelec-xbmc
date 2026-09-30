@@ -653,6 +653,8 @@ protected:
   // baked half of the resume menu washed and half correct).
   // read from the JVM graphics thread (DiscGraphicsArePQ)
   std::atomic<bool> m_dvDiscSession{false};
+  //! the first playlist with video decided the load-time DV engage (13.v)
+  bool m_dvEarlyDecided{false};
 
   /*! \brief True while the CURRENT playitem's video is HDR, i.e. its graphics are
    * authored in BT.2020 ST.2084 (PQ).
@@ -773,6 +775,8 @@ protected:
      * attribute/STN changes, and a format change must never be glued into
      * live decoders (falls back to the full-reopen path instead) */
     static bool ClipFormatsMatch(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);
+    /* the load-time DV engage (design 13.v), decided by the first playlist with video */
+    void DecideEarlyDvEngage();
     /* IG button sound effects (sound.bdmv): decoded LPCM from libbluray,
      * cached as AE sounds at open, fired by BD_EVENT_SOUND_EFFECT */
     void LoadMenuSounds();

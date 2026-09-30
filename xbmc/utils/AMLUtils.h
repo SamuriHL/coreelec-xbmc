@@ -152,6 +152,15 @@ bool aml_dv_disc_engage_pending();
 // case needs, leaving the sink in DV against a non-DV decode (black screen).
 // A later DV-output segment re-engages via aml_dv_pre_engage_disc_session().
 void aml_dv_release_disc_engage();
+// Early engage (design 13.v, debug flag special://profile/dvearly): DV and its
+// link format at the first playlist of a DV disc session, so the TV locks while
+// the disc loads. Only when that clip outputs DV at the mode already on the wire.
+void aml_dv_early_engage_disc_session(bool dvOutput, bool clip2160p23976);
+// The first picture's mode decision: true when the load's engage already put the
+// link where this picture needs it (no forced mode switch); otherwise releases it.
+bool aml_dv_early_covers_picture(bool dvPicture);
+// A renderer took over the GUI transform the early engage set.
+void aml_dv_early_gui_claimed();
 // Whether the disc-session DV output engage is currently applied.
 bool aml_dv_disc_engaged();
 // Clear a DV core left engaged by a previous run that died before its teardown
