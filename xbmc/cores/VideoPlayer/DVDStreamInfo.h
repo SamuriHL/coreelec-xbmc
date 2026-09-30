@@ -53,6 +53,8 @@ public:
   void Clear(); // clears current information
   bool Equal(const CDVDStreamInfo& right, int compare);
   bool Equal(const CDemuxStream &right, bool withextradata);
+  //! the fields Equal(right, compare) finds different, for logging
+  std::string Differences(const CDVDStreamInfo& right, int compare) const;
 
   void Assign(const CDVDStreamInfo &right, bool withextradata);
   void Assign(const CDemuxStream &right, bool withextradata);

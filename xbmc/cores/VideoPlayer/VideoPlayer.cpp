@@ -6090,8 +6090,10 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   {
     reuse = m_CurrentAudio.hint.Equal(hint,
                                       CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
-    CLog::Log(LOGINFO, "CVideoPlayer::OpenAudioStream - BD stream reuse {}",
-              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen");
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenAudioStream - BD stream reuse {}{}",
+              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen: ",
+              reuse ? "" : m_CurrentAudio.hint.Differences(
+                               hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID));
   }
   // one-shot (see OpenVideoStream)
   m_bdStreamReuseAudio = false;
@@ -6206,8 +6208,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (!stillsSelectsDecMode)
       cmp.stills = m_CurrentVideo.hint.stills;
     reuse = m_CurrentVideo.hint.Equal(cmp, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
-    CLog::Log(LOGINFO, "CVideoPlayer::OpenVideoStream - BD stream reuse {}",
-              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen");
+    CLog::Log(LOGINFO, "CVideoPlayer::OpenVideoStream - BD stream reuse {}{}",
+              reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen: ",
+              reuse ? "" : m_CurrentVideo.hint.Differences(
+                               cmp, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID));
   }
   // one-shot: each open decision consumes its own flag (streams may be opened
   // lazily per-packet in either order when the disc dictates them, so the

@@ -183,6 +183,54 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
   return true;
 }
 
+std::string CDVDStreamInfo::Differences(const CDVDStreamInfo& right, int compare) const
+{
+  std::string out;
+  auto note = [&out](bool differs, const char* name) {
+    if (differs)
+      out += out.empty() ? name : std::string(" ") + name;
+  };
+  note(codec != right.codec, "codec");
+  note(type != right.type, "type");
+  note((compare & COMPARE_ID) && uniqueId != right.uniqueId, "uniqueId");
+  note((compare & COMPARE_ID) && demuxerId != right.demuxerId, "demuxerId");
+  note(codec_tag != right.codec_tag, "codec_tag");
+  note(flags != right.flags, "flags");
+  note((compare & COMPARE_EXTRADATA) && extradata != right.extradata, "extradata");
+  note(fpsscale != right.fpsscale || fpsrate != right.fpsrate, "fps");
+  note(interlaced != right.interlaced, "interlaced");
+  note(width != right.width || height != right.height, "size");
+  note(stills != right.stills, "stills");
+  note(pqAuthoredGraphics != right.pqAuthoredGraphics, "pqAuthoredGraphics");
+  note(level != right.level, "level");
+  note(profile != right.profile, "profile");
+  note(ptsinvalid != right.ptsinvalid, "ptsinvalid");
+  note(forced_aspect != right.forced_aspect, "forced_aspect");
+  note(bitsperpixel != right.bitsperpixel || bitdepth != right.bitdepth, "bitdepth");
+  note(vfr != right.vfr, "vfr");
+  note(hdrType != right.hdrType, "hdrType");
+  note(colorSpace != right.colorSpace || colorRange != right.colorRange ||
+           colorPrimaries != right.colorPrimaries ||
+           colorTransferCharacteristic != right.colorTransferCharacteristic,
+       "colour");
+  note(stereo_mode != right.stereo_mode, "stereo_mode");
+  note(!masteringMetadata != !right.masteringMetadata, "masteringMetadata");
+  note(!contentLightMetadata != !right.contentLightMetadata, "contentLightMetadata");
+  note(contentLightMetadata && right.contentLightMetadata &&
+           (contentLightMetadata->MaxCLL != right.contentLightMetadata->MaxCLL ||
+            contentLightMetadata->MaxFALL != right.contentLightMetadata->MaxFALL),
+       "cll");
+  note(0 != std::memcmp(&dovi, &right.dovi, sizeof(AVDOVIDecoderConfigurationRecord)), "dovi");
+  note(channels != right.channels || channellayout != right.channellayout, "channels");
+  note(samplerate != right.samplerate, "samplerate");
+  note(blockalign != right.blockalign, "blockalign");
+  note(bitrate != right.bitrate, "bitrate");
+  note(bitspersample != right.bitspersample, "bitspersample");
+  note(m_3dSubtitlePlane != right.m_3dSubtitlePlane, "3dSubtitlePlane");
+  note((cryptoSession == nullptr) != (right.cryptoSession == nullptr), "crypto");
+  return out.empty() ? "mastering values" : out;
+}
+
 bool CDVDStreamInfo::Equal(const CDemuxStream& right, bool withextradata)
 {
   CDVDStreamInfo info;
