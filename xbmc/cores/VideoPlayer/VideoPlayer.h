@@ -770,6 +770,8 @@ protected:
   // the video gap makes the wrap visually gapless and leaves audio a small
   // residual its sync skew absorbs. Player thread only.
   double m_menuWrapVideoGap = 0.0;
+  //! the one correction of a timeline jump joined ahead of the clock after a still
+  double m_stillJoinCorrection = DVD_NOPTS_VALUE;
 
   // Per-jump sequence stamped onto the packet that opens a timeline restart,
   // and a latch so only the first packet of a jump is stamped - the unconfirmed

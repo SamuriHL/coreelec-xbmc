@@ -1909,6 +1909,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // expire either. Same leak Prepare() closes at the file boundary.
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
+  m_stillJoinCorrection = DVD_NOPTS_VALUE;
 }
 
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
@@ -2121,6 +2122,7 @@ void CVideoPlayer::Prepare()
   // sub-second forward step of whatever plays next.
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
+  m_stillJoinCorrection = DVD_NOPTS_VALUE;
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
@@ -3604,12 +3606,34 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
 
   double correction = 0.0;
   bool backwardRestart = false;
+  // A timeline jump is joined onto where the old stream ended. When a disc
+  // held a still past that end (a short menu clip shown for as long as the
+  // disc waits), the clock has run on, and the joined stream would start in
+  // the past: every frame late and dropped (Halo S2's intro, joined 21 s
+  // behind the clock). Join such a jump just ahead of the clock instead, with
+  // one correction for every stream of the jump.
+  const double clock = m_clock.GetClock();
+  const auto joinCorrection = [&](double end) -> double
+  {
+    // every stream ran out a second before the clock got here
+    if (clock == DVD_NOPTS_VALUE || clock < maxdts + DVD_MSEC_TO_TIME(1000))
+      return pPacket->dts - end;
+    if (m_stillJoinCorrection == DVD_NOPTS_VALUE)
+    {
+      m_stillJoinCorrection = pPacket->dts - (clock + DVD_MSEC_TO_TIME(500));
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer::CheckContinuity - the clock ran {:.3f}s past the old stream's end: "
+                "joining ahead of the clock",
+                (clock - maxdts) / DVD_TIME_BASE);
+    }
+    return m_stillJoinCorrection;
+  };
   if( pPacket->dts > maxdts + DVD_MSEC_TO_TIME(1000))
   {
     CLog::Log(LOGDEBUG,
               "CVideoPlayer::CheckContinuity - resync forward :{}, prev:{:f}, curr:{:f}, diff:{:f}",
               current.type, current.dts, pPacket->dts, pPacket->dts - maxdts);
-    correction = pPacket->dts - maxdts;
+    correction = joinCorrection(maxdts);
   }
 
   /* if it's large scale jump, correct for it after having confirmed the jump */
@@ -3619,7 +3643,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
         LOGDEBUG,
         "CVideoPlayer::CheckContinuity - resync backward :{}, prev:{:f}, curr:{:f}, diff:{:f}",
         current.type, current.dts, pPacket->dts, pPacket->dts - current.dts);
-    correction = pPacket->dts - current.dts_end();
+    correction = joinCorrection(current.dts_end());
     backwardRestart = true;
   }
   else if(pPacket->dts < current.dts)
@@ -3757,6 +3781,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
                   applied, correction);
       }
       m_menuWrapVideoGap = 0.0;
+      m_stillJoinCorrection = DVD_NOPTS_VALUE;
       // the seam has been closed - one boundary, one correction
       m_seamStepPending = false;
       m_seamStepArmedDts = DVD_NOPTS_VALUE;
@@ -6234,6 +6259,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   // either side of it are unrelated to the boundary that armed it
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
+  m_stillJoinCorrection = DVD_NOPTS_VALUE;
 
 #if defined(HAVE_LIBBLURAY)
   // So does an armed-but-uncollected seamless glide. HandleMessages() runs
