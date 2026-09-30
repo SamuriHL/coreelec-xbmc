@@ -6168,6 +6168,11 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (!player->OpenStream(hint))
       return false;
 
+    // a fresh player's queue is empty: a segment marker queued in the old one
+    // may have gone with it
+    m_renderManager.SetIncomingSegmentGen(m_segmentGen);
+    m_segmentGenPublished = m_segmentGen;
+
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 
     const std::shared_ptr<CDVDInputStream::IExtentionStream>  pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInputStream);
