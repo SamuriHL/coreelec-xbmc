@@ -267,6 +267,13 @@ public:
   virtual void KeepConfiguration(unsigned int millis) {}
 
   /*!
+   * \brief Hold the output for a playback session (real_player design 5):
+   * between streams the sink stays open in the last format, bitstream sending
+   * IEC 61937 pause bursts, instead of falling back to 2.0 PCM.
+   */
+  virtual void SetSessionHold(bool hold) {}
+
+  /*!
    * \brief Instruct AE to re-initialize, e.g. after ELD change event
    */
   virtual void DeviceChange() {}

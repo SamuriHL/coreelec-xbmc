@@ -100,6 +100,7 @@ public:
     DISPLAYRESET,
     APPFOCUSED,
     KEEPCONFIG,
+    SESSIONHOLD,
     YIELDDEVICE,
     TIMEOUT,
   };
@@ -276,6 +277,7 @@ public:
   bool SupportsQualityLevel(enum AEQuality level) override;
   bool IsSettingVisible(const std::string &settingId) override;
   void KeepConfiguration(unsigned int millis) override;
+  void SetSessionHold(bool hold) override;
   void DeviceChange() override;
   void DefaultDeviceChange() override;
   void DeviceCountChange(const std::string& driver) override;
@@ -362,6 +364,10 @@ protected:
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;
   std::chrono::milliseconds m_extKeepConfig;
+  //! design 5: the session hold and the input format it keeps between streams
+  bool m_extSessionHold = false;
+  bool m_heldFormatValid = false;
+  AEAudioFormat m_heldFormat;
   bool m_extDeferData;
   std::queue<time_t> m_extLastDeviceChange;
   bool m_extSuspended = false;

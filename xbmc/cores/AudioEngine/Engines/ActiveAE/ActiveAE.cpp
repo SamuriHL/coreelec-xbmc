@@ -415,6 +415,27 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::KEEPCONFIG:
           m_extKeepConfig = std::chrono::milliseconds(*reinterpret_cast<unsigned int*>(msg->data));
           return;
+        case CActiveAEControlProtocol::SESSIONHOLD:
+        {
+          const bool hold = *reinterpret_cast<bool*>(msg->data);
+          if (hold == m_extSessionHold)
+            return;
+          m_extSessionHold = hold;
+          m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::HOLDBURSTS, &hold, sizeof(bool));
+          CLog::Log(LOGINFO, "CActiveAE - session hold {}", hold ? "on" : "off");
+          if (!hold)
+          {
+            m_heldFormatValid = false;
+            // released between streams: fall back as a normal stream end
+            if (m_streams.empty() && m_state != AE_TOP_UNCONFIGURED)
+            {
+              m_extDrainTimer.Set(0ms);
+              m_extDrain = true;
+              m_extTimeout = 0ms;
+            }
+          }
+          return;
+        }
         case CActiveAEControlProtocol::DISPLAYRESET:
           return;
         case CActiveAEControlProtocol::APPFOCUSED:
@@ -655,7 +676,8 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         {
         case CActiveAEControlProtocol::RECONFIGURE:
         {
-          if (m_streams.empty())
+          // held between streams: the sink keeps sending pause bursts
+          if (m_streams.empty() && !m_extSessionHold)
           {
             streaming = false;
             m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
@@ -755,8 +777,14 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           if (!stream->m_paused && m_streams.size() == 1)
           {
             FlushEngine();
-            streaming = false;
-            m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
+            // a held session pauses on pause bursts, as a player's bitstream
+            // output does (a held start, a user pause); zeros re-lock the AVR
+            if (!m_extSessionHold)
+            {
+              streaming = false;
+              m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming,
+                                                  sizeof(bool));
+            }
           }
           stream->m_paused = true;
           return;
@@ -832,6 +860,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             if (m_settings.guisoundmode == AE_SOUND_OFF ||
                (m_settings.guisoundmode == AE_SOUND_IDLE && !m_streams.empty()))
               return;
+            // a held bitstream output has no PCM mix for it
+            if (m_extSessionHold && m_mode == MODE_RAW)
+              return;
 
             SoundState st = {sound, 0};
             m_sounds_playing.push_back(st);
@@ -883,7 +914,12 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           msgStreamFree = reinterpret_cast<MsgStreamFree*>(msg->data);
           DiscardStream(msgStreamFree->stream);
           msg->Reply(CActiveAEDataProtocol::ACC);
-          if (m_streams.empty())
+          // held: the sink stays open in this format until the next stream
+          if (m_streams.empty() && m_extSessionHold && m_heldFormatValid)
+          {
+            CLog::Log(LOGDEBUG, "CActiveAE - last stream gone, output held");
+          }
+          else if (m_streams.empty())
           {
             if (m_extKeepConfig > 0ms)
               m_extDrainTimer.Set(m_extKeepConfig);
@@ -1244,7 +1280,11 @@ AEAudioFormat CActiveAE::GetInputFormat(AEAudioFormat *desiredFmt)
 {
   AEAudioFormat inputFormat;
 
-  if (m_streams.empty())
+  if (m_streams.empty() && m_extSessionHold && m_heldFormatValid)
+  {
+    inputFormat = m_heldFormat;
+  }
+  else if (m_streams.empty())
   {
     inputFormat.m_dataFormat    = AE_FMT_FLOAT;
     inputFormat.m_sampleRate    = 48000;
@@ -1280,6 +1320,11 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
   AEAudioFormat oldSinkRequestFormat = m_sinkRequestFormat;
 
   inputFormat = GetInputFormat(desiredFmt);
+  if (!m_streams.empty())
+  {
+    m_heldFormat = inputFormat;
+    m_heldFormatValid = true;
+  }
 
   m_sinkRequestFormat = inputFormat;
   ApplySettingsToFormat(m_sinkRequestFormat, m_settings, (int*)&m_mode);
@@ -1325,8 +1370,17 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
     m_silenceBuffers = NULL;
   }
 
+  // held bitstream output between streams: the sink stays in the stream's
+  // format and sends pause bursts; no PCM silence or GUI-sound buffers
+  if (m_streams.empty() && m_extSessionHold && m_heldFormatValid && m_mode == MODE_RAW)
+  {
+    sinkInputFormat = m_sinkFormat;
+    m_internalFormat = inputFormat;
+    bool streaming = true;
+    m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
+  }
   // buffers for driving gui sounds if no streams are active
-  if (m_streams.empty())
+  else if (m_streams.empty())
   {
     inputFormat = m_sinkFormat;
     if (m_sinkFormat.m_channelLayout.Count() > m_sinkRequestFormat.m_channelLayout.Count())
@@ -3545,6 +3599,11 @@ void CActiveAE::KeepConfiguration(unsigned int millis)
 {
   unsigned int timeMs = millis;
   m_controlPort.SendOutMessage(CActiveAEControlProtocol::KEEPCONFIG, &timeMs, sizeof(unsigned int));
+}
+
+void CActiveAE::SetSessionHold(bool hold)
+{
+  m_controlPort.SendOutMessage(CActiveAEControlProtocol::SESSIONHOLD, &hold, sizeof(bool));
 }
 
 void CActiveAE::DeviceChange()

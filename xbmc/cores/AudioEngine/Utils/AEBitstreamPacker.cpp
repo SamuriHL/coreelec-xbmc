@@ -75,9 +75,11 @@ void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
 
 bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts)
 {
-  // re-use last buffer
-  if (m_pauseDuration == millis)
+  // re-use last buffer, unless it was zeros and bursts are wanted now (or
+  // the reverse)
+  if (m_pauseDuration == millis && m_pauseIsBurst == iecBursts)
     return false;
+  m_pauseIsBurst = iecBursts;
 
   switch (info.m_type)
   {

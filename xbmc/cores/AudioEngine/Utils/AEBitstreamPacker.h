@@ -46,5 +46,6 @@ private:
   unsigned int  m_dataSize = 0;
   uint8_t       m_packedBuffer[MAX_IEC61937_PACKET];
   unsigned int m_pauseDuration = 0;
+  bool m_pauseIsBurst = false;
 };
 

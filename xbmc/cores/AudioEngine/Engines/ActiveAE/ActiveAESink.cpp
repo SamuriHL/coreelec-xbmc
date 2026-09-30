@@ -349,6 +349,10 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extStreaming = *(bool*)msg->data;
           return;
 
+        case CSinkControlProtocol::HOLDBURSTS:
+          m_extHoldBursts = *(bool*)msg->data;
+          return;
+
         case CSinkControlProtocol::SETSILENCETIMEOUT:
           m_silenceTimeOut = std::chrono::minutes(*reinterpret_cast<int*>(msg->data));
           return;
@@ -1208,8 +1212,9 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       }
       else if (samples->pkt->pause_burst_ms > 0)
       {
-        // construct a pause burst if we have already output valid audio
-        bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
+        // construct a pause burst if we have already output valid audio, or
+        // the session is held (a reopen between streams has sent none yet)
+        bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0 || m_extHoldBursts);
         if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
           skipSwap = true;
       }

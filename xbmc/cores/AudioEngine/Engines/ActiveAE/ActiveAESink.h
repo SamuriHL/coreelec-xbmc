@@ -67,6 +67,7 @@ public:
     TIMEOUT,
     SETSILENCETIMEOUT,
     SETNOISETYPE,
+    HOLDBURSTS,
   };
   enum InSignal
   {
@@ -142,6 +143,8 @@ protected:
   std::chrono::milliseconds m_extSilenceTimeout;
   bool m_extAppFocused;
   bool m_extStreaming;
+  //! a held session: pause bursts even before this sink has sent audio
+  bool m_extHoldBursts = false;
   bool m_extReserved{false};
   std::chrono::duration<double> m_reservedCacheTotal{};
   std::chrono::duration<double> m_reservedLatency{};

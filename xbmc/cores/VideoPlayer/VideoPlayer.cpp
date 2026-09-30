@@ -851,6 +851,7 @@ CVideoPlayer::~CVideoPlayer()
 
   CloseFile();
   DestroyPlayers();
+  ReleaseAudioSessionHold();
 
   while (m_outboundEvents->IsProcessing())
   {
@@ -875,6 +876,16 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   {
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
+  }
+  // design 5 (4b, debug flag): the audio output is held for the session
+  if (XFILE::CFile::Exists("special://profile/audiohold"))
+  {
+    if (IAE* ae = CServiceBroker::GetActiveAE())
+    {
+      ae->SetSessionHold(true);
+      m_audioSessionHold = true;
+      CLog::Log(LOGINFO, "VideoPlayer: audio session hold on (debug flag)");
+    }
   }
   m_keepFrameEnabled = XFILE::CFile::Exists("special://profile/keepframe");
   if (m_keepFrameEnabled)
@@ -2045,6 +2056,15 @@ void CVideoPlayer::CheckMenuPageWait()
     m_overlayContainer.ReleasePendingMenu();
     m_menuPageWaiting = false;
   }
+}
+
+void CVideoPlayer::ReleaseAudioSessionHold()
+{
+  if (!m_audioSessionHold)
+    return;
+  m_audioSessionHold = false;
+  if (IAE* ae = CServiceBroker::GetActiveAE())
+    ae->SetSessionHold(false);
 }
 
 void CVideoPlayer::HoldStart()
@@ -4418,6 +4438,7 @@ void CVideoPlayer::OnExit()
   CloseStream(m_CurrentVideo, !m_bAbortRequest);
   // a picture kept at the last join, with no decoder left to replace it
   aml_drop_kept_frame("player exit");
+  ReleaseAudioSessionHold();
   CloseStream(m_CurrentTeletext,!m_bAbortRequest);
   CloseStream(m_CurrentRadioRDS, !m_bAbortRequest);
   CloseStream(m_CurrentAudioID3, !m_bAbortRequest);

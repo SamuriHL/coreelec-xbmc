@@ -539,6 +539,7 @@ protected:
   //! real_player E1 (docs/real_player_disc_session_design.md §3): a start is
   //! committed with the clock paused until the output mode is final
   void HoldStart();
+  void ReleaseAudioSessionHold();
   void CheckHeldStart();
   void ReleaseHeldStart(const char* why);
   //! true while a held disc boundary waits for the old streams to finish starting
@@ -805,6 +806,7 @@ protected:
   bool m_bdjKeepAliveDebug = false;
   bool m_startHeld = false;
   bool m_keepFrameEnabled = false; //!< design 4.3 debug flag (special://profile/keepframe)
+  std::atomic_bool m_audioSessionHold{false}; //!< design 5 debug flag (special://profile/audiohold)
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
   double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release
