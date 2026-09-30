@@ -196,7 +196,17 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetPresentLatestOverlay()
 void CDVDOverlayContainer::NotePresentedSegment(unsigned int gen)
 {
   std::unique_lock lock(*this);
-  m_releasedSegment = std::max(m_releasedSegment, gen);
+  if (gen <= m_releasedSegment)
+    return;
+  for (const auto& o : m_overlays)
+    if (!o->IsOverlayContainerFlushable() && o->m_segmentGen > m_releasedSegment &&
+        o->m_segmentGen <= gen)
+    {
+      CLog::Log(LOGDEBUG, "CDVDOverlayContainer - menu page of segment {} shown with its picture",
+                o->m_segmentGen);
+      break;
+    }
+  m_releasedSegment = gen;
 }
 
 void CDVDOverlayContainer::ReleasePendingMenu()
