@@ -139,6 +139,7 @@ public:
   virtual int codec_init_cntl(codec_para_t *pcodec)=0;
   virtual int codec_poll_cntl(codec_para_t *pcodec)=0;
   virtual int codec_set_cntl_mode(codec_para_t *pcodec, unsigned int mode)=0;
+  virtual int codec_set_eos(codec_para_t *pcodec, int is_eos)=0;
   virtual int codec_set_cntl_avthresh(codec_para_t *pcodec, unsigned int avthresh)=0;
   virtual int codec_set_cntl_syncthresh(codec_para_t *pcodec, unsigned int syncthresh)=0;
 
@@ -168,6 +169,7 @@ class DllLibAmCodec : public DllDynamic, DllLibamCodecInterface
   DEFINE_METHOD1(int, codec_init_cntl,          (codec_para_t *p1))
   DEFINE_METHOD1(int, codec_poll_cntl,          (codec_para_t *p1))
   DEFINE_METHOD2(int, codec_set_cntl_mode,      (codec_para_t *p1, unsigned int p2))
+  DEFINE_METHOD2(int, codec_set_eos,            (codec_para_t *p1, int p2))
   DEFINE_METHOD2(int, codec_set_cntl_avthresh,  (codec_para_t *p1, unsigned int p2))
   DEFINE_METHOD2(int, codec_set_cntl_syncthresh,(codec_para_t *p1, unsigned int p2))
 
@@ -192,6 +194,7 @@ class DllLibAmCodec : public DllDynamic, DllLibamCodecInterface
     RESOLVE_METHOD(codec_init_cntl)
     RESOLVE_METHOD(codec_poll_cntl)
     RESOLVE_METHOD(codec_set_cntl_mode)
+    RESOLVE_METHOD(codec_set_eos)
     RESOLVE_METHOD(codec_set_cntl_avthresh)
     RESOLVE_METHOD(codec_set_cntl_syncthresh)
 
@@ -2086,7 +2089,30 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   m_drain = drain;
   m_drainEos = drain && (endOfStream || m_drainEos);
   if (!drain)
+  {
     m_drainPadded = false;
+    ClearDecoderEos();
+  }
+}
+
+// The decoder flushes its reorder buffer (vh265 DEC_RESULT_EOS ->
+// flush_output) only once told the input has ended and it has run out of it;
+// without that a segment's last pictures (Halo S2: four) never come out.
+void CAMLCodec::SignalDecoderEos()
+{
+  if (m_decoderEos || !m_opened || !am_private)
+    return;
+  m_decoderEos = true;
+  m_dll->codec_set_eos(&am_private->vcodec, 1);
+  CLog::Log(LOGDEBUG, "CAMLCodec::SignalDecoderEos - end of input signalled");
+}
+
+void CAMLCodec::ClearDecoderEos()
+{
+  if (!m_decoderEos || !m_opened || !am_private)
+    return;
+  m_decoderEos = false;
+  m_dll->codec_set_eos(&am_private->vcodec, 0);
 }
 
 void CAMLCodec::WriteDrainPadding()
@@ -2128,6 +2154,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_drainPadded = false;
+  m_decoderEos = false;
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
@@ -2913,6 +2940,9 @@ void CAMLCodec::Reset()
   if (!m_opened)
     return;
 
+  // a flush brings more input; the decoder must not think it has ended
+  ClearDecoderEos();
+
   m_park_last_data_len = -1;
   SetPollDevice(-1);
 
@@ -3400,6 +3430,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     {
       CLog::Log(LOGDEBUG, "CAMLCodec::GetPicture - drain starved with {} bytes left", data_len);
       WriteDrainPadding();
+      SignalDecoderEos();
     }
   }
   const bool drainInputSettled =
