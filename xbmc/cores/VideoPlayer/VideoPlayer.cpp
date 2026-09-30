@@ -939,6 +939,9 @@ bool CVideoPlayer::CloseFile(bool reopen)
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
 
+  // a draining close in progress must not hold up the stop
+  m_VideoPlayerVideo->AbortDrain();
+
   // wait for the main thread to finish up
   // since this main thread cleans up all other resources and threads
   // we are done after the StopThread call
@@ -1960,6 +1963,11 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   if (!drain)
     ApplyDiscTimelineEvents(true);
 #endif
+  // the video tail may still be inside the decoder: start playing it out now,
+  // alongside the audio drain, not after it
+  if (drain && m_CurrentVideo.id >= 0 &&
+      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC && !m_bAbortRequest)
+    m_VideoPlayerVideo->BeginDrain();
   CloseStream(m_CurrentAudio, drain);
   CloseStream(m_CurrentVideo, drain);
 

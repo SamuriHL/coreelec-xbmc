@@ -175,6 +175,9 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec: {}",
             avcodec_get_name(hint.codec));
 
+  m_drainStarted = false;
+  m_drainAbort = false;
+
   m_processInfo.GetVideoBufferManager().ReleasePools();
 
   //reported fps is usually not completely correct
@@ -250,19 +253,19 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   // wait until buffers are empty
   if (bWaitForBuffers && m_speed > 0)
   {
-    m_drained.Reset();
-    SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
+    BeginDrain();
     // a display mode change pauses the clock mid-drain; that is not a stall
     m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
 
     // The queue empties when the drain message is taken, while the segment's
     // last pictures are still inside the decoder: wait for the drain itself.
     XbmcThreads::EndTime<> timer(3000ms);
+    XbmcThreads::EndTime<> heldBudget(30000ms); // a display that never comes back
     while (!m_drained.Wait(20ms))
     {
-      if (m_messageQueue.ReceivedAbortRequest() || !IsRunning())
+      if (m_drainAbort || m_messageQueue.ReceivedAbortRequest() || !IsRunning())
         break;
-      if (m_pClock->IsPaused())
+      if (m_pClock->IsPaused() && !heldBudget.IsTimePast())
         timer.Set(3000ms);
       else if (timer.IsTimePast())
       {
@@ -271,6 +274,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
       }
     }
   }
+  m_drainStarted = false;
 
   m_messageQueue.Abort();
 
@@ -290,6 +294,21 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
     m_picture.videoBuffer->Release();
     m_picture.videoBuffer = nullptr;
   }
+}
+
+void CVideoPlayerVideo::BeginDrain()
+{
+  if (m_drainStarted.exchange(true))
+    return;
+  m_drainAbort = false;
+  m_drained.Reset();
+  SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
+}
+
+void CVideoPlayerVideo::AbortDrain()
+{
+  m_drainAbort = true;
+  m_drained.Set();
 }
 
 bool CVideoPlayerVideo::AcceptsData() const
@@ -578,11 +597,18 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
-      while (!m_bStop && m_pVideoCodec)
+      while (!m_bStop && m_pVideoCodec && !m_drainAbort)
       {
         m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_DRAIN_EOS);
-        if (!ProcessDecoderOutput(frametime, pts))
-          break;
+        if (ProcessDecoderOutput(frametime, pts))
+          continue;
+        // a paused clock (a display mode change) holds the tail; it has not ended
+        if (m_pClock->IsPaused() && !m_drainAbort && !m_bStop)
+        {
+          CThread::Sleep(20ms);
+          continue;
+        }
+        break;
       }
       m_drained.Set();
     }

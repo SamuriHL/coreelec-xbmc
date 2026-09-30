@@ -2078,6 +2078,8 @@ int CAMLCodec::GetAmlDuration() const
 // an access unit delimiter - and push it past the fetch quantum with filler.
 void CAMLCodec::SetDrain(bool drain, bool endOfStream)
 {
+  if (drain && !m_drain)
+    m_drainInputMoved = std::chrono::steady_clock::now();
   m_drain = drain;
   if (!drain)
     m_drainPadded = false;
@@ -3367,6 +3369,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // running; only a STABLE small buffer is idle input (review finding A4)
   const int prev_data_len = m_park_last_data_len;
   m_park_last_data_len = data_len;
+  // a drain's input settles over time, not between two back-to-back polls
+  if (m_drain && data_len != prev_data_len)
+    m_drainInputMoved = std::chrono::steady_clock::now();
+  const bool drainInputSettled =
+      m_drain && std::chrono::steady_clock::now() - m_drainInputMoved >= std::chrono::milliseconds(500);
 
   // Ceiling below which a stable, non-advancing buffer counts as idle input
   // rather than a decoder stall. A padded FEL access unit is intentionally
@@ -3563,11 +3570,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // before the tail comes out; stay busy until the input settles.
   else if (m_drainPadded && m_drain && ret == EAGAIN &&
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout) &&
-           (data_len != prev_data_len ||
-            std::chrono::steady_clock::now() - m_drainInputMoved < std::chrono::milliseconds(500)))
+           !drainInputSettled)
   {
-    if (data_len != prev_data_len)
-      m_drainInputMoved = std::chrono::steady_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
   }
@@ -3640,8 +3644,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // nothing it can report. VC_NONE here reads as progress to the video thread,
   // which then only takes priority messages - so the stream's own VIDEO_DRAIN
   // (priority 0), the one that would end the stream, is never read. Report
-  // idle instead, inside the decoder timeout.
-  else if (m_drain && ret == EAGAIN && data_len == prev_data_len &&
+  // idle instead, inside the decoder timeout, once the input has stood still
+  // long enough that no picture is on its way.
+  else if (drainInputSettled && ret == EAGAIN &&
            m_speed != DVD_PLAYSPEED_PAUSE &&
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout))
     return CDVDVideoCodec::VC_BUFFER;
