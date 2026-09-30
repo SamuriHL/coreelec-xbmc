@@ -552,7 +552,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   // when the mode is set
   if (delay > 0 && m_delayDispReset)
   {
-    m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
+    m_resetDelay = std::chrono::milliseconds(static_cast<unsigned int>(delay * 100));
+    m_dispResetTimer.Set(m_resetDelay);
     m_modeSetAt = std::chrono::steady_clock::now();
     m_sinkLockedReads = 0;
     m_sinkLockPoll.Set(0ms);
@@ -563,17 +564,23 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   return ret;
 }
 
-// What the display reset waits for is the sink locking onto the new mode, as a
-// reference player's start does; the HDMI link reports that itself (SCDC).
-// Two locked reads 50 ms apart, the first no sooner than 100 ms after the mode
-// set so a lock left over from the old signal is not taken. A sink downstream
-// of a repeater locks after it: only the link the box drives is observable.
+// The display reset waits for the later of the user's refresh-change delay and
+// the sink the box drives reporting lock over SCDC. Without HDCP a source cannot
+// see a display behind a repeater; the delay is the user's knowledge of their
+// chain, and the lock covers a display slower than it. Two locked reads 50 ms
+// apart, the first no sooner than 100 ms after the mode set so a lock left over
+// from the old signal is not taken. An unreadable lock leaves the delay alone.
 bool CWinSystemAmlogic::SinkLockedAfterModeSet()
 {
+  if (m_sinkLockedReads >= 2)
+    return true;
   if (std::chrono::steady_clock::now() - m_modeSetAt < 100ms || !m_sinkLockPoll.IsTimePast())
     return false;
   m_sinkLockPoll.Set(50ms);
-  if (aml_hdmi_sink_locked() == 1)
+  const int locked = aml_hdmi_sink_locked();
+  if (locked < 0)
+    m_sinkLockedReads = 2;
+  else if (locked == 1)
     ++m_sinkLockedReads;
   else
     m_sinkLockedReads = 0;
