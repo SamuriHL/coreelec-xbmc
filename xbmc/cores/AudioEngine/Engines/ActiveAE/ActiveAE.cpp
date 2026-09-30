@@ -422,14 +422,21 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             return;
           m_extSessionHold = hold;
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::HOLDBURSTS, &hold, sizeof(bool));
+          // a format from before this session (music) is not the session's
+          if (hold)
+            m_heldFormatValid = false;
           CLog::Log(LOGINFO, "CActiveAE - session hold {}", hold ? "on" : "off");
           if (!hold)
           {
             m_heldFormatValid = false;
-            // released between streams: fall back as a normal stream end
+            // released between streams: fall back as a normal stream end,
+            // once the output still in the sink has played
             if (m_streams.empty() && m_state != AE_TOP_UNCONFIGURED)
             {
-              m_extDrainTimer.Set(0ms);
+              AEDelayStatus status;
+              m_stats.GetDelay(status);
+              m_extDrainTimer.Set(
+                  std::chrono::milliseconds(static_cast<int>(status.GetDelay() * 1000)));
               m_extDrain = true;
               m_extTimeout = 0ms;
             }
@@ -570,6 +577,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         {
         case CActiveAEControlProtocol::TIMEOUT:
           m_extError = false;
+          // a held format the sink refused between streams: retry as a
+          // normal stream end would, so the next stream can still open
+          if (m_streams.empty())
+            m_heldFormatValid = false;
           LoadSettings();
           Configure();
           if (!m_extError)
@@ -733,6 +744,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           LoadSettings();
           ValidateOutputDevices(false);
           m_extError = false;
+          // another device between streams: the held format was the old one's
+          if (m_streams.empty())
+            m_heldFormatValid = false;
           Configure();
           if (!m_extError)
           {
@@ -1320,14 +1334,16 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
   AEAudioFormat oldSinkRequestFormat = m_sinkRequestFormat;
 
   inputFormat = GetInputFormat(desiredFmt);
-  if (!m_streams.empty())
-  {
-    m_heldFormat = inputFormat;
-    m_heldFormatValid = true;
-  }
 
   m_sinkRequestFormat = inputFormat;
   ApplySettingsToFormat(m_sinkRequestFormat, m_settings, (int*)&m_mode);
+  // the hold keeps a bitstream output; decoded PCM (and transcode, whose rule
+  // needs a stream) takes the normal path between streams
+  if (!m_streams.empty())
+  {
+    m_heldFormat = inputFormat;
+    m_heldFormatValid = m_mode == MODE_RAW;
+  }
   m_extKeepConfig = 0ms;
 
   std::string device = (m_sinkRequestFormat.m_dataFormat == AE_FMT_RAW) ? m_settings.passthroughdevice : m_settings.device;

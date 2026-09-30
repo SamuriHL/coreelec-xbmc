@@ -2060,9 +2060,8 @@ void CVideoPlayer::CheckMenuPageWait()
 
 void CVideoPlayer::ReleaseAudioSessionHold()
 {
-  if (!m_audioSessionHold)
+  if (!m_audioSessionHold.exchange(false))
     return;
-  m_audioSessionHold = false;
   if (IAE* ae = CServiceBroker::GetActiveAE())
     ae->SetSessionHold(false);
 }
