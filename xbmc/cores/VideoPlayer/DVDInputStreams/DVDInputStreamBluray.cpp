@@ -1241,6 +1241,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
       CLog::Log(LOGDEBUG,
                 "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}: same-playlist "
                 "wrap, identity unchanged", m_event.param);
+      // the loop's page is the one already up: it does not wait (6.1)
+      m_samePlaylistWrapInRead = true;
       break;
     }
     {
@@ -1701,6 +1703,7 @@ bool CDVDInputStreamBluray::HoldForEvent()
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
   m_readThread = std::this_thread::get_id();
+  m_samePlaylistWrapInRead = false;
   m_inRead = true;
   const int result = ReadNav(buf, buf_size);
   m_inRead = false;
@@ -1721,8 +1724,9 @@ void CDVDInputStreamBluray::FinishReadOverlays()
   {
     // a read that ends holding a boundary started the page's playlist ahead of
     // the transition that opens it; otherwise that segment is already open
-    m_deferredPage->m_pageWait = IsHoldingBoundary() ? CDVDOverlay::PAGE_NEXT_SEGMENT
-                                                     : CDVDOverlay::PAGE_CURRENT_SEGMENT;
+    m_deferredPage->m_pageWait = m_samePlaylistWrapInRead ? CDVDOverlay::PAGE_AT_ONCE
+                                 : IsHoldingBoundary()    ? CDVDOverlay::PAGE_NEXT_SEGMENT
+                                                          : CDVDOverlay::PAGE_CURRENT_SEGMENT;
     std::shared_ptr<CDVDOverlayGroup> page = std::move(m_deferredPage);
     m_deferredPage.reset();
     m_deferredClosePost = false;
@@ -1975,6 +1979,9 @@ void CDVDInputStreamBluray::OverlayClose(bool hdmv)
   }
   else
   {
+    // a close supersedes anything this read still holds back
+    m_deferredPage.reset();
+    m_deferredClosePost = false;
     auto group = std::make_shared<CDVDOverlayGroup>();
     group->bForced = true;
     // menu overlays belong to disc navigation, not to a demux stream: they must
@@ -2221,13 +2228,18 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool keepAliveEligible)
 #endif
   // the first display of a preloaded page, and whatever follows it in the same
   // read, goes out at the end of the read (FinishReadOverlays)
-  if (OnReadThread() && (firstDisplay || m_deferredPage))
+  // (on any thread once a page is held back, so nothing overtakes it)
+  if (m_deferredPage || (OnReadThread() && firstDisplay))
   {
     m_deferredPage = group;
     m_deferredClosePost = false;
   }
   else
+  {
+    // newer than any CLOSE this read deferred (the close cleared the planes)
+    m_deferredClosePost = false;
     m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+  }
   // content-based, not latched-true: a HIDE (or a flush of fully-cleared
   // planes) must drop the "overlay up" state or menu-domain classification
   // and IsInMenu() stay stuck after the composition is gone. The background

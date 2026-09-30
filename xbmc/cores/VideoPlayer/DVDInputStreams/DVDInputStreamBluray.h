@@ -504,6 +504,7 @@ protected:
   bool m_inRead = false;
   std::thread::id m_readThread;
   bool m_deferredClosePost = false;
+  bool m_samePlaylistWrapInRead = false; //!< a page in this read repeats the one up
   std::shared_ptr<CDVDOverlayGroup> m_deferredPage;
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);

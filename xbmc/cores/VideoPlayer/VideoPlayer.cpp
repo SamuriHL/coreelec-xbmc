@@ -1993,6 +1993,9 @@ void CVideoPlayer::PublishSegmentGen()
   if (m_segmentGenPublished == m_segmentGen)
     return;
   m_segmentGenPublished = m_segmentGen;
+  // a page waiting for this segment waits from its opening, not its posting
+  if (m_menuPageWaiting)
+    m_menuPageWaitSince = std::chrono::steady_clock::now();
   // a running video player takes it in order with the packets that follow;
   // a closed one's next pictures come from a player opened after now
   if (m_CurrentVideo.id >= 0 && m_VideoPlayerVideo->IsInited())
