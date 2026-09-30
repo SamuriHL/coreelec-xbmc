@@ -234,6 +234,8 @@ void aml_dv_set_osd_visible(bool visible);
 void aml_dv_set_subtitles_visible(bool visible);
 bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
+//! the sink's own TMDS lock (SCDC, hdmitx sink_lock): 1 locked, 0 not, -1 unknown
+int aml_hdmi_sink_locked();
 // real_player Phase 0 measurement: the vsync-wait return time (steady_clock us)
 // and whether the last present swapped a GUI frame.
 void aml_note_poll_return();

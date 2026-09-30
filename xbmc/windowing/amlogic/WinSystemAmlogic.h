@@ -80,6 +80,12 @@ protected:
 
   bool m_delayDispReset;
   XbmcThreads::EndTime<> m_dispResetTimer;
+  //! real_player: the display reset follows the sink's own lock after a mode
+  //! set; the refresh-change delay is the fallback
+  bool SinkLockedAfterModeSet();
+  std::chrono::steady_clock::time_point m_modeSetAt{};
+  XbmcThreads::EndTime<> m_sinkLockPoll;
+  int m_sinkLockedReads{0};
 
   CCriticalSection m_resourceSection;
   std::vector<IDispResource*> m_resources;

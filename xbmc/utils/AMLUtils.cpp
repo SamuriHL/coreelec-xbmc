@@ -2403,6 +2403,19 @@ bool aml_video_started()
   return (StringUtils::EqualsNoCase(videostarted.Get<std::string>().value_or("0x0"), "0x1"));
 }
 
+int aml_hdmi_sink_locked()
+{
+  CSysfsPath sinkLock{"/sys/class/amhdmitx/amhdmitx0/sink_lock"};
+  if (!sinkLock.Exists())
+    return -1;
+  const std::string state = sinkLock.Get<std::string>().value_or("");
+  if (state.find("locked=1") != std::string::npos)
+    return 1;
+  if (state.find("locked=0") != std::string::npos)
+    return 0;
+  return -1; // na, busy, err
+}
+
 int aml_amdv_wait(StreamHdrType hdrType)
 {
   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)

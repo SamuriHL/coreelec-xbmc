@@ -47,6 +47,7 @@
 #include "system_egl.h"
 
 using namespace KODI;
+using namespace std::chrono_literals;
 
 std::unique_ptr<CAMLDisplay> CWinSystemAmlogic::m_amlDisplay = nullptr;
 
@@ -550,11 +551,33 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   // the delay is for the display to lock onto the new mode, so count it from
   // when the mode is set
   if (delay > 0 && m_delayDispReset)
+  {
     m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
+    m_modeSetAt = std::chrono::steady_clock::now();
+    m_sinkLockedReads = 0;
+    m_sinkLockPoll.Set(0ms);
+  }
 
   m_force_mode_switch = false;
   m_hotplug_mode_switch = false;
   return ret;
+}
+
+// What the display reset waits for is the sink locking onto the new mode, as a
+// reference player's start does; the HDMI link reports that itself (SCDC).
+// Two locked reads 50 ms apart, the first no sooner than 100 ms after the mode
+// set so a lock left over from the old signal is not taken. A sink downstream
+// of a repeater locks after it: only the link the box drives is observable.
+bool CWinSystemAmlogic::SinkLockedAfterModeSet()
+{
+  if (std::chrono::steady_clock::now() - m_modeSetAt < 100ms || !m_sinkLockPoll.IsTimePast())
+    return false;
+  m_sinkLockPoll.Set(50ms);
+  if (aml_hdmi_sink_locked() == 1)
+    ++m_sinkLockedReads;
+  else
+    m_sinkLockedReads = 0;
+  return m_sinkLockedReads >= 2;
 }
 
 bool CWinSystemAmlogic::DestroyWindow()

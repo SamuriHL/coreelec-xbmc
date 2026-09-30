@@ -392,9 +392,14 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
       KODI::TIME::Sleep(50ms);
   }
 
-  if (m_delayDispReset && m_dispResetTimer.IsTimePast())
+  if (m_delayDispReset && (m_dispResetTimer.IsTimePast() || SinkLockedAfterModeSet()))
   {
     m_delayDispReset = false;
+    CLog::Log(LOGINFO, "CWinSystemAmlogic: display reset {} ms after the mode set ({})",
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - m_modeSetAt)
+                  .count(),
+              m_sinkLockedReads >= 2 ? "sink locked" : "refresh-change delay");
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
