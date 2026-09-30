@@ -167,35 +167,6 @@ bool CDVDInputStreamBluray::DiscHasDolbyVision()
 #endif
 }
 
-// True when every video clip on the disc is 2160p 23.976, so the first picture's
-// mode is known before the disc chooses its first playlist.
-bool CDVDInputStreamBluray::DiscVideoIs2160p23976()
-{
-  for (int i = 0; i < m_nTitles; i++)
-  {
-    BLURAY_TITLE_INFO* t = bd_get_title_info(m_bd, i, 0);
-    if (!t)
-      continue;
-    bool uniform = true;
-    for (uint32_t c = 0; c < t->clip_count && uniform; c++)
-    {
-      const BLURAY_CLIP_INFO& clip = t->clips[c];
-      if (clip.video_stream_count > 0)
-        uniform = clip.video_streams[0].format == BLURAY_VIDEO_FORMAT_2160P &&
-                  clip.video_streams[0].rate == BLURAY_VIDEO_RATE_24000_1001;
-    }
-    const uint32_t playlist = t->playlist;
-    bd_free_title_info(t);
-    if (!uniform)
-    {
-      CLog::Log(LOGINFO, "CDVDInputStreamBluray - playlist {} is not 2160p 23.976: the DV engage "
-                "waits for the first playlist", playlist);
-      return false;
-    }
-  }
-  return true;
-}
-
 // Design 13.v: the first playlist with video tells whether the session's first
 // picture outputs DV (the rule CVideoPlayer::OpenStream applies per segment) and
 // at which mode, so the DV engage can happen while the disc still loads.
@@ -856,16 +827,6 @@ bool CDVDInputStreamBluray::Open()
       m_dvDiscSession = true;
       aml_dv_set_disc_session(true);
       aml_dv_pre_engage_disc_session();
-      // one mode on the whole disc: engage while it loads (13.v)
-      if (DiscVideoIs2160p23976())
-      {
-        const unsigned int vs10 =
-            aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
-        m_dvEarlyDecided = true;
-        aml_dv_early_engage_disc_session(vs10 == DOLBY_VISION_OUTPUT_MODE_BYPASS ||
-                                             vs10 == DOLBY_VISION_OUTPUT_MODE_IPT,
-                                         true);
-      }
     }
 
     bd_register_overlay_proc (m_bd, this, bluray_overlay_cb);
