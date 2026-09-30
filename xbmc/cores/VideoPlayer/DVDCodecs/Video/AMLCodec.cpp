@@ -25,6 +25,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
+#include "filesystem/File.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
@@ -2070,10 +2071,50 @@ int CAMLCodec::GetAmlDuration() const
   return am_private ? (am_private->video_rate * PTS_FREQ) / UNIT_FREQ : 0;
 };
 
+// Phase 0 E2 (docs/real_player_disc_session_design.md 4.1): the stream parser
+// completes an access unit only once the next one starts, and fetches in
+// quanta, so a segment's last pictures stay inside the decoder when no more
+// input comes. On a drain, start one more (empty) access unit - an access unit
+// delimiter - and push it past the fetch quantum with filler data.
+void CAMLCodec::SetDrain(bool drain)
+{
+  const bool rising = drain && !m_drain;
+  m_drain = drain;
+  if (!rising || !m_e2DrainPadding || !m_opened || !am_private ||
+      am_private->gcodec.dec_mode != STREAM_TYPE_STREAM || am_private->video_format != VFORMAT_HEVC)
+    return;
+
+  constexpr size_t fillerPayload = 32 * 1024;
+  std::vector<uint8_t> pad;
+  pad.reserve(16 + fillerPayload);
+  // AUD: nal_unit_type 35, pic_type 2 (any slice type) + rbsp stop bit
+  const uint8_t aud[] = {0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x50};
+  pad.insert(pad.end(), std::begin(aud), std::end(aud));
+  // FD_NUT: nal_unit_type 38, 0xFF payload, rbsp stop bit
+  const uint8_t fd[] = {0x00, 0x00, 0x01, 0x4C, 0x01};
+  pad.insert(pad.end(), std::begin(fd), std::end(fd));
+  pad.insert(pad.end(), fillerPayload, 0xFF);
+  pad.push_back(0x80);
+
+  size_t written = 0;
+  for (int tries = 0; written < pad.size() && tries < 50; ++tries)
+  {
+    const int n = m_dll->codec_write(&am_private->vcodec, pad.data() + written,
+                                     static_cast<int>(pad.size() - written));
+    if (n > 0)
+      written += n;
+    else
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  CLog::Log(LOGINFO, "CAMLCodec::SetDrain - E2: wrote {} of {} bytes of drain padding", written,
+            pad.size());
+}
+
 bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualStream)
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
+  m_e2DrainPadding = XFILE::CFile::Exists("special://profile/e2_drainpad");
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
