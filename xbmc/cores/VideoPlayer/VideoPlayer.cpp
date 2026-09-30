@@ -877,15 +877,15 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
   }
-  // design 5 (4b, debug flag): the audio output is held for the session
-  if (XFILE::CFile::Exists("special://profile/audiohold"))
+  // design 5 (4b): the audio output is held for the session; the debug flag
+  // turns it off for A/B runs
+  if (XFILE::CFile::Exists("special://profile/audiohold_off"))
+    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG audio session hold disabled");
+  else if (IAE* ae = CServiceBroker::GetActiveAE())
   {
-    if (IAE* ae = CServiceBroker::GetActiveAE())
-    {
-      ae->SetSessionHold(true);
-      m_audioSessionHold = true;
-      CLog::Log(LOGINFO, "VideoPlayer: audio session hold on (debug flag)");
-    }
+    ae->SetSessionHold(true);
+    m_audioSessionHold = true;
+    CLog::Log(LOGINFO, "VideoPlayer: audio session hold on");
   }
   m_keepFrameEnabled = XFILE::CFile::Exists("special://profile/keepframe");
   if (m_keepFrameEnabled)
