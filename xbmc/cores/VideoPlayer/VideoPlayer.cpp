@@ -41,6 +41,7 @@
 #include "cores/VideoPlayer/Interface/InputStreamConstants.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+#include "filesystem/File.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/StereoscopicsManager.h"
 #include "input/actions/Action.h"
@@ -866,6 +867,11 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // Stash the path for the Amlogic DV L5 active-area detector, which runs on the
   // codec thread where g_application.CurrentFile() is not yet set.
   aml_dv_detect_set_file(file.GetPath());
+
+  // real_player E1 experiment: start held until the output mode is final
+  m_heldStartEnabled = options.fullscreen && XFILE::CFile::Exists("special://profile/e1_heldstart");
+  if (m_heldStartEnabled)
+    CLog::Log(LOGINFO, "VideoPlayer: E1 held start enabled");
 
   if (IsRunning())
   {
@@ -1952,6 +1958,45 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   m_stillJoinCorrection = DVD_NOPTS_VALUE;
 }
 
+void CVideoPlayer::HoldStart()
+{
+  m_startHeld = true;
+  m_startHeldDecisions = m_renderManager.GetResolutionDecisions();
+  m_startHeldSince = std::chrono::steady_clock::now();
+  m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
+  m_VideoPlayerVideo->SetStartHeld(true);
+  CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {})",
+            m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions);
+}
+
+void CVideoPlayer::CheckHeldStart()
+{
+  if (!m_startHeld || m_displayLost)
+    return;
+  const auto held = std::chrono::steady_clock::now() - m_startHeldSince;
+  if (m_renderManager.GetResolutionDecisions() != m_startHeldDecisions)
+    ReleaseHeldStart("output mode decided");
+  else if (held > 12s)
+    ReleaseHeldStart("no mode decision in 12s");
+}
+
+void CVideoPlayer::ReleaseHeldStart(const char* why)
+{
+  const double held =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
+  m_startHeld = false;
+  m_VideoPlayerVideo->SetStartHeld(false);
+  m_clock.SetSpeed(m_playSpeed);
+  m_VideoPlayerAudio->SetSpeed(m_playSpeed);
+  m_VideoPlayerVideo->SetSpeed(m_playSpeed);
+  m_streamPlayerSpeed = m_playSpeed;
+  CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", held, why,
+            m_clock.GetClock() / DVD_TIME_BASE);
+}
+
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
 {
   if(stream.id<0)
@@ -2467,6 +2512,7 @@ void CVideoPlayer::Process()
 
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
+    CheckHeldStart();
 
     // update player state
     UpdatePlayState(200);
@@ -3120,7 +3166,7 @@ void CVideoPlayer::HandlePlaySpeed()
 
   if (m_caching == CACHESTATE_DONE)
   {
-    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
+    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !m_startHeld)
     {
       // take action if audio or video stream is stalled
       if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
@@ -3363,8 +3409,12 @@ void CVideoPlayer::HandlePlaySpeed()
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_processInfo->GetLevelVQ());
 
+      const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
+                             m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
+                             m_CurrentVideo.packets > 0 &&
+                             m_renderManager.IsResolutionUpdatePending();
       if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
-          m_playSpeed == DVD_PLAYSPEED_PAUSE)
+          (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
       {
         clock = m_CurrentVideo.starttime;
       }
@@ -3412,6 +3462,8 @@ void CVideoPlayer::HandlePlaySpeed()
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
       SetCaching(CACHESTATE_DONE);
+      if (holdStart)
+        HoldStart();
       UpdatePlayState(0);
 
       m_syncTimer.Set(3000ms);
@@ -6303,6 +6355,8 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  if (m_startHeld)
+    ReleaseHeldStart("flush");
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
 

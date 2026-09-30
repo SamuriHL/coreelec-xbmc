@@ -536,6 +536,11 @@ protected:
    *        (CDVDInputStreamBluray's seamless glide), so the demuxer is part
    *        way through the incoming clip and must not be flushed. */
   void BdSegmentTransition(bool glided = false);
+  //! real_player E1 (docs/real_player_disc_session_design.md §3): a start is
+  //! committed with the clock paused until the output mode is final
+  void HoldStart();
+  void CheckHeldStart();
+  void ReleaseHeldStart(const char* why);
   //! true while a held disc boundary waits for the old streams to finish starting
   bool WaitStartAtBoundary();
 
@@ -786,6 +791,11 @@ protected:
   bool m_updateStreamDetails{false};
 
   std::atomic<bool> m_displayLost;
+  bool m_heldStartEnabled = false; //!< E1 flag file, read at open
+  bool m_startHeld = false;
+  bool m_startHeldSawLost = false;
+  unsigned int m_startHeldDecisions = 0;
+  std::chrono::steady_clock::time_point m_startHeldSince;
   // playback started on a disc screen with no stream behind it (BD-J screen
   // with no playlist); HasVideo() reports it so the fullscreen video window
   // can own the screen and the remote. Read from the GUI thread.

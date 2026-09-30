@@ -409,6 +409,10 @@ void CVideoPlayerVideo::Process()
       if (iPriority)
         continue;
 
+      // a start held for the output mode has its clock paused on purpose
+      if (m_startHeld)
+        continue;
+
       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
       if (!m_stalled)
       {
@@ -690,6 +694,23 @@ void CVideoPlayerVideo::UpdatePlayerInfo()
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
+
+  // phase 0 counter (docs/real_player_disc_session_design.md 4.1): a run of
+  // VC_NONE starves the priority-0 queue
+  if (decoderState == CDVDVideoCodec::VC_NONE)
+  {
+    ++m_vcNoneRun;
+    if (m_vcNoneRun == 50 || m_vcNoneRun % 1000 == 0)
+      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - phase0: {} consecutive VC_NONE, {} msgs queued, speed {}",
+                m_vcNoneRun, m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET), m_speed);
+  }
+  else
+  {
+    if (m_vcNoneRun >= 50)
+      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - phase0: VC_NONE run ended after {} (state {})",
+                m_vcNoneRun, static_cast<int>(decoderState));
+    m_vcNoneRun = 0;
+  }
 
   if (decoderState == CDVDVideoCodec::VC_BUFFER)
   {

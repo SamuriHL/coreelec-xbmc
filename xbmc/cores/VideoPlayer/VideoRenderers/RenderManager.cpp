@@ -1259,6 +1259,8 @@ void CRenderManager::UpdateResolution()
           if (m_pRenderer)
             m_pRenderer->Update();
         }
+        // after the mode set: a real change has already run OnLostDisplay
+        ++m_resolutionDecisions;
         m_playerPort->VideoParamsChange();
       }
     }

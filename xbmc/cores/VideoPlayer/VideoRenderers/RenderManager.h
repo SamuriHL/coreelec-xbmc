@@ -142,6 +142,9 @@ public:
   //! a picture queued after that is presented, the disc's graphics wait for it
   //! instead of showing over black or the previous segment's last picture.
   void SetAwaitingVideo(bool awaiting);
+  //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
+  unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
+  bool IsResolutionUpdatePending() const { return m_bTriggerUpdateResolution; }
 
   /*!
    * \brief True if any subtitle/overlay is visible on the current presented
@@ -237,6 +240,7 @@ protected:
   std::atomic_bool m_showVideo = {false};
   std::atomic_bool m_displayLost = {false};
   bool m_awaitingVideo = false; // m_presentlock
+  std::atomic<unsigned int> m_resolutionDecisions{0};
   int m_awaitIdx = -1; //!< the first picture queued while awaiting (m_presentlock)
   std::chrono::steady_clock::time_point m_awaitSince; // m_presentlock
 

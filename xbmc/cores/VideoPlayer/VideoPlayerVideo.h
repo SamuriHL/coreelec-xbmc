@@ -68,6 +68,7 @@ public:
   double GetSubtitleDelay() override { return m_iSubtitleDelay; }
   void SetSubtitleDelay(double delay) override { m_iSubtitleDelay = delay; }
   bool IsStalled() const override { return m_stalled; }
+  void SetStartHeld(bool held) override { m_startHeld = held; }
   bool IsRewindStalled() const override { return m_rewindStalled; }
   double GetCurrentPts() override;
   double GetOutputDelay() override; /* returns the expected delay, from that a packet is put in queue */
@@ -134,6 +135,8 @@ protected:
   float m_fForcedAspectRatio;
   int m_speed;
   std::atomic_bool m_stalled = false;
+  std::atomic_bool m_startHeld = false;
+  int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder
   std::atomic_bool m_rewindStalled;
   bool m_paused;
   /* diagnostics only: last keep-alive stamp already reported as expired, so
