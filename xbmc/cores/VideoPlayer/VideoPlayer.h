@@ -804,6 +804,7 @@ protected:
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;
   bool m_startHeld = false;
+  bool m_keepFrameEnabled = false; //!< design 4.3 debug flag (special://profile/keepframe)
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
   double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release

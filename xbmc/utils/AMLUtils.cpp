@@ -2403,6 +2403,49 @@ bool aml_video_started()
   return (StringUtils::EqualsNoCase(videostarted.Get<std::string>().value_or("0x0"), "0x1"));
 }
 
+namespace
+{
+std::atomic_bool s_keepFrameArmed{false};
+std::atomic_bool s_frameKept{false};
+std::atomic<unsigned int> s_disableVideoGeneration{0};
+} // namespace
+
+void aml_keep_frame_arm(bool arm)
+{
+  s_keepFrameArmed = arm;
+}
+
+bool aml_keep_frame_take_arm()
+{
+  return s_keepFrameArmed.exchange(false);
+}
+
+void aml_set_frame_kept(bool kept)
+{
+  s_frameKept = kept;
+}
+
+bool aml_frame_kept()
+{
+  return s_frameKept;
+}
+
+void aml_drop_kept_frame(const char* why)
+{
+  s_keepFrameArmed = false;
+  if (!s_frameKept.exchange(false))
+    return;
+  // disable_video=1 switches VD1 off and frees the keeper's pinned buffers
+  CSysfsPath("/sys/class/video/disable_video", 1);
+  ++s_disableVideoGeneration;
+  CLog::Log(LOGINFO, "aml_drop_kept_frame: kept picture blanked ({})", why);
+}
+
+unsigned int aml_disable_video_generation()
+{
+  return s_disableVideoGeneration;
+}
+
 int aml_hdmi_sink_locked()
 {
   CSysfsPath sinkLock{"/sys/class/amhdmitx/amhdmitx0/sink_lock"};

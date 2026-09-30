@@ -236,6 +236,17 @@ bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
 //! the sink's own TMDS lock (SCDC, hdmitx sink_lock): 1 locked, 0 not, -1 unknown
 int aml_hdmi_sink_locked();
+//! real_player 4a (design 4.3): keep the last picture across a decoder reinit
+//! at a disc join. The player arms the next close; the kernel keeps the frame
+//! (blackout_policy=0) until the next decoder's first frame replaces it.
+void aml_keep_frame_arm(bool arm);
+bool aml_keep_frame_take_arm();
+void aml_set_frame_kept(bool kept);
+bool aml_frame_kept();
+//! blank a kept frame now (stop, no video in the next segment, open failure)
+void aml_drop_kept_frame(const char* why);
+//! bumped whenever disable_video is written outside CAMLCodec::ShowMainVideo
+unsigned int aml_disable_video_generation();
 // real_player Phase 0 measurement: the vsync-wait return time (steady_clock us)
 // and whether the last present swapped a GUI frame.
 void aml_note_poll_return();

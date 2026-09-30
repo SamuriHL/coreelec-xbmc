@@ -876,6 +876,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
   }
+  m_keepFrameEnabled = XFILE::CFile::Exists("special://profile/keepframe");
+  if (m_keepFrameEnabled)
+    CLog::Log(LOGINFO, "VideoPlayer: kept picture across disc reinits enabled (debug flag)");
   m_bdjKeepAliveDebug = XFILE::CFile::Exists("special://profile/bdj_keepalive");
   if (m_bdjKeepAliveDebug)
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG BD-J keep-alive transitions enabled");
@@ -1981,7 +1984,16 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
       m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC && !m_bAbortRequest)
     m_VideoPlayerVideo->BeginDrain();
   CloseStream(m_CurrentAudio, drain);
+  // design 4.3 (4a, debug flag): the last picture stays on screen across the
+  // decoder reinit, as a reference player's non-seamless join. Not for DV
+  // profile 5, whose IPT frame shows wrong without its core path.
+  const bool keepFrame = m_keepFrameEnabled && m_CurrentVideo.id >= 0 && !m_bAbortRequest &&
+                         m_CurrentVideo.hint.dovi.dv_profile != 5;
+  aml_keep_frame_arm(keepFrame);
   CloseStream(m_CurrentVideo, drain);
+  // the close is synchronous: an arm the decoder did not take must not reach
+  // a later close (a stop blanks)
+  aml_keep_frame_arm(false);
 
   m_CurrentAudio.Clear();
   m_CurrentVideo.Clear();
@@ -2585,6 +2597,9 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
+      // a segment without video: no picture replaces a kept one
+      if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
+        aml_drop_kept_frame("segment without video");
       // a segment without video: no picture will come for a waiting page
       if (m_menuPageWaiting && m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
       {
@@ -4401,6 +4416,8 @@ void CVideoPlayer::OnExit()
 
   CloseStream(m_CurrentAudio, !m_bAbortRequest);
   CloseStream(m_CurrentVideo, !m_bAbortRequest);
+  // a picture kept at the last join, with no decoder left to replace it
+  aml_drop_kept_frame("player exit");
   CloseStream(m_CurrentTeletext,!m_bAbortRequest);
   CloseStream(m_CurrentRadioRDS, !m_bAbortRequest);
   CloseStream(m_CurrentAudioID3, !m_bAbortRequest);
@@ -6246,7 +6263,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
     const bool freshPlayer = !player->IsInited();
     if (!player->OpenStream(hint))
+    {
+      aml_drop_kept_frame("video open failed");
       return false;
+    }
 
     // a fresh player's queue is empty: a segment marker queued in the old one
     // may have gone with it (a running one takes STREAMCHANGE in order instead)

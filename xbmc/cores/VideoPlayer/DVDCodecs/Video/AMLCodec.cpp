@@ -2202,7 +2202,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     return false;
   }
 
-  ShowMainVideo(false);
+  // a picture kept across the reinit stays until this decoder's first frame
+  if (!aml_frame_kept())
+    ShowMainVideo(false);
 
   am_packet_init(&am_private->am_pkt);
   // default stream type
@@ -2835,6 +2837,16 @@ void CAMLCodec::CloseDecoder()
   // later streams, native DV included. The donor reset it in aml_dv_off().
   aml_dv_set_hdr10_osd_brightness(0);
 
+  // design 4.3: a disc join keeps the last picture on screen until the next
+  // decoder's first frame; the kernel keeps it through the unregister only
+  // with blackout_policy 0 (the same keep Reset() uses across a seek)
+  const bool keepFrame = aml_keep_frame_take_arm();
+  if (keepFrame)
+  {
+    CSysfsPath("/sys/class/video/blackout_policy", 0);
+    CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder - keeping the last picture across the reinit");
+  }
+
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
   m_opened = false;
@@ -2877,7 +2889,10 @@ void CAMLCodec::CloseDecoder()
         usleep(10000); // wait 10ms
     }
 
-    while (AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
+    // a kept picture keeps VD1 on (the keeper's toggle mode), so the core
+    // stays up and this would burn the whole bound at every join
+    while (!keepFrame &&
+           AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
            (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
       usleep(10000); // wait 10ms
 
@@ -2910,13 +2925,23 @@ void CAMLCodec::CloseDecoder()
       AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
   }
 
-  AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
-  AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
-  AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
-
-  ShowMainVideo(false);
+  // the core stays as it is under a kept picture: the next OpenDecoder sets
+  // the layers again, and an unmap here would drop the kept frame's DV path
+  if (!keepFrame)
+  {
+    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
+    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+    ShowMainVideo(false);
+  }
 
   CloseAmlVideo();
+
+  if (keepFrame)
+  {
+    CSysfsPath("/sys/class/video/blackout_policy", 1);
+    aml_set_frame_kept(true);
+  }
 }
 
 void CAMLCodec::CloseAmlVideo()
@@ -3796,8 +3821,18 @@ void CAMLCodec::ShowMainVideo(const bool show)
   // called from the decoder and the render threads
   static std::mutex mutex;
   static int saved_disable_video = -1;
+  static unsigned int seen_generation = 0;
 
   std::lock_guard<std::mutex> lock(mutex);
+  // written elsewhere (a kept picture blanked): the cache no longer holds
+  if (seen_generation != aml_disable_video_generation())
+  {
+    seen_generation = aml_disable_video_generation();
+    saved_disable_video = -1;
+  }
+  // the new decoder's first frame is on: nothing is kept any more
+  if (show)
+    aml_set_frame_kept(false);
   int disable_video = show ? 0:1;
   if (saved_disable_video == disable_video)
     return;
