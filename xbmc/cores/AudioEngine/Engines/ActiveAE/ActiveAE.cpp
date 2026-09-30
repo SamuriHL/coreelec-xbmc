@@ -2251,6 +2251,21 @@ bool CActiveAE::RunStages()
         double playingPts = pts - delay;
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
         double error = playingPts - (*it)->m_pClock->GetClock();
+        // TEMP STARTDIAG (held-start audio, design 13.aa): the parts of the
+        // start-sync error while a stream is not yet in sync
+        {
+          static unsigned int s_startDiag = 0;
+          if ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC)
+            s_startDiag = 0;
+          else if (s_startDiag++ % 3 == 0)
+            CLog::Log(LOGINFO,
+                      "STARTDIAG state {} pts {:.3f} offset {:.3f} delay {:.3f} clock {:.3f} "
+                      "phase {:.3f} pending {} error {:.3f}",
+                      static_cast<int>((*it)->m_syncState), static_cast<double>(buf->timestamp),
+                      buf->pkt_start_offset * 1000.0 / buf->pkt->config.sample_rate, delay,
+                      (*it)->m_pClock->GetClock(), (*it)->m_pClock->GetClockPhase(),
+                      (*it)->m_pClock->IsClockPhasePending(), error);
+        }
 
         // Restored to upstream (2026-08-11). This fork had removed the scaling
         // on the argument that it created a physical dead zone masking real
