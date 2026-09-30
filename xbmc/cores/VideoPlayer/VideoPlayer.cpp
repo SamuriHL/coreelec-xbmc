@@ -2939,7 +2939,11 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
   if (CheckIsCurrent(m_CurrentAudio, pStream, pPacket))
     ProcessAudioData(pStream, pPacket);
   else if (CheckIsCurrent(m_CurrentVideo, pStream, pPacket))
+  {
+    if (!m_pendingElPackets.empty())
+      SendPendingElPackets(pPacket);
     ProcessVideoData(pStream, pPacket);
+  }
   else if (CheckIsCurrent(m_CurrentSubtitle, pStream, pPacket))
     ProcessSubData(pStream, pPacket);
   else if (CheckIsCurrent(m_CurrentTeletext, pStream, pPacket))
@@ -2952,12 +2956,60 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayer::ProcessPacket packet from enhancement layer: size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms",
       pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0);
+    // a disc clip's EL can be muxed ahead of its first BL: before the BL opens
+    // the video stream the queue is closed, and losing the IDR's EL cost the
+    // clip its first GOP (13.u3)
+    if (!m_VideoPlayerVideo->IsInited())
+    {
+      m_pendingElPackets.push_back(pPacket);
+      if (m_pendingElPackets.size() > 48)
+      {
+        CDVDDemuxUtils::FreeDemuxPacket(m_pendingElPackets.front());
+        m_pendingElPackets.pop_front();
+      }
+      return;
+    }
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, false));
   }
   else
   {
     CDVDDemuxUtils::FreeDemuxPacket(pPacket); // free it since we won't do anything with it
   }
+}
+
+void CVideoPlayer::SendPendingElPackets(const DemuxPacket* firstBl)
+{
+  if (!m_VideoPlayerVideo->IsInited())
+    return;
+  const double blTime = firstBl->dts != DVD_NOPTS_VALUE ? firstBl->dts : firstBl->pts;
+  int sent = 0;
+  int dropped = 0;
+  for (DemuxPacket* el : m_pendingElPackets)
+  {
+    const double elTime = el->dts != DVD_NOPTS_VALUE ? el->dts : el->pts;
+    // only this clip's: an EL left from the previous clip is on another timeline
+    if (blTime != DVD_NOPTS_VALUE && elTime != DVD_NOPTS_VALUE &&
+        elTime >= blTime - DVD_MSEC_TO_TIME(100) && elTime <= blTime + DVD_MSEC_TO_TIME(2000))
+    {
+      m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(el, false));
+      ++sent;
+    }
+    else
+    {
+      CDVDDemuxUtils::FreeDemuxPacket(el);
+      ++dropped;
+    }
+  }
+  m_pendingElPackets.clear();
+  CLog::Log(LOGINFO, "CVideoPlayer: {} EL packets from before the video stream opened sent ahead "
+            "of its first BL ({:.3f}), {} dropped", sent, blTime / DVD_TIME_BASE, dropped);
+}
+
+void CVideoPlayer::ClearPendingElPackets()
+{
+  for (DemuxPacket* el : m_pendingElPackets)
+    CDVDDemuxUtils::FreeDemuxPacket(el);
+  m_pendingElPackets.clear();
 }
 
 void CVideoPlayer::CheckStreamChanges(CCurrentStream& current, CDemuxStream* stream)
@@ -4406,6 +4458,8 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
+
+  ClearPendingElPackets();
 
   // set event to inform openfile something went wrong in case openfile is still waiting for this event
   SetCaching(CACHESTATE_DONE);
@@ -6460,6 +6514,9 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
   if (current.id < 0)
     return false;
 
+  if (&current == &m_CurrentVideo)
+    ClearPendingElPackets();
+
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
 
   if(bWaitForBuffers)
@@ -6585,6 +6642,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  ClearPendingElPackets();
   // a flush or seek leaves no picture for a waiting menu page to go with
   if (m_menuPageWaiting)
   {
