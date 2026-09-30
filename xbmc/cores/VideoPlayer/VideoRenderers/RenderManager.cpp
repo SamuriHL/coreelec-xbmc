@@ -861,8 +861,11 @@ bool CRenderManager::GraphicsWithheld()
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided ||
       !CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
     return false;
+  // only a configured video start: a BD-J screen with no playlist behind it
+  // has no mode to wait for (a fullscreen toggle also raises the trigger)
   std::unique_lock lock(m_statelock);
-  return std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
+  return m_renderState == STATE_CONFIGURED &&
+         std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
 }
 
 void CRenderManager::PresentHdrGraphics(int idx,
