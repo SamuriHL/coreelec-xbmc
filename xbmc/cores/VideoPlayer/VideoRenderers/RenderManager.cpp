@@ -849,13 +849,13 @@ void CRenderManager::PresentHdrGraphics(int idx,
 {
   CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   SHdrGraphics graphics;
-  m_overlays.CollectHDROverlays(idx, graphics.images);
+  const bool timed = m_overlays.CollectHDROverlays(idx, graphics.images);
   graphics.source = source;
   graphics.dest = dest;
   graphics.view = view;
   graphics.width = static_cast<float>(winSystem->GetGfxContext().GetWidth());
   graphics.height = static_cast<float>(winSystem->GetGfxContext().GetHeight());
-  graphics.pts = idx >= 0 ? m_Queue[idx].pts : DVD_NOPTS_VALUE;
+  graphics.pts = idx >= 0 && timed ? m_Queue[idx].pts : DVD_NOPTS_VALUE;
   winSystem->PresentHdrGraphics(graphics);
 }
 

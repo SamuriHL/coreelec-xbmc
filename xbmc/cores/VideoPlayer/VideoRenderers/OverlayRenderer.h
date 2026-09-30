@@ -128,8 +128,9 @@ namespace OVERLAY {
     // True if RenderHDROverlays would draw anything for this buffer
     bool HasHDROverlays(int idx) const;
 
-    // the images RenderHDROverlays would draw, bottom first
-    void CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const;
+    // the images RenderHDROverlays would draw, bottom first; false when any is
+    // shown at once rather than with the buffer's frame
+    bool CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const;
 
     /*!
      * \brief Pre-walk hook: render libass output for the present slot.

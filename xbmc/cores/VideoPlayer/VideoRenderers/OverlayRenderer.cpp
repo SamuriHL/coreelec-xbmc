@@ -288,12 +288,13 @@ bool CRenderer::HasHDROverlays(int idx) const
   return false;
 }
 
-void CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const
+bool CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const
 {
   std::unique_lock lock(m_section);
   const std::vector<SElement>* const buffer =
       (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
 
+  bool untimed = false;
   for (const std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
     if (!list)
@@ -301,9 +302,13 @@ void CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOver
     for (const auto& e : *list)
     {
       if (e.overlay_dvd && IsHDRImage(*e.overlay_dvd))
+      {
         images.push_back(e.overlay_dvd);
+        untimed |= list == &m_presentLatest;
+      }
     }
   }
+  return !untimed;
 }
 
 void CRenderer::Render(COverlay* o)

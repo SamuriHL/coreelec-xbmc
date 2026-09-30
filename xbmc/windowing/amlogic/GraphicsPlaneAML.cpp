@@ -332,7 +332,7 @@ void CGraphicsPlaneAML::ReleaseReturned()
   m_returned.clear();
 }
 
-bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs)
+bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
 {
   // R5: never more than four buffers out of the surface
   if (m_locked >= LOCK_CAP)
@@ -388,7 +388,7 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs)
 
   m_locked++;
   const uint64_t seq =
-      m_coordinator->Submit(CPresentationCoordinator::PLANE_GRAPHICS, bo, fb, req, fence);
+      m_coordinator->Submit(CPresentationCoordinator::PLANE_GRAPHICS, bo, fb, req, fence, pts);
   m_lastFb = fb;
   m_lastVisible = visible;
   m_coordinator->WaitTaken(seq, 50ms);
@@ -689,7 +689,7 @@ void CGraphicsPlaneAML::Process()
     {
       if (TakeShown())
         UpdateTextures();
-      if (m_redraw && SubmitFrame(!m_shown.images.empty(), MonotonicNs()))
+      if (m_redraw && SubmitFrame(!m_shown.images.empty(), MonotonicNs(), m_shown.pts))
         m_redraw = false;
       m_wake.Wait(m_redraw ? 16ms : 100ms);
     }

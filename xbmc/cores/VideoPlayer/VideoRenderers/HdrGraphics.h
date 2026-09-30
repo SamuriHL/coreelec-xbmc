@@ -24,6 +24,8 @@ struct SHdrGraphics
   CRect source, dest, view; //!< the video rects, as for COverlay::CRenderer::SetVideoRect
   float width = 0; //!< the space the rects are in
   float height = 0;
-  double pts = 0; //!< of the video frame they go with; DVD_NOPTS_VALUE without one
+  //! of the video frame they go with; DVD_NOPTS_VALUE without one, or when any
+  //! image is shown at once (a disc menu) rather than with the frame
+  double pts = 0;
   bool limited = false; //!< limited-range output, as the GUI plane's
 };

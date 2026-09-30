@@ -59,6 +59,7 @@ struct SequenceEvent
 thread_local SequenceEvent t_event;
 thread_local bool t_flipped = false;
 thread_local uint64_t t_flipTag = 0;
+thread_local unsigned int t_flipSequence = 0;
 
 void OnSequence(int fd, uint64_t sequence, uint64_t ns, uint64_t userData)
 {
@@ -77,6 +78,7 @@ void OnPageFlip(int fd,
 {
   t_flipped = true;
   t_flipTag = reinterpret_cast<uintptr_t>(userData);
+  t_flipSequence = sequence;
 }
 
 int ReadKernelDrops()
@@ -215,7 +217,7 @@ void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
 }
 
 uint64_t CPresentationCoordinator::Submit(
-    int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence)
+    int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, double pts)
 {
   uint64_t seq;
   {
@@ -233,6 +235,7 @@ uint64_t CPresentationCoordinator::Submit(
     ready.fb = fb;
     ready.req = req;
     ready.fence = fence;
+    ready.pts = pts;
     ready.seq = seq = ++m_submitSeq;
     if (plane == PLANE_UI)
       m_report.uiSubmits++;
@@ -526,7 +529,7 @@ void CPresentationCoordinator::HandleEvents(int fd,
   drmHandleEvent(fd, &context);
 
   if (t_flipped)
-    OnFlip(t_flipTag);
+    OnFlip(t_flipTag, t_flipSequence);
 
   if (!t_event.got)
     return;
@@ -591,6 +594,7 @@ void CPresentationCoordinator::CommitUi()
       commit.has[plane] = true;
       commit.bo[plane] = ready.bo;
       commit.generation[plane] = m_planes[plane].generation;
+      commit.pts[plane] = ready.pts;
       m_planes[plane].inCommit = true;
       m_planes[plane].committedBo = ready.bo;
       m_planes[plane].committedFb = ready.bo ? ready.fb : m_planes[plane].onScreenFb;
@@ -602,6 +606,7 @@ void CPresentationCoordinator::CommitUi()
     m_committing = commit;
     m_inFlight = true;
     m_inCommitTag = ++m_commitTagSeq;
+    m_inFlightGfxPts = commit.has[PLANE_GRAPHICS] ? commit.pts[PLANE_GRAPHICS] : DVD_NOPTS_VALUE;
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
   }
@@ -682,11 +687,13 @@ void CPresentationCoordinator::CommitWorker()
   }
 }
 
-void CPresentationCoordinator::OnFlip(uint64_t tag)
+void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
 {
   std::unique_lock lock(m_uiMutex);
   if (!m_inFlight || tag != m_inCommitTag)
     return;
+  if (m_inFlightGfxPts != DVD_NOPTS_VALUE)
+    CountPlacement(m_inFlightGfxPts, sequence);
   for (PlaneState& state : m_planes)
   {
     if (!state.inCommit)
@@ -711,6 +718,25 @@ void CPresentationCoordinator::OnFlip(uint64_t tag)
   m_report.flipMax = std::max(m_report.flipMax, flip);
 }
 
+void CPresentationCoordinator::CountPlacement(double pts, unsigned int sequence)
+{
+  // the flip event carries the low bits of the same vblank count
+  const OnScreen* shown = nullptr;
+  for (const OnScreen& entry : m_onScreen)
+  {
+    if (static_cast<int32_t>(sequence - static_cast<unsigned int>(entry.fromSeq)) >= 0)
+      shown = &entry;
+  }
+  if (!shown || m_frameUs <= 0.0)
+    return;
+  const int frames = static_cast<int>(std::lround((pts - shown->pts) / m_frameUs));
+  m_report.gfxPlacement[std::clamp(frames, -2, 2) + 2]++;
+  CLog::Log(LOGDEBUG,
+            "CPresentationCoordinator - graphics for pts {:.3f} on screen at vblank {} with video "
+            "pts {:.3f} (shown from vblank {}, last tick {}): {:+d} frames",
+            pts / 1000000.0, sequence, shown->pts / 1000000.0, shown->fromSeq, m_lastSeq, frames);
+}
+
 void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 {
   // a hold that landed during the wait is acknowledged before any release
@@ -729,6 +755,17 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   m_video->PresentTick(tick, result);
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
+
+  // a frame released at this vblank is on screen from the next one
+  if (!result.configured)
+    m_onScreen.clear();
+  else if (result.newFrame && tick.vblankNs)
+  {
+    if (m_onScreen.size() >= 8)
+      m_onScreen.erase(m_onScreen.begin());
+    m_onScreen.push_back({tick.seq + 1, result.pts});
+    m_frameUs = result.frametime;
+  }
 
   if (!result.configured)
     SetState(State::IDLE, tick.epoch);
@@ -847,14 +884,15 @@ void CPresentationCoordinator::LogReport()
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
             "commits={} failed={} flips={} lost={} commit max={:.0f}us "
             "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us "
-            "| graphics submits={} replaced={} commits={}",
+            "| graphics submits={} replaced={} commits={} placement [<-1 {} -1 {} 0 {} +1 {} >+1 {}]",
             r.ticks, r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
             r.woke ? r.wakeSum / r.woke : 0.0, r.wakeMax, r.ticks ? r.workSum / r.ticks : 0.0,
             r.workMax, drops >= 0 && m_kernelDrops >= 0 ? drops - m_kernelDrops : -1,
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,
             r.commitMax, r.commitHist[0], r.commitHist[1], r.commitHist[2], r.commitHist[3],
             r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax, r.gfxSubmits, r.gfxReplaced,
-            r.gfxCommits);
+            r.gfxCommits, r.gfxPlacement[0], r.gfxPlacement[1], r.gfxPlacement[2],
+            r.gfxPlacement[3], r.gfxPlacement[4]);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

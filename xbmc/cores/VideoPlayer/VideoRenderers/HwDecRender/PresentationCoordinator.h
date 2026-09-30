@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "threads/Thread.h"
 
 #include <atomic>
@@ -63,9 +64,11 @@ public:
    * once its GPU fence has signalled and no flip is in flight, together with
    * whatever the other plane has ready; a newer submit replaces one not yet
    * committed. bo may be null for a property-only change (fb is then the one
-   * on screen). Takes ownership of req and fence.
+   * on screen). Takes ownership of req and fence. pts: the video frame the
+   * content goes with, for the placement count (graphics only).
    */
-  uint64_t Submit(int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence);
+  uint64_t Submit(
+      int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, double pts = DVD_NOPTS_VALUE);
   uint64_t SubmitUi(gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence)
   {
     return Submit(PLANE_UI, bo, fb, req, fence);
@@ -107,6 +110,7 @@ private:
     drmModeAtomicReqPtr req = nullptr;
     int fence = -1;
     uint64_t seq = 0;
+    double pts = DVD_NOPTS_VALUE;
   };
 
   struct PlaneState
@@ -127,13 +131,23 @@ private:
     bool has[PLANE_COUNT] = {};
     gbm_bo* bo[PLANE_COUNT] = {};
     uint64_t generation[PLANE_COUNT] = {};
+    double pts[PLANE_COUNT] = {DVD_NOPTS_VALUE, DVD_NOPTS_VALUE};
+  };
+
+  //! the video frame on screen from a vblank on
+  struct OnScreen
+  {
+    uint64_t fromSeq = 0;
+    double pts = 0.0;
   };
 
   void QueueVblank(unsigned int epoch);
   void HandleEvents(int fd, SPresentTick& tick, bool& gotTick, unsigned int epoch);
   void CommitUi();
   void CommitWorker();
-  void OnFlip(uint64_t tag);
+  void OnFlip(uint64_t tag, unsigned int sequence);
+  //! graphics flipped at sequence: count its frame against the video frame shown
+  void CountPlacement(double pts, unsigned int sequence);
   void Drop(int plane, UiBuffer& buffer); // under m_uiMutex
   //! under a hold: a commit still marked in flight lost its flip (under m_uiMutex)
   void AbandonLostCommit(int detached);
@@ -173,6 +187,9 @@ private:
   std::thread m_commitThread;
   bool m_flipLostLogged = false;
   int64_t m_commitNs = 0;
+  double m_inFlightGfxPts = DVD_NOPTS_VALUE; //!< the graphics pts of the commit in flight
+  std::vector<OnScreen> m_onScreen; //!< coordinator thread only
+  double m_frameUs = 0.0;
   bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
   //! a commit carrying it failed: left out from then on
   std::atomic<bool> m_graphicsRejected{false};
@@ -196,6 +213,8 @@ private:
     int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
     int gfxSubmits = 0, gfxReplaced = 0, gfxCommits = 0; //!< graphics plane
+    //! graphics flips by frames from their video frame: <-1, -1, 0, +1, >+1
+    int gfxPlacement[5] = {};
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
 #include "threads/CriticalSection.h"
 #include "threads/Event.h"
@@ -90,8 +91,9 @@ private:
   void DrawGraphics();
   //! where the image goes on the plane, in plane pixels
   CRect Place(const CDVDOverlayImage& image, const STexture& texture) const;
-  //! draws and submits a frame; false when it could not be handed over
-  bool SubmitFrame(bool visible, int64_t nowNs);
+  //! draws and submits a frame; false when it could not be handed over. pts:
+  //! the video frame a new composition goes with (placement count only)
+  bool SubmitFrame(bool visible, int64_t nowNs, double pts = DVD_NOPTS_VALUE);
   //! re-commits what is on screen with the current geometry (R6)
   bool SubmitGeometry();
   void ReleaseReturned();
