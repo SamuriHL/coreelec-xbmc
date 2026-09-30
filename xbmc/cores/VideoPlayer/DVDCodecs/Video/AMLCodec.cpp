@@ -2202,6 +2202,21 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     return false;
   }
 
+  // an enhancement-layer composite needs both layers brought up from a full
+  // reset: VD0 carried over by the keeper is never re-enabled for it and the
+  // DV output stays black (M3GAN intro MEL -> FEL menu). Tear down as a plain
+  // close does and let this join go black.
+  if (aml_frame_kept() && (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7) &&
+      (doviIsFEL || (isDualStream && !hints.stills)))
+  {
+    aml_drop_kept_frame("the next stream composites an enhancement layer");
+    auto* display =
+        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+  }
+
   // a picture kept across the reinit stays until this decoder's first frame
   if (!aml_frame_kept())
     ShowMainVideo(false);
