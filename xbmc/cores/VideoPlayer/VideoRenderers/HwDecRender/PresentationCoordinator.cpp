@@ -756,14 +756,18 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
 
-  // a frame released at this vblank is on screen from the next one
+  // a frame released after vblank S is on VD1 from S+2: amvideo's vsync ISR takes
+  // it at S+1 and writes it through vsync RDMA, which applies at the next vsync
+  // (S6 has no pre-vsync). Traced on the box (v4l2_qbuf, amvideo_vf_peek,
+  // drm_vblank_event: 718 of 718 frames). An OSD commit issued after S shows
+  // at S+1, the vblank its flip event reports.
   if (!result.configured)
     m_onScreen.clear();
   else if (result.newFrame && tick.vblankNs)
   {
     if (m_onScreen.size() >= 8)
       m_onScreen.erase(m_onScreen.begin());
-    m_onScreen.push_back({tick.seq + 1, result.pts});
+    m_onScreen.push_back({tick.seq + 2, result.pts});
     m_frameUs = result.frametime;
   }
 
