@@ -189,7 +189,7 @@ protected:
 
   void RenderWithoutPicture(bool gui, bool configured, bool holdGraphics);
   //! under m_presentlock: the disc's graphics wait for a new segment's first picture
-  bool HoldGraphicsFor(int source);
+  bool HoldGraphicsFor(int source, bool& released);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
 
   void PresentSingle(bool clear, DWORD flags, DWORD alpha);

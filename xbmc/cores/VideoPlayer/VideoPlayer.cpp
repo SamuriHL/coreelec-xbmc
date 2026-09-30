@@ -2218,11 +2218,15 @@ void CVideoPlayer::Prepare()
   const bool deferDemux = DiscWaitState(false) != 0;
   if (deferDemux)
     CLog::Log(LOGINFO, "VideoPlayer: disc shows a screen with no playlist, deferring the demuxer");
-  else if (!OpenDemuxStream())
+  else
   {
-    m_bAbortRequest = true;
-    m_error = true;
-    return;
+    m_renderManager.SetAwaitingVideo(true);
+    if (!OpenDemuxStream())
+    {
+      m_bAbortRequest = true;
+      m_error = true;
+      return;
+    }
   }
 
   if (m_processInfo)
@@ -2233,6 +2237,8 @@ void CVideoPlayer::Prepare()
 
   if (!discStateRestored && !deferDemux)
     OpenDefaultStreams();
+  if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
+    m_renderManager.SetAwaitingVideo(false);
 
   // Update stack and offsets in fileItem (for Blurays/DVDs)
   m_pInputStream->UpdateStack(fileItem);
@@ -2441,7 +2447,8 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
-      if (m_CurrentVideo.id < 0)
+      // a disc menu opens its video stream later, from CheckBetterStream
+      if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
         m_renderManager.SetAwaitingVideo(false);
 
 #if defined(HAVE_LIBBLURAY)

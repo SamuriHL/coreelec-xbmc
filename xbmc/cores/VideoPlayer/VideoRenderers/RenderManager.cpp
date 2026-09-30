@@ -862,7 +862,7 @@ void CRenderManager::SetAwaitingVideo(bool awaiting)
 // A preloaded menu page is posted as soon as its playlist starts, before the
 // video decoder has even opened: shown at once it sits over black (or the
 // last segment's picture) for the whole decoder start.
-bool CRenderManager::HoldGraphicsFor(int source)
+bool CRenderManager::HoldGraphicsFor(int source, bool& released)
 {
   if (!m_awaitingVideo)
     return false;
@@ -877,6 +877,7 @@ bool CRenderManager::HoldGraphicsFor(int source)
               pictureShown ? "first picture" : "no picture in 3s");
     m_awaitingVideo = false;
     m_awaitIdx = -1;
+    released = true;
     return false;
   }
   return true;
@@ -905,12 +906,17 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   int source;
   bool holdGraphics;
+  bool graphicsReleased = false;
   {
     std::unique_lock lock(m_presentlock);
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
-    holdGraphics = HoldGraphicsFor(source);
+    holdGraphics = HoldGraphicsFor(source, graphicsReleased);
   }
+  // the GUI layer redraws only when dirty, and a held composition spent its
+  // one dirty frame while held
+  if (graphicsReleased)
+    OVERLAY::MarkDirty();
 
   {
     std::unique_lock lock(m_statelock);
