@@ -86,6 +86,7 @@ public:
 
   void          SetSpeed(int speed);
   void          SetDrain(bool drain, bool endOfStream = false);
+  void          WriteDrainPadding();
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
   void          SetVideoRate(int videoRate);
   uint64_t      GetOMXPts() const { return m_cur_pts; }

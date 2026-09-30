@@ -2074,8 +2074,11 @@ int CAMLCodec::GetAmlDuration() const
 // completes an access unit only once the next one starts, and fetches in
 // quanta, so a segment's last pictures stay inside the decoder when no more
 // input comes. On a drain that ends the stream (a close; never the stillframe
-// squeeze, after which input may resume), start one more (empty) access unit -
-// an access unit delimiter - and push it past the fetch quantum with filler.
+// squeeze, after which input may resume), once the decoder has consumed what
+// it can (GetPicture), start one more (empty) access unit - an access unit
+// delimiter - and push it past the fetch quantum with filler. Written earlier,
+// while the segment's remaining input is still queued, it does not release the
+// last pictures (Halo S2, phase 1 gate).
 void CAMLCodec::SetDrain(bool drain, bool endOfStream)
 {
   if (drain && !m_drain)
@@ -2084,7 +2087,11 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   m_drainEos = drain && (endOfStream || m_drainEos);
   if (!drain)
     m_drainPadded = false;
-  if (!drain || !endOfStream || m_drainPadded || !m_opened || !am_private ||
+}
+
+void CAMLCodec::WriteDrainPadding()
+{
+  if (m_drainPadded || !m_opened || !am_private ||
       am_private->gcodec.dec_mode != STREAM_TYPE_STREAM || am_private->video_format != VFORMAT_HEVC)
     return;
 
@@ -3373,6 +3380,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // a drain's input settles over time, not between two back-to-back polls
   if (m_drain && data_len != prev_data_len)
     m_drainInputMoved = std::chrono::steady_clock::now();
+  // an ending stream starved at its tail - input stopped moving and less than
+  // a fetch quantum's worth left (a stall with the output held keeps far more
+  // queued): the parser holds the last access units
+  if (m_drainEos && m_drain && !m_drainPadded && data_len < 65536 &&
+      std::chrono::steady_clock::now() - m_drainInputMoved >= std::chrono::milliseconds(100))
+    WriteDrainPadding();
   const bool drainInputSettled =
       m_drain && std::chrono::steady_clock::now() - m_drainInputMoved >= std::chrono::milliseconds(500);
 
