@@ -2486,6 +2486,14 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
     }
 
+    // a close that kept its picture (design 4.3) skipped the layer reset; the
+    // dual-layer branch below writes both switches itself
+    if (aml_frame_kept() && hints.dovi.dv_profile != 4 && hints.dovi.dv_profile != 7)
+    {
+      AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
+      AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+    }
+
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
     {
       // Stream path for FEL, and for dual-stream (disc) MEL titles: the
@@ -2496,10 +2504,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       // decoding. Single-stream MEL (MKV remuxes carry no in-stream EOS) and
       // menu clips (stills; validated seamless/keep-alive path) stay on the
       // frame path.
+      // both layer switches are written at every open: a close that kept its
+      // picture (design 4.3) skips the reset to 0
+      AmlDisplay->aml_set_drmProperty(
+          "dv_debug", DRM_MODE_OBJECT_CRTC,
+          doviIsFEL || (isDualStream && !hints.stills) ? "enable_fel 1" : "enable_fel 0");
+      AmlDisplay->aml_set_drmProperty(
+          "dv_debug", DRM_MODE_OBJECT_CRTC,
+          doviIsFEL || (isDualStream && !hints.stills) ? "enable_mel 1" : "enable_mel 0");
       if (doviIsFEL || (isDualStream && !hints.stills))
       {
-        AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 1");
-        AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 1");
         am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
         // Dual-stream DV is fed one short m2ts segment at a time (disc
         // playitems, or a file-played BL+EL rip), so the stream buffer can
@@ -3830,9 +3844,6 @@ void CAMLCodec::ShowMainVideo(const bool show)
     seen_generation = aml_disable_video_generation();
     saved_disable_video = -1;
   }
-  // the new decoder's first frame is on: nothing is kept any more
-  if (show)
-    aml_set_frame_kept(false);
   int disable_video = show ? 0:1;
   if (saved_disable_video == disable_video)
     return;
@@ -3968,6 +3979,11 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
   {
     // mainvideo 'should' be showing already if we get here, make sure.
     ShowMainVideo(true);
+    // this decoder's frame is on: a picture kept at the join is replaced.
+    // Not a closed decoder's: its frames still in the render queue present
+    // after the close
+    if (m_opened)
+      aml_set_frame_kept(false);
     return;
   }
 
@@ -4079,6 +4095,8 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
   // we only get called once gui has changed to something
   // that would show video playback, so show it.
   ShowMainVideo(true);
+  if (m_opened)
+    aml_set_frame_kept(false);
 }
 
 void CAMLCodec::SetVideoRate(int videoRate)
