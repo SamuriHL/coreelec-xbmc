@@ -173,12 +173,17 @@ bool CDVDInputStreamBluray::DiscHasDolbyVision()
 void CDVDInputStreamBluray::DecideEarlyDvEngage()
 {
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
-  if (!m_dvDiscSession || m_dvEarlyDecided || !m_titleInfo || m_titleInfo->clip_count == 0 ||
+  if (m_dvEarlyDecided || !m_titleInfo || m_titleInfo->clip_count == 0 ||
       m_titleInfo->clips[0].video_stream_count == 0)
     return;
   m_dvEarlyDecided = true;
   const BLURAY_CLIP_INFO& clip = m_titleInfo->clips[0];
   const BLURAY_STREAM_INFO& video = clip.video_streams[0];
+  CLog::Log(LOGINFO, "CDVDInputStreamBluray - first playlist {} with video: format {} rate {} "
+            "dynamic range {} ({} domain)", m_playlist, video.format, video.rate,
+            video.dynamic_range_type, IsMenuDomainVideo() ? "menu" : "title");
+  if (!m_dvDiscSession)
+    return;
   unsigned int vs10 = DOLBY_VISION_OUTPUT_MODE_BYPASS;
   bool dvOutput = false;
   if (clip.dv_stream_count > 0 || video.dynamic_range_type == BLURAY_DYNAMIC_RANGE_DOLBY_VISION)
@@ -736,6 +741,11 @@ bool CDVDInputStreamBluray::Open()
               disc_info->initial_dynamic_range_type,
               m_pqAuthoredGraphics ? "graphics drawn as HDR until a playlist says otherwise"
                                    : "SDR");
+    // index.bdmv AppInfo, logged beside the first playlist's clip format
+    // (DecideEarlyDvEngage) to learn what discs declare for the load (13.w)
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - AppInfo: video_format {} frame_rate {} "
+              "3D {} initial output {}", disc_info->video_format, disc_info->frame_rate,
+              disc_info->content_exist_3D, disc_info->initial_output_mode_preference);
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - BD-J handled        : {}",
               disc_info->bdj_handled);
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - UNSUPPORTED titles  : {}",
