@@ -190,6 +190,7 @@ private:
   bool            m_felIdrPadding = false;
   bool            m_e2DrainPadding = false; //!< phase 0 E2 flag file, read at open
   bool            m_e2Padded = false; //!< this drain's padding is written
+  std::chrono::steady_clock::time_point m_e2InputMoved; //!< last data_len change after the pad
 
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.

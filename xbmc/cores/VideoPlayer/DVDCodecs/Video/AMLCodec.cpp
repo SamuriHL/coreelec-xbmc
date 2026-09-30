@@ -2099,6 +2099,7 @@ void CAMLCodec::SetDrain(bool drain, bool endOfStream)
   pad.push_back(0x80);
 
   m_e2Padded = true;
+  m_e2InputMoved = std::chrono::steady_clock::now();
   size_t written = 0;
   for (int tries = 0; written < pad.size() && tries < 50; ++tries)
   {
@@ -3559,6 +3560,19 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // Reset clears.
   else if (m_drain && data_len == 0 && !m_no_data_since_reset)
     return CDVDVideoCodec::VC_EOF;
+  // E2: the padded tail is still being parsed. The drain loop polls back to
+  // back and ends on the first idle report, which would close the decoder
+  // before the tail comes out; stay busy until the input settles.
+  else if (m_e2Padded && m_drain && ret == EAGAIN &&
+           elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout) &&
+           (data_len != prev_data_len ||
+            std::chrono::steady_clock::now() - m_e2InputMoved < std::chrono::milliseconds(500)))
+  {
+    if (data_len != prev_data_len)
+      m_e2InputMoved = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    return CDVDVideoCodec::VC_NONE;
+  }
   else if (ret == EAGAIN &&
            (m_speed == DVD_PLAYSPEED_PAUSE ||
             (data_len < idleInputLimit && data_len == prev_data_len)))
