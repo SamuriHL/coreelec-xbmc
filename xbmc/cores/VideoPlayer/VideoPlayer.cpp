@@ -3445,6 +3445,11 @@ void CVideoPlayer::HandlePlaySpeed()
       m_firstPictureWaitSince = {};
       m_firstPictureWaitExpired = false;
     }
+    // the wait's own expiry is its only exit: exception 1 below (video does
+    // not start) would otherwise flush the buffers after one video timeout
+    const bool waitingFirstPicture =
+        m_firstPictureWaitSince != std::chrono::steady_clock::time_point{} &&
+        !m_firstPictureWaitExpired;
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentVideo.packets == 0 && m_CurrentAudio.packets > threshold) ||
                  audioFullVideoStarving;
@@ -3573,6 +3578,8 @@ void CVideoPlayer::HandlePlaySpeed()
 
       m_syncStartPtsWait.reset();
       m_syncStartDeferred = false;
+      m_firstPictureWaitSince = {};
+      m_firstPictureWaitExpired = false;
       m_clock.Discontinuity(clock);
       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
@@ -3602,9 +3609,11 @@ void CVideoPlayer::HandlePlaySpeed()
           !m_VideoPlayerAudio->AcceptsData() &&
           m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING &&
           m_VideoPlayerVideo->IsStalled() &&
-          m_CurrentVideo.packets > 10)
+          m_CurrentVideo.packets > 10 && !waitingFirstPicture)
       {
         m_VideoPlayerAudio->AcceptsData();
+        m_firstPictureWaitSince = {};
+        m_firstPictureWaitExpired = false;
         CLog::Log(LOGWARNING, "VideoPlayer::Sync - stream player video does not start, flushing buffers");
         FlushBuffers(DVD_NOPTS_VALUE, true, true);
         m_syncStuckArmed = false;
