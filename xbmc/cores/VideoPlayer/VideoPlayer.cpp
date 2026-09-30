@@ -2828,8 +2828,10 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket, do
       pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0);
     // a disc clip's EL can be muxed ahead of its first BL: before the BL opens
     // the video stream the queue is closed, and losing the IDR's EL cost the
-    // clip its first GOP (13.u3)
-    if (!m_VideoPlayerVideo->IsInited())
+    // clip its first GOP (13.u3). Once ELs are held, later ones join them
+    // even if something else opened the queue meanwhile (a stream change in
+    // direct-playlist mode): the first BL sends them all in arrival order.
+    if (!m_VideoPlayerVideo->IsInited() || !m_pendingElPackets.empty())
     {
       m_pendingElPackets.push_back(pPacket);
       if (m_pendingElPackets.size() > 48)
@@ -4686,6 +4688,9 @@ void CVideoPlayer::HandleMessages()
       m_CurrentAudio.stream = NULL;
       m_CurrentVideo.stream = NULL;
       m_CurrentSubtitle.stream = NULL;
+
+      // held ELs belong to the demuxer state being reset
+      ClearPendingElPackets();
 
       // we need to reset the demuxer, probably because the streams have changed
       if(m_pDemuxer)

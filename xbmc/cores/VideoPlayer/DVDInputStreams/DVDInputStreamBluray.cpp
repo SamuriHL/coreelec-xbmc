@@ -2224,13 +2224,15 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   std::unique_lock lock(m_overlayLock);
   SPlane& plane(m_planes[ov->plane]);
 
-  // The disc supplies the rectangle. An empty rectangle or one that starts
-  // off the plane is rejected; one that crosses the right or bottom edge is
+  // The disc supplies the rectangle. An empty rectangle, one that starts
+  // off the plane, or one larger than the plane (which would size the decode
+  // buffer from corrupt data) is rejected; one that crosses the right or bottom edge is
   // decoded at its full size and cropped to the plane below, as a hardware
   // player shows it (the spec forbids such objects, so only mis-authored
   // discs reach the crop). Idea from matthane's ce-canary 4ef734f4c0.
   if (ov->cmd == BD_OVERLAY_DRAW && !ov->palette_update_flag &&
-      (ov->w == 0 || ov->h == 0 || ov->x >= plane.w || ov->y >= plane.h))
+      (ov->w == 0 || ov->h == 0 || ov->x >= plane.w || ov->y >= plane.h || ov->w > plane.w ||
+       ov->h > plane.h))
   {
     CLog::Log(LOGWARNING, "CDVDInputStreamBluray - invalid overlay rectangle {}x{} at {},{} on "
                           "plane {} ({}x{})",

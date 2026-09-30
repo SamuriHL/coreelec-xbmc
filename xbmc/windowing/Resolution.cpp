@@ -291,7 +291,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
       // note: height has greater tolerance due to 32/64px boundaries e.g. 1080→1088 or 2160→2176
       if (MatchesMode(width, height, info) &&
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
-          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(
             LOGDEBUG,
@@ -436,7 +437,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
 
       // allow resolutions that are desktop resolution but have 2.5 times the refresh rate
       if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
-          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(
             LOGDEBUG,
