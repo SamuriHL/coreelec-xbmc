@@ -2064,8 +2064,9 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   m_startHeld = false;
   m_startReleasedClock = m_clock.GetClock();
 #if defined(HAVE_LIBBLURAY)
-  // a BD-J application's media clock ran on during the hold (design 3.6)
-  if (m_pInputBluray)
+  // a BD-J application's media clock ran on during the hold (design 3.6); a
+  // flush release comes from a seek or a new playlist, which re-anchor it
+  if (m_pInputBluray && std::string_view(why) != "flush")
     m_pInputBluray->ShiftBdjMediaClock(held);
 #endif
   m_VideoPlayerVideo->SetStartHeld(false);
