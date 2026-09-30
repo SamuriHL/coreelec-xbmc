@@ -536,6 +536,8 @@ protected:
    *        (CDVDInputStreamBluray's seamless glide), so the demuxer is part
    *        way through the incoming clip and must not be flushed. */
   void BdSegmentTransition(bool glided = false);
+  //! true while a held disc boundary waits for the old streams to finish starting
+  bool WaitStartAtBoundary();
 
   bool IsValidStream(const CCurrentStream& stream);
   bool IsBetterStream(const CCurrentStream& current, CDemuxStream* stream);
@@ -772,6 +774,7 @@ protected:
   double m_menuWrapVideoGap = 0.0;
   //! the one correction of a timeline jump joined ahead of the clock after a still
   double m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  std::chrono::steady_clock::time_point m_boundaryStartWaitSince{};
 
   // Per-jump sequence stamped onto the packet that opens a timeline restart,
   // and a latch so only the first packet of a jump is stamped - the unconfirmed

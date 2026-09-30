@@ -172,6 +172,8 @@ public:
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
   bool IsMenuDomainVideo();
+  //! a stream boundary is held: Read() returns nothing until NextStream()
+  bool IsHoldingBoundary() const { return m_hold == HOLD_HELD; }
   // The current playlist's STN table names at least one IG stream. The STN
   // covers out-of-mux IG carried by a sub-path (TNG's menus), which the
   // clip files alone would miss.

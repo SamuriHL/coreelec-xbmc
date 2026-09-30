@@ -1687,6 +1687,43 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
  * event ordering or event loss can strand a stream closed ("the disc will
  * dictate later" is not part of any contract). */
 
+/* A segment can be read out before its streams have finished starting: the
+ * 4 s intro of Halo S2 is read in a quarter of a second, and the disc jumps to
+ * its menu at once. CloseStream() only drains a stream that is in sync, so the
+ * transition would tear the intro down unplayed. While the boundary is held,
+ * nothing more is read; keep it held until the start completes (bounded) so
+ * a draining transition plays the queued segment out. */
+bool CVideoPlayer::WaitStartAtBoundary()
+{
+  const auto starting = [](const CCurrentStream& current)
+  { return current.id >= 0 && current.syncState != IDVDStreamPlayer::SYNC_INSYNC; };
+
+#if defined(HAVE_LIBBLURAY)
+  const bool held = m_pInputBluray && m_pInputBluray->IsHoldingBoundary();
+#else
+  const bool held = false;
+#endif
+  if (!held || m_bAbortRequest || !(starting(m_CurrentAudio) || starting(m_CurrentVideo)))
+  {
+    m_boundaryStartWaitSince = {};
+    return false;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (m_boundaryStartWaitSince == std::chrono::steady_clock::time_point{})
+  {
+    m_boundaryStartWaitSince = now;
+    CLog::Log(LOGINFO, "VideoPlayer: stream boundary before the streams started, holding it");
+  }
+  else if (now - m_boundaryStartWaitSince >= 3s)
+  {
+    CLog::Log(LOGWARNING, "VideoPlayer: streams still not started 3s after a stream boundary, "
+                          "releasing it");
+    return false;
+  }
+  return true;
+}
+
 CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
 {
 #if defined(HAVE_LIBBLURAY)
@@ -2564,6 +2601,12 @@ void CVideoPlayer::Process()
             }
           }
         }
+      }
+
+      if (WaitStartAtBoundary())
+      {
+        CThread::Sleep(10ms);
+        continue;
       }
 
       // if there is another stream available, reopen demuxer
