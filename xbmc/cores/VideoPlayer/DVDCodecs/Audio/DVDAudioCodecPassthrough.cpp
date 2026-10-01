@@ -20,7 +20,6 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
-#include "utils/StringUtils.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -290,18 +289,6 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       m_seedRefPts = packet.pts;
       m_seedRefUnits = m_seedUnits;
     }
-    // TEMP LABELDIAG: the packets after a reset
-    if (m_needsResync && m_packetDiag < 40)
-    {
-      m_packetDiag++;
-      CLog::Log(LOGINFO,
-                "LABELDIAG packet pts {:.3f} size {} used {} unit {} locked {}->{} current {:.3f} "
-                "next {:.3f} first4 {:02x}{:02x}{:02x}{:02x} sync {:02x}{:02x}{:02x}{:02x}",
-                packet.pts / 1e6, iSize, used, m_dataSize, wasLocked, m_parser.IsValid(),
-                m_currentPts / 1e6, m_nextPts / 1e6, pData[0], pData[1], pData[2], pData[3],
-                iSize > 7 ? pData[4] : 0, iSize > 7 ? pData[5] : 0, iSize > 7 ? pData[6] : 0,
-                iSize > 7 ? pData[7] : 0);
-    }
 
     // The packet the parser locked onto a TrueHD stream in: its pts belongs to
     // its first access unit, and the major sync the stream starts from can be
@@ -409,37 +396,10 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       {
         // LAV Audio: a MAT frame contains 24 TrueHD frames; cache the timestamp
         // of the first one so the whole MAT burst carries that PTS.
-        //
-        // Until the packer has a major sync it discards every access unit, so
-        // the first one it takes can be up to 128 units (107 ms) after the
-        // packet pts current then (after a seek). Its time is that pts plus the
-        // units discarded since: a frame labelled with the discarded unit's pts
-        // put every label after a seek that much early, which the jitter
-        // tracker only corrects past 100 ms (13 Hours: -104 ms, 8 s after).
-        const bool majorSync = m_dataSize >= 8 && m_buffer[4] == 0xF8 && m_buffer[5] == 0x72 &&
-                               m_buffer[6] == 0x6F && m_buffer[7] == 0xBA;
-        const double unitTime =
-            static_cast<double>(m_format.m_streamInfo.GetDuration()) / 24.0 * 1000.0;
-        if (!m_packerMAT->IsStarted() && !majorSync)
-        {
-          if (IsValidPts(m_currentPts) && m_currentPts != m_truehdSkipPts)
-          {
-            m_truehdSkipPts = m_currentPts;
-            m_truehdSkipTime = 0.0;
-          }
-          m_truehdSkipTime += unitTime;
-        }
-        else if (!m_truehdPtsCacheValid && IsValidPts(m_currentPts))
+        if (!m_truehdPtsCacheValid && IsValidPts(m_currentPts))
         {
           m_truehdPtsCache = m_currentPts;
-          if (m_currentPts == m_truehdSkipPts)
-            m_truehdPtsCache += m_truehdSkipTime;
           m_truehdPtsCacheValid = true;
-          if (m_truehdSkipTime > 0.0)
-            CLog::LogF(LOGDEBUG, "TrueHD: {:.3f} ms of access units before the first major sync",
-                       m_truehdSkipTime / 1000.0);
-          m_truehdSkipPts = LOCAL_NOPTS;
-          m_truehdSkipTime = 0.0;
         }
       }
 
@@ -579,8 +539,6 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     m_internalClock = seed;
     m_needsResync = false;
     m_jitterTracker.Reset();
-    m_labelDiag = 0; // TEMP LABELDIAG
-    m_packetDiag = 40;
     CLog::LogF(LOGDEBUG, "internal clock synced to demuxer PTS {:.3f}s",
                demuxerPts / DVD_TIME_BASE);
   }
@@ -593,18 +551,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   {
     const double jitter = m_internalClock - demuxerPts + samplesOffsetTime;
     m_jitterTracker.Sample(jitter);
-    // TEMP LABELDIAG (design §15, 2.2): the label against the demuxer, per frame,
-    // after each seed
-    if (m_labelDiag < 60)
-    {
-      m_labelDiagLine += StringUtils::Format(" {:+.1f}", jitter / 1000.0);
-      if (++m_labelDiag % 20 == 0)
-      {
-        CLog::Log(LOGINFO, "LABELDIAG frames {}-{} (ms):{}", m_labelDiag - 19, m_labelDiag,
-                  m_labelDiagLine);
-        m_labelDiagLine.clear();
-      }
-    }
+
 
     // Correct toward the most stable value in the window (smallest absolute jitter).
     const double absMinJitter = m_jitterTracker.AbsMinimum();
@@ -694,11 +641,8 @@ void CDVDAudioCodecPassthrough::Reset()
     m_nextPts = LOCAL_NOPTS;
     m_truehdPtsCache = LOCAL_NOPTS;
     m_truehdPtsCacheValid = false;
-    m_truehdSkipPts = LOCAL_NOPTS;
-    m_truehdSkipTime = 0.0;
     m_internalClock = LOCAL_NOPTS;
     m_needsResync = true;
-    m_packetDiag = 0; // TEMP LABELDIAG
     m_seedRefPts = LOCAL_NOPTS;
     m_seedRefUnits = 0;
     m_seedUnits = 0;

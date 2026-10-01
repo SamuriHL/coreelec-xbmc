@@ -23,7 +23,6 @@
 #include <atomic>
 
 #include <list>
-#include <string>
 #include <memory>
 #include <vector>
 
@@ -119,18 +118,11 @@ private:
   // TrueHD timestamp caching: cache the PTS of the first frame in a MAT assembly.
   double m_truehdPtsCache{LOCAL_NOPTS};
   bool m_truehdPtsCacheValid{false};
-  // access units the MAT packer discarded while waiting for a major sync (after a
-  // seek or a reset): the packet pts they arrived with, and their duration since
-  double m_truehdSkipPts{LOCAL_NOPTS};
-  double m_truehdSkipTime{0.0};
   // the TrueHD seed (after a reset): the latest packet with its own pts among
   // the access units of the first MAT frame, and how many units came before it
   double m_seedRefPts{LOCAL_NOPTS};
   int m_seedRefUnits{0};
   int m_seedUnits{0};
-  int m_labelDiag{60};          // TEMP LABELDIAG
-  int m_packetDiag{0};          // TEMP LABELDIAG
-  std::string m_labelDiagLine;  // TEMP LABELDIAG
 
   // Jitter tracking using the LAV FloatingAverage (min-abs correction).
   static constexpr size_t JITTER_WINDOW_SIZE = 256;
