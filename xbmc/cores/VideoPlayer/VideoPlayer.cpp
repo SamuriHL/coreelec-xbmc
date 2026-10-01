@@ -3665,8 +3665,25 @@ void CVideoPlayer::HandlePlaySpeed()
                              m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
                              m_CurrentVideo.packets > 0 &&
                              m_renderManager.IsResolutionUpdatePending();
-      if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
-          (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
+      // A start scheduled on the clock (design §15, step 2.2) that no mode set
+      // holds: held and released at once, so it resumes on a vblank a lead
+      // ahead with the audio landing there. The clock starts at the first
+      // picture (or the first audio, without video); audio queued before it
+      // is pre-roll. Live streams keep their own start (a second behind).
+      const bool videoStart =
+          m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
+      const bool audioOnlyStart = m_CurrentVideo.id < 0 &&
+                                  m_CurrentAudio.starttime != DVD_NOPTS_VALUE &&
+                                  m_CurrentAudio.packets > 0;
+      const bool scheduleStart = !holdStart && m_scheduledStart &&
+                                 m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+                                 !m_pInputStream->IsRealtime() && (videoStart || audioOnlyStart);
+      if (scheduleStart)
+      {
+        clock = videoStart ? m_CurrentVideo.starttime : m_CurrentAudio.starttime;
+      }
+      else if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
+               (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
       {
         clock = m_CurrentVideo.starttime;
       }
@@ -3715,7 +3732,7 @@ void CVideoPlayer::HandlePlaySpeed()
       // resumes its stream at a resync unless it is paused, and a stream that
       // runs for a moment has the start of its sound consumed by its sync. The
       // caching pause stays in place for the same reason (design 13.ab).
-      if (holdStart)
+      if (holdStart || scheduleStart)
       {
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
@@ -3725,7 +3742,11 @@ void CVideoPlayer::HandlePlaySpeed()
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
-      if (!holdStart)
+      // after the resyncs, so the audio player takes its resync paused and
+      // resumes with the release
+      if (scheduleStart)
+        ReleaseHeldStart("scheduled start");
+      else if (!holdStart)
         SetCaching(CACHESTATE_DONE);
       UpdatePlayState(0);
 
