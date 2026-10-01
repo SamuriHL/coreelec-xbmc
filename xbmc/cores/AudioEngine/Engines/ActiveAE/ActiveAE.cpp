@@ -2283,7 +2283,9 @@ bool CActiveAE::RunStages()
         // a held landing holds its head while the sink plays its keep-alive:
         // head pts - delay stands still, so its average takes out the
         // delay's period sawtooth (design 13.ab, model D)
-        if ((*it)->m_heldLanding)
+        // (from 200 ms on: the sink's queue fills with the pre-roll pauses first)
+        if ((*it)->m_heldLanding &&
+            std::chrono::steady_clock::now() - (*it)->m_heldLandingSince >= 200ms)
         {
           if ((*it)->m_heldQCount == 0)
             (*it)->m_heldQFirst = std::chrono::steady_clock::now();
@@ -2760,6 +2762,7 @@ void CActiveAE::ArmHeldLanding(CActiveAEStream* stream)
   stream->m_heldLanding = true;
   stream->m_heldQSum = 0.0;
   stream->m_heldQCount = 0;
+  stream->m_mutePauseCarry = 0.0;
   stream->m_heldLandingSince = std::chrono::steady_clock::now();
   CLog::Log(LOGINFO, "ActiveAE - held start: holding the first sample for its landing");
 }
@@ -2780,9 +2783,9 @@ void CActiveAE::DisarmHeldLanding(CActiveAEStream* stream, const char* why)
 bool CActiveAE::HeldLanding(CActiveAEStream* stream, double errorScale)
 {
   using namespace std::chrono;
-  // the walk below inserts at most one frame per call and the margin keeps the
-  // first sample from leaving before the pad is queued
-  constexpr double MARGIN_MS = 40.0;
+  // the walk holds the first sample until the whole pad is queued: the margin
+  // only keeps a pad from being too small to place
+  constexpr double MARGIN_MS = 5.0;
   constexpr double MAX_PAD_MS = 1000.0;
   const auto now = steady_clock::now();
   const double waited = duration<double, std::milli>(now - stream->m_heldLandingSince).count();
@@ -2794,11 +2797,11 @@ bool CActiveAE::HeldLanding(CActiveAEStream* stream, double errorScale)
       stream->m_heldQCount ? stream->m_heldQSum / stream->m_heldQCount - clock : 0.0;
 
   const char* fallback = nullptr;
-  if (stream->m_heldQCount && pad < MARGIN_MS)
+  if (stream->m_heldQCount >= 10 && pad < MARGIN_MS)
     fallback = "the clock caught up before the landing";
   else if (waited > 1500.0)
     fallback = phasePending ? "no display phase in 1.5 s" : "no measurement in 1.5 s";
-  else if (phasePending || stream->m_heldQCount < 5 || sampled < 100.0)
+  else if (phasePending || stream->m_heldQCount < 10 || sampled < 200.0)
     return false; // keep holding the first sample
   else if (pad > MAX_PAD_MS)
     fallback = "pad out of range";
@@ -2861,6 +2864,20 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 
   if (stream->m_heldLanding && !HeldLanding(stream, errorScale))
   {
+    // Pre-roll: the first sample stays held and the sink plays the engine's
+    // own pauses, one frame each, from the silence pool. These are counted in
+    // the sink delay, as the walk's pauses and today's muted frames are; the
+    // sink's keep-alive bursts are not, and a pad measured over them landed a
+    // frame off (box, 2026-09-30: +17 ms TrueHD, -28 ms DD).
+    if (CSampleBuffer* pause = m_silenceBuffers->GetFreeBuffer())
+    {
+      const double ms = stream->m_processingBuffers->m_inputFormat.m_streamInfo.GetDuration() +
+                        stream->m_mutePauseCarry;
+      pause->pkt->nb_samples = 0;
+      pause->pkt->pause_burst_ms = static_cast<int>(ms);
+      stream->m_mutePauseCarry = ms - pause->pkt->pause_burst_ms;
+      return pause;
+    }
     stream->m_syncWaitSilence = true;
     m_heldLandingWaiting = true;
     return nullptr;

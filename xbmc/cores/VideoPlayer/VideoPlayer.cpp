@@ -2106,9 +2106,13 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   // of it (it holds the sample, the renderer measures the display phase during
   // the lead, then the distance is played as pause bursts). Picture, graphics
   // and sound then start together at the first picture's time.
-  constexpr double LEAD = DVD_MSEC_TO_TIME(500);
+  // The lead covers the sink's queue filling with the engine's own pauses, the
+  // phase seed (two agreeing blocks of ~125 ms at 24p) and a 200 ms average.
+  // Only a passthrough stream under the session hold can land this way.
+  constexpr double LEAD = DVD_MSEC_TO_TIME(1000);
   const bool lead = std::string_view(why) != "flush" && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
-                    m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0;
+                    m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 && m_audioSessionHold &&
+                    m_VideoPlayerAudio->IsPassthrough();
   const double first = m_clock.GetClock();
   m_startReleasedClock = first;
 #if defined(HAVE_LIBBLURAY)
@@ -2117,20 +2121,22 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   if (m_pInputBluray && std::string_view(why) != "flush")
     m_pInputBluray->ShiftBdjMediaClock(held + (lead ? LEAD / DVD_TIME_BASE : 0.0));
 #endif
-  m_VideoPlayerVideo->SetStartHeld(false);
-  m_renderManager.SetStartHeld(false);
+  // the clock first, then the graphics hold, then the start hold: the GUI
+  // thread must never see the start released with the clock still at `first`
   if (lead)
   {
-    m_renderManager.HoldGraphicsUntil(first);
     m_clock.Discontinuity(first - LEAD);
+    m_renderManager.HoldGraphicsUntil(first);
     m_VideoPlayerAudio->SetHeldStartRelease();
   }
+  m_VideoPlayerVideo->SetStartHeld(false);
+  m_renderManager.SetStartHeld(false);
   m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);
   m_streamPlayerSpeed = m_playSpeed;
   CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f}{})", held,
-            why, m_clock.GetClock() / DVD_TIME_BASE, lead ? ", lead 0.5 s" : "");
+            why, m_clock.GetClock() / DVD_TIME_BASE, lead ? ", lead 1 s" : "");
 }
 
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)
@@ -6685,6 +6691,8 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   }
   if (m_startHeld)
     ReleaseHeldStart("flush");
+  // a seek or a new playlist re-times the clock: a held start's graphics hold is over
+  m_renderManager.HoldGraphicsUntil(DVD_NOPTS_VALUE);
   m_startReleasedClock = DVD_NOPTS_VALUE;
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
