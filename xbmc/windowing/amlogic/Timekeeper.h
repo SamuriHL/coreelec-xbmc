@@ -37,6 +37,7 @@ private:
   void OnTimeout(int64_t now);
   void Publish(int64_t vblankNs, bool synthetic);
   bool ReadMode(uint64_t& num, uint64_t& den);
+  bool ReadModeNow(uint64_t& num, uint64_t& den);
   void FindFracProperty();
   int FracPolicy();
   double NominalNs() const { return 1e9 * static_cast<double>(m_num) / static_cast<double>(m_den); }
@@ -82,6 +83,8 @@ private:
   std::atomic<uint64_t> m_synthetic{0};
   std::atomic<uint64_t> m_heldBack{0}; // real vblanks that would have stepped the counter back
   std::atomic<uint64_t> m_queueErrors{0};
+  std::atomic<uint64_t> m_modeReads{0};
+  std::atomic<int64_t> m_modeReadMaxUs{0};
   std::atomic<uint64_t> m_validEpoch{0};
   std::atomic<int64_t> m_validTicks{0};
   std::atomic<int64_t> m_validNs{0};

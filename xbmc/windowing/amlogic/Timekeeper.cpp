@@ -224,6 +224,19 @@ int CTimekeeper::FracPolicy()
 
 bool CTimekeeper::ReadMode(uint64_t& num, uint64_t& den)
 {
+  const int64_t start = MonotonicNs();
+  const bool ok = ReadModeNow(num, den);
+  const int64_t us = (MonotonicNs() - start) / 1000;
+  m_modeReads.fetch_add(1, std::memory_order_relaxed);
+  int64_t max = m_modeReadMaxUs.load(std::memory_order_relaxed);
+  while (us > max && !m_modeReadMaxUs.compare_exchange_weak(max, us))
+  {
+  }
+  return ok;
+}
+
+bool CTimekeeper::ReadModeNow(uint64_t& num, uint64_t& den)
+{
   drmModeCrtcPtr crtc = drmModeGetCrtc(m_fd, m_crtcId);
   if (!crtc)
     return false;
@@ -591,14 +604,16 @@ void CTimekeeper::Report()
 
     CLog::Log(LOGINFO,
               "TIMEKEEPER epoch {} tick {} kseq {} | wake us p50 {} p99 {} p99.9 {} max {} (n {}) | "
-              "skips {} synthetic {} heldback {} queue errors {} stepped back {} | vblank vs "
+              "skips {} synthetic {} heldback {} queue errors {} stepped back {} mode reads {} "
+              "(max {} us) | vblank vs "
               "nominal {:+.2f} ppm (n {}, resid {:.0f} us) | CDVDClock vs timeline {:+.1f} ppm "
               "(n {}, resid rms {:.2f} max {:.2f} ms, coordinator lag {} vblanks) | audio {} Hz vs "
               "timeline {:+.2f} ppm (n {}, resid rms {:.0f} max {:.0f} us); at htstamp {:+.2f} ppm "
               "(n {}, resid rms {:.0f} max {:.0f} us)",
               tl[TL_EPOCH], tl[TL_TICK], tl[TL_KERNEL_SEQ], percentile(0.5), percentile(0.99),
               percentile(0.999), wakeMax, total, m_skips.load(), m_synthetic.load(),
-              m_heldBack.load(), m_queueErrors.load(), steppedBack, ratePpm, r.n, r.rms / 1000.0,
+              m_heldBack.load(), m_queueErrors.load(), steppedBack, m_modeReads.exchange(0),
+              m_modeReadMaxUs.exchange(0), ratePpm, r.n, r.rms / 1000.0,
               clockPpm, c.n, c.rms / 1000.0, c.max / 1000.0, maxLag, audioRate, audioPpm, a.n,
               a.rms * usPerFrame, a.max * usPerFrame, audioHtPpm, h.n, h.rms * usPerFrame,
               h.max * usPerFrame);
