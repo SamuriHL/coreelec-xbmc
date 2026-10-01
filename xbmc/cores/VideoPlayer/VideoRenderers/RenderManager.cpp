@@ -628,7 +628,7 @@ void CRenderManager::UnInit()
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers)
 {
-  // a file close or skin reload: a held start's graphics hold is over
+  // a seek or a new segment re-times the clock: a held start's graphics hold is over
   m_graphicsHeldUntil = DVD_NOPTS_VALUE;
   if (!m_pRenderer)
     return true;
@@ -867,14 +867,12 @@ bool CRenderManager::GraphicsWithheld()
   // moving picture, as the sound does (design 13.ab)
   if (m_startHeld)
     return true;
-  double heldUntil = m_graphicsHeldUntil;
+  const double heldUntil = m_graphicsHeldUntil;
   if (heldUntil != DVD_NOPTS_VALUE)
   {
-    // within the start's lead; a clock further back means the timeline moved
-    const double clock = m_dvdClock.GetClock();
-    if (clock < heldUntil && clock > heldUntil - DVD_MSEC_TO_TIME(1500))
+    if (m_dvdClock.GetClock() < heldUntil)
       return true;
-    m_graphicsHeldUntil.compare_exchange_strong(heldUntil, DVD_NOPTS_VALUE);
+    m_graphicsHeldUntil = DVD_NOPTS_VALUE;
   }
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
