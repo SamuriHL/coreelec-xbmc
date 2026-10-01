@@ -22,6 +22,7 @@
 
 #include <atomic>
 
+#include <deque>
 #include <list>
 #include <memory>
 #include <vector>
@@ -123,6 +124,12 @@ private:
   double m_seedRefPts{LOCAL_NOPTS};
   int m_seedRefUnits{0};
   int m_seedUnits{0};
+  int m_matUnits{0}; // units in the MAT frame being packed
+  // MAT frames held after a reset until a packet with its own pts dates them
+  std::deque<std::vector<uint8_t>> m_heldMat;
+  bool m_holdDone{false};
+  double m_heldFirstPts{LOCAL_NOPTS};
+  static constexpr size_t MAX_HELD_MAT = 8;
 
   // Jitter tracking using the LAV FloatingAverage (min-abs correction).
   static constexpr size_t JITTER_WINDOW_SIZE = 256;

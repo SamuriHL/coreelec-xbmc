@@ -401,6 +401,10 @@ void CVideoPlayerAudio::Process()
       {
         m_audioSink.Flush();
       }
+      // the content the codec labels was broken (queued audio flushed here, or
+      // packets dropped before it)
+      const bool reseed = flushed || m_packetsDropped;
+      m_packetsDropped = false;
       m_audioClock = pts + delay;
 
       // LAV PCM: reset jitter tracking on resync
@@ -422,7 +426,7 @@ void CVideoPlayerAudio::Process()
       // (block timestamps against 20 ms MAT frames). A start scheduled on the
       // clock lands on the queued labels and then saw the rest step by that
       // much (design §15, step 2.2: Aladdin, -8.9 ms at the re-seed).
-      if (flushed && m_pAudioCodec && m_pAudioCodec->NeedPassthrough())
+      if (reseed && m_pAudioCodec && m_pAudioCodec->NeedPassthrough())
       {
         auto* passthroughCodec = dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
         if (passthroughCodec && passthroughCodec->IsLavStyleSyncEnabled())
@@ -554,6 +558,8 @@ void CVideoPlayerAudio::Process()
 
       if (bPacketDrop)
       {
+        // the codec does not see the dropped packets: its clock must re-seed
+        m_packetsDropped = true;
         if (m_syncState != IDVDStreamPlayer::SYNC_STARTING)
         {
           m_audioSink.Drain();

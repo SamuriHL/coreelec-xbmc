@@ -284,7 +284,8 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
     // A packet parsed from its start (no backlog ahead of it) emits its own first
     // unit here: while the stream waits for its seed, remember the latest such
     // packet's pts and the units before it (counted where they are packed)
-    if (m_lavStyleSyncEnabled && m_needsResync && m_dataSize > 0 && IsValidPts(packet.pts))
+    if (m_lavStyleSyncEnabled && m_needsResync && m_dataSize > 0 && IsValidPts(packet.pts) &&
+        m_dataSize <= static_cast<unsigned int>(iSize) && memcmp(m_buffer, pData, 4) == 0)
     {
       m_seedRefPts = packet.pts;
       m_seedRefUnits = m_seedUnits;
@@ -356,7 +357,11 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
   // from. Labelling it with the first packet's pts put every label after a seek
   // that much early (13 Hours: standing jitter -108 ms, corrected only past the
   // 100 ms threshold; anything under it stayed for the title).
-  if (m_lavStyleSyncEnabled && m_needsResync && !m_dataSize && !m_parser.IsValid())
+  // TrueHD only: an AC-3/E-AC-3/DTS parser also holds its first frame back
+  // while it reads into the next one, and dropping that packet's pts would
+  // label everything a frame late.
+  if (m_lavStyleSyncEnabled && m_needsResync && !m_dataSize && !m_parser.IsValid() &&
+      m_hints.codec == AV_CODEC_ID_TRUEHD)
   {
     m_currentPts = LOCAL_NOPTS;
     m_nextPts = LOCAL_NOPTS;
@@ -408,10 +413,13 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
                            m_buffer[6] == 0x6F && m_buffer[7] == 0xBA);
       if (packed && m_needsResync)
         m_seedUnits++;
+      if (packed)
+        m_matUnits++;
       if (m_packerMAT->PackTrueHD(m_buffer, m_dataSize))
       {
         m_trueHDBuffer = m_packerMAT->GetOutputFrame();
         m_dataSize = TRUEHD_BUF_SIZE;
+        m_matUnits = 0;
 
         if (m_lavStyleSyncEnabled)
         {
@@ -426,6 +434,24 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
             m_currentPts = m_truehdPtsCache;
             m_truehdPtsCacheValid = false;
             m_truehdPtsCache = LOCAL_NOPTS;
+          }
+
+          // After a reset the first unit's pts can be stale: FFmpeg's TrueHD
+          // parser discards a Matroska block up to its first major sync and
+          // stamps the unit it outputs with the block's pts (13 Hours after a
+          // seek: stamped 20.992 s, the next unit 21.056 s). Hold the MAT
+          // frames until a packet with its own pts dates them (GetData's
+          // seed), at most MAX_HELD_MAT; held frames keep their order.
+          if (m_needsResync || !m_heldMat.empty())
+          {
+            if (m_heldMat.empty())
+              m_heldFirstPts = m_currentPts;
+            if (!m_holdDone &&
+                ((IsValidPts(m_seedRefPts) && m_seedRefUnits > 0) ||
+                 m_heldMat.size() + 1 >= MAX_HELD_MAT))
+              m_holdDone = true;
+            m_heldMat.push_back(m_trueHDBuffer);
+            m_dataSize = 0;
           }
         }
       }
@@ -515,27 +541,30 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   // pts + delay estimate here first so there is always a usable clock, but it
   // deliberately leaves m_needsResync set so this overrides it; see the comment
   // there for what happens when the estimate is trusted instead.
-  if (m_needsResync && haveDemuxerPts)
+  const bool seedDated = isTrueHD && IsValidPts(m_seedRefPts) && m_seedRefUnits > 0;
+  if (m_needsResync && (haveDemuxerPts || seedDated || IsValidPts(m_heldFirstPts)))
   {
-    double seed = demuxerPts;
+    // the first held frame's own pts, when frames were held
+    double seed = IsValidPts(m_heldFirstPts) ? m_heldFirstPts : demuxerPts;
     // TrueHD in Matroska: only a block's first unit carries a pts, and a seek
     // into a laced block delivers a later unit still stamped with the block's
     // pts (13 Hours: a major sync stamped 20.992 s, the next unit 21.056 s). A
     // later packet with its own pts inside this first MAT frame dates the start
     // exactly: its pts less the units before it.
-    if (isTrueHD && IsValidPts(m_seedRefPts) && m_seedRefUnits > 0)
+    if (seedDated)
     {
       const double unitTime =
           DVD_TIME_BASE / ((m_format.m_sampleRate % 44100) == 0 ? 1102.5 : 1200.0);
       const double dated = m_seedRefPts - m_seedRefUnits * unitTime;
       CLog::LogF(LOGDEBUG,
                  "TrueHD seed {:.3f}s from the packet {} units in (first packet said {:.3f}s)",
-                 dated / DVD_TIME_BASE, m_seedRefUnits, demuxerPts / DVD_TIME_BASE);
+                 dated / DVD_TIME_BASE, m_seedRefUnits, seed / DVD_TIME_BASE);
       seed = dated;
     }
     m_seedRefPts = LOCAL_NOPTS;
     m_seedRefUnits = 0;
     m_seedUnits = 0;
+    m_heldFirstPts = LOCAL_NOPTS;
     m_internalClock = seed;
     m_needsResync = false;
     m_jitterTracker.Reset();
@@ -551,7 +580,6 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   {
     const double jitter = m_internalClock - demuxerPts + samplesOffsetTime;
     m_jitterTracker.Sample(jitter);
-
 
     // Correct toward the most stable value in the window (smallest absolute jitter).
     const double absMinJitter = m_jitterTracker.AbsMinimum();
@@ -613,6 +641,16 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 
 int CDVDAudioCodecPassthrough::GetData(uint8_t** dst)
 {
+  if (!m_heldMat.empty() && m_holdDone)
+  {
+    m_trueHDBuffer = std::move(m_heldMat.front());
+    m_heldMat.pop_front();
+    if (m_heldMat.empty())
+      m_holdDone = false;
+    *dst = m_trueHDBuffer.data();
+    return TRUEHD_BUF_SIZE;
+  }
+
   if (!m_dataSize)
     AddData(DemuxPacket());
 
@@ -646,6 +684,10 @@ void CDVDAudioCodecPassthrough::Reset()
     m_seedRefPts = LOCAL_NOPTS;
     m_seedRefUnits = 0;
     m_seedUnits = 0;
+    m_matUnits = 0;
+    m_heldMat.clear();
+    m_holdDone = false;
+    m_heldFirstPts = LOCAL_NOPTS;
     m_jitterTracker.Reset();
 
     if (m_packerMAT)
@@ -672,7 +714,11 @@ void CDVDAudioCodecPassthrough::ResetLavSyncState()
   m_jitterTracker.Reset();
   m_seedRefPts = LOCAL_NOPTS;
   m_seedRefUnits = 0;
-  m_seedUnits = 0;
+  // the packer keeps the frame it is building: its first unit is the seed's
+  m_seedUnits = -m_matUnits;
+  m_heldMat.clear();
+  m_holdDone = false;
+  m_heldFirstPts = LOCAL_NOPTS;
 
   CLog::LogF(LOGDEBUG, "internal clock reset, will resync");
 }
