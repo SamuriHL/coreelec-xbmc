@@ -104,6 +104,9 @@ public:
   ~CActiveAESink();
   //! the scheduled start (CSampleBuffer::landEpoch) the output last landed
   unsigned int GetCommittedStart() const { return m_committedStart.load(); }
+  //! the engine gave up on a scheduled start: buffers still tagged with it (or
+  //! an earlier one) play as they come instead of landing (epochs only grow)
+  void AbandonStart(unsigned int epoch) { m_abandonedStart = epoch; }
 
   void EnumerateSinkList(bool force, std::string driver);
   void EnumerateOutputDevices(AEDeviceList &devices, bool passthrough);
@@ -134,14 +137,18 @@ protected:
   unsigned int OutputSamples(CSampleBuffer* samples);
   void ShadowOnPins(CSampleBuffer* samples, unsigned int writtenFrames, const AEDelayStatus& status);
   std::atomic<unsigned int> m_committedStart{0};
+  std::atomic<unsigned int> m_abandonedStart{0};
   int m_landDiag = 40; // TEMP LANDDIAG
   bool m_shadowAudible = false;
   void SwapInit(CSampleBuffer* samples);
   //! a scheduled start: pad the output so this buffer's first sample leaves at
-  //! its landNs; false if it can no longer land (it is then dropped)
-  bool LandScheduled(CSampleBuffer* samples);
+  //! its landNs; false if it can no longer land (it is then dropped). A PCM
+  //! buffer that comes late lands its later samples: skipFrames of its head go.
+  bool LandScheduled(CSampleBuffer* samples, unsigned int& skipFrames);
   //! write raw packed frames from the packer, retrying a full device
   bool WritePacked(unsigned int frames);
+  //! write PCM silence, retrying a full device
+  bool WriteZeros(unsigned int frames);
 
   void GenerateNoise();
 

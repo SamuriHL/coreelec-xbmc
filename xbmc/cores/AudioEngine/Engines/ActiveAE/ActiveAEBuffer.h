@@ -53,7 +53,8 @@ public:
   CActiveAEBufferPool *pool = nullptr;
   int64_t timestamp = 0;
   // the pts of the sample at pkt_start_offset in µs (timestamp keeps the ms value
-  // the sync measurement uses); 0 = none. Set by the stream; passthrough only so far.
+  // the sync measurement uses); 0 = none. Set by the stream, carried through the
+  // resample and atempo pools.
   int64_t ptsUs = 0;
   // a scheduled start: CLOCK_MONOTONIC at which this buffer's first sample must
   // leave the output, and the start it belongs to; 0 = play when it comes
@@ -111,6 +112,7 @@ protected:
   bool m_empty = true;
   bool m_drain = false;
   int64_t m_lastSamplePts = 0;
+  double m_lastSamplePtsUs = 0.0; // the same in µs, unrounded; 0 = none
   bool m_remap = false;
   CSampleBuffer *m_procSample = nullptr;
   std::unique_ptr<IAEResample> m_resampler;
@@ -153,6 +155,7 @@ protected:
   bool m_changeFilter;
   float m_tempo;
   int64_t m_lastSamplePts = 0;
+  double m_lastSamplePtsUs = 0.0; // the same in µs, unrounded; 0 = none
   bool m_fillPackets;
 };
 

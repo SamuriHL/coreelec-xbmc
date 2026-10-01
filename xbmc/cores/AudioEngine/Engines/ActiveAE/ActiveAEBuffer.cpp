@@ -14,6 +14,7 @@
 #include "cores/AudioEngine/Utils/AEPackIEC61937.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 
+#include <cmath>
 #include <memory>
 
 using namespace ActiveAE;
@@ -226,6 +227,7 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
       if (timestamp)
       {
         in->timestamp = timestamp;
+        in->ptsUs = 0;
       }
       m_outputSamples.push_back(in);
       busy = true;
@@ -278,6 +280,16 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
         m_planes[i] = m_procSample->pkt->data[i] + start;
       }
 
+      // a scheduled start's landing names the input's first sample; this
+      // output reaches it after what it holds and what the resampler holds
+      if (in && in->landNs && !m_procSample->landNs)
+      {
+        const int ahead = m_procSample->pkt->nb_samples + m_resampler->GetBufferedSamples();
+        m_procSample->landNs =
+            in->landNs - std::llround(static_cast<double>(ahead) * 1e9 / m_format.m_sampleRate);
+        m_procSample->landEpoch = in->landEpoch;
+      }
+
       int out_samples = m_resampler->Resample(m_planes,
                                               m_procSample->pkt->max_nb_samples - m_procSample->pkt->nb_samples,
                                               in ? in->pkt->data : NULL,
@@ -299,19 +311,27 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
         if (!timestamp)
         {
           if (in->timestamp)
+          {
             m_lastSamplePts = in->timestamp;
+            m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
+                                          : static_cast<double>(in->timestamp) * 1000.0;
+          }
           else
             in->pkt_start_offset = 0;
         }
         else
         {
           m_lastSamplePts = timestamp;
+          m_lastSamplePtsUs = 0.0;
           in->pkt_start_offset = 0;
         }
 
         // pts of last sample we added to the buffer
         m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
                            in->pkt->config.sample_rate;
+        if (m_lastSamplePtsUs != 0.0)
+          m_lastSamplePtsUs += static_cast<double>(in->pkt->nb_samples - in->pkt_start_offset) *
+                               1e6 / in->pkt->config.sample_rate;
       }
 
       // calculate pts for last sample in m_procSample
@@ -319,6 +339,11 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
       m_procSample->pkt_start_offset = m_procSample->pkt->nb_samples;
       m_procSample->timestamp =
           m_lastSamplePts - static_cast<int64_t>(bufferedSamples) * 1000 / m_format.m_sampleRate;
+      m_procSample->ptsUs =
+          m_lastSamplePtsUs != 0.0
+              ? std::llround(m_lastSamplePtsUs -
+                             static_cast<double>(bufferedSamples) * 1e6 / m_format.m_sampleRate)
+              : 0;
 
       if ((m_drain || m_changeResampler) && m_empty)
       {
@@ -544,11 +569,14 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       if (in->timestamp)
       {
         m_lastSamplePts = in->timestamp;
+        m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
+                                      : static_cast<double>(in->timestamp) * 1000.0;
       }
       else
       {
         in->pkt_start_offset = 0;
         in->timestamp = m_lastSamplePts;
+        in->ptsUs = std::llround(m_lastSamplePtsUs);
       }
 
       // RAW carries one IEC61937/MAT packet per buffer, and nb_samples is a BYTE
@@ -561,10 +589,17 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       // ActiveAE.cpp's sync-error calculation a fabricated +1.28 s, which scales
       // below the SYNC_INSYNC clamp and would be absorbed without a warning.
       if (m_format.m_dataFormat == AE_FMT_RAW)
+      {
         m_lastSamplePts += static_cast<int64_t>(m_format.m_streamInfo.GetDuration());
+        m_lastSamplePtsUs += m_format.m_streamInfo.GetDuration() * 1000.0;
+      }
       else
+      {
         m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
                            m_format.m_sampleRate;
+        m_lastSamplePtsUs += static_cast<double>(in->pkt->nb_samples - in->pkt_start_offset) *
+                             1e6 / m_format.m_sampleRate;
+      }
 
       m_outputSamples.push_back(in);
       busy = true;
@@ -625,13 +660,19 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       if (in)
       {
         if (in->timestamp)
+        {
           m_lastSamplePts = in->timestamp;
+          m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
+                                        : static_cast<double>(in->timestamp) * 1000.0;
+        }
         else
           in->pkt_start_offset = 0;
 
         // pts of last sample we added to the buffer
         m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
                            m_format.m_sampleRate;
+        m_lastSamplePtsUs += static_cast<double>(in->pkt->nb_samples - in->pkt_start_offset) *
+                             1e6 / m_format.m_sampleRate;
       }
 
       // calculate pts for last sample in m_procSample
@@ -639,6 +680,11 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       m_procSample->pkt_start_offset = m_procSample->pkt->nb_samples;
       m_procSample->timestamp =
           m_lastSamplePts - static_cast<int64_t>(bufferedSamples) * 1000 / m_format.m_sampleRate;
+      m_procSample->ptsUs =
+          m_lastSamplePtsUs != 0.0
+              ? std::llround(m_lastSamplePtsUs -
+                             static_cast<double>(bufferedSamples) * 1e6 / m_format.m_sampleRate)
+              : 0;
 
       if ((m_drain || m_changeFilter) && m_empty)
       {

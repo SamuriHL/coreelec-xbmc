@@ -26,6 +26,7 @@
 #include <cmath>
 #include <new> // for std::bad_alloc
 #include <sstream>
+#include <vector>
 
 using namespace AE;
 using namespace ActiveAE;
@@ -1217,13 +1218,23 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
               (now + static_cast<int64_t>(st.delay * 1e9) - samples->landNs) / 1e6);
   }
 
+  const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
+  unsigned int skipFrames = 0;
   if (samples->landNs && samples->landEpoch != m_committedStart.load() &&
-      m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack && !LandScheduled(samples))
+      samples->landEpoch > m_abandonedStart.load() && (!raw || m_needIecPack) &&
+      !LandScheduled(samples, skipFrames))
   {
     // too late to land: dropped, so the next buffer can
     m_sink->GetDelay(status);
-    m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, 0);
+    m_stats->UpdateSinkDelay(status, samples->pool ? (raw ? 1 : frames) : 0, 0);
     return status.delay * 1000;
+  }
+  if (skipFrames)
+  {
+    // the head of a PCM buffer that landed late: it is gone, not queued
+    frames -= skipFrames;
+    m_sink->GetDelay(status);
+    m_stats->UpdateSinkDelay(status, samples->pool ? skipFrames : 0);
   }
 
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
@@ -1411,11 +1422,12 @@ bool CActiveAESink::WritePacked(unsigned int frames)
   return true;
 }
 
-bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
+bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFrames)
 {
   // The delay is read here, at the write, because only the sink knows what is
   // queued ahead of this buffer (design §15, step 2.2). The pad is a pause of
-  // exactly the output frames up to the landing (IEC 61937 allows any gap).
+  // exactly the output frames up to the landing (IEC 61937 allows any gap), or
+  // PCM silence.
   AEDelayStatus status;
   m_sink->GetDelay(status);
   struct timespec ts = {};
@@ -1423,8 +1435,18 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
   const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
   const double rate = m_sinkFormat.m_sampleRate;
   const int64_t padNs = samples->landNs - now - static_cast<int64_t>(status.delay * 1e9);
-  const double frameMs = m_sinkFormat.m_streamInfo.GetDuration();
-  if (padNs < -static_cast<int64_t>(frameMs * 0.5e6))
+  const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
+  const double frameMs = raw ? m_sinkFormat.m_streamInfo.GetDuration()
+                             : samples->pkt->nb_samples * 1000.0 / rate;
+  skipFrames = 0;
+  if (!raw && padNs < 0)
+  {
+    // PCM lands to the sample: the head that is already past goes
+    const int64_t late = std::llround(-padNs * rate / 1e9);
+    if (late < samples->pkt->nb_samples)
+      skipFrames = static_cast<unsigned int>(late);
+  }
+  if (padNs < -static_cast<int64_t>(frameMs * 0.5e6) && !skipFrames)
   {
     CLog::Log(LOGDEBUG,
               "CActiveAESink: scheduled start {}: frame {:.1f} ms late, dropped (delay {:.1f} ms)",
@@ -1444,7 +1466,9 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
       padNs > 0 ? static_cast<unsigned int>(std::llround(std::min(padNs, maxPadNs) * rate / 1e9)) : 0;
   const unsigned int total = padFrames;
   bool ok = true;
-  while (padFrames > 0 && ok)
+  if (!raw)
+    ok = WriteZeros(padFrames);
+  while (raw && padFrames > 0 && ok)
   {
     const unsigned int packed =
         m_packer->PackPauseFrames(m_sinkFormat.m_streamInfo, padFrames, padFrames, true);
@@ -1455,12 +1479,45 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
   }
   m_committedStart = samples->landEpoch;
   m_landDiag = 0;
+  // the error: where the first sample written leaves against its own target
+  const double errorMs = padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6
+                                   : (skipFrames * 1e9 / rate + padNs) / 1e6;
   CLog::Log(LOGINFO,
-            "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), delay before "
-            "{:.3f} ms, landing error {:+.3f} ms{}",
-            samples->landEpoch, total, total * 1000.0 / rate, status.delay * 1000.0,
-            padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6 : -padNs / 1e6,
-            ok ? "" : " (pad write failed)");
+            "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), skip {} frames, "
+            "delay before {:.3f} ms, landing error {:+.3f} ms{}",
+            samples->landEpoch, total, total * 1000.0 / rate, skipFrames, status.delay * 1000.0,
+            errorMs, ok ? "" : " (pad write failed)");
+  return true;
+}
+
+bool CActiveAESink::WriteZeros(unsigned int frames)
+{
+  if (!frames)
+    return true;
+  // zero is silence in every signed and float format; unsigned 8-bit centres on 0x80
+  std::vector<uint8_t> zeros(static_cast<size_t>(m_sinkFormat.m_frames) * m_sinkFormat.m_frameSize,
+                             m_sinkFormat.m_dataFormat == AE_FMT_U8 ? 0x80 : 0x00);
+  uint8_t* data[16];
+  for (int i = 0; i < 16; i++)
+    data[i] = zeros.data();
+  unsigned int done = 0;
+  int retry = 0;
+  while (done < frames)
+  {
+    const unsigned int chunk = std::min(frames - done, m_sinkFormat.m_frames);
+    const unsigned int written = m_sink->AddPackets(data, chunk, 0);
+    if (written == 0)
+    {
+      if (++retry > 4)
+        return false;
+      CThread::Sleep(
+          std::chrono::milliseconds(500 * m_sinkFormat.m_frames / m_sinkFormat.m_sampleRate));
+      continue;
+    }
+    if (written > chunk)
+      return false;
+    done += written;
+  }
   return true;
 }
 

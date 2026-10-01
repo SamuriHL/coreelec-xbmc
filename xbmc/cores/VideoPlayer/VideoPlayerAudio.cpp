@@ -407,8 +407,10 @@ void CVideoPlayerAudio::Process()
       m_packetsDropped = false;
       m_audioClock = pts + delay;
 
-      // LAV PCM: reset jitter tracking on resync
-      if (m_lavStylePcmSyncEnabled)
+      // LAV PCM: reset jitter tracking on a resync that broke the content
+      // (the same reason as the passthrough re-seed below: re-seeding an
+      // unbroken stream from one demuxer pts steps the labels already queued)
+      if (m_lavStylePcmSyncEnabled && reseed)
       {
         m_pcmJitterTracker.Reset();
         m_pcmOutputClock = LOCAL_NOPTS;

@@ -2377,6 +2377,14 @@ bool CActiveAE::RunStages()
           {
             out = (*it)->m_processingBuffers->m_outputSamples.front();
             (*it)->m_processingBuffers->m_outputSamples.pop_front();
+            // a buffer a scheduled start dropped plays for no time
+            if (out->pkt->nb_samples == 0)
+            {
+              out->Return();
+              out = nullptr;
+              busy = true;
+              continue;
+            }
 
             int nb_floats = out->pkt->nb_samples * out->pkt->config.channels / out->pkt->planes;
             int nb_loops = 1;
@@ -2454,6 +2462,18 @@ bool CActiveAE::RunStages()
             CSampleBuffer *mix = NULL;
             mix = (*it)->m_processingBuffers->m_outputSamples.front();
             (*it)->m_processingBuffers->m_outputSamples.pop_front();
+            if (mix->pkt->nb_samples == 0)
+            {
+              mix->Return();
+              busy = true;
+              continue;
+            }
+            // mixed sample for sample: a scheduled start's landing holds for both
+            if (mix->landNs && !out->landNs)
+            {
+              out->landNs = mix->landNs;
+              out->landEpoch = mix->landEpoch;
+            }
 
             int nb_floats = mix->pkt->nb_samples * mix->pkt->config.channels / mix->pkt->planes;
             int nb_loops = 1;
@@ -2749,8 +2769,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   // A start scheduled on the clock (design §15, step 2.2): instead of muting and
   // walking onto a clock that is already running, tag each buffer with the
   // instant its first sample must leave the output, and let the sink land it
-  // there. Passthrough only so far (PCM is mixed and re-chunked on its way).
-  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START && m_mode == MODE_RAW)
+  // there. Passthrough and PCM; a transcode's encoder does not carry the tags.
+  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START &&
+      (m_mode == MODE_RAW || m_mode == MODE_PCM))
   {
     int64_t startNs = 0;
     double startClockMs = 0.0;
@@ -2779,6 +2800,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     {
       // the clock was changed before the start landed: start as before
       CLog::Log(LOGINFO, "ActiveAE - scheduled start {} cancelled", stream->m_schedEpoch);
+      m_sink.AbandonStart(stream->m_schedEpoch);
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
     else if (m_sink.GetCommittedStart() != stream->m_schedEpoch &&
@@ -2788,6 +2810,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       // input too late to land): start as before
       CLog::Log(LOGWARNING, "ActiveAE - scheduled start {} did not land, starting as before",
                 stream->m_schedEpoch);
+      m_sink.AbandonStart(stream->m_schedEpoch);
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
     else if (m_sink.GetCommittedStart() == stream->m_schedEpoch &&
@@ -2809,9 +2832,17 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CSampleBuffer* buf = stream->m_processingBuffers->m_outputSamples.front();
       if (buf->ptsUs || buf->timestamp)
       {
-        const double ptsMs = buf->ptsUs ? static_cast<double>(buf->ptsUs) / 1000.0
-                                        : static_cast<double>(buf->timestamp);
-        const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+        // the labels name the sample at pkt_start_offset (0 for passthrough):
+        // land the first one
+        const int rate = buf->pkt->config.sample_rate;
+        const bool raw = m_mode == MODE_RAW;
+        const double ptsMs =
+            (buf->ptsUs ? static_cast<double>(buf->ptsUs) / 1000.0
+                        : static_cast<double>(buf->timestamp)) -
+            (!raw && rate ? static_cast<double>(buf->pkt_start_offset) * 1000.0 / rate : 0.0);
+        const double frameMs =
+            raw ? stream->m_format.m_streamInfo.GetDuration()
+                : (rate ? static_cast<double>(buf->pkt->nb_samples) * 1000.0 / rate : 0.0);
         if (ptsMs + frameMs <= stream->m_schedClockMs)
         {
           // ends before the first picture: there is nothing to hear it with
