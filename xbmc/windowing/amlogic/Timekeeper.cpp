@@ -426,17 +426,27 @@ void CTimekeeper::CheckRate(int64_t ns)
   // give the period to well under 1 ppm; a deviation of 300 ppm to 0.5 % that the
   // sibling explains to 100 ppm means the mode is the sibling: a new epoch at that
   // nominal period. Not a filtered rate: the choice is between two nominal modes.
+  //
+  // Measured on CLOCK_MONOTONIC_RAW: CLOCK_MONOTONIC is slewed by NTP, after a
+  // boot by several hundred ppm (G12B: -870 ppm seen), which this test would
+  // take for the sibling. The raw clock is the undisciplined crystal (tens of
+  // ppm). The vblank's MONOTONIC time moves to it by the clocks' offset now.
+  struct timespec mono = {}, raw = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  clock_gettime(CLOCK_MONOTONIC_RAW, &raw);
+  const int64_t rawNs = ns + (static_cast<int64_t>(raw.tv_sec) - mono.tv_sec) * 1000000000LL +
+                       (static_cast<int64_t>(raw.tv_nsec) - mono.tv_nsec);
   if (!m_rateRefNs)
   {
-    m_rateRefNs = ns;
+    m_rateRefNs = rawNs;
     m_rateRefTick = m_tick;
     return;
   }
-  if (ns - m_rateRefNs < 5000000000LL || m_tick <= m_rateRefTick)
+  if (rawNs - m_rateRefNs < 5000000000LL || m_tick <= m_rateRefTick)
     return;
   const double measured =
-      static_cast<double>(ns - m_rateRefNs) / static_cast<double>(m_tick - m_rateRefTick);
-  m_rateRefNs = ns;
+      static_cast<double>(rawNs - m_rateRefNs) / static_cast<double>(m_tick - m_rateRefTick);
+  m_rateRefNs = rawNs;
   m_rateRefTick = m_tick;
   const double nominal = NominalNs();
   const double deviation = std::fabs(measured / nominal - 1.0);
