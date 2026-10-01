@@ -9,6 +9,8 @@
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "GraphicsPlaneAML.h"
+#include "Timekeeper.h"
+#include "filesystem/File.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "settings/AdvancedSettings.h"
@@ -97,6 +99,14 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
         std::make_unique<CPresentationCoordinator>(m_amlDisplay->aml_get_Device_handle());
     if (!m_coordinator->Start())
       m_coordinator.reset();
+  }
+
+  if (XFILE::CFile::Exists("special://profile/timekeeper_shadow"))
+  {
+    m_timekeeper = std::make_unique<CTimekeeper>(m_amlDisplay->aml_get_Device_handle(),
+                                                 m_amlDisplay->aml_get_Device_crtc_id());
+    if (!m_timekeeper->Start())
+      m_timekeeper.reset();
   }
 
   const int graphicsPlane =

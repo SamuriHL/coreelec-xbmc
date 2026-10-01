@@ -42,6 +42,7 @@ static inline void aml_set_video_presenter_active(bool) {}
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
@@ -2030,6 +2031,13 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   result.configured = true;
   result.displayLost = m_displayLost;
   result.playing = !m_displayLost && !m_dvdClock.IsPaused();
+  if (PRESENTATION::ShadowActive() && tick.vblankNs)
+  {
+    const int64_t sample[PRESENTATION::CS_COUNT] = {
+        static_cast<int64_t>(tick.seq), tick.vblankNs,
+        static_cast<int64_t>(m_dvdClock.GetClock()), result.playing ? 1 : 0};
+    PRESENTATION::CoordinatorBoard().Write(sample);
+  }
   // the display timing of this display epoch has not been published yet
   if (m_timingEpoch != tick.epoch)
     return;

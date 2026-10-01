@@ -84,6 +84,10 @@ private:
   // support fragmentation, e.g. looping in the sink to get a certain amount of data onto the device
   bool m_fragmented = false;
   unsigned int m_originalPeriodSize = AE_MIN_PERIODSIZE;
+  // phase 1 timeline shadow: frames written since the position last restarted
+  uint64_t m_shadowWritten = 0;
+  bool m_shadowMonotonic = false;
+  void ShadowRestart();
 
   struct ALSAConfig
   {

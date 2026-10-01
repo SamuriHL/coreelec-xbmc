@@ -1,10 +1,12 @@
 set(SOURCES WinSystemAmlogic.cpp
             VideoSyncAML.cpp
-            AMLDisplay.cpp)
+            AMLDisplay.cpp
+            Timekeeper.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h
-            AMLDisplay.h)
+            AMLDisplay.h
+            Timekeeper.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp

@@ -19,6 +19,7 @@
 #include "cores/DataCacheCore.h"
 #include "platform/Platform.h"
 #include "utils/XTimeUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 
 #if defined(HAS_LIBAMCODEC)
@@ -32,6 +33,7 @@
 #include <sstream>
 #include <stdint.h>
 #include <string>
+#include <time.h>
 
 #include <sys/utsname.h>
 
@@ -1161,6 +1163,13 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig)
   snd_pcm_sw_params_get_boundary         (sw_params, &boundary);
   snd_pcm_sw_params_set_silence_size     (m_pcm, sw_params, boundary);
   snd_pcm_sw_params_set_avail_min        (m_pcm, sw_params, inconfig.periodSize);
+  m_shadowMonotonic = false;
+  if (PRESENTATION::ShadowActive())
+  {
+    snd_pcm_sw_params_set_tstamp_mode(m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
+    m_shadowMonotonic =
+        snd_pcm_sw_params_set_tstamp_type(m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC) == 0;
+  }
 
   if (snd_pcm_sw_params(m_pcm, sw_params) < 0)
   {
@@ -1168,7 +1177,19 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig)
     return false;
   }
 
+  ShadowRestart();
   return true;
+}
+
+void CAESinkALSA::ShadowRestart()
+{
+  static std::atomic<int64_t> openId{0};
+  m_shadowWritten = 0;
+  if (!PRESENTATION::ShadowActive())
+    return;
+  int64_t values[PRESENTATION::AP_COUNT] = {};
+  values[PRESENTATION::AP_OPEN_ID] = ++openId;
+  PRESENTATION::AudioBoard().Write(values);
 }
 
 void CAESinkALSA::Deinitialize()
@@ -1186,6 +1207,7 @@ void CAESinkALSA::Stop()
   if (!m_pcm)
     return;
   snd_pcm_drop(m_pcm);
+  ShadowRestart();
 }
 
 void CAESinkALSA::GetDelay(AEDelayStatus& status)
@@ -1196,11 +1218,41 @@ void CAESinkALSA::GetDelay(AEDelayStatus& status)
     return;
   }
   snd_pcm_sframes_t frames = 0;
-  snd_pcm_delay(m_pcm, &frames);
+  if (PRESENTATION::ShadowActive())
+  {
+    snd_pcm_status_t* st;
+    snd_pcm_status_alloca(&st);
+    if (snd_pcm_status(m_pcm, st) == 0)
+    {
+      frames = snd_pcm_status_get_delay(st);
+      struct timespec mono = {}, wall = {};
+      clock_gettime(CLOCK_MONOTONIC, &mono);
+      clock_gettime(CLOCK_REALTIME, &wall);
+      snd_htimestamp_t ht;
+      snd_pcm_status_get_htstamp(st, &ht);
+      int64_t prev[PRESENTATION::AP_COUNT];
+      const int64_t open =
+          PRESENTATION::AudioBoard().Read(prev) ? prev[PRESENTATION::AP_OPEN_ID] : 0;
+      const int64_t monoNs = mono.tv_sec * 1000000000LL + mono.tv_nsec;
+      const int64_t values[PRESENTATION::AP_COUNT] = {
+          static_cast<int64_t>(m_shadowWritten) - frames,
+          static_cast<int64_t>(m_format.m_sampleRate),
+          monoNs,
+          ht.tv_sec * 1000000000LL + ht.tv_nsec,
+          m_shadowMonotonic ? monoNs : wall.tv_sec * 1000000000LL + wall.tv_nsec,
+          open};
+      PRESENTATION::AudioBoard().Write(values);
+    }
+    else
+      snd_pcm_delay(m_pcm, &frames);
+  }
+  else
+    snd_pcm_delay(m_pcm, &frames);
 
   if (frames < 0)
   {
     snd_pcm_forward(m_pcm, -frames);
+    m_shadowWritten += -frames;
     frames = 0;
   }
 
@@ -1238,6 +1290,7 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
       CLog::Log(LOGERROR, "CAESinkALSA - snd_pcm_writei({}) {} - trying to recover", ret,
                 snd_strerror(ret));
       ret = snd_pcm_recover(m_pcm, ret, 1);
+      ShadowRestart();
       if(ret < 0)
       {
         HandleError("snd_pcm_writei(1)", ret);
@@ -1257,6 +1310,7 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
       break;
 
     frames_written += ret;
+    m_shadowWritten += ret;
     data_left -= ret;
     buffer = data[0]+offset*m_format.m_frameSize + frames_written*m_format.m_frameSize;
   }
@@ -1305,6 +1359,7 @@ void CAESinkALSA::Drain()
 
   snd_pcm_drain(m_pcm);
   snd_pcm_prepare(m_pcm);
+  ShadowRestart();
 }
 
 void CAESinkALSA::AppendParams(std::string &device, const std::string &params)
