@@ -858,8 +858,13 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
 // switch). Bounded like the held start, in case the decision never runs.
 bool CRenderManager::GraphicsWithheld()
 {
-  if (!m_bTriggerUpdateResolution || m_sessionModeDecided ||
-      !CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
+  if (!CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
+    return false;
+  // a held start shows its first picture still: the graphics come with the
+  // moving picture, as the sound does (design 13.ab)
+  if (m_startHeld)
+    return true;
+  if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
   // has no mode to wait for (a fullscreen toggle also raises the trigger)
