@@ -282,6 +282,14 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
     const bool wasLocked = m_parser.IsValid();
     int used = m_parser.AddData(pData, iSize, &m_buffer, &m_dataSize);
     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+    // A packet parsed from its start (no backlog ahead of it) emits its own first
+    // unit here: while the stream waits for its seed, remember the latest such
+    // packet's pts and the units before it (counted where they are packed)
+    if (m_lavStyleSyncEnabled && m_needsResync && m_dataSize > 0 && IsValidPts(packet.pts))
+    {
+      m_seedRefPts = packet.pts;
+      m_seedRefUnits = m_seedUnits;
+    }
     // TEMP LABELDIAG: the packets after a reset
     if (m_needsResync && m_packetDiag < 40)
     {
@@ -435,6 +443,11 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
         }
       }
 
+      const bool packed = m_packerMAT->IsStarted() ||
+                          (m_dataSize >= 8 && m_buffer[4] == 0xF8 && m_buffer[5] == 0x72 &&
+                           m_buffer[6] == 0x6F && m_buffer[7] == 0xBA);
+      if (packed && m_needsResync)
+        m_seedUnits++;
       if (m_packerMAT->PackTrueHD(m_buffer, m_dataSize))
       {
         m_trueHDBuffer = m_packerMAT->GetOutputFrame();
@@ -544,7 +557,26 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   // there for what happens when the estimate is trusted instead.
   if (m_needsResync && haveDemuxerPts)
   {
-    m_internalClock = demuxerPts;
+    double seed = demuxerPts;
+    // TrueHD in Matroska: only a block's first unit carries a pts, and a seek
+    // into a laced block delivers a later unit still stamped with the block's
+    // pts (13 Hours: a major sync stamped 20.992 s, the next unit 21.056 s). A
+    // later packet with its own pts inside this first MAT frame dates the start
+    // exactly: its pts less the units before it.
+    if (isTrueHD && IsValidPts(m_seedRefPts) && m_seedRefUnits > 0)
+    {
+      const double unitTime =
+          DVD_TIME_BASE / ((m_format.m_sampleRate % 44100) == 0 ? 1102.5 : 1200.0);
+      const double dated = m_seedRefPts - m_seedRefUnits * unitTime;
+      CLog::LogF(LOGDEBUG,
+                 "TrueHD seed {:.3f}s from the packet {} units in (first packet said {:.3f}s)",
+                 dated / DVD_TIME_BASE, m_seedRefUnits, demuxerPts / DVD_TIME_BASE);
+      seed = dated;
+    }
+    m_seedRefPts = LOCAL_NOPTS;
+    m_seedRefUnits = 0;
+    m_seedUnits = 0;
+    m_internalClock = seed;
     m_needsResync = false;
     m_jitterTracker.Reset();
     m_labelDiag = 0; // TEMP LABELDIAG
@@ -667,6 +699,9 @@ void CDVDAudioCodecPassthrough::Reset()
     m_internalClock = LOCAL_NOPTS;
     m_needsResync = true;
     m_packetDiag = 0; // TEMP LABELDIAG
+    m_seedRefPts = LOCAL_NOPTS;
+    m_seedRefUnits = 0;
+    m_seedUnits = 0;
     m_jitterTracker.Reset();
 
     if (m_packerMAT)
@@ -691,6 +726,9 @@ void CDVDAudioCodecPassthrough::ResetLavSyncState()
   m_internalClock = LOCAL_NOPTS;
   m_needsResync = true;
   m_jitterTracker.Reset();
+  m_seedRefPts = LOCAL_NOPTS;
+  m_seedRefUnits = 0;
+  m_seedUnits = 0;
 
   CLog::LogF(LOGDEBUG, "internal clock reset, will resync");
 }
