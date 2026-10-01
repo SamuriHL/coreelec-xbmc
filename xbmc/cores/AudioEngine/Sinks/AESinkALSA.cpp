@@ -28,6 +28,7 @@
 #endif
 
 #include <algorithm>
+#include <fstream>
 #include <limits.h>
 #include <set>
 #include <sstream>
@@ -129,6 +130,46 @@ std::string AMLSpdifIDToStr(enum spdif_id spdif_id)
 
   return spdif_id_str[spdif_id];
 }
+
+namespace
+{
+// The playback PCM id of an ALSA card's device ("TDM-C-dummy dummy-3"), or "".
+std::string ALSAPlaybackId(const std::string& cardName, int dev)
+{
+  std::ifstream info("/proc/asound/" + cardName + "/pcm" + std::to_string(dev) + "p/info");
+  std::string line;
+  while (info && std::getline(info, line))
+  {
+    if (line.rfind("id: ", 0) == 0)
+      return line.substr(4);
+  }
+  return {};
+}
+
+// Every CoreELEC AUGE card maps "hdmi" to device 0, SPDIF-B, and "surround71"
+// to device 3, a TDM block (the dtsi files of g12a/g12b/sm1/sc2/s4/s5/s6/s7/
+// s7d/t7 all agree). The TDM behind "surround71": HDMITX_SRC_NUM if the card is
+// not laid out that way.
+enum spdif_id AMLSurroundTdm(const std::string& cardName)
+{
+  if (cardName.empty() || ALSAPlaybackId(cardName, 0).rfind("SPDIF-B", 0) != 0)
+    return HDMITX_SRC_NUM;
+  const std::string id = ALSAPlaybackId(cardName, 3);
+  if (id.size() < 5 || id.rfind("TDM-", 0) != 0)
+    return HDMITX_SRC_NUM;
+  switch (id[4])
+  {
+    case 'A':
+      return HDMITX_SRC_TDM_A;
+    case 'B':
+      return HDMITX_SRC_TDM_B;
+    case 'C':
+      return HDMITX_SRC_TDM_C;
+    default:
+      return HDMITX_SRC_NUM;
+  }
+}
+} // namespace
 
 static unsigned int ALSASampleRateList[] =
 {
@@ -690,7 +731,19 @@ void CAESinkALSA::aml_configure_simple_control(std::string &device, const enum I
                 }
               }
               else
+              {
+                // older SoCs: "surround71" is a TDM block that differs per SoC.
+                // Name it as the source, so SPDIF-B's own prepare does not claim
+                // HDMITX while the TDM plays (the kernel wires whichever TDM is
+                // prepared once the source is past SPDIF)
                 spdif_id = HDMITX_SRC_SPDIF_B;
+                if (is_surround71)
+                {
+                  const enum spdif_id tdm = AMLSurroundTdm(GetParamFromName(device, "CARD"));
+                  if (tdm != HDMITX_SRC_NUM)
+                    spdif_id = tdm;
+                }
+              }
               break;
             default:
               spdif_id = HDMITX_SRC_SPDIF;
@@ -792,6 +845,25 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
   }
 
   AEDeviceType devType = AEDeviceTypeFromName(device);
+
+  // On an Amlogic AUGE card "hdmi" is SPDIF-B, two channels at most. Opened with
+  // more, it plays them as pairs at a fraction of real time (G12B: 6 channels at
+  // a third of real time). Multi-channel PCM reaches HDMI only through the TDM
+  // block behind "surround71", on the same output.
+  if (!m_passthrough && inconfig.channels > 2 && GetAMLDeviceType(device) == AML_AUGESOUND &&
+      device.substr(0, device.find(':')) == "hdmi" &&
+      AMLSurroundTdm(GetParamFromName(device, "CARD")) != HDMITX_SRC_NUM)
+  {
+    const size_t colon = device.find(':');
+    const std::string surround =
+        "surround71" + (colon != std::string::npos ? device.substr(colon) : std::string());
+    CLog::Log(LOGINFO,
+              "CAESinkALSA::Initialize - {} channels of PCM on \"{}\" (SPDIF-B, 2 channels): "
+              "using \"{}\"",
+              inconfig.channels, device, surround);
+    device = surround;
+    devType = AEDeviceTypeFromName(device);
+  }
 
   std::string AESParams;
   /* digital interfaces should have AESx set, though in practice most
