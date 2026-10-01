@@ -303,6 +303,20 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
     m_backlogSize += iSize;
   }
 
+  // After a reset (a seek, a new stream) the parser locks onto the stream only
+  // at a sync point - for TrueHD a major sync, up to 128 access units (107 ms)
+  // in - and consumes what comes before without emitting anything. A packet it
+  // consumed whole without locking carries the pts of audio that will never
+  // play: drop it, so the first frame emitted takes the pts of a packet it came
+  // from. Labelling it with the first packet's pts put every label after a seek
+  // that much early (13 Hours: standing jitter -108 ms, corrected only past the
+  // 100 ms threshold; anything under it stayed for the title).
+  if (m_lavStyleSyncEnabled && m_needsResync && !m_dataSize && !m_parser.IsValid())
+  {
+    m_currentPts = LOCAL_NOPTS;
+    m_nextPts = LOCAL_NOPTS;
+  }
+
   if (!m_dataSize)
     return true;
 
