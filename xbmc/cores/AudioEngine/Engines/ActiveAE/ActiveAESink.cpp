@@ -18,6 +18,8 @@
 #include "utils/AMLUtils.h"
 #include "utils/EndianSwap.h"
 #include "utils/MemUtils.h"
+#include <time.h>
+#include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -1300,6 +1302,9 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       m_stats->UpdateSinkDelay(status, samples->pool ? written : 0);
   }
 
+  if (PRESENTATION::ShadowActive())
+    ShadowOnPins(samples, totalFrames, status);
+
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
     // A RAW buffer that writes nothing leaves the loop above unrun and
@@ -1316,6 +1321,39 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   }
 
   return status.delay * 1000;
+}
+
+void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
+                                 unsigned int writtenFrames,
+                                 const AEDelayStatus& status)
+{
+  // pause bursts, keep-alive and muted frames are not audible content
+  if (samples->pkt->nb_samples == 0 || !samples->timestamp || !writtenFrames ||
+      !m_sinkFormat.m_sampleRate)
+  {
+    m_shadowAudible = false;
+    return;
+  }
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  // the delay includes this buffer: its first sample leaves that much earlier
+  const double ahead =
+      status.delay - static_cast<double>(writtenFrames) / m_sinkFormat.m_sampleRate;
+  const int64_t onPinsNs = now + static_cast<int64_t>(ahead * 1e9);
+  const int rate = samples->pkt->config.sample_rate;
+  const double ptsMs =
+      static_cast<double>(samples->timestamp) -
+      (rate ? static_cast<double>(samples->pkt_start_offset) * 1000.0 / rate : 0.0);
+  const int64_t values[PRESENTATION::AQ_COUNT] = {static_cast<int64_t>(ptsMs * 1000.0),
+                                                  onPinsNs};
+  PRESENTATION::AudioPinsBoard().Write(values);
+  if (!m_shadowAudible)
+    CLog::Log(LOGINFO,
+              "PINS audio: first audible sample after silence, pts {:.3f}, on the pins at {} ns "
+              "(sink delay {:.1f} ms)",
+              ptsMs / 1000.0, onPinsNs, status.delay * 1000.0);
+  m_shadowAudible = true;
 }
 
 void CActiveAESink::SwapInit(CSampleBuffer* samples)

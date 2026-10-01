@@ -12,6 +12,7 @@
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "platform/linux/SysfsPath.h"
 #include "utils/AMLUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
@@ -778,6 +779,8 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
       m_onScreen.erase(m_onScreen.begin());
     m_onScreen.push_back({tick.seq + 2, result.pts});
     m_frameUs = result.frametime;
+    if (PRESENTATION::ShadowActive())
+      ShadowFrameOnScreen(tick, result.pts);
   }
 
   if (!result.configured)
@@ -790,10 +793,30 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   Account(tick, result, work);
 }
 
+void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick, double pts)
+{
+  int64_t tl[PRESENTATION::TL_COUNT];
+  if (!PRESENTATION::TimelineBoard().Read(tl) || !tl[PRESENTATION::TL_PERIOD_DEN])
+    return;
+  const double periodNs = 1e9 * static_cast<double>(tl[PRESENTATION::TL_PERIOD_NUM]) /
+                          static_cast<double>(tl[PRESENTATION::TL_PERIOD_DEN]);
+  const int64_t onScreenNs = tick.vblankNs + static_cast<int64_t>(2 * periodNs);
+  const int64_t values[PRESENTATION::VP_COUNT] = {static_cast<int64_t>(pts), onScreenNs};
+  PRESENTATION::VideoPinsBoard().Write(values);
+  if (m_shadowStartFrames < 2)
+  {
+    m_shadowStartFrames++;
+    CLog::Log(LOGINFO, "PINS video: frame {} after the start, pts {:.3f}, on screen at {} ns",
+              m_shadowStartFrames, pts / 1e6, onScreenNs);
+  }
+}
+
 void CPresentationCoordinator::SetState(State state, unsigned int epoch)
 {
   if (state == m_state)
     return;
+  if (state != State::PLAYING)
+    m_shadowStartFrames = 0;
   CLog::Log(LOGINFO, "CPresentationCoordinator - {} -> {} (display epoch {})",
             StateName(static_cast<int>(m_state)), StateName(static_cast<int>(state)), epoch);
   m_state = state;

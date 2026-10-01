@@ -129,6 +129,8 @@ protected:
   bool NeedIECPacking();
 
   unsigned int OutputSamples(CSampleBuffer* samples);
+  void ShadowOnPins(CSampleBuffer* samples, unsigned int writtenFrames, const AEDelayStatus& status);
+  bool m_shadowAudible = false;
   void SwapInit(CSampleBuffer* samples);
 
   void GenerateNoise();

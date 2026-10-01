@@ -452,6 +452,8 @@ void CTimekeeper::Report()
   int64_t lastAudioMono = 0;
   int64_t maxLag = 0;
   int64_t steppedBack = 0;
+  int pinsN = 0;
+  double pinsSum = 0, pinsMin = 1e9, pinsMax = -1e9;
 
   while (!m_stop)
   {
@@ -510,7 +512,7 @@ void CTimekeeper::Report()
       Keep(rate, static_cast<double>(tl[TL_TICK]), static_cast<double>(tl[TL_VBLANK_NS]));
 
     // CDVDClock as the coordinator saw it at its last tick
-    int64_t cs[CS_COUNT];
+    int64_t cs[CS_COUNT] = {};
     if (CoordinatorBoard().Read(cs) && cs[CS_PLAYING])
     {
       maxLag = std::max(maxLag, tl[TL_KERNEL_SEQ] - cs[CS_SEQ]);
@@ -556,6 +558,22 @@ void CTimekeeper::Report()
           Keep(audioHt, tickAtHt, static_cast<double>(ap[AP_FRAMES_PLAYED]));
         }
       }
+    }
+
+    // audio minus video at the outputs: the pts on the pins against the pts on
+    // screen, both brought to the same instant
+    int64_t vp[VP_COUNT], aq[AQ_COUNT];
+    if (VideoPinsBoard().Read(vp) && AudioPinsBoard().Read(aq) && cs[CS_PLAYING] &&
+        std::llabs(vp[VP_ON_SCREEN_NS] - tl[TL_VBLANK_NS]) < 1000000000 &&
+        std::llabs(aq[AQ_ON_PINS_NS] - tl[TL_VBLANK_NS]) < 1000000000)
+    {
+      const double aheadMs = (static_cast<double>(aq[AQ_PTS_US] - vp[VP_PTS_US]) -
+                              static_cast<double>(aq[AQ_ON_PINS_NS] - vp[VP_ON_SCREEN_NS]) / 1000.0) /
+                             1000.0;
+      pinsN++;
+      pinsSum += aheadMs;
+      pinsMin = std::min(pinsMin, aheadMs);
+      pinsMax = std::max(pinsMax, aheadMs);
     }
 
     if (++seconds < REPORT_SECONDS)
@@ -622,5 +640,14 @@ void CTimekeeper::Report()
               a.rms * usPerFrame, a.max * usPerFrame, audioHtPpm, h.n, h.rms * usPerFrame,
               h.max * usPerFrame);
     maxLag = 0;
+    if (pinsN)
+      CLog::Log(LOGINFO,
+                "TIMEKEEPER pins: audio ahead of video at the outputs mean {:+.2f} ms min {:+.2f} "
+                "max {:+.2f} (n {})",
+                pinsSum / pinsN, pinsMin, pinsMax, pinsN);
+    pinsN = 0;
+    pinsSum = 0;
+    pinsMin = 1e9;
+    pinsMax = -1e9;
   }
 }

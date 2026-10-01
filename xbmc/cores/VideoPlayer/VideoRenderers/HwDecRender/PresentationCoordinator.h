@@ -154,6 +154,7 @@ private:
   void ReclaimPlane(int plane); // under m_uiMutex
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
+  void ShadowFrameOnScreen(const SPresentTick& tick, double pts);
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick, const SPresentResult& result, int64_t workNs);
   void LogReport();
@@ -167,6 +168,7 @@ private:
   uint64_t m_lastSeq = 0;
   int64_t m_lastTickNs = 0;
   State m_state = State::IDLE;
+  int m_shadowStartFrames = 0;
 
   std::mutex m_videoMutex; // held across a presentation step
   CRenderManager* m_video = nullptr;

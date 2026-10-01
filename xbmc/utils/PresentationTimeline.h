@@ -93,6 +93,21 @@ enum CoordinatorSample
   CS_COUNT
 };
 
+// the latest frame and audio sample at their outputs (shadow only)
+enum VideoPins
+{
+  VP_PTS_US,       // pts of the last released frame
+  VP_ON_SCREEN_NS, // CLOCK_MONOTONIC of the vblank it is on VD1 from
+  VP_COUNT
+};
+
+enum AudioPins
+{
+  AQ_PTS_US,     // pts of the first sample of the last audible buffer written
+  AQ_ON_PINS_NS, // CLOCK_MONOTONIC at which that sample leaves the HDMI pins
+  AQ_COUNT
+};
+
 // written by the mode setter just before it commits a mode
 enum ModeNotice
 {
@@ -127,6 +142,18 @@ inline void ModePeriod(uint32_t htotal,
     num /= g;
     den /= g;
   }
+}
+
+inline CSeqBoard<VP_COUNT>& VideoPinsBoard()
+{
+  static CSeqBoard<VP_COUNT> board;
+  return board;
+}
+
+inline CSeqBoard<AQ_COUNT>& AudioPinsBoard()
+{
+  static CSeqBoard<AQ_COUNT> board;
+  return board;
 }
 
 inline CSeqBoard<MN_COUNT>& ModeBoard()
