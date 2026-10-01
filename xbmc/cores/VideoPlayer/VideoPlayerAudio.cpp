@@ -396,7 +396,8 @@ void CVideoPlayerAudio::Process()
                 pts / DVD_TIME_BASE, m_messageQueue.GetLevel(), m_audioSink.GetDelay() / DVD_TIME_BASE);
 
       double delay = m_audioSink.GetDelay();
-      if (pts > m_audioClock - delay + 0.5 * DVD_TIME_BASE)
+      const bool flushed = pts > m_audioClock - delay + 0.5 * DVD_TIME_BASE;
+      if (flushed)
       {
         m_audioSink.Flush();
       }
@@ -413,7 +414,15 @@ void CVideoPlayerAudio::Process()
       // LAV Audio: rebase the passthrough codec's internal clock to the
       // coordinated A/V clock (pts + delay). ResetLavSyncState() must run first
       // to clear the jitter tracker before adopting the new baseline.
-      if (m_pAudioCodec && m_pAudioCodec->NeedPassthrough())
+      //
+      // Only when the audio queued so far was flushed. A start's RESYNC comes
+      // after audio has been decoded and queued, and the content runs on
+      // unbroken: re-seeding then labels the rest of it from one demuxer pts,
+      // which on MKV TrueHD is up to ~9 ms off the labels already queued
+      // (block timestamps against 20 ms MAT frames). A start scheduled on the
+      // clock lands on the queued labels and then saw the rest step by that
+      // much (design §15, step 2.2: Aladdin, -8.9 ms at the re-seed).
+      if (flushed && m_pAudioCodec && m_pAudioCodec->NeedPassthrough())
       {
         auto* passthroughCodec = dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
         if (passthroughCodec && passthroughCodec->IsLavStyleSyncEnabled())
