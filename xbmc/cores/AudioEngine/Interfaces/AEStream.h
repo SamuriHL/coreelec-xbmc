@@ -30,6 +30,12 @@ public:
   virtual bool IsClockPhasePending() { return false; }
   //! the display phase GetClock() carries, in ms
   virtual double GetClockPhase() { return 0.0; }
+  //! a scheduled start (design §15, step 2.2): GetClock() reads startClockMs at
+  //! CLOCK_MONOTONIC startNs; epoch names the schedule. false: none holds.
+  virtual bool GetScheduledStart(int64_t& startNs, double& startClockMs, unsigned int& epoch)
+  {
+    return false;
+  }
 };
 
 class CAESyncInfo
@@ -45,7 +51,8 @@ public:
     SYNC_INSYNC,
     SYNC_START,
     SYNC_MUTE,
-    SYNC_ADJUST
+    SYNC_ADJUST,
+    SYNC_SCHEDULED // landing on a scheduled start; the sink commits it
   };
   AESyncState state;
 };

@@ -20,6 +20,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -101,6 +102,8 @@ class CActiveAESink : private CThread
 public:
   explicit CActiveAESink(CEvent *inMsgEvent);
   ~CActiveAESink();
+  //! the scheduled start (CSampleBuffer::landEpoch) the output last landed
+  unsigned int GetCommittedStart() const { return m_committedStart.load(); }
 
   void EnumerateSinkList(bool force, std::string driver);
   void EnumerateOutputDevices(AEDeviceList &devices, bool passthrough);
@@ -130,8 +133,14 @@ protected:
 
   unsigned int OutputSamples(CSampleBuffer* samples);
   void ShadowOnPins(CSampleBuffer* samples, unsigned int writtenFrames, const AEDelayStatus& status);
+  std::atomic<unsigned int> m_committedStart{0};
   bool m_shadowAudible = false;
   void SwapInit(CSampleBuffer* samples);
+  //! a scheduled start: pad the output so this buffer's first sample leaves at
+  //! its landNs; false if it can no longer land (it is then dropped)
+  bool LandScheduled(CSampleBuffer* samples);
+  //! write raw packed frames from the packer, retrying a full device
+  bool WritePacked(unsigned int frames);
 
   void GenerateNoise();
 

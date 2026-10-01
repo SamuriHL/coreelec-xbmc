@@ -877,6 +877,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
   }
+  // design §15 step 2.2: a held start resumes at a scheduled instant (A/B flag)
+  m_scheduledStart = XFILE::CFile::Exists("special://profile/scheduled_start");
   // design 5 (4b): the audio output is held for the session; the debug flag
   // turns it off for A/B runs
   if (XFILE::CFile::Exists("special://profile/audiohold_off"))
@@ -2102,15 +2104,37 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
   m_startHeld = false;
   m_startReleasedClock = m_clock.GetClock();
+
+  // A scheduled start (design §15, step 2.2): the clock resumes a lead from
+  // now, exactly then, and the audio output lands its first sample for that
+  // instant instead of muting and walking onto a clock already running. The
+  // lead covers what the audio output queues ahead of a new buffer (engine
+  // queue and device ring, up to 0.2 s each); the sink logs the pad left over.
+  constexpr double SCHEDULED_START_LEAD = 0.35;
+  double lead = 0.0;
+  if (m_scheduledStart && std::string_view(why) != "flush")
+  {
+    int64_t startNs = 0;
+    double startClock = 0.0;
+    if (m_clock.ScheduleResume(m_playSpeed, SCHEDULED_START_LEAD, startNs, startClock))
+    {
+      lead = SCHEDULED_START_LEAD;
+      CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
+                startClock / DVD_TIME_BASE, startNs, lead * 1000.0);
+    }
+  }
+  else
+    m_clock.SetSpeed(m_playSpeed);
+
 #if defined(HAVE_LIBBLURAY)
-  // a BD-J application's media clock ran on during the hold (design 3.6); a
-  // flush release comes from a seek or a new playlist, which re-anchor it
+  // a BD-J application's media clock ran on during the hold (design 3.6), and
+  // over the scheduled lead; a flush release comes from a seek or a new
+  // playlist, which re-anchor it
   if (m_pInputBluray && std::string_view(why) != "flush")
-    m_pInputBluray->ShiftBdjMediaClock(held);
+    m_pInputBluray->ShiftBdjMediaClock(held + lead);
 #endif
   m_VideoPlayerVideo->SetStartHeld(false);
   m_renderManager.SetStartHeld(false);
-  m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);
   m_streamPlayerSpeed = m_playSpeed;

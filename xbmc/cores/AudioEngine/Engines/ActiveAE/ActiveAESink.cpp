@@ -23,6 +23,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <new> // for std::bad_alloc
 #include <sstream>
 
@@ -1202,6 +1203,15 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   // a pause burst leaves the stats' queued time with its own length
   const int pauseMs = samples->pkt->nb_samples == 0 ? samples->pkt->pause_burst_ms : 0;
 
+  if (samples->landNs && samples->landEpoch != m_committedStart.load() &&
+      m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack && !LandScheduled(samples))
+  {
+    // too late to land: dropped, so the next buffer can
+    m_sink->GetDelay(status);
+    m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, 0);
+    return status.delay * 1000;
+  }
+
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
     bool skipSwap = false;
@@ -1356,6 +1366,78 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
               "(sink delay {:.1f} ms)",
               ptsMs / 1000.0, onPinsNs, status.delay * 1000.0);
   m_shadowAudible = true;
+}
+
+bool CActiveAESink::WritePacked(unsigned int frames)
+{
+  uint8_t* buffer = m_packer->GetBuffer();
+  if (m_swapState == CHECK_SWAP)
+    SwapInit(nullptr);
+  if (m_swapState == NEED_BYTESWAP)
+    Endian_Swap16_buf(reinterpret_cast<uint16_t*>(buffer), reinterpret_cast<uint16_t*>(buffer),
+                      frames * m_sinkFormat.m_frameSize / 2);
+  unsigned int done = 0;
+  int retry = 0;
+  while (done < frames)
+  {
+    const unsigned int chunk = std::min(frames - done, m_sinkFormat.m_frames);
+    const unsigned int written = m_sink->AddPackets(&buffer, chunk, done);
+    if (written == 0)
+    {
+      if (++retry > 4)
+        return false;
+      CThread::Sleep(
+          std::chrono::milliseconds(500 * m_sinkFormat.m_frames / m_sinkFormat.m_sampleRate));
+      continue;
+    }
+    if (written > chunk)
+      return false;
+    done += written;
+  }
+  return true;
+}
+
+bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
+{
+  // The delay is read here, at the write, because only the sink knows what is
+  // queued ahead of this buffer (design §15, step 2.2). The pad is a pause of
+  // exactly the output frames up to the landing (IEC 61937 allows any gap).
+  AEDelayStatus status;
+  m_sink->GetDelay(status);
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  const double rate = m_sinkFormat.m_sampleRate;
+  const int64_t padNs = samples->landNs - now - static_cast<int64_t>(status.delay * 1e9);
+  const double frameMs = m_sinkFormat.m_streamInfo.GetDuration();
+  if (padNs < -static_cast<int64_t>(frameMs * 0.5e6))
+  {
+    CLog::Log(LOGDEBUG,
+              "CActiveAESink: scheduled start {}: frame {:.1f} ms late, dropped (delay {:.1f} ms)",
+              samples->landEpoch, -padNs / 1e6, status.delay * 1000.0);
+    return false;
+  }
+
+  unsigned int padFrames = padNs > 0 ? static_cast<unsigned int>(std::llround(padNs * rate / 1e9)) : 0;
+  const unsigned int total = padFrames;
+  bool ok = true;
+  while (padFrames > 0 && ok)
+  {
+    const unsigned int packed =
+        m_packer->PackPauseFrames(m_sinkFormat.m_streamInfo, padFrames, padFrames, true);
+    if (!packed)
+      break;
+    ok = WritePacked(packed);
+    padFrames -= packed;
+  }
+  m_committedStart = samples->landEpoch;
+  CLog::Log(LOGINFO,
+            "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), delay before "
+            "{:.3f} ms, landing error {:+.3f} ms{}",
+            samples->landEpoch, total, total * 1000.0 / rate, status.delay * 1000.0,
+            padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6 : -padNs / 1e6,
+            ok ? "" : " (pad write failed)");
+  return true;
 }
 
 void CActiveAESink::SwapInit(CSampleBuffer* samples)

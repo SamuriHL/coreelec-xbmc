@@ -2735,6 +2735,81 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           ? TRUEHD_PASSTHROUGH_ERROR_SCALE
           : 1.0;
 
+  // A start scheduled on the clock (design §15, step 2.2): instead of muting and
+  // walking onto a clock that is already running, tag each buffer with the
+  // instant its first sample must leave the output, and let the sink land it
+  // there. Passthrough only so far (PCM is mixed and re-chunked on its way).
+  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START && m_mode == MODE_RAW)
+  {
+    int64_t startNs = 0;
+    double startClockMs = 0.0;
+    unsigned int epoch = 0;
+    if (stream->m_pClock->GetScheduledStart(startNs, startClockMs, epoch) &&
+        epoch != m_sink.GetCommittedStart())
+    {
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_SCHEDULED;
+      stream->m_schedNs = startNs;
+      stream->m_schedClockMs = startClockMs;
+      stream->m_schedEpoch = epoch;
+      stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
+      stream->m_resampleIntegral = 0;
+      CLog::Log(LOGINFO,
+                "ActiveAE - scheduled start {} of audio stream: clock {:.3f} ms at {} ns",
+                epoch, startClockMs, startNs);
+    }
+  }
+  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_SCHEDULED)
+  {
+    int64_t startNs = 0;
+    double startClockMs = 0.0;
+    unsigned int epoch = 0;
+    if (!stream->m_pClock->GetScheduledStart(startNs, startClockMs, epoch) ||
+        epoch != stream->m_schedEpoch)
+    {
+      // the clock was changed before the start landed: start as before
+      CLog::Log(LOGINFO, "ActiveAE - scheduled start {} cancelled", stream->m_schedEpoch);
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+    }
+    else if (m_sink.GetCommittedStart() == stream->m_schedEpoch)
+    {
+      // landed: in sync from here; measure from a clean window, with no stale
+      // resume target to walk to (the landing is the alignment)
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
+      stream->m_syncError.Flush(1000ms);
+      stream->m_useResumeSyncTarget = false;
+      stream->m_resumeSyncTargetValid = false;
+      stream->m_captureAfterSinkReopen = true;
+      CLog::Log(LOGINFO, "ActiveAE - scheduled start {} committed", stream->m_schedEpoch);
+    }
+    else
+    {
+      CSampleBuffer* buf = stream->m_processingBuffers->m_outputSamples.front();
+      if (buf->ptsUs || buf->timestamp)
+      {
+        const double ptsMs = buf->ptsUs ? static_cast<double>(buf->ptsUs) / 1000.0
+                                        : static_cast<double>(buf->timestamp);
+        const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+        if (ptsMs + frameMs <= stream->m_schedClockMs)
+        {
+          // ends before the first picture: there is nothing to hear it with
+          // (a frame that straddles the start plays its head just before it)
+          buf->pkt->nb_samples = 0;
+          buf->pkt->pause_burst_ms = 0;
+          CLog::Log(LOGDEBUG, "ActiveAE - scheduled start {}: frame at {:.3f} ms before the start, dropped",
+                    stream->m_schedEpoch, ptsMs);
+          return ret;
+        }
+        double speed = stream->m_pClock->GetClockSpeed();
+        if (speed <= 0.0)
+          speed = 1.0;
+        buf->landNs = stream->m_schedNs +
+                      static_cast<int64_t>((ptsMs - stream->m_schedClockMs) * 1e6 / speed);
+        buf->landEpoch = stream->m_schedEpoch;
+      }
+      return ret;
+    }
+  }
+
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;

@@ -48,6 +48,15 @@ public:
   static int PackTrueHD(const uint8_t* data, unsigned int size, uint8_t* dest);
   static int PackDTSHD(uint8_t* data, unsigned int size, uint8_t* dest, unsigned int period);
   static int PackPause(uint8_t *dest, unsigned int millis, unsigned int framesize, unsigned int samplerate, unsigned int rep_period, unsigned int encodedRate);
+  /*! Exactly `frames` output frames of pause: a burst every rep_period frames,
+   *  the last period stretched to the remainder (IEC 61937-1 allows any gap
+   *  length). gapIecFrames goes in the first burst's gap_length, in IEC 60958
+   *  frames. frames * framesize must fit MAX_IEC61937_PACKET. Returns bytes. */
+  static int PackPauseFrames(uint8_t* dest,
+                             unsigned int frames,
+                             unsigned int framesize,
+                             unsigned int rep_period,
+                             unsigned int gapIecFrames);
 private:
 
   static int PackDTS(uint8_t *data, unsigned int size, uint8_t *dest, bool littleEndian,

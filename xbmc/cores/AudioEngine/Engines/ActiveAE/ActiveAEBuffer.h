@@ -55,6 +55,10 @@ public:
   // the pts of the sample at pkt_start_offset in µs (timestamp keeps the ms value
   // the sync measurement uses); 0 = none. Set by the stream; passthrough only so far.
   int64_t ptsUs = 0;
+  // a scheduled start: CLOCK_MONOTONIC at which this buffer's first sample must
+  // leave the output, and the start it belongs to; 0 = play when it comes
+  int64_t landNs = 0;
+  unsigned int landEpoch = 0;
   int pkt_start_offset = 0;
   int refCount = 0;
   double centerMixLevel;

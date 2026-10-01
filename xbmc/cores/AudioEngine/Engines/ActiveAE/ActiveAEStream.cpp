@@ -348,6 +348,8 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         m_currentBuffer = *((CSampleBuffer**)msg->data);
         m_currentBuffer->timestamp = 0;
         m_currentBuffer->ptsUs = 0;
+        m_currentBuffer->landNs = 0;
+        m_currentBuffer->landEpoch = 0;
         m_currentBuffer->pkt->nb_samples = 0;
         m_currentBuffer->pkt->pause_burst_ms = 0;
         msg->Release();

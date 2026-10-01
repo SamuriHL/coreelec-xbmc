@@ -32,7 +32,7 @@ public:
     Discontinuity(clock, GetAbsoluteClock());
   }
 
-  void Reset() { m_bReset = true; }
+  void Reset();
   void SetSpeed(int iSpeed);
   void SetSpeedAdjust(double adjust);
   double GetSpeedAdjust() const;
@@ -72,6 +72,16 @@ public:
   bool IsPaused() const;
   void Advance(double time);
 
+  //! Resume the clock held at speed 0 at a scheduled instant instead of now
+  //! (design §15, step 2.2): it stays paused for `lead` seconds, then runs at
+  //! iSpeed anchored exactly at that instant, so the audio output can land its
+  //! first sample there. Any other writer before then cancels the schedule.
+  //! startNs: the instant (CLOCK_MONOTONIC); startClock: the clock there.
+  //! false (the clock resumed now) if it was not held at speed 0.
+  bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);
+  //! the scheduled resume, while no writer has changed the clock since
+  bool GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const;
+
 protected:
   //! caller holds m_critSection
   void DropVsyncPhase(bool settled);
@@ -79,6 +89,12 @@ protected:
   double ReduceVsyncAdjust(double adjustment) const;
   //! caller holds m_critSection
   void Rebase(double clock, double absolute);
+  //! caller holds m_critSection
+  void SetSpeedAt(int iSpeed, int64_t current);
+  //! caller holds m_critSection: resume now if the scheduled instant has come
+  void ApplyScheduledResume(int64_t current);
+  //! caller holds m_critSection
+  void CancelScheduledResume();
   double SystemToAbsolute(int64_t system) const;
   int64_t AbsoluteToSystem(double absolute) const;
   double SystemToPlaying(int64_t system);
@@ -110,4 +126,11 @@ protected:
 
   double m_maxspeedadjust;
   CCriticalSection m_speedsection;
+
+  int64_t m_resumeAt = 0; // reference-clock time of a pending scheduled resume
+  int m_resumeSpeed = 0;
+  bool m_scheduleValid = false;
+  int64_t m_scheduleNs = 0;
+  double m_scheduleClock = 0.0;
+  unsigned int m_scheduleEpoch = 0;
 };

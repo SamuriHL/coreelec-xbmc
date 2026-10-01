@@ -290,6 +290,11 @@ protected:
   double m_mutePauseCarry;          // RAW start sync: pause time owed from whole-ms truncation
   bool m_syncWaitSilence;           // the delay walk wants silence but the pool is empty:
                                     // hold the stream's audio until a buffer returns
+  // a start scheduled on the clock (SYNC_SCHEDULED): the clock reads
+  // m_schedClockMs at CLOCK_MONOTONIC m_schedNs; the sink lands schedule m_schedEpoch
+  int64_t m_schedNs = 0;
+  double m_schedClockMs = 0.0;
+  unsigned int m_schedEpoch = 0;
 };
 }
 

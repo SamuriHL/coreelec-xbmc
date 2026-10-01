@@ -25,6 +25,13 @@ public:
 
   void Pack(CAEStreamInfo &info, uint8_t* data, int size);
   bool PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts);
+  /*! Pause of exactly `frames` output frames, or as many as one buffer holds;
+   *  gapFrames (output frames to the next data burst) goes in gap_length.
+   *  Returns the frames packed. */
+  unsigned int PackPauseFrames(CAEStreamInfo& info,
+                               unsigned int frames,
+                               unsigned int gapFrames,
+                               bool iecBursts);
   void Reset();
   uint8_t* GetBuffer();
   unsigned int GetSize() const;

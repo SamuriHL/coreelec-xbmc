@@ -15,6 +15,7 @@
 #include "utils/log.h"
 
 #include <cmath>
+#include <time.h>
 #include <inttypes.h>
 #include <math.h>
 #include <memory>
@@ -61,6 +62,7 @@ double CDVDClock::GetClock(bool interpolated /*= true*/)
   std::unique_lock lock(m_critSection);
 
   int64_t current = m_videoRefClock->GetTime(interpolated);
+  ApplyScheduledResume(current);
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
@@ -86,6 +88,7 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
   // nested, so this introduces no ordering constraint.
   std::unique_lock lock(m_critSection);
 
+  ApplyScheduledResume(current);
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
@@ -235,6 +238,7 @@ double CDVDClock::GetVsyncAdjust()
 void CDVDClock::Pause(bool pause)
 {
   std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
 
   if (pause && !m_paused)
   {
@@ -256,12 +260,76 @@ void CDVDClock::Pause(bool pause)
 bool CDVDClock::IsPaused() const
 {
   std::unique_lock lock(m_critSection);
+  // a scheduled resume whose instant has come runs, though the next GetClock
+  // applies it
+  if (m_resumeAt && m_videoRefClock->GetTime() >= m_resumeAt)
+    return false;
   return m_pauseClock != 0;
+}
+
+void CDVDClock::Reset()
+{
+  std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
+  m_bReset = true;
+}
+
+bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock)
+{
+  std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
+  const int64_t current = m_videoRefClock->GetTime();
+  if (m_paused || !m_pauseClock || iSpeed != DVD_PLAYSPEED_NORMAL || lead <= 0.0)
+  {
+    SetSpeedAt(iSpeed, current);
+    return false;
+  }
+  struct timespec mono = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  const int64_t leadSystem = static_cast<int64_t>(lead * m_systemFrequency);
+  m_resumeAt = current + leadSystem;
+  m_resumeSpeed = iSpeed;
+  m_scheduleNs = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec +
+                 static_cast<int64_t>(lead * 1e9);
+  m_scheduleClock = SystemToPlaying(current);
+  m_scheduleEpoch++;
+  m_scheduleValid = true;
+  startNs = m_scheduleNs;
+  startClock = m_scheduleClock;
+  return true;
+}
+
+bool CDVDClock::GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const
+{
+  std::unique_lock lock(m_critSection);
+  if (!m_scheduleValid)
+    return false;
+  startNs = m_scheduleNs;
+  startClock = m_scheduleClock;
+  epoch = m_scheduleEpoch;
+  return true;
+}
+
+void CDVDClock::ApplyScheduledResume(int64_t current)
+{
+  if (!m_resumeAt || current < m_resumeAt)
+    return;
+  const int64_t at = m_resumeAt;
+  m_resumeAt = 0;
+  // anchored at the scheduled instant, not at whenever a reader came by
+  SetSpeedAt(m_resumeSpeed, at);
+}
+
+void CDVDClock::CancelScheduledResume()
+{
+  m_resumeAt = 0;
+  m_scheduleValid = false;
 }
 
 void CDVDClock::Advance(double time)
 {
   std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
 
   if (m_pauseClock)
   {
@@ -273,7 +341,12 @@ void CDVDClock::SetSpeed(int iSpeed)
 {
   // this will sometimes be a little bit of due to rounding errors, ie clock might jump a bit when changing speed
   std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
+  SetSpeedAt(iSpeed, m_videoRefClock->GetTime());
+}
 
+void CDVDClock::SetSpeedAt(int iSpeed, int64_t current)
+{
   if (m_paused)
   {
     m_speedAfterPause = iSpeed;
@@ -283,14 +356,12 @@ void CDVDClock::SetSpeed(int iSpeed)
   if (iSpeed == DVD_PLAYSPEED_PAUSE)
   {
     if (!m_pauseClock)
-      m_pauseClock = m_videoRefClock->GetTime();
+      m_pauseClock = current;
     return;
   }
 
-  int64_t current;
   int64_t newfreq = m_systemFrequency * DVD_PLAYSPEED_NORMAL / iSpeed;
 
-  current = m_videoRefClock->GetTime();
   // Resuming from a pause shifts the clock by the pause length, and a speed
   // change rescales it: either way it now stands at another point of the
   // display's vsync cadence (measured am9pro: the phase moved 4 ms after a
@@ -369,6 +440,7 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
     return 0;
 
   // a whole-frame step (or no phase at all): the display phase is unchanged
+  CancelScheduledResume();
   Rebase(clock + adjustment, absolute);
 
   CLog::Log(LOGDEBUG, "CDVDClock::ErrorAdjust - {} - error:{:f}, adjusted:{:f}", log, error,
@@ -379,6 +451,7 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
 void CDVDClock::Discontinuity(double clock, double absolute)
 {
   std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
   Rebase(clock, absolute);
   // the clock now stands at an arbitrary point of the display's vsync cadence
   DropVsyncPhase(false);

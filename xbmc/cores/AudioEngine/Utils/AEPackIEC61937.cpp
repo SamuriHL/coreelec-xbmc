@@ -10,6 +10,7 @@
 
 #include "utils/log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <string.h>
@@ -253,6 +254,35 @@ int CAEPackIEC61937::PackDTS(uint8_t *data, unsigned int size, uint8_t *dest, bo
     memset(packet->m_data + size, 0, frameSize - IEC61937_DATA_OFFSET - size);
 
   return frameSize;
+}
+
+int CAEPackIEC61937::PackPauseFrames(uint8_t* dest,
+                                     unsigned int frames,
+                                     unsigned int framesize,
+                                     unsigned int rep_period,
+                                     unsigned int gapIecFrames)
+{
+  const unsigned int bytes = std::min(frames * framesize, static_cast<unsigned int>(MAX_IEC61937_PACKET));
+  frames = bytes / framesize;
+  memset(dest, 0, bytes);
+  if (rep_period == 0 || frames * framesize < IEC61937_DATA_OFFSET + 2)
+    return frames * framesize;
+
+  // a burst at the start of every whole period; the last one also covers the rest
+  const unsigned int bursts = std::max(1u, frames / rep_period);
+  for (unsigned int i = 0; i < bursts; i++)
+  {
+    struct IEC61937Packet* packet =
+        reinterpret_cast<struct IEC61937Packet*>(dest + i * rep_period * framesize);
+    packet->m_preamble1 = IEC61937_PREAMBLE1;
+    packet->m_preamble2 = IEC61937_PREAMBLE2;
+    packet->m_type = 3;
+    packet->m_length = 32;
+  }
+  uint16_t* gapPtr = reinterpret_cast<uint16_t*>(reinterpret_cast<struct IEC61937Packet*>(dest)->m_data);
+  *gapPtr = static_cast<uint16_t>(std::min(gapIecFrames, 65535u));
+
+  return frames * framesize;
 }
 
 int CAEPackIEC61937::PackPause(uint8_t *dest, unsigned int millis, unsigned int framesize, unsigned int samplerate, unsigned int rep_period, unsigned int encodedRate)

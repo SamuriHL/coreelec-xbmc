@@ -83,6 +83,8 @@ CSampleBuffer* CActiveAEBufferPool::GetFreeBuffer()
     buf->refCount = 1;
     buf->centerMixLevel = M_SQRT1_2;
     buf->ptsUs = 0;
+    buf->landNs = 0;
+    buf->landEpoch = 0;
   }
   return buf;
 }

@@ -12,6 +12,7 @@
 #include "AEStreamInfo.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <array>
 #include <stddef.h>
 #include <stdint.h>
@@ -110,6 +111,31 @@ bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, boo
   }
 
   return true;
+}
+
+unsigned int CAEBitstreamPacker::PackPauseFrames(CAEStreamInfo& info,
+                                                 unsigned int frames,
+                                                 unsigned int gapFrames,
+                                                 bool iecBursts)
+{
+  const unsigned int channels = GetOutputChannelMap(info).Count();
+  const unsigned int framesize = channels * 2;
+  if (!framesize)
+    return 0;
+  // the same repetition periods as PackPause
+  const unsigned int repPeriod =
+      info.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD || info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3
+          ? 4
+          : 3;
+  // an output frame of N channels carries N/2 IEC 60958 frames (HBR: 4)
+  const unsigned int iecPerFrame = std::max(1u, channels / 2);
+  m_dataSize = CAEPackIEC61937::PackPauseFrames(m_packedBuffer, frames, framesize, repPeriod,
+                                                gapFrames * iecPerFrame);
+  if (!iecBursts)
+    memset(m_packedBuffer, 0, m_dataSize);
+  // the buffer no longer holds the last millisecond pause
+  m_pauseDuration = 0;
+  return m_dataSize / framesize;
 }
 
 unsigned int CAEBitstreamPacker::GetSize() const
