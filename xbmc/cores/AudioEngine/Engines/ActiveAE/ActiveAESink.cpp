@@ -1203,6 +1203,20 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   // a pause burst leaves the stats' queued time with its own length
   const int pauseMs = samples->pkt->nb_samples == 0 ? samples->pkt->pause_burst_ms : 0;
 
+  // TEMP LANDDIAG (design §15, 2.2): where the buffers after a landing fall
+  // against their own labels' targets
+  if (samples->landNs && samples->landEpoch == m_committedStart.load() && m_landDiag < 40)
+  {
+    AEDelayStatus st;
+    m_sink->GetDelay(st);
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+    CLog::Log(LOGINFO, "LANDDIAG start {} buffer {} pts {:.3f} ms: lands {:+.3f} ms from its target",
+              samples->landEpoch, ++m_landDiag, samples->ptsUs / 1000.0,
+              (now + static_cast<int64_t>(st.delay * 1e9) - samples->landNs) / 1e6);
+  }
+
   if (samples->landNs && samples->landEpoch != m_committedStart.load() &&
       m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack && !LandScheduled(samples))
   {
@@ -1440,6 +1454,7 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
     padFrames -= packed;
   }
   m_committedStart = samples->landEpoch;
+  m_landDiag = 0;
   CLog::Log(LOGINFO,
             "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), delay before "
             "{:.3f} ms, landing error {:+.3f} ms{}",
