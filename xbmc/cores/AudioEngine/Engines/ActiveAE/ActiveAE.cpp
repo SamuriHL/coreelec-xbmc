@@ -2288,17 +2288,33 @@ bool CActiveAE::RunStages()
             std::chrono::steady_clock::now() - (*it)->m_heldLandingSince >= 200ms)
         {
           if ((*it)->m_heldQCount == 0)
+          {
             (*it)->m_heldQFirst = std::chrono::steady_clock::now();
+            (*it)->m_heldQFirstValue = playingPts;
+          }
+          (*it)->m_heldQLastValue = playingPts;
           (*it)->m_heldQSum += playingPts;
           (*it)->m_heldQCount++;
         }
         // TEMP STARTDIAG (held-start audio, design 13.aa): the parts of the
         // start-sync error while a stream is not yet in sync
         {
+          // also the first 3 s in sync: the settled delay against the landing's
+          static unsigned int s_insyncDiag = 0;
           static unsigned int s_startDiag = 0;
+          static std::chrono::steady_clock::time_point s_inSyncSince;
+          const auto now = std::chrono::steady_clock::now();
+          bool log = false;
           if ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC)
+          {
+            if (s_startDiag != 0)
+              s_inSyncSince = now;
             s_startDiag = 0;
-          else if (s_startDiag++ % 3 == 0)
+            log = now - s_inSyncSince < 3s && (++s_insyncDiag % 5 == 0);
+          }
+          else
+            log = (s_startDiag++ % 3 == 0);
+          if (log)
             CLog::Log(LOGINFO,
                       "STARTDIAG state {} pts {:.3f} offset {:.3f} delay {:.3f} clock {:.3f} "
                       "phase {:.3f} pending {} error {:.3f}",
@@ -2832,8 +2848,11 @@ bool CActiveAE::HeldLanding(CActiveAEStream* stream, double errorScale)
   stream->m_useResumeSyncTarget = false;
   CLog::Log(LOGINFO,
             "ActiveAE - held start lands: pad {:.1f} ms ahead of the first sample ({} samples "
-            "over {:.0f} ms, phase {:.3f} ms, waited {:.0f} ms)",
-            pad, stream->m_heldQCount, sampled, stream->m_pClock->GetClockPhase(), waited);
+            "over {:.0f} ms, phase {:.3f} ms, waited {:.0f} ms; head-delay first {:.3f} last "
+            "{:.3f} mean {:.3f}, clock {:.3f})",
+            pad, stream->m_heldQCount, sampled, stream->m_pClock->GetClockPhase(), waited,
+            stream->m_heldQFirstValue, stream->m_heldQLastValue,
+            stream->m_heldQSum / stream->m_heldQCount, clock);
   return true;
 }
 

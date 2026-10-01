@@ -296,6 +296,8 @@ protected:
   bool m_heldLanding = false;       // held start: hold the head, land it once (design 13.ab)
   double m_heldQSum = 0.0;          // held landing: sum of (head pts - sink delay), ms
   int m_heldQCount = 0;
+  double m_heldQFirstValue = 0.0;   // TEMP STARTDIAG: the averaged quantity's first and last
+  double m_heldQLastValue = 0.0;
   std::chrono::steady_clock::time_point m_heldLandingSince;
   std::chrono::steady_clock::time_point m_heldQFirst;
 };
