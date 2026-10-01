@@ -1478,6 +1478,7 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
     padFrames -= packed;
   }
   m_committedStart = samples->landEpoch;
+  PRESENTATION::AudioLandings().fetch_add(1, std::memory_order_release);
   m_landDiag = 0;
   // the error: where the first sample written leaves against its own target
   const double errorMs = padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6

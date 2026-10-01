@@ -13,6 +13,8 @@
 // low-priority reporter compares it with today's clocks. Nothing reads the
 // timeline to present yet. Enabled by special://profile/timekeeper_shadow.
 
+#include "AudioFollower.h"
+
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -54,6 +56,7 @@ private:
   int m_wakeFd = -1;
   std::thread m_thread;
   std::thread m_reporter;
+  CAudioFollower m_follower;
   std::atomic<bool> m_stop{false};
   std::mutex m_reportMutex;
   std::condition_variable m_reportCond;

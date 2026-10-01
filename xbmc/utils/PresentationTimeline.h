@@ -189,6 +189,13 @@ inline std::atomic<uint32_t>& TimelineTicks()
   static std::atomic<uint32_t> ticks{0};
   return ticks;
 }
+// Bumped by the audio sink each time a scheduled start lands: the audio
+// follower measures its phase from there.
+inline std::atomic<uint64_t>& AudioLandings()
+{
+  static std::atomic<uint64_t> landings{0};
+  return landings;
+}
 
 // set while the timekeeper runs as the reference clock's vblank source
 // (special://profile/timeline_clock, design §15 step 2.1)

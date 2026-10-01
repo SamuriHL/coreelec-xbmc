@@ -157,6 +157,7 @@ bool CTimekeeper::Start()
   ShadowActive() = true;
   m_thread = std::thread(&CTimekeeper::Run, this);
   m_reporter = std::thread(&CTimekeeper::Report, this);
+  m_follower.Start();
   return true;
 }
 
@@ -180,6 +181,7 @@ void CTimekeeper::Stop()
   TimelineTicks().notify_all();
   if (m_reporter.joinable())
     m_reporter.join();
+  m_follower.Stop();
   if (m_fd >= 0)
     close(m_fd);
   if (m_wakeFd >= 0)
