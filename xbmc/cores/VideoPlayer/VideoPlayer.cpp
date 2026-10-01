@@ -877,12 +877,6 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
   }
-  // design 13.ab model D: a held start lands its audio during a clock lead. Off
-  // by default until its landing is as exact as the ordinary start sync (box,
-  // 2026-09-30: DD landed 18-24 ms late; TrueHD's queue outlasts the lead)
-  m_heldLandingEnabled = XFILE::CFile::Exists("special://profile/heldlanding");
-  if (m_heldLandingEnabled)
-    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start landing on");
   // design 5 (4b): the audio output is held for the session; the debug flag
   // turns it off for A/B runs
   if (XFILE::CFile::Exists("special://profile/audiohold_off"))
@@ -2118,7 +2112,7 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   constexpr double LEAD = DVD_MSEC_TO_TIME(1000);
   const bool lead = std::string_view(why) != "flush" && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
                     m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 && m_audioSessionHold &&
-                    m_heldLandingEnabled && m_VideoPlayerAudio->IsPassthrough();
+                    m_VideoPlayerAudio->IsPassthrough();
   const double first = m_clock.GetClock();
   m_startReleasedClock = first;
 #if defined(HAVE_LIBBLURAY)
