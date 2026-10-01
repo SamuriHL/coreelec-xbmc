@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
-#include <string_view>
 
 using namespace AE;
 using namespace ActiveAE;
@@ -2716,10 +2715,6 @@ bool CActiveAE::HasWork()
   std::list<CActiveAEStream*>::iterator it;
   for (it = m_streams.begin(); it != m_streams.end(); ++it)
   {
-    // a held landing holds its first sample with a full queue: the engine must
-    // keep running it (every 10 ms) until it lands or falls back
-    if ((*it)->m_heldLanding)
-      return true;
     if (!(*it)->m_processingBuffers->HasWork())
       return true;
     if (!(*it)->m_processingSamples.empty())
@@ -2766,10 +2761,7 @@ void CActiveAE::ArmHeldLanding(CActiveAEStream* stream)
 
 void CActiveAE::DisarmHeldLanding(CActiveAEStream* stream, const char* why)
 {
-  // a pause or flush cancels a release still on its way; a sink reopen does not
-  // (the display reset's reopen runs between the release and its resume)
-  if (std::string_view(why) != "sink reopened")
-    stream->m_heldLandingRequest = false;
+  stream->m_heldLandingRequest = false;
   if (!stream->m_heldLanding)
     return;
   stream->m_heldLanding = false;
