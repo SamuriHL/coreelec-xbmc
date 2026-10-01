@@ -35,6 +35,7 @@ private:
   void Run();
   void OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now);
   void OnTimeout(int64_t now);
+  void CheckRate(int64_t ns);
   void Publish(int64_t vblankNs, bool synthetic);
   bool ReadMode(uint64_t& num, uint64_t& den);
   bool ReadModeNow(uint64_t& num, uint64_t& den);
@@ -77,6 +78,8 @@ private:
   int64_t m_lastOnGridNs = 0;
   int m_onGridRun = 0;
   uint64_t m_epochStartTick = 0;
+  int64_t m_rateRefNs = 0;
+  uint64_t m_rateRefTick = 0;
 
   // counters the reporter reads (written only by the time thread)
   std::atomic<int> m_rtResult{-1};     // 0 if SCHED_FIFO was granted, else errno
@@ -90,6 +93,7 @@ private:
   std::atomic<int64_t> m_validTicks{0};
   std::atomic<int64_t> m_validNs{0};
   std::atomic<uint64_t> m_modeOldNum{0}, m_modeOldDen{0};
+  std::atomic<uint64_t> m_rateCorrections{0}; // epochs the panel's measured rate started
   static constexpr int WAKE_BINS = 401; // 50 µs bins to 20 ms, then overflow
   std::array<std::atomic<uint32_t>, WAKE_BINS> m_wake{};
   std::atomic<int64_t> m_wakeMaxUs{0};

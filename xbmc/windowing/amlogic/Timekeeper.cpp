@@ -334,7 +334,12 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
     double nominal = NominalNs();
     int64_t steps = std::llround(dt / nominal);
     const bool onGrid = steps >= 1 && std::fabs(dt - steps * nominal) <= 0.02 * nominal;
-    if (!onGrid && !m_suspect)
+    // A mode set blanks the output, so its first vblank comes after a gap. A new
+    // mode whose period is a whole multiple of the old one (48 -> 24, 60 -> 30), or a
+    // 1000/1001 sibling whose first vblank happens to land on the old grid, stays
+    // on-grid: the gap is what shows the change then.
+    const bool gap = dt > 1.5 * nominal;
+    if ((!onGrid || gap) && !m_suspect)
     {
       // the vblank before this one was the last on the old grid
       m_suspect = true;
@@ -346,8 +351,8 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
       // take the timing the mode setter posted, once the vblanks have left the
       // old grid; or clear once the old grid holds for three vblanks again
       int64_t notice[MN_COUNT];
-      const bool posted =
-          !onGrid && ModeBoard().Read(notice) && notice[MN_SERIAL] != m_modeSerial;
+      const bool posted = (!onGrid || gap) && ModeBoard().Read(notice) &&
+                          notice[MN_SERIAL] != m_modeSerial;
       const uint64_t num = posted ? static_cast<uint64_t>(notice[MN_PERIOD_NUM]) : 0;
       const uint64_t den = posted ? static_cast<uint64_t>(notice[MN_PERIOD_DEN]) : 0;
       if (posted)
@@ -363,11 +368,12 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
         m_epochStartTick = m_tickAtLastReal;
         m_valid = false;
         m_validRun = 0;
+        m_rateRefNs = 0;
         m_suspect = false;
         nominal = NominalNs();
         steps = std::llround(dt / nominal);
       }
-      else if (onGrid && ++m_onGridRun >= 3)
+      else if (onGrid && !gap && ++m_onGridRun >= 3)
         m_suspect = false;
     }
     if (steps < 1)
@@ -392,6 +398,8 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
         m_validEpoch = m_epoch;
       }
     }
+    else if (!m_suspect)
+      CheckRate(ns);
   }
   else
     m_tick = 1;
@@ -408,6 +416,48 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
   }
 
   Publish(ns, false);
+}
+
+void CTimekeeper::CheckRate(int64_t ns)
+{
+  // Is the panel running the nominal period? Some HDMI transmitters do not apply
+  // the 1000/1001 rate FRAC_RATE_POLICY asks for (hdmitx20 SoCs), and then the
+  // panel runs the integer sibling. Over 5 s of real vblanks the counted ticks
+  // give the period to well under 1 ppm; a deviation of 300 ppm to 0.5 % that the
+  // sibling explains to 100 ppm means the mode is the sibling: a new epoch at that
+  // nominal period. Not a filtered rate: the choice is between two nominal modes.
+  if (!m_rateRefNs)
+  {
+    m_rateRefNs = ns;
+    m_rateRefTick = m_tick;
+    return;
+  }
+  if (ns - m_rateRefNs < 5000000000LL || m_tick <= m_rateRefTick)
+    return;
+  const double measured =
+      static_cast<double>(ns - m_rateRefNs) / static_cast<double>(m_tick - m_rateRefTick);
+  m_rateRefNs = ns;
+  m_rateRefTick = m_tick;
+  const double nominal = NominalNs();
+  const double deviation = std::fabs(measured / nominal - 1.0);
+  if (deviation < 0.0003 || deviation > 0.005)
+    return;
+  const bool slower = measured > nominal;
+  const uint64_t num = slower ? m_num * 1001 : m_num * 1000;
+  const uint64_t den = slower ? m_den * 1000 : m_den * 1001;
+  const double sibling = 1e9 * static_cast<double>(num) / static_cast<double>(den);
+  if (std::fabs(measured / sibling - 1.0) > 0.0001)
+    return;
+  const uint64_t g = std::gcd(num, den);
+  m_modeOldNum = m_num;
+  m_modeOldDen = m_den;
+  m_num = num / g;
+  m_den = den / g;
+  m_epoch++;
+  m_epochStartNs = ns;
+  m_epochStartTick = m_tick;
+  m_rateRefNs = 0;
+  m_rateCorrections.fetch_add(1, std::memory_order_relaxed);
 }
 
 void CTimekeeper::OnTimeout(int64_t now)
@@ -644,15 +694,16 @@ void CTimekeeper::Report()
 
     CLog::Log(LOGINFO,
               "TIMEKEEPER epoch {} tick {} kseq {} | wake us p50 {} p99 {} p99.9 {} max {} (n {}) | "
-              "skips {} synthetic {} heldback {} queue errors {} stepped back {} mode reads {} "
-              "(max {} us) | vblank vs "
+              "skips {} synthetic {} heldback {} queue errors {} stepped back {} rate corrections {} "
+              "mode reads {} (max {} us) | vblank vs "
               "nominal {:+.2f} ppm (n {}, resid {:.0f} us) | CDVDClock vs timeline {:+.1f} ppm "
               "(n {}, resid rms {:.2f} max {:.2f} ms, coordinator lag {} vblanks) | audio {} Hz vs "
               "timeline {:+.2f} ppm (n {}, resid rms {:.0f} max {:.0f} us); at htstamp {:+.2f} ppm "
               "(n {}, resid rms {:.0f} max {:.0f} us)",
               tl[TL_EPOCH], tl[TL_TICK], tl[TL_KERNEL_SEQ], percentile(0.5), percentile(0.99),
               percentile(0.999), wakeMax, total, m_skips.load(), m_synthetic.load(),
-              m_heldBack.load(), m_queueErrors.load(), steppedBack, m_modeReads.exchange(0),
+              m_heldBack.load(), m_queueErrors.load(), steppedBack, m_rateCorrections.load(),
+              m_modeReads.exchange(0),
               m_modeReadMaxUs.exchange(0), ratePpm, r.n, r.rms / 1000.0,
               clockPpm, c.n, c.rms / 1000.0, c.max / 1000.0, maxLag, audioRate, audioPpm, a.n,
               a.rms * usPerFrame, a.max * usPerFrame, audioHtPpm, h.n, h.rms * usPerFrame,
