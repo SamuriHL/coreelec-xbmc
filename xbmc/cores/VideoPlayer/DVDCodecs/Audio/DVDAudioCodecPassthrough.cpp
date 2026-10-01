@@ -337,10 +337,37 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       {
         // LAV Audio: a MAT frame contains 24 TrueHD frames; cache the timestamp
         // of the first one so the whole MAT burst carries that PTS.
-        if (!m_truehdPtsCacheValid && IsValidPts(m_currentPts))
+        //
+        // Until the packer has a major sync it discards every access unit, so
+        // the first one it takes can be up to 128 units (107 ms) after the
+        // packet pts current then (after a seek). Its time is that pts plus the
+        // units discarded since: a frame labelled with the discarded unit's pts
+        // put every label after a seek that much early, which the jitter
+        // tracker only corrects past 100 ms (13 Hours: -104 ms, 8 s after).
+        const bool majorSync = m_dataSize >= 8 && m_buffer[4] == 0xF8 && m_buffer[5] == 0x72 &&
+                               m_buffer[6] == 0x6F && m_buffer[7] == 0xBA;
+        const double unitTime =
+            static_cast<double>(m_format.m_streamInfo.GetDuration()) / 24.0 * 1000.0;
+        if (!m_packerMAT->IsStarted() && !majorSync)
+        {
+          if (IsValidPts(m_currentPts) && m_currentPts != m_truehdSkipPts)
+          {
+            m_truehdSkipPts = m_currentPts;
+            m_truehdSkipTime = 0.0;
+          }
+          m_truehdSkipTime += unitTime;
+        }
+        else if (!m_truehdPtsCacheValid && IsValidPts(m_currentPts))
         {
           m_truehdPtsCache = m_currentPts;
+          if (m_currentPts == m_truehdSkipPts)
+            m_truehdPtsCache += m_truehdSkipTime;
           m_truehdPtsCacheValid = true;
+          if (m_truehdSkipTime > 0.0)
+            CLog::LogF(LOGDEBUG, "TrueHD: {:.3f} ms of access units before the first major sync",
+                       m_truehdSkipTime / 1000.0);
+          m_truehdSkipPts = LOCAL_NOPTS;
+          m_truehdSkipTime = 0.0;
         }
       }
 
@@ -557,6 +584,8 @@ void CDVDAudioCodecPassthrough::Reset()
     m_nextPts = LOCAL_NOPTS;
     m_truehdPtsCache = LOCAL_NOPTS;
     m_truehdPtsCacheValid = false;
+    m_truehdSkipPts = LOCAL_NOPTS;
+    m_truehdSkipTime = 0.0;
     m_internalClock = LOCAL_NOPTS;
     m_needsResync = true;
     m_jitterTracker.Reset();

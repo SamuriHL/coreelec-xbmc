@@ -118,6 +118,10 @@ private:
   // TrueHD timestamp caching: cache the PTS of the first frame in a MAT assembly.
   double m_truehdPtsCache{LOCAL_NOPTS};
   bool m_truehdPtsCacheValid{false};
+  // access units the MAT packer discarded while waiting for a major sync (after a
+  // seek or a reset): the packet pts they arrived with, and their duration since
+  double m_truehdSkipPts{LOCAL_NOPTS};
+  double m_truehdSkipTime{0.0};
 
   // Jitter tracking using the LAV FloatingAverage (min-abs correction).
   static constexpr size_t JITTER_WINDOW_SIZE = 256;

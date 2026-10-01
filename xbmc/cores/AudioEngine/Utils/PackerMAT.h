@@ -30,6 +30,9 @@ public:
   ~CPackerMAT() = default;
 
   bool PackTrueHD(const uint8_t* data, int size);
+  //! a major sync has been packed: access units are taken from here on (before
+  //! it, PackTrueHD discards every access unit that is not a major sync)
+  bool IsStarted() const { return m_state.prevFrametimeValid; }
   std::vector<uint8_t> GetOutputFrame();
 
   // Samples offset carried by the last GetOutputFrame() MAT frame, for TrueHD
