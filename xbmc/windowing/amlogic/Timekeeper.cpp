@@ -163,6 +163,7 @@ bool CTimekeeper::Start()
 void CTimekeeper::Stop()
 {
   ShadowActive() = false;
+  TimelineClockActive() = false;
   m_stop = true;
   if (m_wakeFd >= 0)
   {
@@ -174,6 +175,9 @@ void CTimekeeper::Stop()
   m_reportCond.notify_all();
   if (m_thread.joinable())
     m_thread.join();
+  // wake tick readers: no tick follows
+  TimelineTicks().fetch_add(1, std::memory_order_release);
+  TimelineTicks().notify_all();
   if (m_reporter.joinable())
     m_reporter.join();
   if (m_fd >= 0)
@@ -431,6 +435,8 @@ void CTimekeeper::Publish(int64_t vblankNs, bool synthetic)
                                     static_cast<int64_t>(m_epoch),
                                     synthetic ? 1 : 0};
   TimelineBoard().Write(values);
+  TimelineTicks().fetch_add(1, std::memory_order_release);
+  TimelineTicks().notify_all();
 }
 
 void CTimekeeper::Report()

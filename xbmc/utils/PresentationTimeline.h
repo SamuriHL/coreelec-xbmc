@@ -180,6 +180,24 @@ inline CSeqBoard<CS_COUNT>& CoordinatorBoard()
   return board;
 }
 
+// The timeline's tick, bumped by the timekeeper after each publish. Readers that
+// present per tick sleep on it (std::atomic::wait, a futex) instead of polling;
+// the timekeeper also bumps it when it stops, so no reader sleeps forever.
+inline std::atomic<uint32_t>& TimelineTicks()
+{
+  // 32-bit: a futex word, so wait/notify go straight to the kernel
+  static std::atomic<uint32_t> ticks{0};
+  return ticks;
+}
+
+// set while the timekeeper runs as the reference clock's vblank source
+// (special://profile/timeline_clock, design §15 step 2.1)
+inline std::atomic<bool>& TimelineClockActive()
+{
+  static std::atomic<bool> active{false};
+  return active;
+}
+
 // set while the phase-1 shadow runs (special://profile/timekeeper_shadow)
 inline std::atomic<bool>& ShadowActive()
 {

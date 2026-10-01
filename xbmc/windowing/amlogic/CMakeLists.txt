@@ -1,10 +1,12 @@
 set(SOURCES WinSystemAmlogic.cpp
             VideoSyncAML.cpp
+            VideoSyncTimeline.cpp
             AMLDisplay.cpp
             Timekeeper.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h
+            VideoSyncTimeline.h
             AMLDisplay.h
             Timekeeper.h)
 

@@ -7,9 +7,11 @@
  */
 
 #include "VideoSyncAML.h"
+#include "VideoSyncTimeline.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "GraphicsPlaneAML.h"
 #include "Timekeeper.h"
+#include "utils/PresentationTimeline.h"
 #include "filesystem/File.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
@@ -101,12 +103,16 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
       m_coordinator.reset();
   }
 
-  if (XFILE::CFile::Exists("special://profile/timekeeper_shadow"))
+  // the timeline clock needs the timekeeper; the shadow comparison runs with it
+  const bool timelineClock = XFILE::CFile::Exists("special://profile/timeline_clock");
+  if (timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow"))
   {
     m_timekeeper = std::make_unique<CTimekeeper>(m_amlDisplay->aml_get_Device_handle(),
                                                  m_amlDisplay->aml_get_Device_crtc_id());
     if (!m_timekeeper->Start())
       m_timekeeper.reset();
+    else if (timelineClock)
+      PRESENTATION::TimelineClockActive() = true;
   }
 
   const int graphicsPlane =
@@ -883,8 +889,12 @@ EGLConfig  CWinSystemAmlogicGLESContext::GetEGLConfig() const
 
 std::unique_ptr<CVideoSync> CWinSystemAmlogicGLESContext::GetVideoSync(CVideoReferenceClock *clock)
 {
-  std::unique_ptr<CVideoSync> pVSync(new CVideoSyncAML(clock));
-  return pVSync;
+  // the timeline clock, once the timekeeper has published (before its first
+  // vblank the board is empty, and the kernel's vblanks are the source)
+  int64_t tl[PRESENTATION::TL_COUNT];
+  if (PRESENTATION::TimelineClockActive() && PRESENTATION::TimelineBoard().Read(tl))
+    return std::make_unique<CVideoSyncTimeline>(clock);
+  return std::make_unique<CVideoSyncAML>(clock);
 }
 
 bool CWinSystemAmlogicGLESContext::SupportsStereo(const RenderStereoMode mode) const
