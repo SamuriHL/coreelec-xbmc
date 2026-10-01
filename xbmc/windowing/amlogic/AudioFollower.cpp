@@ -8,26 +8,32 @@
 
 #include "AudioFollower.h"
 
+#include "filesystem/File.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <string>
 #include <vector>
 
 #include <pthread.h>
+#if defined(HAS_ALSA)
+#include <alsa/asoundlib.h>
+#endif
 
 using namespace PRESENTATION;
 using namespace std::chrono_literals;
 
 namespace
 {
-constexpr double TAU_S = 120.0;          // S6 law: phase pulled in with this time constant
+constexpr double TAU_S = 120.0;          // fine law: phase pulled in with this time constant
 constexpr double TRIM_LIMIT_PPM = 50.0;
-constexpr double G12B_STEP_PPM = 30.0;   // one real MPLL step (two SDM codes)
-constexpr double G12B_BAND_S = 100e-6;   // switch codes when the phase leaves ±100 µs
-constexpr int G12B_HOLD_S = 5;           // the phase average must refill after a switch
+constexpr double FINE_WRITE_PPM = 0.05;  // fine law: smallest change worth a write
+constexpr double GRID_STEP_PPM = 30.0;   // log-only: one real G12B MPLL step
+constexpr double GRID_BAND_S = 100e-6;   // grid law: switch codes when the phase leaves ±100 µs
+constexpr int GRID_HOLD_S = 5;           // the phase average must refill after a switch
 constexpr double ABORT_PHASE_S = 1e-3;
 constexpr double ABORT_DRIFT_PPM = 100.0;
 constexpr size_t FIT_SECONDS = 60;
@@ -55,6 +61,113 @@ double RobustSlope(const std::deque<std::pair<double, double>>& points)
                          (points[j].first - points[i].first));
   return Median(std::move(slopes));
 }
+
+// The kernel's "HDMI Audio Clock Trim" (common_drivers 0021), in 0.01 ppm:
+// [0] trim, [1] achieved against the PLL's nominal, [2] state (1 ready)
+class CTrimControl
+{
+public:
+  ~CTrimControl()
+  {
+#if defined(HAS_ALSA)
+    if (m_ctl)
+      snd_ctl_close(m_ctl);
+#endif
+  }
+
+  bool Open()
+  {
+#if defined(HAS_ALSA)
+    for (int card = 0; card < 8 && !m_ctl; card++)
+    {
+      snd_ctl_t* ctl = nullptr;
+      if (snd_ctl_open(&ctl, ("hw:" + std::to_string(card)).c_str(), 0) < 0)
+        continue;
+      snd_ctl_elem_id_t* id;
+      snd_ctl_elem_info_t* info;
+      snd_ctl_elem_id_alloca(&id);
+      snd_ctl_elem_info_alloca(&info);
+      snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+      snd_ctl_elem_id_set_name(id, "HDMI Audio Clock Trim");
+      snd_ctl_elem_info_set_id(info, id);
+      if (snd_ctl_elem_info(ctl, info) == 0 && snd_ctl_elem_info_get_count(info) == 3)
+      {
+        m_ctl = ctl;
+        m_numid = snd_ctl_elem_info_get_numid(info);
+      }
+      else
+        snd_ctl_close(ctl);
+    }
+#endif
+    return m_ctl != nullptr;
+  }
+
+  // the achieved trim in ppm, or false when there is no HDMI stream to trim
+  bool Read(double& achievedPpm, int& state)
+  {
+#if defined(HAS_ALSA)
+    snd_ctl_elem_value_t* value;
+    snd_ctl_elem_value_alloca(&value);
+    snd_ctl_elem_value_set_numid(value, m_numid);
+    if (!m_ctl || snd_ctl_elem_read(m_ctl, value) < 0)
+      return false;
+    achievedPpm = snd_ctl_elem_value_get_integer(value, 1) / 100.0;
+    state = static_cast<int>(snd_ctl_elem_value_get_integer(value, 2));
+    return state == 1;
+#else
+    return false;
+#endif
+  }
+
+  // 0 or a negative errno
+  int Write(double trimPpm)
+  {
+#if defined(HAS_ALSA)
+    snd_ctl_elem_value_t* value;
+    snd_ctl_elem_value_alloca(&value);
+    snd_ctl_elem_value_set_numid(value, m_numid);
+    snd_ctl_elem_value_set_integer(value, 0, std::lround(trimPpm * 100.0));
+    const int ret = m_ctl ? snd_ctl_elem_write(m_ctl, value) : -ENODEV;
+    return ret < 0 ? ret : 0;
+#else
+    return -ENODEV;
+#endif
+  }
+
+private:
+#if defined(HAS_ALSA)
+  snd_ctl_t* m_ctl = nullptr;
+#else
+  void* m_ctl = nullptr;
+#endif
+  unsigned int m_numid = 0;
+};
+
+enum class Mode
+{
+  LOG_ONLY, // no control, or not enabled: both laws run on paper
+  WAIT,     // enabled, waiting for the drift fit
+  FINE,     // a fine PLL (S6): t = -d0 - φ/τ
+  GRID,     // a coarse PLL (G12B): switch between the two codes that bracket -d0
+  ABORTED,  // trim 0 for the rest of this sink open
+};
+
+const char* ModeName(Mode mode)
+{
+  switch (mode)
+  {
+    case Mode::LOG_ONLY:
+      return "log-only";
+    case Mode::WAIT:
+      return "acquiring";
+    case Mode::FINE:
+      return "fine";
+    case Mode::GRID:
+      return "grid";
+    default:
+      return "aborted";
+  }
+}
 } // namespace
 
 CAudioFollower::~CAudioFollower()
@@ -80,8 +193,16 @@ void CAudioFollower::Run()
 {
   pthread_setname_np(pthread_self(), "AudioFollower");
 
+  CTrimControl control;
+  const bool enabled = XFILE::CFile::Exists("special://profile/audio_follower");
+  const bool haveControl = enabled && control.Open();
+  CLog::Log(LOGINFO, "FOLLOWER {}", !enabled     ? "log-only (special://profile/audio_follower absent)"
+                                    : haveControl ? "enabled"
+                                                  : "log-only: no HDMI Audio Clock Trim control");
+
   // ψ: the sink's position against the vblank sequence since the anchor (open,
-  // rate or epoch change); φ: the same since the last landing
+  // rate or epoch change), less the trim applied; φ: the phase since the last
+  // landing
   bool anchored = false;
   int64_t openId = -1, rate = 0, epoch = 0;
   uint64_t landings = 0;
@@ -93,27 +214,66 @@ void CAudioFollower::Run()
   std::vector<double> bin;           // φ samples in the current second
   int64_t binStartNs = 0;
   double binX = 0;                   // seconds since the anchor at the bin's last sample
-  std::deque<std::pair<double, double>> psi; // per second: (seconds, median ψ)
+  std::deque<std::pair<double, double>> psi; // per second: (seconds, median trim-free ψ)
 
-  // the virtual loops: the phase each law would have produced
-  double s6Trim = 0, s6Integral = 0;
-  double gTrim = 0, gIntegral = 0;
-  int gHold = 0, gSteps = 0;
-  bool s6Abort = false, gAbort = false;
-  std::deque<double> gRecent;        // last 5 s of the G12B virtual phase
+  Mode mode = haveControl ? Mode::WAIT : Mode::LOG_ONLY;
+  double written = 0;        // the trim last written, ppm
+  double applied = 0;        // the trim the kernel reports achieved, from the trim-0 baseline
+  double baseline = 0;       // achieved at trim 0
+  double appliedIntegral = 0;
+  double gridStep = GRID_STEP_PPM;
+  double driftAtStart = 0;
+  std::deque<double> appliedRecent; // the applied trim over the fit window
+  std::string abortReason;
+
+  // log-only: each law's phase had it been applied
+  double fineTrim = 0, fineIntegral = 0;
+  double gridTrim = 0, gridIntegral = 0;
+  int gridHold = 0, switches = 0;
+  std::deque<double> gridRecent;     // last 5 s of the grid law's phase
   int seconds = 0, samples = 0;
   std::vector<double> noise;
 
+  const auto write = [&](double trim) -> bool
+  {
+    const int ret = control.Write(trim);
+    double achieved = 0;
+    int state = 0;
+    if (ret < 0 || !control.Read(achieved, state))
+    {
+      abortReason = "trim write " + std::to_string(trim) + " ppm failed (" + std::to_string(ret) +
+                    ", state " + std::to_string(state) + ")";
+      return false;
+    }
+    written = trim;
+    applied = achieved - baseline;
+    return true;
+  };
+  const auto abort = [&](const std::string& reason)
+  {
+    if (mode == Mode::FINE || mode == Mode::GRID || mode == Mode::WAIT)
+    {
+      CLog::Log(LOGWARNING, "FOLLOWER stopped for this stream: {}", reason);
+      if (written != 0)
+        control.Write(0);
+      written = applied = 0;
+      mode = Mode::ABORTED;
+    }
+  };
   const auto reset = [&]()
   {
+    if (written != 0)
+      control.Write(0);
+    written = applied = appliedIntegral = 0;
+    mode = haveControl ? Mode::WAIT : Mode::LOG_ONLY;
     anchored = false;
     landingPending = true;
     bin.clear();
     psi.clear();
-    gRecent.clear();
-    s6Trim = s6Integral = gTrim = gIntegral = 0;
-    gHold = gSteps = 0;
-    s6Abort = gAbort = false;
+    appliedRecent.clear();
+    gridRecent.clear();
+    fineTrim = fineIntegral = gridTrim = gridIntegral = 0;
+    gridHold = switches = 0;
   };
 
   while (!m_stop)
@@ -167,8 +327,8 @@ void CAudioFollower::Run()
     {
       landingPending = false;
       psiAtLanding = psiNow;
-      s6Integral = gIntegral = 0;
-      gRecent.clear();
+      fineIntegral = gridIntegral = 0;
+      gridRecent.clear();
       bin.clear();
     }
     bin.push_back(psiNow - psiAtLanding);
@@ -187,65 +347,137 @@ void CAudioFollower::Run()
       v = std::fabs(v - phi);
     noise.push_back(Median(bin));
     bin.clear();
-    psi.emplace_back(binX, psiAtLanding + phi);
+
+    // the trim applied over the second just measured
+    appliedIntegral += applied * 1e-6;
+    appliedRecent.push_back(applied);
+    if (appliedRecent.size() > FIT_SECONDS)
+      appliedRecent.pop_front();
+    psi.emplace_back(binX, psiAtLanding + phi - appliedIntegral);
     if (psi.size() > FIT_SECONDS)
       psi.pop_front();
     const bool fitted = psi.size() >= FIT_MIN;
     const double driftPpm = fitted ? RobustSlope(psi) * 1e6 : 0.0;
 
-    // S6: a fine trim, t = -d0 - φ/τ; d0 comes from ψ, so it does not depend
-    // on the trim and the loop is one integrator on φ
-    s6Integral += s6Trim * 1e-6;
-    const double s6Phi = phi + s6Integral;
-    if (fitted && !s6Abort)
-      s6Trim = std::clamp(-driftPpm - s6Phi / TAU_S * 1e6, -TRIM_LIMIT_PPM, TRIM_LIMIT_PPM);
-    if (fitted && (std::fabs(s6Phi) > ABORT_PHASE_S || std::fabs(driftPpm) > ABORT_DRIFT_PPM))
-      s6Abort = true;
-
-    // G12B: the two grid codes that bracket -d0, one making the phase fall and
-    // the other rise; switch between them when the phase leaves the band
-    gIntegral += gTrim * 1e-6;
-    const double gPhi = phi + gIntegral;
-    gRecent.push_back(gPhi);
-    if (gRecent.size() > 5)
-      gRecent.pop_front();
-    double gMean = 0;
-    for (double v : gRecent)
-      gMean += v;
-    gMean /= gRecent.size();
-    if (gHold > 0)
-      gHold--;
-    if (fitted && !gAbort)
+    // the drift does not depend on the trim, so it is d0 whatever the loop does
+    if (mode == Mode::WAIT && fitted)
     {
-      const double low = G12B_STEP_PPM * std::floor(-driftPpm / G12B_STEP_PPM);
-      double want = gTrim;
-      if (gTrim != low && gTrim != low + G12B_STEP_PPM)
-        want = gMean > 0 ? low : low + G12B_STEP_PPM;
-      else if (gHold == 0 && gMean > G12B_BAND_S)
-        want = low;
-      else if (gHold == 0 && gMean < -G12B_BAND_S)
-        want = low + G12B_STEP_PPM;
-      if (want != gTrim)
+      double achieved = 0;
+      int state = 0;
+      if (std::fabs(driftPpm) > ABORT_DRIFT_PPM)
+        abort("drift " + std::to_string(driftPpm) + " ppm");
+      else if (!control.Read(achieved, state) || control.Write(3.0) < 0 ||
+               !control.Read(achieved, state))
+        abort("no HDMI stream to trim (state " + std::to_string(state) + ")");
+      else
       {
-        gTrim = want;
-        gHold = G12B_HOLD_S;
-        gSteps++;
+        double zero = 0;
+        control.Write(0);
+        control.Read(zero, state);
+        baseline = zero;
+        const double fine = achieved - zero;
+        if (std::fabs(fine - 3.0) < 0.5)
+          mode = Mode::FINE;
+        else if (control.Write(GRID_STEP_PPM) == 0 && control.Read(achieved, state) &&
+                 achieved - zero > 15.0 && achieved - zero < 60.0)
+        {
+          gridStep = achieved - zero;
+          control.Write(0);
+          mode = Mode::GRID;
+        }
+        else
+        {
+          control.Write(0);
+          abort("the PLL moved " + std::to_string(fine) + " ppm for 3");
+        }
+        driftAtStart = driftPpm;
+        if (mode == Mode::FINE || mode == Mode::GRID)
+          CLog::Log(LOGINFO,
+                    "FOLLOWER open {}: {} PLL (step {:.2f} ppm), drift {:+.2f} ppm, achieved {:+.2f} "
+                    "ppm at trim 0",
+                    openId, ModeName(mode), mode == Mode::FINE ? fine : gridStep, driftPpm, baseline);
       }
     }
-    if (fitted && (std::fabs(gPhi) > ABORT_PHASE_S || std::fabs(driftPpm) > ABORT_DRIFT_PPM))
-      gAbort = true;
+
+    const bool fineVirtual = mode != Mode::FINE;
+    const bool gridVirtual = mode != Mode::GRID;
+
+    // fine: t = -d0 - φ/τ; d0 comes from ψ, so the loop is one integrator on φ
+    if (fineVirtual)
+      fineIntegral += fineTrim * 1e-6;
+    const double finePhi = phi + (fineVirtual ? fineIntegral : 0);
+    if (fitted)
+      fineTrim = std::clamp(-driftPpm - finePhi / TAU_S * 1e6, -TRIM_LIMIT_PPM, TRIM_LIMIT_PPM);
+
+    // grid: the two codes that bracket -d0, one making the phase fall and the
+    // other rise; switch between them when the phase leaves the band
+    if (gridVirtual)
+      gridIntegral += gridTrim * 1e-6;
+    const double gridPhi = phi + (gridVirtual ? gridIntegral : 0);
+    const double step = mode == Mode::GRID ? gridStep : GRID_STEP_PPM;
+    gridRecent.push_back(gridPhi);
+    if (gridRecent.size() > 5)
+      gridRecent.pop_front();
+    double gridMean = 0;
+    for (double v : gridRecent)
+      gridMean += v;
+    gridMean /= gridRecent.size();
+    if (gridHold > 0)
+      gridHold--;
+    if (fitted)
+    {
+      const double low = step * std::floor(-driftPpm / step);
+      double want = gridTrim;
+      if (std::fabs(gridTrim - low) > step / 2 && std::fabs(gridTrim - low - step) > step / 2)
+        want = gridMean > 0 ? low : low + step;
+      else if (gridHold == 0 && gridMean > GRID_BAND_S)
+        want = low;
+      else if (gridHold == 0 && gridMean < -GRID_BAND_S)
+        want = low + step;
+      if (std::fabs(want - gridTrim) > step / 2)
+      {
+        gridTrim = want;
+        gridHold = GRID_HOLD_S;
+        switches++;
+      }
+    }
+
+    if (mode == Mode::FINE && std::fabs(fineTrim - written) >= FINE_WRITE_PPM && !write(fineTrim))
+      abort(abortReason);
+    else if (mode == Mode::GRID && std::fabs(gridTrim - written) > step / 2 && !write(gridTrim))
+      abort(abortReason);
+
+    // a trim that does not act shows as a drift that moves with it
+    if (mode == Mode::FINE || mode == Mode::GRID)
+    {
+      double mean = 0;
+      for (double v : appliedRecent)
+        mean += v;
+      mean /= appliedRecent.size();
+      const double phiNow = mode == Mode::FINE ? finePhi : gridPhi;
+      if (std::fabs(phiNow) > ABORT_PHASE_S)
+        abort("phase " + std::to_string(phiNow * 1e6) + " us");
+      else if (appliedRecent.size() >= FIT_SECONDS &&
+               std::fabs(driftPpm - driftAtStart) > std::max(0.3, 0.5 * std::fabs(mean)))
+        abort("the drift moved from " + std::to_string(driftAtStart) + " to " +
+              std::to_string(driftPpm) + " ppm under a trim of " + std::to_string(mean) + " ppm");
+    }
 
     if (++seconds < REPORT_SECONDS)
       continue;
     seconds = 0;
     CLog::Log(LOGINFO,
-              "FOLLOWER (log-only) open {} {} Hz | samples/s {} noise {:.0f} us | phase {:+.1f} us "
-              "drift {:+.2f} ppm (n {}) | S6 law: trim {:+.2f} ppm phase {:+.1f} us{} | G12B "
-              "bracket: trim {:+.0f} ppm phase {:+.1f} us switches {}{}",
-              openId, rate, samples / REPORT_SECONDS, Median(noise) * 1e6, phi * 1e6, driftPpm,
-              psi.size(), s6Trim, s6Phi * 1e6, s6Abort ? " ABORT" : "", gTrim, gPhi * 1e6, gSteps,
-              gAbort ? " ABORT" : "");
+              "FOLLOWER {} open {} {} Hz | samples/s {} noise {:.0f} us | phase {:+.1f} us drift "
+              "{:+.2f} ppm (n {}) | trim written {:+.2f} applied {:+.2f} ppm | fine law: trim "
+              "{:+.2f} ppm phase {:+.1f} us | grid law: trim {:+.0f} ppm phase {:+.1f} us "
+              "switches {}",
+              ModeName(mode), openId, rate, samples / REPORT_SECONDS, Median(noise) * 1e6,
+              phi * 1e6, driftPpm, psi.size(), written, applied, fineTrim, finePhi * 1e6, gridTrim,
+              gridPhi * 1e6, switches);
     samples = 0;
     noise.clear();
   }
+
+  if (written != 0)
+    control.Write(0);
 }
