@@ -708,11 +708,11 @@ void CRenderManager::CreateRenderer()
 
       m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer(id, buffer);
       if (m_pRenderer)
-      {
-        return;
-      }
+        break;
     }
-    m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer("default", buffer);
+    if (!m_pRenderer)
+      m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer("default", buffer);
+    m_presentVblanks = m_pRenderer ? m_pRenderer->PresentVblanks() : -1;
   }
 }
 
@@ -724,6 +724,7 @@ void CRenderManager::DeleteRenderer()
 
     delete m_pRenderer;
     m_pRenderer = NULL;
+    m_presentVblanks = -1;
   }
 }
 
@@ -1142,7 +1143,13 @@ void CRenderManager::PublishDisplayTiming()
   const unsigned int epoch = aml_presenter_epoch();
   const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   m_timingFps = gfx.GetFPS();
-  m_timingLatencyMs = m_latencyTweak + static_cast<double>(gfx.GetDisplayLatency());
+  // a renderer whose plane fixes the release-to-display vblanks knows its
+  // latency; the window system's figure assumes GL buffering
+  const int vblanks = m_presentVblanks;
+  const double display = vblanks >= 0 && m_timingFps > 0.0f
+                             ? vblanks * 1000.0 / static_cast<double>(m_timingFps)
+                             : static_cast<double>(gfx.GetDisplayLatency());
+  m_timingLatencyMs = m_latencyTweak + display;
   m_timingEpoch = epoch;
 }
 

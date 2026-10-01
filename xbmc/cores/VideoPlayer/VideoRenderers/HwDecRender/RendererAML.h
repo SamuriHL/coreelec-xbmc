@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 
 #include <memory>
@@ -36,6 +37,7 @@ public:
   virtual void Update() override {};
   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
   bool SupportsOffThreadPresent() const override { return true; }
+  int PresentVblanks() const override { return AML_VD1_PRESENT_VBLANKS; }
   void SetOffThreadPresent(bool enable) override { m_offThreadPresent = enable; }
   void PresentFrame(int index) override;
   virtual bool SupportsMultiPassRendering()override { return false; };

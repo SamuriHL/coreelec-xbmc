@@ -366,6 +366,7 @@ protected:
   int m_renderSource = -1;
   std::atomic<float> m_timingFps{60.0f};
   std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
+  std::atomic<int> m_presentVblanks{-1};
   std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in
   //! Phase 4 shadow: the last frame released while playing, and its vblank
   //! (coordinator thread only)

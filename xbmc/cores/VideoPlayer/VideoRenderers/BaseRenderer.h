@@ -73,6 +73,9 @@ public:
   // real_player: a hardware-plane renderer whose frame release can run on the
   // presentation coordinator; RenderUpdate then keeps only the geometry
   virtual bool SupportsOffThreadPresent() const { return false; }
+  //! Vblanks from a frame's release to its display, when the renderer's plane
+  //! fixes them; -1 leaves the window system's display latency in charge
+  virtual int PresentVblanks() const { return -1; }
   virtual void SetOffThreadPresent(bool enable) {}
   virtual void PresentFrame(int index) {}
   virtual bool IsGuiLayer() { return true; }

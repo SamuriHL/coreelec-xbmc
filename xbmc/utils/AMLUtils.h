@@ -271,6 +271,11 @@ struct CAmlPresenterHold
 // (nothing of its own in flight); epoch = the current display epoch
 bool aml_presenter_check_hold(unsigned int& epoch, bool park = true);
 unsigned int aml_presenter_epoch();
+
+// A frame queued to amvideo after vblank S is on VD1 from S+2: the vsync ISR
+// takes it at S+1 and applies it through vsync RDMA at the next vsync (traced
+// on S6: v4l2_qbuf, amvideo_vf_peek, drm_vblank_event, 718 of 718 frames).
+constexpr int AML_VD1_PRESENT_VBLANKS = 2;
 void aml_presenter_set_running(bool running);
 //! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
 void aml_presenter_set_wake_fd(int fd);

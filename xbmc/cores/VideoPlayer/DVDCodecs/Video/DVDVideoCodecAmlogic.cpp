@@ -1232,8 +1232,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const double videoDelay =
       static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
 
-  return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
-                          videoDelay -
+  const float fps = gfx.GetFPS();
+  const double display =
+      fps > 0.0f ? AML_VD1_PRESENT_VBLANKS * 1000.0 / static_cast<double>(fps) : 0.0;
+  return DVD_MSEC_TO_TIME(latencyTweak + display - videoDelay -
                           static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
 }
 
