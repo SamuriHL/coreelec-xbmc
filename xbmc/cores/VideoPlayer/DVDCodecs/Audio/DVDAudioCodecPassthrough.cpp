@@ -282,6 +282,18 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
     const bool wasLocked = m_parser.IsValid();
     int used = m_parser.AddData(pData, iSize, &m_buffer, &m_dataSize);
     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+    // TEMP LABELDIAG: the packets after a reset
+    if (m_needsResync && m_packetDiag < 40)
+    {
+      m_packetDiag++;
+      CLog::Log(LOGINFO,
+                "LABELDIAG packet pts {:.3f} size {} used {} unit {} locked {}->{} current {:.3f} "
+                "next {:.3f} first4 {:02x}{:02x}{:02x}{:02x} sync {:02x}{:02x}{:02x}{:02x}",
+                packet.pts / 1e6, iSize, used, m_dataSize, wasLocked, m_parser.IsValid(),
+                m_currentPts / 1e6, m_nextPts / 1e6, pData[0], pData[1], pData[2], pData[3],
+                iSize > 7 ? pData[4] : 0, iSize > 7 ? pData[5] : 0, iSize > 7 ? pData[6] : 0,
+                iSize > 7 ? pData[7] : 0);
+    }
 
     // The packet the parser locked onto a TrueHD stream in: its pts belongs to
     // its first access unit, and the major sync the stream starts from can be
@@ -536,6 +548,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     m_needsResync = false;
     m_jitterTracker.Reset();
     m_labelDiag = 0; // TEMP LABELDIAG
+    m_packetDiag = 40;
     CLog::LogF(LOGDEBUG, "internal clock synced to demuxer PTS {:.3f}s",
                demuxerPts / DVD_TIME_BASE);
   }
@@ -653,6 +666,7 @@ void CDVDAudioCodecPassthrough::Reset()
     m_truehdSkipTime = 0.0;
     m_internalClock = LOCAL_NOPTS;
     m_needsResync = true;
+    m_packetDiag = 0; // TEMP LABELDIAG
     m_jitterTracker.Reset();
 
     if (m_packerMAT)
