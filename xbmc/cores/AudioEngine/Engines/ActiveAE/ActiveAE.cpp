@@ -1535,6 +1535,17 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
         // if input format does not follow ffmpeg channel mask, we may need to remap channels
         (*it)->InitRemapper();
       }
+      // a paused stream holds only unprocessed input from its own pool, which
+      // outlives the sink: a held start keeps the start of its sound across
+      // the display reset's sink reopen (design 13.ab)
+      std::deque<CSampleBuffer*> carried;
+      if (initSink && (*it)->m_processingBuffers && (*it)->m_paused)
+      {
+        carried.swap((*it)->m_processingBuffers->m_inputSamples);
+        if (!(*it)->m_processingBuffers->m_outputSamples.empty())
+          CLog::Log(LOGWARNING, "ActiveAE - sink reopen drops {} processed buffers of a paused stream",
+                    (*it)->m_processingBuffers->m_outputSamples.size());
+      }
       if (initSink && (*it)->m_processingBuffers)
       {
         (*it)->m_processingBuffers->Flush();
@@ -1550,6 +1561,12 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
 
         (*it)->m_processingBuffers->Create(MAX_CACHE_LEVEL * 1000, false, m_settings.stereoupmix,
                                            m_settings.normalizelevels, m_settings.mixSubLevel);
+      }
+      if (!carried.empty())
+      {
+        CLog::Log(LOGINFO, "ActiveAE - sink reopen keeps {} input buffers of a paused stream",
+                  carried.size());
+        (*it)->m_processingBuffers->m_inputSamples = std::move(carried);
       }
       if (m_mode == MODE_TRANSCODE || m_streams.size() > 1)
         (*it)->m_processingBuffers->FillBuffer();
