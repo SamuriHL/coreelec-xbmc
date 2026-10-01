@@ -2101,21 +2101,36 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   const double held =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
   m_startHeld = false;
-  m_startReleasedClock = m_clock.GetClock();
+  // Design 13.ab, model D: the clock restarts a lead behind the first picture,
+  // which stays on screen, so the audio engine can land the first sample ahead
+  // of it (it holds the sample, the renderer measures the display phase during
+  // the lead, then the distance is played as pause bursts). Picture, graphics
+  // and sound then start together at the first picture's time.
+  constexpr double LEAD = DVD_MSEC_TO_TIME(500);
+  const bool lead = std::string_view(why) != "flush" && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+                    m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0;
+  const double first = m_clock.GetClock();
+  m_startReleasedClock = first;
 #if defined(HAVE_LIBBLURAY)
   // a BD-J application's media clock ran on during the hold (design 3.6); a
   // flush release comes from a seek or a new playlist, which re-anchor it
   if (m_pInputBluray && std::string_view(why) != "flush")
-    m_pInputBluray->ShiftBdjMediaClock(held);
+    m_pInputBluray->ShiftBdjMediaClock(held + (lead ? LEAD / DVD_TIME_BASE : 0.0));
 #endif
   m_VideoPlayerVideo->SetStartHeld(false);
   m_renderManager.SetStartHeld(false);
+  if (lead)
+  {
+    m_renderManager.HoldGraphicsUntil(first);
+    m_clock.Discontinuity(first - LEAD);
+    m_VideoPlayerAudio->SetHeldStartRelease();
+  }
   m_clock.SetSpeed(m_playSpeed);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);
   m_streamPlayerSpeed = m_playSpeed;
-  CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", held, why,
-            m_clock.GetClock() / DVD_TIME_BASE);
+  CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f}{})", held,
+            why, m_clock.GetClock() / DVD_TIME_BASE, lead ? ", lead 0.5 s" : "");
 }
 
 bool CVideoPlayer::IsValidStream(const CCurrentStream& stream)

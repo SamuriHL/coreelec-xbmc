@@ -10,6 +10,7 @@
 
 #include "DVDClock.h"
 #include "DebugRenderer.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRenderer.h"
@@ -143,6 +144,8 @@ public:
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }
+  //! a held start's graphics wait until the clock reaches its first picture
+  void HoldGraphicsUntil(double clock) { m_graphicsHeldUntil = clock; }
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
 
@@ -240,6 +243,7 @@ protected:
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
   std::atomic_bool m_startHeld{false};
+  std::atomic<double> m_graphicsHeldUntil{DVD_NOPTS_VALUE};
   std::atomic_bool m_sessionModeDecided{false}; //!< this file's first output mode is set
   std::atomic<unsigned int> m_incomingSegmentGen{0}; //!< generation of the pictures queued next
 

@@ -240,6 +240,14 @@ void CAudioSinkAE::Resume()
   CLog::Log(LOGDEBUG,"CDVDAudio::Resume - resume audio stream");
 }
 
+void CAudioSinkAE::ResumeHeldStart()
+{
+  std::unique_lock lock(m_critSection);
+  if (m_pAudioStream)
+    m_pAudioStream->ResumeHeldStart();
+  CLog::Log(LOGDEBUG, "CDVDAudio::ResumeHeldStart - resume the audio stream of a held start");
+}
+
 double CAudioSinkAE::GetDelay()
 {
   std::unique_lock lock(m_critSection);

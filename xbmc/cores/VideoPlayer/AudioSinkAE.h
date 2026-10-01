@@ -36,6 +36,7 @@ public:
   void SetDynamicRangeCompression(long drc);
   void Pause();
   void Resume();
+  void ResumeHeldStart();
   bool Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool needresampler);
   bool IsValidFormat(const DVDAudioFrame &audioframe);
   void Destroy(bool finish);

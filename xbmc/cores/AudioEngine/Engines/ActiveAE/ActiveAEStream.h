@@ -16,6 +16,7 @@
 #include "threads/Event.h"
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 
 namespace ActiveAE
@@ -165,6 +166,7 @@ public:
 
   void Pause() override;
   void Resume() override;
+  void ResumeHeldStart() override;
   void Drain(bool wait) override;
   bool IsDraining() override;
   bool IsDrained() override;
@@ -290,6 +292,12 @@ protected:
   double m_mutePauseCarry;          // RAW start sync: pause time owed from whole-ms truncation
   bool m_syncWaitSilence;           // the delay walk wants silence but the pool is empty:
                                     // hold the stream's audio until a buffer returns
+  std::atomic_bool m_heldLandingRequest{false}; // set by ResumeHeldStart, taken at RESUMESTREAM
+  bool m_heldLanding = false;       // held start: hold the head, land it once (design 13.ab)
+  double m_heldQSum = 0.0;          // held landing: sum of (head pts - sink delay), ms
+  int m_heldQCount = 0;
+  std::chrono::steady_clock::time_point m_heldLandingSince;
+  std::chrono::steady_clock::time_point m_heldQFirst;
 };
 }
 

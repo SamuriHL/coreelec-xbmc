@@ -19,6 +19,7 @@
 #include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <utility>
@@ -41,6 +42,7 @@ public:
   void CloseStream(bool bWaitForBuffers) override;
 
   void SetSpeed(int speed) override;
+  void SetHeldStartRelease() override { m_heldStartRelease = true; }
   void Flush(bool sync) override;
 
   // waits until all available data has been rendered
@@ -76,6 +78,8 @@ public:
   int GetMaxDataSize() const { return m_messageQueue.GetMaxDataSize(); }
 
 protected:
+  std::atomic_bool m_heldStartRelease{false};
+
 
   void OnStartup() override;
   void OnExit() override;

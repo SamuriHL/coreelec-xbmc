@@ -133,6 +133,12 @@ public:
    */
   virtual void Resume() = 0;
 
+  /*!
+   * \brief Resumes a stream whose clock was held at its first picture: the engine
+   * lands it ahead of its first sample, without muting it, or falls back to Resume
+   */
+  virtual void ResumeHeldStart() { Resume(); }
+
   /**
    * Start draining the stream
    * @note Once called AddData will not consume more data.
