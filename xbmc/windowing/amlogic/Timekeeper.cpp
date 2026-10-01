@@ -140,6 +140,10 @@ bool CTimekeeper::Start()
     Stop();
     return false;
   }
+  FindFracProperty();
+  if (!m_fracPropId)
+    CLog::Log(LOGWARNING, "CTimekeeper - no FRAC_RATE_POLICY on the connector: 1000/1001 rates "
+                          "will read as integer rates");
   ShadowActive() = true;
   m_thread = std::thread(&CTimekeeper::Run, this);
   m_reporter = std::thread(&CTimekeeper::Report, this);
@@ -169,6 +173,55 @@ void CTimekeeper::Stop()
   m_fd = m_wakeFd = -1;
 }
 
+void CTimekeeper::FindFracProperty()
+{
+  // the connector driving our CRTC, and its FRAC_RATE_POLICY property
+  drmModeResPtr res = drmModeGetResources(m_fd);
+  if (!res)
+    return;
+  for (int i = 0; i < res->count_connectors && !m_fracPropId; i++)
+  {
+    drmModeConnectorPtr connector = drmModeGetConnector(m_fd, res->connectors[i]);
+    if (!connector)
+      continue;
+    drmModeEncoderPtr encoder =
+        connector->encoder_id ? drmModeGetEncoder(m_fd, connector->encoder_id) : nullptr;
+    if (encoder && encoder->crtc_id == m_crtcId)
+    {
+      drmModeObjectPropertiesPtr props =
+          drmModeObjectGetProperties(m_fd, connector->connector_id, DRM_MODE_OBJECT_CONNECTOR);
+      for (uint32_t p = 0; props && p < props->count_props; p++)
+      {
+        drmModePropertyPtr prop = drmModeGetProperty(m_fd, props->props[p]);
+        if (prop && std::string(prop->name) == "FRAC_RATE_POLICY")
+        {
+          m_connectorId = connector->connector_id;
+          m_fracPropId = prop->prop_id;
+        }
+        drmModeFreeProperty(prop);
+      }
+      drmModeFreeObjectProperties(props);
+    }
+    drmModeFreeEncoder(encoder);
+    drmModeFreeConnector(connector);
+  }
+  drmModeFreeResources(res);
+}
+
+int CTimekeeper::FracPolicy()
+{
+  if (!m_fracPropId)
+    return 0;
+  int value = 0;
+  drmModeObjectPropertiesPtr props =
+      drmModeObjectGetProperties(m_fd, m_connectorId, DRM_MODE_OBJECT_CONNECTOR);
+  for (uint32_t p = 0; props && p < props->count_props; p++)
+    if (props->props[p] == m_fracPropId)
+      value = static_cast<int>(props->prop_values[p]);
+  drmModeFreeObjectProperties(props);
+  return value;
+}
+
 bool CTimekeeper::ReadMode(uint64_t& num, uint64_t& den)
 {
   drmModeCrtcPtr crtc = drmModeGetCrtc(m_fd, m_crtcId);
@@ -180,6 +233,15 @@ bool CTimekeeper::ReadMode(uint64_t& num, uint64_t& den)
     // period = htotal * vtotal / (clock kHz * 1000) seconds
     num = static_cast<uint64_t>(crtc->mode.htotal) * crtc->mode.vtotal;
     den = static_cast<uint64_t>(crtc->mode.clock) * 1000;
+    // Amlogic makes the 1000/1001 rates through the connector's
+    // FRAC_RATE_POLICY; the mode's clock stays the integer-rate one
+    const uint32_t hz = crtc->mode.vrefresh;
+    if ((hz == 24 || hz == 30 || hz == 48 || hz == 60 || hz == 120 || hz == 240) &&
+        FracPolicy() == 1)
+    {
+      num *= 1001;
+      den *= 1000;
+    }
     const uint64_t g = std::gcd(num, den);
     num /= g;
     den /= g;
@@ -226,7 +288,12 @@ void CTimekeeper::Run()
         // the CRTC is mid-commit (EINVAL at a mode set): a mode change may follow
         m_queueErrors.fetch_add(1, std::memory_order_relaxed);
         m_failedQueues++;
-        m_suspect = true;
+        if (!m_suspect && m_lastRealNs)
+        {
+          m_suspect = true;
+          m_lastOnGridNs = m_lastRealNs;
+          m_onGridRun = 0;
+        }
       }
     }
 
@@ -262,9 +329,18 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
     const int64_t dt = ns - m_lastRealNs;
     double nominal = NominalNs();
     int64_t steps = std::llround(dt / nominal);
-    if (m_suspect || steps < 1 || std::fabs(dt - steps * nominal) > 0.02 * nominal)
+    const bool onGrid = steps >= 1 && std::fabs(dt - steps * nominal) <= 0.02 * nominal;
+    if (!onGrid && !m_suspect)
     {
-      // a vblank off the nominal grid: re-read the mode (off the steady path)
+      // the vblank before this one was the last on the old grid
+      m_suspect = true;
+      m_lastOnGridNs = m_lastRealNs;
+      m_onGridRun = 0;
+    }
+    if (m_suspect)
+    {
+      // re-read the mode (off the steady path) until it changes, or the old
+      // grid holds for three vblanks again
       uint64_t num, den;
       if (ReadMode(num, den) && num * m_den != den * m_num)
       {
@@ -273,14 +349,16 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
         m_num = num;
         m_den = den;
         m_epoch++;
+        m_epochStartNs = m_lastOnGridNs;
+        m_epochStartTick = m_tickAtLastReal;
         m_valid = false;
         m_validRun = 0;
-        m_epochStartNs = m_lastRealNs;
-        m_epochStartTick = m_tick;
+        m_suspect = false;
         nominal = NominalNs();
         steps = std::llround(dt / nominal);
       }
-      m_suspect = false;
+      else if (onGrid && ++m_onGridRun >= 3)
+        m_suspect = false;
     }
     if (steps < 1)
       steps = 1;
@@ -414,7 +492,7 @@ void CTimekeeper::Report()
     {
       CLog::Log(LOGINFO,
                 "TIMEKEEPER epoch {}: period valid after {} ticks, {:.1f} ms after the last vblank "
-                "of the previous mode",
+                "on the previous mode's grid",
                 validEpoch, m_validTicks.load(), m_validNs.load() / 1e6);
       validLogged = validEpoch;
     }

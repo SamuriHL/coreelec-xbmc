@@ -37,6 +37,8 @@ private:
   void OnTimeout(int64_t now);
   void Publish(int64_t vblankNs, bool synthetic);
   bool ReadMode(uint64_t& num, uint64_t& den);
+  void FindFracProperty();
+  int FracPolicy();
   double NominalNs() const { return 1e9 * static_cast<double>(m_num) / static_cast<double>(m_den); }
 
   // the reporter: samples the boards once a second, logs every 10 s
@@ -45,6 +47,8 @@ private:
   int m_masterFd;
   uint32_t m_crtcId;
   int m_fd = -1;
+  uint32_t m_connectorId = 0;
+  uint32_t m_fracPropId = 0;
   int m_wakeFd = -1;
   std::thread m_thread;
   std::thread m_reporter;
@@ -68,6 +72,8 @@ private:
   int m_validRun = 0;
   bool m_valid = true;
   int64_t m_epochStartNs = 0;
+  int64_t m_lastOnGridNs = 0;
+  int m_onGridRun = 0;
   uint64_t m_epochStartTick = 0;
 
   // counters the reporter reads (written only by the time thread)
