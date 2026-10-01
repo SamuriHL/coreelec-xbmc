@@ -278,8 +278,45 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       return true;
 
     m_dataSize = m_bufferSize;
+    const bool wasLocked = m_parser.IsValid();
     int used = m_parser.AddData(pData, iSize, &m_buffer, &m_dataSize);
     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+
+    // The packet the parser locked onto a TrueHD stream in: its pts belongs to
+    // its first access unit, and the major sync the stream starts from can be
+    // further in (MKV blocks carry several units). Each unit starts with its
+    // length, so count the units before the major sync and move the pts on by
+    // their duration (40 samples at the base rate, 1/1200 s or 1/1102.5 s).
+    if (m_lavStyleSyncEnabled && m_needsResync && !wasLocked && m_parser.IsValid() &&
+        m_parser.GetStreamInfo().m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+        IsValidPts(m_currentPts) && IsValidPts(packet.pts) && m_currentPts == packet.pts)
+    {
+      int offset = 0;
+      int units = 0;
+      bool found = false;
+      while (offset + 8 <= iSize)
+      {
+        if (pData[offset + 4] == 0xF8 && pData[offset + 5] == 0x72 && pData[offset + 6] == 0x6F &&
+            pData[offset + 7] == 0xBA)
+        {
+          found = true;
+          break;
+        }
+        const int length = ((pData[offset] << 8 | pData[offset + 1]) & 0x0FFF) * 2;
+        if (length < 4)
+          break;
+        offset += length;
+        units++;
+      }
+      if (found && units > 0)
+      {
+        const unsigned int rate = m_parser.GetSampleRate();
+        const double unitTime = DVD_TIME_BASE / ((rate % 44100) == 0 ? 1102.5 : 1200.0);
+        m_currentPts += units * unitTime;
+        CLog::LogF(LOGDEBUG, "TrueHD: major sync {} access units into the packet, pts moved {:.3f} ms",
+                   units, units * unitTime / 1000.0);
+      }
+    }
 
     if (used != iSize)
     {
