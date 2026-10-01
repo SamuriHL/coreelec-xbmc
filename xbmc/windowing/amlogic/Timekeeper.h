@@ -67,6 +67,7 @@ private:
   int64_t m_lastPublishedNs = 0;
   uint64_t m_lastKernelSeq = 0;
   bool m_pending = false;
+  int64_t m_modeSerial = 0;
   int m_failedQueues = 0;
   int64_t m_queuedNs = 0;
   bool m_suspect = false;

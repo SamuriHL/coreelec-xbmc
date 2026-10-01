@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <numeric>
 
 namespace PRESENTATION
 {
@@ -91,6 +92,48 @@ enum CoordinatorSample
   CS_PLAYING,
   CS_COUNT
 };
+
+// written by the mode setter just before it commits a mode
+enum ModeNotice
+{
+  MN_SERIAL,     // bumps per notice
+  MN_PERIOD_NUM, // the new mode's period = NUM / DEN seconds
+  MN_PERIOD_DEN,
+  MN_COUNT
+};
+
+// A DRM mode's frame period as a fraction of a second. Amlogic makes the
+// 1000/1001 rates through the connector's FRAC_RATE_POLICY while the mode
+// keeps the integer-rate clock.
+inline void ModePeriod(uint32_t htotal,
+                       uint32_t vtotal,
+                       uint32_t clockKHz,
+                       uint32_t vrefresh,
+                       bool fractional,
+                       uint64_t& num,
+                       uint64_t& den)
+{
+  num = static_cast<uint64_t>(htotal) * vtotal;
+  den = static_cast<uint64_t>(clockKHz) * 1000;
+  if (fractional && (vrefresh == 24 || vrefresh == 30 || vrefresh == 48 || vrefresh == 60 ||
+                     vrefresh == 120 || vrefresh == 240))
+  {
+    num *= 1001;
+    den *= 1000;
+  }
+  const uint64_t g = std::gcd(num, den);
+  if (g)
+  {
+    num /= g;
+    den /= g;
+  }
+}
+
+inline CSeqBoard<MN_COUNT>& ModeBoard()
+{
+  static CSeqBoard<MN_COUNT> board;
+  return board;
+}
 
 inline CSeqBoard<TL_COUNT>& TimelineBoard()
 {

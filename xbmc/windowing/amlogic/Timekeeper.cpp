@@ -144,6 +144,16 @@ bool CTimekeeper::Start()
   if (!m_fracPropId)
     CLog::Log(LOGWARNING, "CTimekeeper - no FRAC_RATE_POLICY on the connector: 1000/1001 rates "
                           "will read as integer rates");
+  // the time thread never asks the kernel: the mode setter posts each new timing
+  uint64_t num, den;
+  if (ReadMode(num, den))
+  {
+    m_num = num;
+    m_den = den;
+  }
+  int64_t notice[MN_COUNT];
+  if (ModeBoard().Read(notice))
+    m_modeSerial = notice[MN_SERIAL];
   ShadowActive() = true;
   m_thread = std::thread(&CTimekeeper::Run, this);
   m_reporter = std::thread(&CTimekeeper::Report, this);
@@ -240,26 +250,10 @@ bool CTimekeeper::ReadModeNow(uint64_t& num, uint64_t& den)
   drmModeCrtcPtr crtc = drmModeGetCrtc(m_fd, m_crtcId);
   if (!crtc)
     return false;
-  bool ok = false;
-  if (crtc->mode_valid && crtc->mode.clock && crtc->mode.htotal && crtc->mode.vtotal)
-  {
-    // period = htotal * vtotal / (clock kHz * 1000) seconds
-    num = static_cast<uint64_t>(crtc->mode.htotal) * crtc->mode.vtotal;
-    den = static_cast<uint64_t>(crtc->mode.clock) * 1000;
-    // Amlogic makes the 1000/1001 rates through the connector's
-    // FRAC_RATE_POLICY; the mode's clock stays the integer-rate one
-    const uint32_t hz = crtc->mode.vrefresh;
-    if ((hz == 24 || hz == 30 || hz == 48 || hz == 60 || hz == 120 || hz == 240) &&
-        FracPolicy() == 1)
-    {
-      num *= 1001;
-      den *= 1000;
-    }
-    const uint64_t g = std::gcd(num, den);
-    num /= g;
-    den /= g;
-    ok = true;
-  }
+  const bool ok = crtc->mode_valid && crtc->mode.clock && crtc->mode.htotal && crtc->mode.vtotal;
+  if (ok)
+    ModePeriod(crtc->mode.htotal, crtc->mode.vtotal, crtc->mode.clock, crtc->mode.vrefresh,
+               FracPolicy() == 1, num, den);
   drmModeFreeCrtc(crtc);
   return ok;
 }
@@ -270,13 +264,6 @@ void CTimekeeper::Run()
   sched_param param = {};
   param.sched_priority = TIME_PRIORITY;
   m_rtResult = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
-
-  uint64_t num, den;
-  if (ReadMode(num, den))
-  {
-    m_num = num;
-    m_den = den;
-  }
 
   drmEventContext context = {};
   context.version = 4;
@@ -352,10 +339,16 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
     }
     if (m_suspect)
     {
-      // re-read the mode (off the steady path) until it changes, or the old
-      // grid holds for three vblanks again
-      uint64_t num, den;
-      if (ReadMode(num, den) && num * m_den != den * m_num)
+      // take the timing the mode setter posted, once the vblanks have left the
+      // old grid; or clear once the old grid holds for three vblanks again
+      int64_t notice[MN_COUNT];
+      const bool posted =
+          !onGrid && ModeBoard().Read(notice) && notice[MN_SERIAL] != m_modeSerial;
+      const uint64_t num = posted ? static_cast<uint64_t>(notice[MN_PERIOD_NUM]) : 0;
+      const uint64_t den = posted ? static_cast<uint64_t>(notice[MN_PERIOD_DEN]) : 0;
+      if (posted)
+        m_modeSerial = notice[MN_SERIAL];
+      if (posted && num && den && num * m_den != den * m_num)
       {
         m_modeOldNum = m_num;
         m_modeOldDen = m_den;
@@ -568,6 +561,17 @@ void CTimekeeper::Report()
     if (++seconds < REPORT_SECONDS)
       continue;
     seconds = 0;
+
+    // the kernel's view of the mode, read here and never on the time thread
+    uint64_t crtcNum = 0, crtcDen = 0;
+    const bool crtcRead = ReadMode(crtcNum, crtcDen);
+    const bool crtcMatch =
+        crtcRead && crtcNum * static_cast<uint64_t>(tl[TL_PERIOD_DEN]) ==
+                        crtcDen * static_cast<uint64_t>(tl[TL_PERIOD_NUM]);
+    if (crtcRead && !crtcMatch)
+      CLog::Log(LOGWARNING, "TIMEKEEPER epoch {}: the CRTC mode period is {}/{} s, the timeline "
+                            "uses {}/{} s",
+                tl[TL_EPOCH], crtcNum, crtcDen, tl[TL_PERIOD_NUM], tl[TL_PERIOD_DEN]);
 
     // wake latency after vblank over the window
     uint32_t bins[WAKE_BINS];

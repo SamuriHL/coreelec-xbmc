@@ -18,6 +18,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 #include "utils/RegExp.h"
 #include "windowing/GraphicContext.h"
@@ -1089,6 +1090,17 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
       set_drmProp(m_crtc->crtc_id, "MODE_ID", DRM_MODE_OBJECT_CRTC, mode_blobid, req);
       set_drmProp(m_crtc->crtc_id, "ACTIVE", DRM_MODE_OBJECT_CRTC, active ? 1 : 0, req);
 
+      {
+        // the timekeeper takes the new timing from here, never from the kernel mid-commit
+        uint64_t num, den;
+        PRESENTATION::ModePeriod(drmDevicemode->htotal, drmDevicemode->vtotal,
+                                 drmDevicemode->clock, drmDevicemode->vrefresh,
+                                 fractional_rate == 1, num, den);
+        static int64_t serial = 0;
+        const int64_t notice[PRESENTATION::MN_COUNT] = {++serial, static_cast<int64_t>(num),
+                                                        static_cast<int64_t>(den)};
+        PRESENTATION::ModeBoard().Write(notice);
+      }
       ret = (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0);
       if (!ret)
         CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to set drmDevice mode: {}", __FUNCTION__, drmDevicemode->name);
