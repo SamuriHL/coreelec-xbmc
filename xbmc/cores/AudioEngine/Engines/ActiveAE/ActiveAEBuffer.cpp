@@ -82,6 +82,7 @@ CSampleBuffer* CActiveAEBufferPool::GetFreeBuffer()
     m_freeSamples.pop_front();
     buf->refCount = 1;
     buf->centerMixLevel = M_SQRT1_2;
+    buf->ptsUs = 0;
   }
   return buf;
 }

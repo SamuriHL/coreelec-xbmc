@@ -1163,13 +1163,11 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig)
   snd_pcm_sw_params_get_boundary         (sw_params, &boundary);
   snd_pcm_sw_params_set_silence_size     (m_pcm, sw_params, boundary);
   snd_pcm_sw_params_set_avail_min        (m_pcm, sw_params, inconfig.periodSize);
-  m_shadowMonotonic = false;
-  if (PRESENTATION::ShadowActive())
-  {
-    snd_pcm_sw_params_set_tstamp_mode(m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
-    m_shadowMonotonic =
-        snd_pcm_sw_params_set_tstamp_type(m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC) == 0;
-  }
+  // the delay is read with its own timestamp (snd_pcm_status), so a write can be
+  // scheduled against the timeline (design §15, step 2.0)
+  snd_pcm_sw_params_set_tstamp_mode(m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
+  m_shadowMonotonic =
+      snd_pcm_sw_params_set_tstamp_type(m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC) == 0;
 
   if (snd_pcm_sw_params(m_pcm, sw_params) < 0)
   {
@@ -1218,13 +1216,13 @@ void CAESinkALSA::GetDelay(AEDelayStatus& status)
     return;
   }
   snd_pcm_sframes_t frames = 0;
-  if (PRESENTATION::ShadowActive())
+  snd_pcm_status_t* st;
+  snd_pcm_status_alloca(&st);
+  if (snd_pcm_status(m_pcm, st) == 0)
   {
-    snd_pcm_status_t* st;
-    snd_pcm_status_alloca(&st);
-    if (snd_pcm_status(m_pcm, st) == 0)
+    frames = snd_pcm_status_get_delay(st);
+    if (PRESENTATION::ShadowActive())
     {
-      frames = snd_pcm_status_get_delay(st);
       struct timespec mono = {}, wall = {};
       clock_gettime(CLOCK_MONOTONIC, &mono);
       clock_gettime(CLOCK_REALTIME, &wall);
@@ -1243,8 +1241,6 @@ void CAESinkALSA::GetDelay(AEDelayStatus& status)
           open};
       PRESENTATION::AudioBoard().Write(values);
     }
-    else
-      snd_pcm_delay(m_pcm, &frames);
   }
   else
     snd_pcm_delay(m_pcm, &frames);

@@ -52,6 +52,9 @@ public:
   std::unique_ptr<CSoundPacket> pkt;
   CActiveAEBufferPool *pool = nullptr;
   int64_t timestamp = 0;
+  // the pts of the sample at pkt_start_offset in µs (timestamp keeps the ms value
+  // the sync measurement uses); 0 = none. Set by the stream; passthrough only so far.
+  int64_t ptsUs = 0;
   int pkt_start_offset = 0;
   int refCount = 0;
   double centerMixLevel;

@@ -14,6 +14,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 
 using namespace ActiveAE;
@@ -299,6 +300,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         }
         m_lastPts = pts;
         m_currentBuffer->timestamp = pts;
+        m_currentBuffer->ptsUs = std::llround(pts * 1000.0);
         m_currentBuffer->pkt_start_offset = m_currentBuffer->pkt->nb_samples;
       }
 
@@ -345,6 +347,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
       {
         m_currentBuffer = *((CSampleBuffer**)msg->data);
         m_currentBuffer->timestamp = 0;
+        m_currentBuffer->ptsUs = 0;
         m_currentBuffer->pkt->nb_samples = 0;
         m_currentBuffer->pkt->pause_burst_ms = 0;
         msg->Release();
