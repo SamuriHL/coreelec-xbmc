@@ -3687,20 +3687,21 @@ void CVideoPlayer::HandlePlaySpeed()
       m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
       m_CurrentVideo.starttimePending = false;
-      m_VideoPlayerAudio->SendMessage(
-          std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
-      m_VideoPlayerVideo->SendMessage(
-          std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
-      // a held start keeps its streams paused from the caching pause: resuming
-      // them here and pausing them in HoldStart ran the audio stream for a
-      // moment, and its sync consumed the start of the sound (design 13.ab)
+      // A held start pauses its streams before the resync: the audio player
+      // resumes its stream at a resync unless it is paused, and a stream that
+      // runs for a moment has the start of its sound consumed by its sync. The
+      // caching pause stays in place for the same reason (design 13.ab).
       if (holdStart)
       {
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
         HoldStart();
       }
-      else
+      m_VideoPlayerAudio->SendMessage(
+          std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
+      m_VideoPlayerVideo->SendMessage(
+          std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
+      if (!holdStart)
         SetCaching(CACHESTATE_DONE);
       UpdatePlayState(0);
 
