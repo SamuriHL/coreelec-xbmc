@@ -14,6 +14,7 @@
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
 
+#include <atomic>
 #include <cmath>
 #include <time.h>
 #include <inttypes.h>
@@ -286,13 +287,32 @@ bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double
   }
   struct timespec mono = {};
   clock_gettime(CLOCK_MONOTONIC, &mono);
+  const int64_t monoNow = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec;
   const int64_t leadSystem = static_cast<int64_t>(lead * m_systemFrequency);
   m_resumeAt = current + leadSystem;
+  m_scheduleNs = monoNow + static_cast<int64_t>(lead * 1e9);
+
+  // On a vblank: the clock then reads a frame's pts at every vblank, the
+  // renderer's display phase is nil, and a frame is on screen when the clock
+  // reads its pts - which is where the audio lands.
+  int64_t vblankTime = 0, vblankHost = 0;
+  double interval = 0.0, hostInterval = 0.0;
+  if (m_videoRefClock->GetVblankGrid(vblankTime, vblankHost, interval, hostInterval) &&
+      interval > 0.0 && m_systemFrequency == 1000000000)
+  {
+    const double k =
+        std::ceil(static_cast<double>(current + leadSystem - vblankTime) / interval);
+    m_resumeAt = vblankTime + static_cast<int64_t>(std::llround(k * interval));
+    // host counter (CLOCK_MONOTONIC_RAW, ns) to CLOCK_MONOTONIC
+    const int64_t hostToMono = monoNow - CurrentHostCounter();
+    m_scheduleNs = vblankHost + static_cast<int64_t>(std::llround(k * hostInterval)) + hostToMono;
+  }
+
   m_resumeSpeed = iSpeed;
-  m_scheduleNs = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec +
-                 static_cast<int64_t>(lead * 1e9);
   m_scheduleClock = SystemToPlaying(current);
-  m_scheduleEpoch++;
+  // unique across clocks: the audio output remembers the last start it landed
+  static std::atomic<unsigned int> s_scheduleEpoch{0};
+  m_scheduleEpoch = ++s_scheduleEpoch;
   m_scheduleValid = true;
   startNs = m_scheduleNs;
   startClock = m_scheduleClock;

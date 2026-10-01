@@ -27,6 +27,12 @@ class CVideoReferenceClock : CThread
     double  GetSpeed();
     double  GetRefreshRate(double* interval = nullptr);
     bool    GetClockInfo(int& MissedVblanks, double& ClockSpeed, double& RefreshRate) const;
+    //! the vblank grid: the clock's time at the last vblank and that vblank's
+    //! host-counter time, and one vblank in each; false without vblanks
+    bool GetVblankGrid(int64_t& vblankTime,
+                       int64_t& vblankHost,
+                       double& interval,
+                       double& hostInterval) const;
 
     void UpdateClock(int NrVBlanks, uint64_t time);
 

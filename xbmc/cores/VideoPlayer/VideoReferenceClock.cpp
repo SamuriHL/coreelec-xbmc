@@ -201,6 +201,21 @@ void CVideoReferenceClock::UpdateClockInternal(int NrVBlanks, bool CheckMissed)
   }
 }
 
+bool CVideoReferenceClock::GetVblankGrid(int64_t& vblankTime,
+                                         int64_t& vblankHost,
+                                         double& interval,
+                                         double& hostInterval) const
+{
+  std::unique_lock lock(m_CritSection);
+  if (!m_UseVblank || m_RefreshRate <= 0.0)
+    return false;
+  vblankTime = m_CurrTime;
+  vblankHost = m_VblankTime;
+  interval = UpdateInterval();
+  hostInterval = static_cast<double>(m_SystemFrequency) / m_RefreshRate;
+  return true;
+}
+
 double CVideoReferenceClock::UpdateInterval() const
 {
   return m_ClockSpeed / m_RefreshRate * static_cast<double>(m_SystemFrequency);
