@@ -810,6 +810,7 @@ protected:
   bool m_startHeld = false;
   bool m_keepFrameEnabled = false; //!< design 4.3 debug flag (special://profile/keepframe)
   std::atomic_bool m_audioSessionHold{false}; //!< design 5 debug flag (special://profile/audiohold)
+  bool m_heldLandingEnabled = false; //!< design 13.ab model D, debug flag (special://profile/heldlanding)
   bool m_startHeldSawLost = false;
   unsigned int m_startHeldDecisions = 0;
   double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release
