@@ -454,6 +454,7 @@ void CTimekeeper::Report()
   int64_t steppedBack = 0;
   int pinsN = 0;
   double pinsSum = 0, pinsMin = 1e9, pinsMax = -1e9;
+  double videoVsClockSum = 0, audioVsClockSum = 0;
 
   while (!m_stop)
   {
@@ -574,6 +575,17 @@ void CTimekeeper::Report()
       pinsSum += aheadMs;
       pinsMin = std::min(pinsMin, aheadMs);
       pinsMax = std::max(pinsMax, aheadMs);
+      // each output against CDVDClock at the same instant (the clock runs 1:1)
+      const auto clockAt = [&](int64_t ns)
+      { return static_cast<double>(cs[CS_CLOCK_US]) + (ns - cs[CS_VBLANK_NS]) / 1000.0; };
+      videoVsClockSum += (vp[VP_PTS_US] - clockAt(vp[VP_ON_SCREEN_NS])) / 1000.0;
+      audioVsClockSum += (aq[AQ_PTS_US] - clockAt(aq[AQ_ON_PINS_NS])) / 1000.0;
+      if (pinsN == 1)
+        CLog::Log(LOGINFO,
+                  "TIMEKEEPER pins sample: video pts {} us on screen at {} ns | audio pts {} us on "
+                  "the pins at {} ns | CDVDClock {} us at vblank {} ns (seq {})",
+                  vp[VP_PTS_US], vp[VP_ON_SCREEN_NS], aq[AQ_PTS_US], aq[AQ_ON_PINS_NS],
+                  cs[CS_CLOCK_US], cs[CS_VBLANK_NS], cs[CS_SEQ]);
     }
 
     if (++seconds < REPORT_SECONDS)
@@ -643,10 +655,13 @@ void CTimekeeper::Report()
     if (pinsN)
       CLog::Log(LOGINFO,
                 "TIMEKEEPER pins: audio ahead of video at the outputs mean {:+.2f} ms min {:+.2f} "
-                "max {:+.2f} (n {})",
-                pinsSum / pinsN, pinsMin, pinsMax, pinsN);
+                "max {:+.2f} (n {}) | against CDVDClock: video {:+.2f} ms, audio {:+.2f} ms",
+                pinsSum / pinsN, pinsMin, pinsMax, pinsN, videoVsClockSum / pinsN,
+                audioVsClockSum / pinsN);
     pinsN = 0;
     pinsSum = 0;
+    videoVsClockSum = 0;
+    audioVsClockSum = 0;
     pinsMin = 1e9;
     pinsMax = -1e9;
   }
