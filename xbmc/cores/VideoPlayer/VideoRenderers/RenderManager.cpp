@@ -546,7 +546,6 @@ void CRenderManager::PreInit()
   m_dvdClock.ClearVsyncAdjust(true);
   m_sessionModeDecided = false;
   m_startHeld = false;
-  m_graphicsHeldUntil = DVD_NOPTS_VALUE;
   {
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
@@ -628,8 +627,6 @@ void CRenderManager::UnInit()
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers)
 {
-  // a seek or a new segment re-times the clock: a held start's graphics hold is over
-  m_graphicsHeldUntil = DVD_NOPTS_VALUE;
   if (!m_pRenderer)
     return true;
 
@@ -867,13 +864,6 @@ bool CRenderManager::GraphicsWithheld()
   // moving picture, as the sound does (design 13.ab)
   if (m_startHeld)
     return true;
-  const double heldUntil = m_graphicsHeldUntil;
-  if (heldUntil != DVD_NOPTS_VALUE)
-  {
-    if (m_dvdClock.GetClock() < heldUntil)
-      return true;
-    m_graphicsHeldUntil = DVD_NOPTS_VALUE;
-  }
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it

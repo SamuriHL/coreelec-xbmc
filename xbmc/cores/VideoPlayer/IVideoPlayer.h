@@ -141,8 +141,6 @@ public:
   bool OpenStream(CDVDStreamInfo hints) override = 0;
   void CloseStream(bool bWaitForBuffers) override = 0;
   virtual void SetSpeed(int speed) = 0;
-  //! the next resume releases a start held at its first picture (design 13.ab)
-  virtual void SetHeldStartRelease() {}
   virtual void Flush(bool sync) = 0;
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;

@@ -409,13 +409,6 @@ void CActiveAEStream::Resume()
   m_activeAE->PauseStream(this, false);
 }
 
-void CActiveAEStream::ResumeHeldStart()
-{
-  // before the message, so the engine sees it when it takes RESUMESTREAM
-  m_heldLandingRequest = true;
-  m_activeAE->PauseStream(this, false);
-}
-
 void CActiveAEStream::Drain(bool wait)
 {
   Message *msg;

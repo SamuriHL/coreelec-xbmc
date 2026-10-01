@@ -483,8 +483,6 @@ void CVideoPlayerAudio::Process()
     {
       double speed = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio - CDVDMsg::PLAYER_SETSPEED: {:f} last: {:d}", speed, m_speed);
-      // set just before this message by a held start's release, for this message only
-      const bool heldStartRelease = m_heldStartRelease.exchange(false);
 
       if (m_processInfo.IsTempoAllowed(static_cast<float>(speed)/DVD_PLAYSPEED_NORMAL))
       {
@@ -492,10 +490,7 @@ void CVideoPlayerAudio::Process()
         {
           if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
           {
-            if (heldStartRelease && speed == DVD_PLAYSPEED_NORMAL)
-              m_audioSink.ResumeHeldStart();
-            else
-              m_audioSink.Resume();
+            m_audioSink.Resume();
             m_stalled = false;
 
             // Resuming re-runs the ENTIRE AE start-sync: CActiveAE's

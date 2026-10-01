@@ -335,9 +335,6 @@ protected:
   CActiveAEStream* CreateStream(MsgStreamNew *streamMsg);
   void DiscardStream(CActiveAEStream *stream);
   void SFlushStream(CActiveAEStream *stream);
-  void ArmHeldLanding(CActiveAEStream* stream);
-  void DisarmHeldLanding(CActiveAEStream* stream, const char* why);
-  bool HeldLanding(CActiveAEStream* stream, double errorScale);
   void FlushEngine();
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
@@ -369,7 +366,6 @@ protected:
   std::chrono::milliseconds m_extKeepConfig;
   //! design 5: the session hold and the input format it keeps between streams
   bool m_extSessionHold = false;
-  bool m_heldLandingWaiting = false; // a held landing holds its head: run stages at 10 ms
   bool m_heldFormatValid = false;
   AEAudioFormat m_heldFormat;
   bool m_extDeferData;

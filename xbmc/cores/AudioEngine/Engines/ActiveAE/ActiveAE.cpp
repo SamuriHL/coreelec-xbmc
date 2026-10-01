@@ -768,7 +768,6 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
           stream = *(CActiveAEStream**)msg->data;
-          DisarmHeldLanding(stream, "paused");
           // Arm the resume landing target. The resume start-sync lands AT the
           // remembered epoch alignment (see SyncStream) instead of taking a
           // fresh draw around zero: a RAW stream has no post-INSYNC actuator,
@@ -806,12 +805,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::RESUMESTREAM:
           stream = *(CActiveAEStream**)msg->data;
           if (stream->m_paused)
-          {
             stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
-            ArmHeldLanding(stream);
-          }
-          else
-            stream->m_heldLandingRequest = false;
           stream->m_paused = false;
           streaming = true;
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
@@ -1104,7 +1098,6 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           stream = *(CActiveAEStream**)msg->data;
           stream->m_paused = false;
           stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
-          ArmHeldLanding(stream);
           m_state = AE_TOP_CONFIGURED_PLAY;
           m_extTimeout = 0ms;
           return;
@@ -1174,7 +1167,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           if (!m_extDrain && HasWork())
           {
             ClearDiscardedBuffers();
-            m_extTimeout = m_heldLandingWaiting ? 10ms : 100ms;
+            m_extTimeout = 100ms;
             return;
           }
           m_extTimeout = 0ms;
@@ -1545,8 +1538,6 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
       // a paused stream holds only unprocessed input from its own pool, which
       // outlives the sink: a held start keeps the start of its sound across
       // the display reset's sink reopen (design 13.ab)
-      if (initSink)
-        DisarmHeldLanding(*it, "sink reopened");
       std::deque<CSampleBuffer*> carried;
       if (initSink && (*it)->m_processingBuffers && (*it)->m_paused)
       {
@@ -1744,7 +1735,6 @@ void CActiveAE::DiscardStream(CActiveAEStream *stream)
 
 void CActiveAE::SFlushStream(CActiveAEStream *stream)
 {
-  DisarmHeldLanding(stream, "flushed");
   while (!stream->m_processingSamples.empty())
   {
     stream->m_processingSamples.front()->Return();
@@ -2171,7 +2161,6 @@ void CActiveAE::UnconfigureSink()
 bool CActiveAE::RunStages()
 {
   bool busy = false;
-  m_heldLandingWaiting = false;
 
   // serve input streams
   std::list<CActiveAEStream*>::iterator it;
@@ -2279,16 +2268,6 @@ bool CActiveAE::RunStages()
         double playingPts = pts - delay;
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
         double error = playingPts - (*it)->m_pClock->GetClock();
-        // a held landing holds its head while the sink plays its keep-alive:
-        // head pts - delay stands still, so its average takes out the
-        // delay's period sawtooth (design 13.ab, model D)
-        if ((*it)->m_heldLanding)
-        {
-          if ((*it)->m_heldQCount == 0)
-            (*it)->m_heldQFirst = std::chrono::steady_clock::now();
-          (*it)->m_heldQSum += playingPts;
-          (*it)->m_heldQCount++;
-        }
         // TEMP STARTDIAG (held-start audio, design 13.aa): the parts of the
         // start-sync error while a stream is not yet in sync
         {
@@ -2731,101 +2710,6 @@ namespace
 constexpr double RAW_LANDING_BAND = 1.0;
 } // namespace
 
-// Design 13.ab, model D. The player released a held start with its clock a lead
-// behind the first picture. The stream's first sample is held (no mute: muting
-// turns real frames into pauses) until the clock's display phase is known; the
-// distance to the clock is then computed once and played as pause bursts ahead
-// of the first sample, through the walk's burst arm. Anything unexpected falls
-// back to the ordinary start sync.
-void CActiveAE::ArmHeldLanding(CActiveAEStream* stream)
-{
-  stream->m_heldLanding = false;
-  if (!stream->m_heldLandingRequest.exchange(false))
-    return;
-  if (m_mode != MODE_RAW)
-  {
-    CLog::Log(LOGINFO, "ActiveAE - held start: not passthrough, ordinary start sync");
-    return;
-  }
-  if (!m_extSessionHold)
-  {
-    CLog::Log(LOGINFO, "ActiveAE - held start: no session hold, ordinary start sync");
-    return;
-  }
-  stream->m_heldLanding = true;
-  stream->m_heldQSum = 0.0;
-  stream->m_heldQCount = 0;
-  stream->m_heldLandingSince = std::chrono::steady_clock::now();
-  CLog::Log(LOGINFO, "ActiveAE - held start: holding the first sample for its landing");
-}
-
-void CActiveAE::DisarmHeldLanding(CActiveAEStream* stream, const char* why)
-{
-  stream->m_heldLandingRequest = false;
-  if (!stream->m_heldLanding)
-    return;
-  stream->m_heldLanding = false;
-  stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
-  CLog::Log(LOGINFO, "ActiveAE - held start landing dropped ({}): ordinary start sync", why);
-}
-
-bool CActiveAE::HeldLanding(CActiveAEStream* stream, double errorScale)
-{
-  using namespace std::chrono;
-  // the walk below inserts at most one frame per call and the margin keeps the
-  // first sample from leaving before the pad is queued
-  constexpr double MARGIN_MS = 40.0;
-  constexpr double MAX_PAD_MS = 1000.0;
-  const auto now = steady_clock::now();
-  const double waited = duration<double, std::milli>(now - stream->m_heldLandingSince).count();
-  const double sampled =
-      stream->m_heldQCount ? duration<double, std::milli>(now - stream->m_heldQFirst).count() : 0.0;
-  const bool phasePending = stream->m_pClock->IsClockPhasePending();
-  const double clock = stream->m_pClock->GetClock();
-  const double pad =
-      stream->m_heldQCount ? stream->m_heldQSum / stream->m_heldQCount - clock : 0.0;
-
-  const char* fallback = nullptr;
-  if (stream->m_heldQCount && pad < MARGIN_MS)
-    fallback = "the clock caught up before the landing";
-  else if (waited > 1500.0)
-    fallback = phasePending ? "no display phase in 1.5 s" : "no measurement in 1.5 s";
-  else if (phasePending || stream->m_heldQCount < 5 || sampled < 100.0)
-    return false; // keep holding the first sample
-  else if (pad > MAX_PAD_MS)
-    fallback = "pad out of range";
-
-  stream->m_heldLanding = false;
-  if (fallback)
-  {
-    CLog::Log(LOGWARNING,
-              "ActiveAE - held start landing dropped ({}; pad {:.1f} ms, {} samples, {:.0f} ms "
-              "waited): ordinary start sync",
-              fallback, pad, stream->m_heldQCount, waited);
-    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
-    return true;
-  }
-
-  // the walk's burst arm plays the pad ahead of the head and lands in the band
-  stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
-  stream->m_syncError.Flush(100ms);
-  stream->m_syncError.Correction(pad * errorScale);
-  stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
-  stream->m_resampleIntegral = 0;
-  stream->m_muteWindows = 0;
-  stream->m_mutePhaseWindows = 0;
-  stream->m_mutePauseCarry = 0.0;
-  // a computed pad, not a stale window average: no re-mute at the landing
-  stream->m_lastSyncError = 0.0;
-  // a start, not a resume: no pre-pause park to aim at
-  stream->m_useResumeSyncTarget = false;
-  CLog::Log(LOGINFO,
-            "ActiveAE - held start lands: pad {:.1f} ms ahead of the first sample ({} samples "
-            "over {:.0f} ms, phase {:.3f} ms, waited {:.0f} ms)",
-            pad, stream->m_heldQCount, sampled, stream->m_pClock->GetClockPhase(), waited);
-  return true;
-}
-
 CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 {
   CSampleBuffer *ret = NULL;
@@ -2850,13 +2734,6 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
        m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
           ? TRUEHD_PASSTHROUGH_ERROR_SCALE
           : 1.0;
-
-  if (stream->m_heldLanding && !HeldLanding(stream, errorScale))
-  {
-    stream->m_syncWaitSilence = true;
-    m_heldLandingWaiting = true;
-    return nullptr;
-  }
 
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
   {
