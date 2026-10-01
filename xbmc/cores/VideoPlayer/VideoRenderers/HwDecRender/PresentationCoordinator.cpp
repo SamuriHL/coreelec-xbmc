@@ -640,6 +640,10 @@ void CPresentationCoordinator::CommitWorker()
     lock.lock();
     m_committing = Committing();
     m_report.commitMax = std::max(m_report.commitMax, took);
+    // TEMP TICKDIAG (timebase audit Q6)
+    if (took >= 20000.0)
+      CLog::Log(LOGINFO, "TICKDIAG commit {:.0f} us (ui {} graphics {})", took,
+                commit.has[PLANE_UI], commit.has[PLANE_GRAPHICS]);
     m_report.commitHist[took < 1000.0 ? 0 : took < 5000.0 ? 1 : took < 20000.0 ? 2 : 3]++;
     if (ret == 0)
     {
@@ -746,7 +750,12 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     return;
   }
 
+  const int64_t diagWait = MonotonicNs();
   std::unique_lock lock(m_videoMutex);
+  // TEMP TICKDIAG (timebase audit Q6)
+  if (MonotonicNs() - diagWait > 5000000)
+    CLog::Log(LOGINFO, "TICKDIAG video mutex wait {} us",
+              (MonotonicNs() - diagWait) / 1000);
   if (!m_video)
     return;
 

@@ -1997,7 +1997,34 @@ void CRenderManager::ShadowReference(SPresentResult& result, bool forced)
 
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
 {
+  // TEMP TICKDIAG (timebase audit Q6): where a slow coordinator tick spends its time
+  using diagClock = std::chrono::steady_clock;
+  const auto diag0 = diagClock::now();
+  auto diagLock = diag0, diagPresent = diag0, diagPrepare = diag0, diagFrame = diag0;
+  struct DiagLog
+  {
+    const diagClock::time_point& t0;
+    const diagClock::time_point& a;
+    const diagClock::time_point& b;
+    const diagClock::time_point& c;
+    const diagClock::time_point& d;
+    ~DiagLog()
+    {
+      const auto us = [](auto from, auto to)
+      { return std::chrono::duration_cast<std::chrono::microseconds>(to - from).count(); };
+      const auto end = diagClock::now();
+      if (us(t0, end) < 5000)
+        return;
+      const auto last = [&](auto t) { return t < t0 ? t0 : t; };
+      CLog::Log(LOGINFO,
+                "TICKDIAG total {} us: statelock {} presentlock {} prepare {} release {} rest {}",
+                us(t0, end), us(t0, last(a)), us(last(a), last(b)), us(last(b), last(c)),
+                us(last(c), last(d)), us(last(d), end));
+    }
+  } diagLog{diag0, diagLock, diagPresent, diagPrepare, diagFrame};
+
   std::unique_lock lock(m_statelock);
+  diagLock = diagClock::now();
   if (m_renderState != STATE_CONFIGURED || !m_presenterMode || !m_pRenderer)
     return;
   result.configured = true;
@@ -2010,6 +2037,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   CheckEnableClockSync();
 
   std::unique_lock presentLock(m_presentlock);
+  diagPresent = diagClock::now();
   lock.unlock();
 
   // the frame released at the previous vsync is on screen now
@@ -2032,6 +2060,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   const bool forced = m_forceNext;
   if (m_presentstep == PRESENT_READY)
     PrepareNextRender(tick.vblankNs);
+  diagPrepare = diagClock::now();
   result.skipped = std::max(0, m_QueueSkip - skipped);
 
   if (m_presentstep == PRESENT_FLIP)
@@ -2059,6 +2088,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   if (result.newFrame)
     m_pRenderer->PresentFrame(m_presentsource);
+  diagFrame = diagClock::now();
 
   ShadowReference(result, forced && result.newFrame);
 
