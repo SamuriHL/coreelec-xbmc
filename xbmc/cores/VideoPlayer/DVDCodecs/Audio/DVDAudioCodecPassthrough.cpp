@@ -20,6 +20,7 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -534,6 +535,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     m_internalClock = demuxerPts;
     m_needsResync = false;
     m_jitterTracker.Reset();
+    m_labelDiag = 0; // TEMP LABELDIAG
     CLog::LogF(LOGDEBUG, "internal clock synced to demuxer PTS {:.3f}s",
                demuxerPts / DVD_TIME_BASE);
   }
@@ -546,6 +548,18 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   {
     const double jitter = m_internalClock - demuxerPts + samplesOffsetTime;
     m_jitterTracker.Sample(jitter);
+    // TEMP LABELDIAG (design §15, 2.2): the label against the demuxer, per frame,
+    // after each seed
+    if (m_labelDiag < 60)
+    {
+      m_labelDiagLine += StringUtils::Format(" {:+.1f}", jitter / 1000.0);
+      if (++m_labelDiag % 20 == 0)
+      {
+        CLog::Log(LOGINFO, "LABELDIAG frames {}-{} (ms):{}", m_labelDiag - 19, m_labelDiag,
+                  m_labelDiagLine);
+        m_labelDiagLine.clear();
+      }
+    }
 
     // Correct toward the most stable value in the window (smallest absolute jitter).
     const double absMinJitter = m_jitterTracker.AbsMinimum();

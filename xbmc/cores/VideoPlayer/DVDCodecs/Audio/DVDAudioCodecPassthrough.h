@@ -23,6 +23,7 @@
 #include <atomic>
 
 #include <list>
+#include <string>
 #include <memory>
 #include <vector>
 
@@ -122,6 +123,8 @@ private:
   // seek or a reset): the packet pts they arrived with, and their duration since
   double m_truehdSkipPts{LOCAL_NOPTS};
   double m_truehdSkipTime{0.0};
+  int m_labelDiag{60};          // TEMP LABELDIAG
+  std::string m_labelDiagLine;  // TEMP LABELDIAG
 
   // Jitter tracking using the LAV FloatingAverage (min-abs correction).
   static constexpr size_t JITTER_WINDOW_SIZE = 256;
