@@ -1418,7 +1418,16 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples)
     return false;
   }
 
-  unsigned int padFrames = padNs > 0 ? static_cast<unsigned int>(std::llround(padNs * rate / 1e9)) : 0;
+  // a start is scheduled at most about half a second ahead: a longer pad is a
+  // pts jump, and would block this thread past the engine's message timeouts
+  const int64_t maxPadNs = 500000000LL + static_cast<int64_t>(frameMs * 1e6);
+  if (padNs > maxPadNs)
+  {
+    CLog::Log(LOGWARNING, "CActiveAESink: scheduled start {}: pad {:.1f} ms capped",
+              samples->landEpoch, padNs / 1e6);
+  }
+  unsigned int padFrames =
+      padNs > 0 ? static_cast<unsigned int>(std::llround(std::min(padNs, maxPadNs) * rate / 1e9)) : 0;
   const unsigned int total = padFrames;
   bool ok = true;
   while (padFrames > 0 && ok)

@@ -310,6 +310,9 @@ bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double
 
   m_resumeSpeed = iSpeed;
   m_scheduleClock = SystemToPlaying(current);
+  // whatever display phase was held belongs to a clock that started anywhere;
+  // from a vblank it is nil, and the renderer measures it again once playing
+  DropVsyncPhase(false);
   // unique across clocks: the audio output remembers the last start it landed
   static std::atomic<unsigned int> s_scheduleEpoch{0};
   m_scheduleEpoch = ++s_scheduleEpoch;
@@ -342,8 +345,15 @@ void CDVDClock::ApplyScheduledResume(int64_t current)
 
 void CDVDClock::CancelScheduledResume()
 {
-  m_resumeAt = 0;
   m_scheduleValid = false;
+  if (!m_resumeAt)
+    return;
+  // the clock was going to run: run it now (or from the instant, if that has
+  // come), so the writer that cancels finds it as it would have without the
+  // schedule - never left at speed 0
+  const int64_t at = std::min(m_videoRefClock->GetTime(), m_resumeAt);
+  m_resumeAt = 0;
+  SetSpeedAt(m_resumeSpeed, at);
 }
 
 void CDVDClock::Advance(double time)

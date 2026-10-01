@@ -28,6 +28,7 @@
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
+#include <time.h>
 #include <memory>
 #include <mutex>
 
@@ -2710,6 +2711,16 @@ namespace
 constexpr double RAW_LANDING_BAND = 1.0;
 } // namespace
 
+namespace
+{
+int64_t CurrentMonotonicNs()
+{
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+}
+} // namespace
+
 CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 {
   CSampleBuffer *ret = NULL;
@@ -2770,7 +2781,17 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGINFO, "ActiveAE - scheduled start {} cancelled", stream->m_schedEpoch);
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
-    else if (m_sink.GetCommittedStart() == stream->m_schedEpoch)
+    else if (m_sink.GetCommittedStart() != stream->m_schedEpoch &&
+             CurrentMonotonicNs() > stream->m_schedNs + 1000000000LL)
+    {
+      // nothing landed a second past the start (a sink that cannot pad, or
+      // input too late to land): start as before
+      CLog::Log(LOGWARNING, "ActiveAE - scheduled start {} did not land, starting as before",
+                stream->m_schedEpoch);
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+    }
+    else if (m_sink.GetCommittedStart() == stream->m_schedEpoch &&
+             CurrentMonotonicNs() >= stream->m_schedNs)
     {
       // landed: in sync from here; measure from a clean window, with no stale
       // resume target to walk to (the landing is the alignment)
@@ -2783,6 +2804,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     }
     else
     {
+      // landed but the clock not yet running: no measurement before the
+      // start; buffers stay tagged (the sink ignores tags of a landed start)
       CSampleBuffer* buf = stream->m_processingBuffers->m_outputSamples.front();
       if (buf->ptsUs || buf->timestamp)
       {
