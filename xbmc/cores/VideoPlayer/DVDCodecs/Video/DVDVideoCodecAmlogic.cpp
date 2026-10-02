@@ -1267,8 +1267,25 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
 
   // the AML renderer keeps the display latency while paused, except during a
   // display reset (CRenderManager::PrepareNextRender); this label-only target
-  // keeps it throughout
-  const double target = m_hints.pClock->GetClock() + RenderDisplayLatency();
+  // keeps it throughout. Before a start the clock has yet to make, the
+  // renderer selects by the clock on screen then, and so does this.
+  double target = m_hints.pClock->GetClock() + RenderDisplayLatency();
+  int64_t startNs = 0;
+  double startClock = 0.0;
+  if (m_hints.pClock->GetPendingStart(startNs, startClock))
+  {
+    target = startClock;
+    if (startNs)
+    {
+      struct timespec now = {};
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      const double nowUs = static_cast<double>(now.tv_sec) * 1e6 + now.tv_nsec / 1e3;
+      target += std::max(0.0, nowUs + RenderDisplayLatency() - startNs / 1e3);
+    }
+    const float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+    if (fps > 0.0f)
+      target += DVD_TIME_BASE / 2.0 / static_cast<double>(fps);
+  }
 
   AMLFrameMetadata meta;
   if (m_metadataSequencer.Consume(target, meta))

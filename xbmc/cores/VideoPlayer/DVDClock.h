@@ -81,6 +81,13 @@ public:
   bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);
   //! the scheduled resume, while no writer has changed the clock since
   bool GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const;
+  //! the player holds the clock for a start (it then resumes or schedules it)
+  void SetStartHeld(bool held);
+  //! a start the clock has yet to make: held for it (startNs 0), or scheduled
+  //! and not yet reached (startNs its CLOCK_MONOTONIC instant). startClock is
+  //! the clock it starts from. A frame shown before then is shown into a clock
+  //! that has not started, so selection must use the clock on screen then.
+  bool GetPendingStart(int64_t& startNs, double& startClock);
 
 protected:
   //! caller holds m_critSection
@@ -128,6 +135,7 @@ protected:
   CCriticalSection m_speedsection;
 
   int64_t m_resumeAt = 0; // reference-clock time of a pending scheduled resume
+  bool m_startHeld = false;
   int m_resumeSpeed = 0;
   bool m_scheduleValid = false;
   int64_t m_scheduleNs = 0;
