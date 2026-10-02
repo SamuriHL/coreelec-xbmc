@@ -22,6 +22,7 @@
 #include <list>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 
 class CVideoPlayer;
@@ -162,6 +163,17 @@ protected:
   // sustained same-sign over-threshold run = a genuine mid-size pts step
   // (100-900ms discontinuity) -> resync instead of window-chasing it
   int m_pcmStepRun{0};
+  // A timeline correction (a Blu-ray seam or menu loop wrap), marked by a
+  // change in the packets' total offset: its step against the decoded content
+  // is realised on the PCM it opens (see DVDAudioCodecPassthrough for bitstreams)
+  double m_lastOffsetCorrection{0.0};
+  bool m_haveOffsetCorrection{false};
+  bool m_boundaryMarkPending{false};
+  bool m_boundaryEnabled{true};
+  double m_boundaryPts{DVD_NOPTS_VALUE};
+  unsigned int m_boundaryTrim{0}; // overlapped samples still to trim
+  double m_lastPcmJitter{0.0};
+  std::vector<uint8_t> m_boundarySilence;
   bool m_pcmStepPositive{false};
 };
 

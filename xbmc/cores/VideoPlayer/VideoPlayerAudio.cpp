@@ -15,6 +15,7 @@
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
+#include "filesystem/File.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
@@ -131,6 +132,8 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 
 void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
 {
+  m_boundaryEnabled = !XFILE::CFile::Exists("special://profile/boundary_off");
+
   m_pAudioCodec = std::move(codec);
   m_labelling = false;
   m_packetsDropped = false;
@@ -585,6 +588,16 @@ void CVideoPlayerAudio::Process()
         continue;
       }
 
+      if (m_haveOffsetCorrection && pPacket->m_ptsOffsetCorrection != m_lastOffsetCorrection)
+        m_boundaryMarkPending = true;
+      m_lastOffsetCorrection = pPacket->m_ptsOffsetCorrection;
+      m_haveOffsetCorrection = true;
+      if (m_boundaryMarkPending && pPacket->pts != DVD_NOPTS_VALUE)
+      {
+        m_boundaryPts = pPacket->pts;
+        m_boundaryMarkPending = false;
+      }
+
       if (!m_pAudioCodec->AddData(*pPacket))
       {
         m_messageQueue.PutBack(pMsg);
@@ -650,12 +663,65 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         m_pcmResyncTimestamp = false;
         m_pcmJitterTracker.Reset();
         m_pcmStepRun = 0;
+        // an exact seed: nothing before it to be continuous with
+        m_boundaryPts = DVD_NOPTS_VALUE;
+        m_boundaryTrim = 0;
+        m_lastPcmJitter = 0.0;
       }
       else if (IsValidPts(m_pcmOutputClock) && inputPtsValid)
       {
         // jitter: our running output clock vs the demuxer input PTS
         double jitter = m_pcmOutputClock - inputPts;
+        // The frame the boundary packet decoded to: present by label, as a
+        // player does. An overlap trims the head already played; a gap is
+        // silence before the frame (an M3GAN menu loop wrap: -6.167 ms).
+        if (m_boundaryPts != DVD_NOPTS_VALUE &&
+            std::abs(inputPts - m_boundaryPts) < DVD_MSEC_TO_TIME(1))
+        {
+          m_boundaryPts = DVD_NOPTS_VALUE;
+          const double step = m_lastPcmJitter - jitter;
+          const double rate = audioframe.format.m_sampleRate;
+          const bool realise = m_boundaryEnabled && rate > 0 && audioframe.framesize > 0 &&
+                               audioframe.framesOut == 0 &&
+                               std::abs(step) >= DVD_MSEC_TO_TIME(1) &&
+                               std::abs(step) <= DVD_MSEC_TO_TIME(100);
+          if (realise && step < 0)
+            m_boundaryTrim = static_cast<unsigned int>(std::llround(-step * rate / DVD_TIME_BASE));
+          else if (realise)
+          {
+            audioframe.padBefore = step;
+            // the content goes on at the standing jitter after the silence
+            m_pcmOutputClock = inputPts + m_lastPcmJitter;
+            jitter = m_lastPcmJitter;
+          }
+          CLog::Log(LOGINFO, "CVideoPlayerAudio: timeline step {:+.3f} ms at label {:.3f} ms{}",
+                    step / 1000.0, inputPts / 1000.0,
+                    realise ? (step < 0 ? fmt::format(": {} samples trimmed", m_boundaryTrim)
+                                        : fmt::format(": {:.3f} ms padded", step / 1000.0))
+                            : std::string(" left"));
+        }
+        if (m_boundaryTrim > 0 && audioframe.framesOut == 0)
+        {
+          // an overlap: the head already played goes, across frames if longer
+          const unsigned int trim = std::min(m_boundaryTrim, audioframe.nb_frames);
+          m_boundaryTrim -= trim;
+          if (trim == audioframe.nb_frames)
+          {
+            audioframe.nb_frames = 0;
+            return false;
+          }
+          const double rate = audioframe.format.m_sampleRate;
+          for (unsigned int i = 0; i < audioframe.planes; i++)
+            audioframe.data[i] += trim * audioframe.framesize / audioframe.planes;
+          audioframe.nb_frames -= trim;
+          audioframe.duration = audioframe.nb_frames * DVD_TIME_BASE / rate;
+          inputPts += trim * DVD_TIME_BASE / rate;
+          // the content goes on at the standing jitter from here
+          m_pcmOutputClock = inputPts + m_lastPcmJitter;
+          jitter = m_lastPcmJitter;
+        }
         m_pcmJitterTracker.Sample(jitter);
+        m_lastPcmJitter = jitter;
         double absMinJitter = m_pcmJitterTracker.AbsMinimum();
         double thresholdDvdTime = PCM_JITTER_THRESHOLD * DVD_TIME_BASE / 1000000.0;
 
@@ -857,6 +923,23 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   }
   CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio::OutputPacket: pts:{:.3f} curr_pts:{:.3f} clock:{:.3f} level:{:d}",
     audioframe.pts / DVD_TIME_BASE, m_info.pts / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, GetLevel());
+
+  if (audioframe.padBefore > 0 && !audioframe.passthrough && audioframe.framesOut == 0)
+  {
+    // a gap in the labels at a timeline correction: silence before the frame
+    DVDAudioFrame silence = audioframe;
+    const double rate = audioframe.format.m_sampleRate;
+    silence.nb_frames = static_cast<unsigned int>(std::llround(audioframe.padBefore * rate / DVD_TIME_BASE));
+    silence.duration = silence.nb_frames * DVD_TIME_BASE / rate;
+    silence.pts = audioframe.pts - silence.duration;
+    silence.padBefore = 0;
+    m_boundarySilence.assign(static_cast<size_t>(silence.nb_frames) * audioframe.framesize, 0);
+    for (unsigned int i = 0; i < silence.planes; i++)
+      silence.data[i] = m_boundarySilence.data();
+    if (silence.nb_frames)
+      m_audioSink.AddPackets(silence);
+    audioframe.padBefore = 0;
+  }
 
   int framesOutput = m_audioSink.AddPackets(audioframe);
 
