@@ -322,6 +322,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::FLUSH:
           ReturnBuffers();
+          ClearShadowPins();
           msg->Reply(CSinkControlProtocol::ACC);
           return;
 
@@ -1174,6 +1175,7 @@ void CActiveAESink::CloseSink(const bool drain)
 
   m_sink->Deinitialize();
   m_sink.reset();
+  ClearShadowPins();
 }
 
 void CActiveAESink::ReturnBuffers()
@@ -1358,6 +1360,16 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   return status.delay * 1000;
 }
 
+void CActiveAESink::ClearShadowPins()
+{
+  // The last sample published was flushed, closed or followed by silence: it
+  // no longer pairs with the picture (an audio track change restarts the clock
+  // up to a second before the new track lands).
+  const int64_t values[PRESENTATION::AQ_COUNT] = {0, 0};
+  PRESENTATION::AudioPinsBoard().Write(values);
+  m_shadowAudible = false;
+}
+
 void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
                                  unsigned int writtenFrames,
                                  const AEDelayStatus& status)
@@ -1366,7 +1378,8 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
   if (samples->pkt->nb_samples == 0 || !samples->timestamp || !writtenFrames ||
       !m_sinkFormat.m_sampleRate)
   {
-    m_shadowAudible = false;
+    if (m_shadowAudible)
+      ClearShadowPins();
     return;
   }
   struct timespec ts = {};
@@ -1483,11 +1496,15 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   // the error: where the first sample written leaves against its own target
   const double errorMs = padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6
                                    : (skipFrames * 1e9 / rate + padNs) / 1e6;
+  // the delay after the pad: on a sink opened just before (nothing queued, the
+  // device not yet running) whether it accounts for the pad as a running one does
+  AEDelayStatus after;
+  m_sink->GetDelay(after);
   CLog::Log(LOGINFO,
             "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), skip {} frames, "
-            "delay before {:.3f} ms, landing error {:+.3f} ms{}",
+            "delay before {:.3f} ms, after {:.3f} ms, landing error {:+.3f} ms{}",
             samples->landEpoch, total, total * 1000.0 / rate, skipFrames, status.delay * 1000.0,
-            errorMs, ok ? "" : " (pad write failed)");
+            after.delay * 1000.0, errorMs, ok ? "" : " (pad write failed)");
   return true;
 }
 

@@ -136,6 +136,7 @@ protected:
 
   unsigned int OutputSamples(CSampleBuffer* samples);
   void ShadowOnPins(CSampleBuffer* samples, unsigned int writtenFrames, const AEDelayStatus& status);
+  void ClearShadowPins();
   std::atomic<unsigned int> m_committedStart{0};
   std::atomic<unsigned int> m_abandonedStart{0};
   int m_landDiag = 40; // TEMP LANDDIAG
