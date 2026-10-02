@@ -1197,6 +1197,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 {
   // The engine had nothing while the clock ran: the silence written in its
   // place delays the audio after it by as long, and the follower cannot see it.
+  // Only after audible content: before a start lands, silence is the wait.
   {
     struct timespec ts = {};
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1205,7 +1206,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
     {
       int64_t tl[PRESENTATION::TL_COUNT], cs[PRESENTATION::CS_COUNT];
       if (PRESENTATION::TimelineBoard().Read(tl) && PRESENTATION::CoordinatorBoard().Read(cs) &&
-          cs[PRESENTATION::CS_PLAYING] &&
+          cs[PRESENTATION::CS_PLAYING] && (m_starvedSinceNs || m_shadowAudible) &&
           std::llabs(tl[PRESENTATION::TL_KERNEL_SEQ] - cs[PRESENTATION::CS_SEQ]) < 30)
       {
         if (!m_starvedSinceNs)
