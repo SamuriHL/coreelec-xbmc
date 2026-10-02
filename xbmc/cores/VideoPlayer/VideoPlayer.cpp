@@ -3547,16 +3547,21 @@ void CVideoPlayer::HandlePlaySpeed()
     // committed ahead of it is not held (Superman UHD: committed 80 ms before
     // its first picture configured the renderer). Give it a bounded wait; the
     // deadlock the shortcut breaks still breaks, 1 s later.
+    // The same goes for audio read ahead of the first video packet: after a
+    // seek in a loosely interleaved file, 20 audio packets can come 80 ms
+    // before it, and a start committed on them is neither held nor scheduled.
     bool audioFullVideoStarving =
-        !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10;
-    if (audioFullVideoStarving && m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
-        m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING)
+        (!m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10) ||
+        (m_CurrentVideo.packets == 0 && m_CurrentAudio.packets > threshold);
+    if (audioFullVideoStarving &&
+        (m_heldStartEnabled || (m_scheduledStart && !m_pInputStream->IsRealtime())) &&
+        m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING)
     {
       const auto now = std::chrono::steady_clock::now();
       if (m_firstPictureWaitSince == std::chrono::steady_clock::time_point{})
       {
         m_firstPictureWaitSince = now;
-        CLog::Log(LOGDEBUG, "VideoPlayer::Sync - audio queue full, waiting for the first picture");
+        CLog::Log(LOGDEBUG, "VideoPlayer::Sync - audio ahead of video, waiting for the first picture");
       }
       else if (now - m_firstPictureWaitSince >= 1s && !m_firstPictureWaitExpired)
       {
@@ -3576,7 +3581,6 @@ void CVideoPlayer::HandlePlaySpeed()
         m_firstPictureWaitSince != std::chrono::steady_clock::time_point{} &&
         !m_firstPictureWaitExpired;
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
-                 (m_CurrentVideo.packets == 0 && m_CurrentAudio.packets > threshold) ||
                  audioFullVideoStarving;
     bool audio = m_CurrentAudio.id < 0 || (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentAudio.packets == 0 && m_CurrentVideo.packets > threshold) ||
@@ -3809,6 +3813,8 @@ void CVideoPlayer::HandlePlaySpeed()
   {
     m_syncStartPtsWait.reset();
     m_syncStartDeferred = false;
+    m_firstPictureWaitSince = {};
+    m_firstPictureWaitExpired = false;
     // Neither player is at the handshake, so nothing can be stuck at it.
     m_syncStuckArmed = false;
   }
@@ -6728,8 +6734,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 
   m_SpeedState.Reset(pts);
 
-  // a defer window from before the flush belongs to a dead sync attempt
+  // a defer window from before the flush belongs to a dead sync attempt, and
+  // so does a first-picture wait
   m_syncStartDeferred = false;
+  m_firstPictureWaitSince = {};
+  m_firstPictureWaitExpired = false;
 
   // and so does an armed seam-step correction: after a flush the timestamps
   // either side of it are unrelated to the boundary that armed it

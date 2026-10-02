@@ -21,6 +21,7 @@ extern "C"
 #include <libavutil/channel_layout.h>
 }
 
+#include <algorithm>
 #include <cassert>
 #include <string.h>
 
@@ -281,6 +282,11 @@ AVCodecID CAEEncoderFFmpeg::GetCodecID()
 unsigned int CAEEncoderFFmpeg::GetFrames()
 {
   return m_NeededFrames;
+}
+
+unsigned int CAEEncoderFFmpeg::GetPadding()
+{
+  return m_CodecCtx ? static_cast<unsigned int>(std::max(m_CodecCtx->initial_padding, 0)) : 0;
 }
 
 int CAEEncoderFFmpeg::Encode(uint8_t *in, int in_size, uint8_t *out, int out_size)

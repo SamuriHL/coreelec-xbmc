@@ -69,6 +69,12 @@ public:
   virtual unsigned int GetFrames() = 0;
 
   /**
+   * Return the encoder's priming: decoded output sample n is input sample n - padding
+   * @return number of frames
+   */
+  virtual unsigned int GetPadding() = 0;
+
+  /**
    * Encodes the supplied samples into a provided buffer
    * @param in the PCM samples encoder requested format
    * @param in_size input buffer size

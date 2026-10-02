@@ -2632,9 +2632,25 @@ bool CActiveAE::RunStages()
             buf->pkt->nb_samples = m_encoder->Encode(out->pkt->data[0], out->pkt->planes*out->pkt->linesize,
                                                      buf->pkt->data[0], buf->pkt->planes*buf->pkt->linesize);
 
-            // set pts of last sample
-            buf->pkt_start_offset = buf->pkt->nb_samples;
-            buf->timestamp = out->timestamp;
+            // label the frame's first decoded sample: the mix's sample 0, less
+            // the encoder's priming (nb_samples here counts bytes, not samples)
+            const double paddingMs = m_encoder->GetPadding() * 1000.0 / m_encoderFormat.m_sampleRate;
+            const int outRate = out->pkt->config.sample_rate;
+            const double startMs =
+                (out->ptsUs ? static_cast<double>(out->ptsUs) / 1000.0
+                            : static_cast<double>(out->timestamp)) -
+                (outRate ? static_cast<double>(out->pkt_start_offset) * 1000.0 / outRate : 0.0) -
+                paddingMs;
+            buf->pkt_start_offset = 0;
+            buf->timestamp = out->timestamp ? static_cast<int64_t>(std::llround(startMs)) : 0;
+            buf->ptsUs = out->timestamp ? std::llround(startMs * 1000.0) : 0;
+            // a scheduled start lands the frame whose decode carries the mix's
+            // sample 0 at its landing: the frame begins the encoder's priming earlier
+            if (out->landNs && buf->pkt->nb_samples)
+            {
+              buf->landNs = out->landNs - std::llround(paddingMs * 1e6);
+              buf->landEpoch = out->landEpoch;
+            }
           }
 
           out->Return();
@@ -2772,9 +2788,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   // A start scheduled on the clock (design §15, step 2.2): instead of muting and
   // walking onto a clock that is already running, tag each buffer with the
   // instant its first sample must leave the output, and let the sink land it
-  // there. Passthrough and PCM; a transcode's encoder does not carry the tags.
+  // there. Passthrough, PCM and transcode (the encoder carries the mix's tag).
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START &&
-      (m_mode == MODE_RAW || m_mode == MODE_PCM))
+      (m_mode == MODE_RAW || m_mode == MODE_PCM || m_mode == MODE_TRANSCODE))
   {
     int64_t startNs = 0;
     double startClockMs = 0.0;

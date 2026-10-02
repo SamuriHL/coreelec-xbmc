@@ -26,6 +26,7 @@ public:
   unsigned int GetBitRate() override;
   AVCodecID GetCodecID() override;
   unsigned int GetFrames() override;
+  unsigned int GetPadding() override;
 
   int Encode(uint8_t* in, int in_size, uint8_t* out, int out_size) override;
   double GetDelay(unsigned int bufferSize) override;
