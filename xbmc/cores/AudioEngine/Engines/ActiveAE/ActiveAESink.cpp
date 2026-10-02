@@ -1195,6 +1195,32 @@ void CActiveAESink::ReturnBuffers()
 
 unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 {
+  // The engine had nothing while the clock ran: the silence written in its
+  // place delays the audio after it by as long, and the follower cannot see it.
+  {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+    if (samples == &m_sampleOfSilence)
+    {
+      int64_t tl[PRESENTATION::TL_COUNT], cs[PRESENTATION::CS_COUNT];
+      if (PRESENTATION::TimelineBoard().Read(tl) && PRESENTATION::CoordinatorBoard().Read(cs) &&
+          cs[PRESENTATION::CS_PLAYING] &&
+          std::llabs(tl[PRESENTATION::TL_KERNEL_SEQ] - cs[PRESENTATION::CS_SEQ]) < 30)
+      {
+        if (!m_starvedSinceNs)
+          m_starvedSinceNs = now;
+        m_starvedBuffers++;
+      }
+    }
+    else if (m_starvedSinceNs)
+    {
+      CLog::Log(LOGINFO, "CActiveAESink: starved while playing: {} silence buffers over {:.1f} ms",
+                m_starvedBuffers, (now - m_starvedSinceNs) / 1e6);
+      m_starvedSinceNs = 0;
+      m_starvedBuffers = 0;
+    }
+  }
   uint8_t **buffer = samples->pkt->data;
   uint8_t *packBuffer;
   unsigned int frames = samples->pkt->nb_samples;

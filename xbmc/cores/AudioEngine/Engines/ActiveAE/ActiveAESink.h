@@ -141,6 +141,8 @@ protected:
   std::atomic<unsigned int> m_abandonedStart{0};
   int m_landDiag = 40; // TEMP LANDDIAG
   bool m_shadowAudible = false;
+  int64_t m_starvedSinceNs = 0; // silence written while the clock runs
+  unsigned int m_starvedBuffers = 0;
   void SwapInit(CSampleBuffer* samples);
   //! a scheduled start: pad the output so this buffer's first sample leaves at
   //! its landNs; false if it can no longer land (it is then dropped). A PCM
