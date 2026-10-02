@@ -61,6 +61,9 @@ enum AML_DISPLAY_DV_LED
 #define AML_S6      0x48
 
 int  aml_get_cpufamily_id();
+// the SoCs the presentation timeline work is validated on (S6, G12B): elsewhere
+// the player keeps today's behaviour
+bool aml_presentation_validated();
 std::string aml_get_cpufamily_name(int cpuid = -1);
 bool aml_support_hevc();
 bool aml_support_hevc_4k2k();

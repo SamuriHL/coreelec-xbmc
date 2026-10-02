@@ -88,6 +88,12 @@ int aml_get_cpufamily_id()
   return aml_cpufamily_id;
 }
 
+bool aml_presentation_validated()
+{
+  const int id = aml_get_cpufamily_id();
+  return id == AML_S6 || id == AML_G12B;
+}
+
 std::string aml_get_cpufamily_name(int cpuid)
 {
   switch(cpuid)

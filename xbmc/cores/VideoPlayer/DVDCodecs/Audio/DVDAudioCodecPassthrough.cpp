@@ -19,6 +19,7 @@
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "filesystem/File.h"
+#include "utils/AMLUtils.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
@@ -109,7 +110,8 @@ void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSe
 
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
-  m_boundaryEnabled = !XFILE::CFile::Exists("special://profile/boundary_off");
+  m_boundaryEnabled =
+      aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/boundary_off");
 
   m_hints = hints;
   UpdateDialNormSettings();

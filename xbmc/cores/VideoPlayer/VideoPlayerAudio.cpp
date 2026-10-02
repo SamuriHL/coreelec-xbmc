@@ -16,6 +16,7 @@
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "filesystem/File.h"
+#include "utils/AMLUtils.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
@@ -132,7 +133,8 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 
 void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
 {
-  m_boundaryEnabled = !XFILE::CFile::Exists("special://profile/boundary_off");
+  m_boundaryEnabled =
+      aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/boundary_off");
 
   m_pAudioCodec = std::move(codec);
   m_labelling = false;
