@@ -4073,6 +4073,8 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
    * across its 28 playitems (-0.159, +0.332, -0.430, +0.291, -0.464, +0.346
    * ...), so most of the film's boundaries are affected and none of them reach
    * the threshold. The later ones do (+24.9s, +48.1s) and are already handled.
+   * The smallest is +0.059 (playitem 12): the margin is 20 ms, as for an
+   * overlap below.
    *
    * Correct against this stream's OWN end, exactly as the backward restart
    * does. maxdts would be wrong here: it is the furthest-ahead stream, and
@@ -4091,7 +4093,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
   }
   if (correction == 0.0 && m_seamStepPending && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
       current.dts_end() != DVD_NOPTS_VALUE &&
-      pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(60) &&
+      pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(20) &&
       pPacket->dts < current.dts_end() + DVD_MSEC_TO_TIME(1000))
   {
     correction = pPacket->dts - current.dts_end();
