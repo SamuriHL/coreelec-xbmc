@@ -176,6 +176,7 @@ private:
   // it once-per-jump: the same packet is re-delivered on retries and on the
   // VC_FLUSHED replay.
   bool m_pendingTimelineRestart = false;
+  double m_restartDemuxDts = DVD_NOPTS_VALUE; // the last timeline restart's demuxer dts
   uint32_t m_lastTimelineRestartSeq = 0;
   bool m_timelineRestartSeqSeeded = false;
   bool m_felIdrPaddingPushed = false;

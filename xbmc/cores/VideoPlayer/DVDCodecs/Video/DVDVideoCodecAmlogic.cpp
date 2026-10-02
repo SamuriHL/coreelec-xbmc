@@ -770,6 +770,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     // far ahead and anything nearer belongs to the incoming clip and is kept.
     const double restartDts =
         packet.demuxDts != DVD_NOPTS_VALUE ? packet.demuxDts : packet.dts;
+    m_restartDemuxDts = restartDts;
     while (restartDts != DVD_NOPTS_VALUE && !m_packages.empty())
     {
       const double queuedDts = std::get<5>(m_packages.front());
@@ -907,6 +908,24 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
           const bool dtsKnown =
               demuxDtsBackup != DVD_NOPTS_VALUE && pairDts != DVD_NOPTS_VALUE;
+          // Seconds apart across a timeline restart, one of the two belongs to
+          // the clip that ended: the one farther from the restart. An outgoing
+          // enhancement layer delivered after the restart otherwise reads as
+          // the newest packet and the incoming base layers queued before it -
+          // the incoming keyframe first - are dropped as unpaired (M3GAN 2.0
+          // 00801 playitem 26: keyframe lost, decoder reset, 2.47 s frozen).
+          if (dtsKnown && m_restartDemuxDts != DVD_NOPTS_VALUE &&
+              std::abs(demuxDtsBackup - pairDts) > DL_STALE_QUEUE_LEAD &&
+              std::min(std::abs(pairDts - m_restartDemuxDts),
+                       std::abs(demuxDtsBackup - m_restartDemuxDts)) < 3.0 * DVD_TIME_BASE &&
+              std::abs(pairDts - m_restartDemuxDts) > std::abs(demuxDtsBackup - m_restartDemuxDts))
+          {
+            CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: dropping incoming {} package with demux "
+                                "dts: {:.3f} - the clip before the timeline restart at {:.3f}",
+                      __FUNCTION__, packet.isELPackage ? "EL" : "BL", pairDts / DVD_TIME_BASE,
+                      m_restartDemuxDts / DVD_TIME_BASE);
+            return true;
+          }
           if (dtsKnown && demuxDtsBackup < pairDts - DL_PAIR_DTS_TOLERANCE)
           {
             CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with demux dts: {:.3f} (incoming {} demux dts: {:.3f})", __FUNCTION__,
