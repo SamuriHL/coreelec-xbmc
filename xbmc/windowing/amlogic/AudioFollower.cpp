@@ -36,6 +36,7 @@ constexpr double GRID_BAND_S = 100e-6;   // grid law: switch codes when the phas
 constexpr int GRID_HOLD_S = 5;           // the phase average must refill after a switch
 constexpr double ABORT_PHASE_S = 1e-3;
 constexpr double ABORT_DRIFT_PPM = 100.0;
+constexpr double CLOCK_SPEED_PPM = 100.0; // off 1:1 by more: the content does not run on the vblanks
 constexpr size_t FIT_SECONDS = 60;
 constexpr size_t FIT_MIN = 30;
 constexpr int REPORT_SECONDS = 10;
@@ -150,6 +151,7 @@ enum class Mode
   FINE,     // a fine PLL (S6): t = -d0 - φ/τ
   GRID,     // a coarse PLL (G12B): switch between the two codes that bracket -d0
   ABORTED,  // trim 0 for the rest of this sink open
+  OFF_SPEED, // the clock is not 1:1 with the vblanks (resampling to the display, speed adjust)
 };
 
 const char* ModeName(Mode mode)
@@ -164,6 +166,8 @@ const char* ModeName(Mode mode)
       return "fine";
     case Mode::GRID:
       return "grid";
+    case Mode::OFF_SPEED:
+      return "off-speed";
     default:
       return "aborted";
   }
@@ -219,6 +223,7 @@ void CAudioFollower::Run()
   int64_t binStartNs = 0;
   double binX = 0;                   // seconds since the anchor at the bin's last sample
   std::deque<std::pair<double, double>> psi; // per second: (seconds, median trim-free ψ)
+  std::deque<std::pair<int64_t, int64_t>> clockAt; // per second: (vblank ns, CDVDClock µs)
 
   Mode mode = haveControl ? Mode::WAIT : Mode::LOG_ONLY;
   double written = 0;        // the trim last written, ppm
@@ -280,6 +285,7 @@ void CAudioFollower::Run()
     gridRecent.clear();
     fineTrim = fineIntegral = gridTrim = gridIntegral = 0;
     gridHold = switches = 0;
+    clockAt.clear();
   };
 
   while (!m_stop)
@@ -325,7 +331,10 @@ void CAudioFollower::Run()
       psi.clear();
       appliedRecent.clear();
       appliedIntegral = 0;
+      clockAt.clear();
     }
+    const bool csFresh = CoordinatorBoard().Read(cs) && cs[CS_PLAYING] &&
+                         std::llabs(tl[TL_KERNEL_SEQ] - cs[CS_SEQ]) < 30;
 
     const double periodNs = 1e9 * static_cast<double>(tl[TL_PERIOD_NUM]) / tl[TL_PERIOD_DEN];
     const int64_t htMono = ap[AP_HTSTAMP_NS] - (ap[AP_WALL_NS] - ap[AP_MONO_NS]);
@@ -348,6 +357,7 @@ void CAudioFollower::Run()
     {
       landings = landed;
       landingPending = true;
+      clockAt.clear();
     }
     if (landingPending)
     {
@@ -400,6 +410,37 @@ void CAudioFollower::Run()
     // d0 is the hardware's: after a pause the laws run on the last fit while
     // the next one builds
     const double driftPpm = lastDrift;
+
+    // The PLL holds the sink to the vblanks, which is right only while the
+    // content clock runs 1:1 with them. The median of the per-second rates
+    // ignores a clock jump.
+    if (csFresh)
+    {
+      clockAt.emplace_back(cs[CS_VBLANK_NS], cs[CS_CLOCK_US]);
+      if (clockAt.size() > 11)
+        clockAt.pop_front();
+    }
+    std::vector<double> clockRates;
+    for (size_t i = 1; i < clockAt.size(); i++)
+      if (clockAt[i].first > clockAt[i - 1].first)
+        clockRates.push_back(1e3 * (clockAt[i].second - clockAt[i - 1].second) /
+                             (clockAt[i].first - clockAt[i - 1].first));
+    const double clockPpm = clockRates.size() >= 5 ? (Median(clockRates) - 1.0) * 1e6 : 0.0;
+    const bool offSpeed = std::fabs(clockPpm) > CLOCK_SPEED_PPM;
+    if (offSpeed && (mode == Mode::WAIT || mode == Mode::FINE || mode == Mode::GRID))
+    {
+      CLog::Log(LOGINFO, "FOLLOWER open {}: the clock runs {:+.0f} ppm off the vblanks, trim 0",
+                openId, clockPpm);
+      if (written != 0)
+        control.Write(0);
+      written = applied = 0;
+      mode = Mode::OFF_SPEED;
+    }
+    else if (!offSpeed && mode == Mode::OFF_SPEED && clockRates.size() >= 5)
+    {
+      CLog::Log(LOGINFO, "FOLLOWER open {}: the clock runs 1:1 again", openId);
+      mode = Mode::WAIT;
+    }
 
     // the drift does not depend on the trim, so it is d0 whatever the loop does
     if (mode == Mode::WAIT && fitted)
