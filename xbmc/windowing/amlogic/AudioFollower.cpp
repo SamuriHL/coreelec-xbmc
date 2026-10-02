@@ -223,7 +223,7 @@ void CAudioFollower::Run()
   int64_t binStartNs = 0;
   double binX = 0;                   // seconds since the anchor at the bin's last sample
   std::deque<std::pair<double, double>> psi; // per second: (seconds, median trim-free ψ)
-  std::deque<std::pair<int64_t, int64_t>> clockAt; // per second: (vblank ns, CDVDClock µs)
+  std::deque<std::pair<int64_t, int64_t>> clockAt; // per second: (vblank seq, CDVDClock µs)
 
   Mode mode = haveControl ? Mode::WAIT : Mode::LOG_ONLY;
   double written = 0;        // the trim last written, ppm
@@ -412,11 +412,12 @@ void CAudioFollower::Run()
     const double driftPpm = lastDrift;
 
     // The PLL holds the sink to the vblanks, which is right only while the
-    // content clock runs 1:1 with them. The median of the per-second rates
-    // ignores a clock jump.
+    // content clock runs 1:1 with them. Counted in vblanks, not CLOCK_MONOTONIC
+    // (slewed hundreds of ppm after a boot); the median of the per-second
+    // rates ignores a clock jump.
     if (csFresh)
     {
-      clockAt.emplace_back(cs[CS_VBLANK_NS], cs[CS_CLOCK_US]);
+      clockAt.emplace_back(cs[CS_SEQ], cs[CS_CLOCK_US]);
       if (clockAt.size() > 11)
         clockAt.pop_front();
     }
@@ -424,7 +425,7 @@ void CAudioFollower::Run()
     for (size_t i = 1; i < clockAt.size(); i++)
       if (clockAt[i].first > clockAt[i - 1].first)
         clockRates.push_back(1e3 * (clockAt[i].second - clockAt[i - 1].second) /
-                             (clockAt[i].first - clockAt[i - 1].first));
+                             ((clockAt[i].first - clockAt[i - 1].first) * periodNs));
     const double clockPpm = clockRates.size() >= 5 ? (Median(clockRates) - 1.0) * 1e6 : 0.0;
     const bool offSpeed = std::fabs(clockPpm) > CLOCK_SPEED_PPM;
     if (offSpeed && (mode == Mode::WAIT || mode == Mode::FINE || mode == Mode::GRID))
@@ -440,6 +441,8 @@ void CAudioFollower::Run()
     {
       CLog::Log(LOGINFO, "FOLLOWER open {}: the clock runs 1:1 again", openId);
       mode = Mode::WAIT;
+      // the phase built up while off speed is not the follower's to undo
+      landingPending = true;
     }
 
     // the drift does not depend on the trim, so it is d0 whatever the loop does
