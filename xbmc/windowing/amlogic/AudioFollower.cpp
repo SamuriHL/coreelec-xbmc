@@ -209,9 +209,10 @@ void CAudioFollower::Run()
   double framesA = 0, seqA = 0, periodS = 0;
   double psiAtLanding = 0;
   bool landingPending = true;
+  bool landingBin = false;           // the current second is the first since a landing
   int64_t lastMono = 0;
 
-  std::vector<double> bin;           // φ samples in the current second
+  std::vector<double> bin;           // ψ samples in the current second
   int64_t binStartNs = 0;
   double binX = 0;                   // seconds since the anchor at the bin's last sample
   std::deque<std::pair<double, double>> psi; // per second: (seconds, median trim-free ψ)
@@ -325,13 +326,16 @@ void CAudioFollower::Run()
     }
     if (landingPending)
     {
+      // φ is zero over the first second after it: one sample may be an
+      // htstamp outlier of 100 µs and more
       landingPending = false;
-      psiAtLanding = psiNow;
+      landingBin = true;
       fineIntegral = gridIntegral = 0;
       gridRecent.clear();
       bin.clear();
+      binStartNs = htMono;
     }
-    bin.push_back(psiNow - psiAtLanding);
+    bin.push_back(psiNow);
     binX = x;
     samples++;
 
@@ -342,9 +346,15 @@ void CAudioFollower::Run()
     // one second: the median φ, and how far the samples scatter round it
     if (bin.empty())
       continue;
-    const double phi = Median(bin);
+    const double psiMedian = Median(bin);
+    if (landingBin)
+    {
+      landingBin = false;
+      psiAtLanding = psiMedian;
+    }
+    const double phi = psiMedian - psiAtLanding;
     for (double& v : bin)
-      v = std::fabs(v - phi);
+      v = std::fabs(v - psiMedian);
     noise.push_back(Median(bin));
     bin.clear();
 

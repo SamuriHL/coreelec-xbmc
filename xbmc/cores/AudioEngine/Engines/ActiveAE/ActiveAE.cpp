@@ -2719,6 +2719,9 @@ bool CActiveAE::HasWork()
       return true;
     if (!(*it)->m_processingSamples.empty())
       return true;
+    // a scheduled start holds its first buffer until the landing is close
+    if ((*it)->m_syncState == CAESyncInfo::AESyncState::SYNC_SCHEDULED)
+      return true;
   }
 
   return false;
@@ -2783,6 +2786,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       stream->m_schedNs = startNs;
       stream->m_schedClockMs = startClockMs;
       stream->m_schedEpoch = epoch;
+      stream->m_schedLandNs = 0;
       stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
       stream->m_resampleIntegral = 0;
       CLog::Log(LOGINFO,
@@ -2804,7 +2808,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
     else if (m_sink.GetCommittedStart() != stream->m_schedEpoch &&
-             CurrentMonotonicNs() > stream->m_schedNs + 1000000000LL)
+             CurrentMonotonicNs() > std::max(stream->m_schedNs, stream->m_schedLandNs) + 1000000000LL)
     {
       // nothing landed a second past the start (a sink that cannot pad, or
       // input too late to land): start as before
@@ -2859,8 +2863,31 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         buf->landNs = stream->m_schedNs +
                       static_cast<int64_t>((ptsMs - stream->m_schedClockMs) * 1e6 / speed);
         buf->landEpoch = stream->m_schedEpoch;
+        if (buf->landNs - stream->m_schedNs > 5000000000LL)
+        {
+          // seconds after the picture: a pts jump, not a start
+          CLog::Log(LOGWARNING,
+                    "ActiveAE - scheduled start {}: first audio {:.0f} ms after the start, "
+                    "starting as before",
+                    stream->m_schedEpoch, (buf->landNs - stream->m_schedNs) / 1e6);
+          m_sink.AbandonStart(stream->m_schedEpoch);
+          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+          buf->landNs = 0;
+          buf->landEpoch = 0;
+        }
+        else
+        {
+          stream->m_schedLandNs = buf->landNs;
+          // A new audio track starts where the demuxer is, ahead of the
+          // picture by what it has read. The sink pads at most half a second,
+          // so hand it the buffer only when its landing is that close.
+          if (buf->landNs - CurrentMonotonicNs() > 450000000LL)
+            stream->m_syncWaitSilence = true;
+          return ret;
+        }
       }
-      return ret;
+      else
+        return ret;
     }
   }
 

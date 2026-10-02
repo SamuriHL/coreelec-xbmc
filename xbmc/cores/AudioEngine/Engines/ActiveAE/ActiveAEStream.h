@@ -295,6 +295,7 @@ protected:
   int64_t m_schedNs = 0;
   double m_schedClockMs = 0.0;
   unsigned int m_schedEpoch = 0;
+  int64_t m_schedLandNs = 0; // where the first buffer lands: later than m_schedNs on a track change
 };
 }
 
