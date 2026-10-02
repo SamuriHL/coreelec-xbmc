@@ -390,6 +390,10 @@ public:
     return pending;
   }
 
+  /* The playlist's own timestamp step at the last seamless boundary, in 90 kHz
+   * ticks: the incoming play item's IN minus the outgoing one's OUT. */
+  std::optional<int64_t> GetSeamPlaylistStep() const { return m_seamPlaylistStep; }
+
   /* Drop an armed-but-uncollected glide. The player collects the flag on the
    * iteration AFTER the one that armed it, and a lot can happen in between: a
    * seek or a flush from HandleMessages(), or a second boundary in the same
@@ -576,6 +580,7 @@ protected:
   bool BdjTimingActive() const { return m_bdjTiming && IsBdjTitle(); }
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
+  std::optional<int64_t> m_seamPlaylistStep;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
    * ended and the disc returned to menu" (drain it). Player thread only.

@@ -779,6 +779,8 @@ protected:
    * audio was handed rather than where audio is, and across a menu boundary it
    * can be tens of minutes stale on another timeline. */
   double m_seamStepArmedDts = DVD_NOPTS_VALUE;
+  // the playlist's own step at the armed boundary (IN - OUT), DVD time
+  std::optional<double> m_seamStepPlaylistStep;
 
   // BD menu loop wrap: video's own measured timestamp gap, recorded when video
   // first flags the backward jump (0.0 = unset). With a single global offset

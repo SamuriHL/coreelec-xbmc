@@ -1621,6 +1621,7 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
   // clips' stream attributes and fall back to the full reopen path
   // on any mismatch (review finding A10)
   const BLURAY_CLIP_INFO* next = nullptr;
+  m_seamPlaylistStep.reset();
   if (m_seamlessHold && m_titleInfo)
   {
     if (m_event.event == BD_EVENT_PLAYITEM &&
@@ -1629,6 +1630,8 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
     else if (m_event.event == BD_EVENT_PLAYLIST &&
              m_titleInfo->clip_count > 0)
       next = &m_titleInfo->clips[0];
+    if (m_clip && next)
+      m_seamPlaylistStep = static_cast<int64_t>(next->in_time) - static_cast<int64_t>(m_clip->out_time);
     if (!ClipFormatsMatch(m_clip, next))
     {
       CLog::Log(LOGDEBUG,

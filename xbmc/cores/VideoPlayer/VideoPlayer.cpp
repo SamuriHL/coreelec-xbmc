@@ -1908,6 +1908,14 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // video open and SYNC_INSYNC, so video's dts is the one value here that is
     // guaranteed current; if it somehow is not, do not arm at all rather than
     // arm something unboundable.
+    m_seamStepPlaylistStep.reset();
+#if defined(HAVE_LIBBLURAY)
+    if (m_pInputBluray)
+    {
+      if (const std::optional<int64_t> step = m_pInputBluray->GetSeamPlaylistStep())
+        m_seamStepPlaylistStep = static_cast<double>(*step) * DVD_TIME_BASE / 90000.0;
+    }
+#endif
     if (m_CurrentVideo.dts != DVD_NOPTS_VALUE)
     {
       m_seamStepArmedDts = m_CurrentVideo.dts;
@@ -4074,7 +4082,10 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
    * ...), so most of the film's boundaries are affected and none of them reach
    * the threshold. The later ones do (+24.9s, +48.1s) and are already handled.
    * The smallest is +0.059 (playitem 12): the margin is 20 ms, as for an
-   * overlap below.
+   * overlap below. Only the playlist's own step (IN - OUT) is closed: a
+   * menu loop's outgoing clip can end on a frame gap (its truncated last
+   * frame dropped) while the playlist steps back to the loop start, and
+   * closing that gap moves audio, which has no such gap.
    *
    * Correct against this stream's OWN end, exactly as the backward restart
    * does. maxdts would be wrong here: it is the furthest-ahead stream, and
@@ -4091,10 +4102,24 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     m_seamStepPending = false;
     m_seamStepArmedDts = DVD_NOPTS_VALUE;
   }
-  if (correction == 0.0 && m_seamStepPending && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
-      current.dts_end() != DVD_NOPTS_VALUE &&
-      pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(20) &&
-      pPacket->dts < current.dts_end() + DVD_MSEC_TO_TIME(1000))
+  const bool forwardGap = correction == 0.0 && m_seamStepPending &&
+                          m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+                          current.dts_end() != DVD_NOPTS_VALUE &&
+                          pPacket->dts > current.dts_end() + DVD_MSEC_TO_TIME(20) &&
+                          pPacket->dts < current.dts_end() + DVD_MSEC_TO_TIME(1000);
+  const bool playlistStep =
+      m_seamStepPlaylistStep && *m_seamStepPlaylistStep > 0.0 &&
+      std::abs(pPacket->dts - current.dts_end() - *m_seamStepPlaylistStep) <
+          DVD_MSEC_TO_TIME(100);
+  if (forwardGap && !playlistStep)
+  {
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::CheckContinuity - forward gap :{} of {:f} left open: the playlist "
+              "steps {:f} here",
+              current.type, pPacket->dts - current.dts_end(),
+              m_seamStepPlaylistStep ? *m_seamStepPlaylistStep : DVD_NOPTS_VALUE);
+  }
+  if (forwardGap && playlistStep)
   {
     correction = pPacket->dts - current.dts_end();
     seamStep = true;
