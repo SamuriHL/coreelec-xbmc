@@ -90,6 +90,7 @@ enum CoordinatorSample
   CS_VBLANK_NS, // its timestamp
   CS_CLOCK_US,  // CDVDClock::GetClock() at that tick, in µs
   CS_PLAYING,
+  CS_SPEED_PPM, // CDVDClock's speed against the reference clock's ticks, less 1, in ppm
   CS_COUNT
 };
 

@@ -2042,7 +2042,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   {
     const int64_t sample[PRESENTATION::CS_COUNT] = {
         static_cast<int64_t>(tick.seq), tick.vblankNs,
-        static_cast<int64_t>(m_dvdClock.GetClock()), result.playing ? 1 : 0};
+        static_cast<int64_t>(m_dvdClock.GetClock()), result.playing ? 1 : 0,
+        std::llround((m_dvdClock.GetClockSpeed() - 1.0) * 1e6)};
     PRESENTATION::CoordinatorBoard().Write(sample);
   }
   // the display timing of this display epoch has not been published yet
