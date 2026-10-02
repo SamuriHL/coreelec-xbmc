@@ -210,6 +210,9 @@ void CAudioFollower::Run()
   double psiAtLanding = 0;
   bool landingPending = true;
   bool landingBin = false;           // the current second is the first since a landing
+  bool paused = false;
+  bool haveDrift = false;            // d0 fitted at least once since the sink opened
+  double lastDrift = 0;
   int64_t lastMono = 0;
 
   std::vector<double> bin;           // ψ samples in the current second
@@ -266,6 +269,8 @@ void CAudioFollower::Run()
     if (written != 0)
       control.Write(0);
     written = applied = appliedIntegral = 0;
+    haveDrift = false;
+    lastDrift = 0;
     mode = haveControl ? Mode::WAIT : Mode::LOG_ONLY;
     anchored = false;
     landingPending = true;
@@ -300,6 +305,26 @@ void CAudioFollower::Run()
       rate = ap[AP_RATE];
       epoch = tl[TL_EPOCH];
       reset();
+    }
+
+    // Paused, the sink plays pause bursts in whole milliseconds: its count is
+    // no phase. Hold the trim, and on resume measure afresh from there.
+    int64_t cs[CS_COUNT];
+    const bool nowPaused = CoordinatorBoard().Read(cs) && !cs[CS_PLAYING] &&
+                           std::llabs(tl[TL_KERNEL_SEQ] - cs[CS_SEQ]) < 30;
+    if (nowPaused)
+    {
+      paused = true;
+      continue;
+    }
+    if (paused)
+    {
+      paused = false;
+      anchored = false;
+      landingPending = true;
+      psi.clear();
+      appliedRecent.clear();
+      appliedIntegral = 0;
     }
 
     const double periodNs = 1e9 * static_cast<double>(tl[TL_PERIOD_NUM]) / tl[TL_PERIOD_DEN];
@@ -367,7 +392,14 @@ void CAudioFollower::Run()
     if (psi.size() > FIT_SECONDS)
       psi.pop_front();
     const bool fitted = psi.size() >= FIT_MIN;
-    const double driftPpm = fitted ? RobustSlope(psi) * 1e6 : 0.0;
+    if (fitted)
+    {
+      lastDrift = RobustSlope(psi) * 1e6;
+      haveDrift = true;
+    }
+    // d0 is the hardware's: after a pause the laws run on the last fit while
+    // the next one builds
+    const double driftPpm = lastDrift;
 
     // the drift does not depend on the trim, so it is d0 whatever the loop does
     if (mode == Mode::WAIT && fitted)
@@ -416,7 +448,7 @@ void CAudioFollower::Run()
     if (fineVirtual)
       fineIntegral += fineTrim * 1e-6;
     const double finePhi = phi + (fineVirtual ? fineIntegral : 0);
-    if (fitted)
+    if (haveDrift)
       fineTrim = std::clamp(-driftPpm - finePhi / TAU_S * 1e6, -TRIM_LIMIT_PPM, TRIM_LIMIT_PPM);
 
     // grid: the two codes that bracket -d0, one making the phase fall and the
@@ -434,7 +466,7 @@ void CAudioFollower::Run()
     gridMean /= gridRecent.size();
     if (gridHold > 0)
       gridHold--;
-    if (fitted)
+    if (haveDrift)
     {
       const double low = step * std::floor(-driftPpm / step);
       double want = gridTrim;
@@ -465,9 +497,9 @@ void CAudioFollower::Run()
         mean += v;
       mean /= appliedRecent.size();
       const double phiNow = mode == Mode::FINE ? finePhi : gridPhi;
-      if (std::fabs(phiNow) > ABORT_PHASE_S)
+      if (haveDrift && std::fabs(phiNow) > ABORT_PHASE_S)
         abort("phase " + std::to_string(phiNow * 1e6) + " us");
-      else if (appliedRecent.size() >= FIT_SECONDS &&
+      else if (fitted && appliedRecent.size() >= FIT_SECONDS &&
                std::fabs(driftPpm - driftAtStart) > std::max(0.3, 0.5 * std::fabs(mean)))
         abort("the drift moved from " + std::to_string(driftAtStart) + " to " +
               std::to_string(driftPpm) + " ppm under a trim of " + std::to_string(mean) + " ppm");
