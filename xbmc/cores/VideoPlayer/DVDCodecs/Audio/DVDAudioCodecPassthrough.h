@@ -56,6 +56,7 @@ public:
   // Enable/disable the LAV Audio internal-clock + jitter sync path.
   void SetLavStyleSyncEnabled(bool enabled);
   bool IsLavStyleSyncEnabled() const { return m_lavStyleSyncEnabled; }
+  void ClearBoundary();
 
   // Reset LAV sync state (for GENERAL_RESYNC without a full codec reset).
   void ResetLavSyncState();
@@ -147,4 +148,19 @@ private:
 
   // Rate limiter for the standing-jitter trace (see GetData).
   unsigned int m_jitterTraceCount{0};
+
+  // A timeline correction (a Blu-ray seam or menu loop wrap) is marked by a
+  // change in the packets' total offset; the step it leaves in the labels
+  // against the content already emitted is realised at the output.
+  double m_lastOffsetCorrection{0.0};
+  bool m_haveOffsetCorrection{false};
+  bool m_boundaryEnabled{true};
+  bool m_boundaryMarkPending{false}; // the changed packet had no pts
+  bool m_currentMark{false}; // m_currentPts / m_nextPts open the corrected timeline
+  bool m_nextMark{false};
+  unsigned int m_boundaryDrops{0}; // overlapped incoming frames still to drop
+  double m_boundaryPad{0.0}; // the gap to pad before the next frame kept
+  bool m_boundaryKeep{false}; // the next frame is the first kept after drops
+  double m_boundaryJitter{0.0}; // the standing jitter before the boundary
+  double m_lastJitter{0.0};
 };

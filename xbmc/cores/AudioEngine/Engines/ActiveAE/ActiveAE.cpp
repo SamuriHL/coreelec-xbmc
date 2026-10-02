@@ -101,17 +101,25 @@ void CEngineStats::UpdateSinkDelay(const AEDelayStatus& status, int samples, int
 
 void CEngineStats::AddSamples(int samples,
                               const std::list<CActiveAEStream*>& streams,
-                              int pauseMs)
+                              int pauseMs,
+                              double padMs)
 {
   std::unique_lock lock(m_lock);
   m_bufferedSamples += samples;
   if (!m_pcmOutput)
-    m_bufferedRawTime += samples * RawPacketTime(pauseMs);
+    m_bufferedRawTime += samples * RawPacketTime(pauseMs) + padMs / 1000.0;
 
   for (auto stream : streams)
   {
     UpdateStream(stream);
   }
+}
+
+void CEngineStats::PadWritten(double padMs)
+{
+  std::unique_lock lock(m_lock);
+  if (!m_pcmOutput)
+    m_bufferedRawTime = std::max(0.0, m_bufferedRawTime - padMs / 1000.0);
 }
 
 double CEngineStats::RawPacketTime(int pauseMs) const
@@ -191,6 +199,7 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
           delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
         else
           delay += static_cast<float>(m_sinkFormat.m_streamInfo.GetDuration() / 1000.0);
+        delay += static_cast<float>((*itBuf)->padMs / 1000.0);
       }
       str.m_bufferedTime = static_cast<double>(delay);
       stream->m_bufferedTime = 0;
@@ -2264,7 +2273,8 @@ bool CActiveAE::RunStages()
       {
         AEDelayStatus status;
         m_stats.GetDelay(status);
-        double pts = buf->timestamp - (buf->pkt_start_offset * 1000 / buf->pkt->config.sample_rate);
+        double pts = buf->timestamp - (buf->pkt_start_offset * 1000 / buf->pkt->config.sample_rate) -
+                     buf->padMs;
         double delay = status.GetDelay() * 1000;
         double playingPts = pts - delay;
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
@@ -2697,7 +2707,8 @@ bool CActiveAE::RunStages()
             continue;
           }
           m_stats.AddSamples(1, m_streams,
-                             buffer->pkt->nb_samples == 0 ? buffer->pkt->pause_burst_ms : 0);
+                             buffer->pkt->nb_samples == 0 ? buffer->pkt->pause_burst_ms : 0,
+                             buffer->pkt->nb_samples > 0 ? buffer->padMs : 0.0);
           m_sinkBuffers->m_inputSamples.push_back(buffer);
         }
       }

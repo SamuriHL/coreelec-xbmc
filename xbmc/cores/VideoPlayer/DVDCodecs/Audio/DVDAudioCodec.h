@@ -43,6 +43,8 @@ typedef struct stDVDAudioFrame
   int profile;
   bool hasDownmix;
   double centerMixLevel;
+  // output silence (a pause, for a bitstream) of this length before the frame
+  double padBefore = 0;
 } DVDAudioFrame;
 
 class CDVDAudioCodec

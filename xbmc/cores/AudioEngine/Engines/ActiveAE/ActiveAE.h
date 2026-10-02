@@ -190,7 +190,13 @@ public:
   void Reset(unsigned int sampleRate, bool pcm);
   //! pauseMs: a passthrough pause burst's length (0 for a data packet)
   void UpdateSinkDelay(const AEDelayStatus& status, int samples, int pauseMs = 0);
-  void AddSamples(int samples, const std::list<CActiveAEStream*>& streams, int pauseMs = 0);
+  //! padMs: a pad the sink writes before the packet (CSampleBuffer::padMs)
+  void AddSamples(int samples,
+                  const std::list<CActiveAEStream*>& streams,
+                  int pauseMs = 0,
+                  double padMs = 0);
+  //! the sink is writing a pad AddSamples counted: the device delay has it now
+  void PadWritten(double padMs);
   void GetDelay(AEDelayStatus& status);
   void AddStream(unsigned int streamid);
   void RemoveStream(unsigned int streamid);

@@ -60,6 +60,9 @@ public:
   // leave the output, and the start it belongs to; 0 = play when it comes
   int64_t landNs = 0;
   unsigned int landEpoch = 0;
+  // silence (a pause, for a bitstream) the output writes before this buffer: a
+  // step in the labels realised at the output
+  double padMs = 0;
   int pkt_start_offset = 0;
   int refCount = 0;
   double centerMixLevel;

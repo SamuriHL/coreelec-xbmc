@@ -1248,15 +1248,43 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   }
 
   const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
+  // the engine counted the pad as queued: from here the device delay has it
+  const double padMs = samples->pkt->nb_samples > 0 ? samples->padMs : 0.0;
+  if (padMs > 0)
+    m_stats->PadWritten(padMs);
   unsigned int skipFrames = 0;
-  if (samples->landNs && samples->landEpoch != m_committedStart.load() &&
-      samples->landEpoch > m_abandonedStart.load() && (!raw || m_needIecPack) &&
-      !LandScheduled(samples, skipFrames))
+  const bool landing = samples->landNs && samples->landEpoch != m_committedStart.load() &&
+                       samples->landEpoch > m_abandonedStart.load() && (!raw || m_needIecPack);
+  if (landing && !LandScheduled(samples, skipFrames))
   {
     // too late to land: dropped, so the next buffer can
     m_sink->GetDelay(status);
     m_stats->UpdateSinkDelay(status, samples->pool ? (raw ? 1 : frames) : 0, 0);
     return status.delay * 1000;
+  }
+  // a landing buffer is placed by its landNs, which already has the step
+  if (padMs > 0 && !landing && raw && !m_needIecPack)
+    m_sink->AddPause(static_cast<unsigned int>(std::lround(padMs)));
+  else if (padMs > 0 && !landing && frames > 0)
+  {
+    // a step in the labels, realised: the gap before this buffer's first sample
+    unsigned int padFrames =
+        static_cast<unsigned int>(std::llround(padMs * m_sinkFormat.m_sampleRate / 1000.0));
+    bool ok = true;
+    if (!raw && (ok = WriteZeros(padFrames)))
+      padFrames = 0;
+    while (raw && padFrames > 0 && ok)
+    {
+      const unsigned int packed =
+          m_packer->PackPauseFrames(m_sinkFormat.m_streamInfo, padFrames, padFrames, true);
+      if (!packed)
+        break;
+      ok = WritePacked(packed);
+      padFrames -= packed;
+    }
+    if (!ok || padFrames)
+      CLog::Log(LOGWARNING, "CActiveAESink: pad of {:.3f} ms before pts {:.3f} ms not written",
+                padMs, samples->ptsUs / 1000.0);
   }
   if (skipFrames)
   {

@@ -3963,7 +3963,8 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
 
 void CVideoPlayer::UpdateCorrection(DemuxPacket* pkt, double correction)
 {
-  pkt->m_ptsOffsetCorrection = correction;
+  // the packet's total: a boundary packet is corrected again after the read
+  pkt->m_ptsOffsetCorrection += correction;
 
   if(pkt->dts != DVD_NOPTS_VALUE)
     pkt->dts -= correction;

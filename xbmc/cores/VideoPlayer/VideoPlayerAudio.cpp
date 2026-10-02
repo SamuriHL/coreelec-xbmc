@@ -616,6 +616,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   if (audioframe.nb_frames <= audioframe.framesOut)
   {
     audioframe.hasDownmix = false;
+    audioframe.padBefore = 0;
 
     m_pAudioCodec->GetData(audioframe);
 

@@ -73,6 +73,7 @@ public:
     double pts = 0;
     bool hasDownmix = false;
     double centerMixLevel = 1;
+    double padMs = 0; // silence (or a pause) to output before the data
   };
 
 public:

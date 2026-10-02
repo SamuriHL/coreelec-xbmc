@@ -18,6 +18,7 @@
 #include "ServiceBroker.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "filesystem/File.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
@@ -108,6 +109,8 @@ void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSe
 
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  m_boundaryEnabled = !XFILE::CFile::Exists("special://profile/boundary_off");
+
   m_hints = hints;
   UpdateDialNormSettings();
   m_isEAC3JOC = hints.codec == AV_CODEC_ID_EAC3 && hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
@@ -215,6 +218,20 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
   unsigned char *pData(const_cast<uint8_t*>(packet.pData));
   int iSize(packet.iSize);
 
+  bool boundaryMark = false;
+  if (pData)
+  {
+    if (m_haveOffsetCorrection && packet.m_ptsOffsetCorrection != m_lastOffsetCorrection)
+      m_boundaryMarkPending = true;
+    m_lastOffsetCorrection = packet.m_ptsOffsetCorrection;
+    m_haveOffsetCorrection = true;
+    if (m_boundaryMarkPending && IsValidPts(packet.pts))
+    {
+      boundaryMark = true;
+      m_boundaryMarkPending = false;
+    }
+  }
+
   if (m_lavStyleSyncEnabled)
   {
     // LAV Audio: validate PTS with the robust range check so seamless-branch
@@ -229,22 +246,31 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
         m_currentPts = LOCAL_NOPTS;
       if (!IsValidPts(m_nextPts))
         m_nextPts = LOCAL_NOPTS;
+      if (m_currentPts == LOCAL_NOPTS)
+        m_currentMark = false;
+      if (m_nextPts == LOCAL_NOPTS)
+        m_nextMark = false;
 
       if (m_currentPts == LOCAL_NOPTS)
       {
         if (m_nextPts != LOCAL_NOPTS)
         {
           m_currentPts = m_nextPts;
+          m_currentMark = m_nextMark;
           m_nextPts = ptsIsValid ? incomingPts : LOCAL_NOPTS;
+          m_nextMark = ptsIsValid && boundaryMark;
         }
         else if (ptsIsValid)
         {
           m_currentPts = incomingPts;
+          m_currentMark = boundaryMark;
         }
       }
       else if (ptsIsValid)
       {
+        // a replaced next label was never emitted: the boundary moves on with it
         m_nextPts = incomingPts;
+        m_nextMark = m_nextMark || boundaryMark;
       }
     }
   }
@@ -490,6 +516,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 {
   frame.nb_frames = GetData(frame.data);
   frame.framesOut = 0;
+  frame.padBefore = 0;
 
   if (frame.nb_frames == 0)
     return;
@@ -534,6 +561,9 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 
   const double demuxerPts = m_currentPts;
   const bool haveDemuxerPts = IsValidPts(demuxerPts);
+  const bool boundaryFrame = m_currentMark;
+  m_currentMark = false;
+  bool seeded = false;
 
   // STEP 1: resync the internal clock when needed (codec creation, after seeks).
   // This seed is EXACT - it is the true PTS of the content being emitted - and
@@ -567,9 +597,77 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     m_heldFirstPts = LOCAL_NOPTS;
     m_internalClock = seed;
     m_needsResync = false;
+    seeded = true;
     m_jitterTracker.Reset();
     CLog::LogF(LOGDEBUG, "internal clock synced to demuxer PTS {:.3f}s",
                demuxerPts / DVD_TIME_BASE);
+  }
+
+  // A timeline correction steps the labels against the content already
+  // emitted (an M3GAN menu loop wrap: -6.167 ms of AC-3, every wrap). Present
+  // by label, as a player does: an overlap drops the overlapped incoming frames
+  // and the gap they leave, like a gap in the labels, is padded before the next
+  // frame kept. Frame-sized formats only; TrueHD and E-AC-3 steps are measured.
+  if (m_boundaryDrops > 0)
+  {
+    m_boundaryDrops--;
+    frame.nb_frames = 0;
+    m_currentPts = LOCAL_NOPTS;
+    return;
+  }
+  if (seeded)
+  {
+    // an exact seed: nothing before it to be continuous with
+    ClearBoundary();
+  }
+  else if (m_boundaryKeep && haveDemuxerPts)
+  {
+    m_boundaryKeep = false;
+    frame.padBefore = m_boundaryPad;
+    m_boundaryPad = 0.0;
+    m_internalClock = demuxerPts + m_boundaryJitter;
+  }
+  else if (boundaryFrame && haveDemuxerPts && IsValidPts(m_internalClock))
+  {
+    // R: the label less where the content emitted so far ends, against the
+    // standing jitter before the boundary; negative is an overlap
+    const double step = m_lastJitter - (m_internalClock - demuxerPts + samplesOffsetTime);
+    const double frameTime = frame.duration;
+    const bool frameSized = streamType == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_2048;
+    const bool realise = m_boundaryEnabled && frameSized && frameTime > 0.0 &&
+                         std::abs(step) >= DVD_MSEC_TO_TIME(1) &&
+                         std::abs(step) <= DVD_MSEC_TO_TIME(100);
+    unsigned int drops = 0;
+    double pad = step;
+    if (realise && step < 0.0)
+    {
+      drops = static_cast<unsigned int>(std::ceil(-step / frameTime - 1e-6));
+      pad = drops * frameTime + step;
+    }
+    CLog::Log(LOGINFO,
+              "CDVDAudioCodecPassthrough: timeline step {:+.3f} ms at label {:.3f} ms{}", step / 1000.0,
+              demuxerPts / 1000.0,
+              realise ? fmt::format(": {} frames dropped, {:.3f} ms padded", drops, pad / 1000.0)
+                      : std::string(" left"));
+    if (realise)
+    {
+      m_boundaryJitter = m_lastJitter;
+      if (drops > 0)
+      {
+        m_boundaryDrops = drops - 1;
+        m_boundaryPad = pad;
+        m_boundaryKeep = true;
+        frame.nb_frames = 0;
+        m_currentPts = LOCAL_NOPTS;
+        return;
+      }
+      frame.padBefore = pad;
+      m_internalClock = demuxerPts + m_boundaryJitter;
+    }
   }
 
   // STEP 2: track jitter between our clock and the demuxer PTS; whenever it
@@ -580,6 +678,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   {
     const double jitter = m_internalClock - demuxerPts + samplesOffsetTime;
     m_jitterTracker.Sample(jitter);
+    m_lastJitter = jitter;
 
     // Correct toward the most stable value in the window (smallest absolute jitter).
     const double absMinJitter = m_jitterTracker.AbsMinimum();
@@ -587,6 +686,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     {
       m_internalClock -= absMinJitter;
       m_jitterTracker.OffsetValues(-absMinJitter);
+      m_lastJitter -= absMinJitter;
 
       CLog::LogF(LOGDEBUG, "jitter correction {:.2f}ms (threshold {:.0f}ms)", absMinJitter / 1000.0,
                  m_jitterThreshold / 1000.0);
@@ -664,8 +764,21 @@ int CDVDAudioCodecPassthrough::GetData(uint8_t** dst)
   return bytes;
 }
 
+void CDVDAudioCodecPassthrough::ClearBoundary()
+{
+  m_boundaryMarkPending = false;
+  m_currentMark = false;
+  m_nextMark = false;
+  m_boundaryDrops = 0;
+  m_boundaryPad = 0.0;
+  m_boundaryKeep = false;
+  m_lastJitter = 0.0;
+}
+
 void CDVDAudioCodecPassthrough::Reset()
 {
+  m_haveOffsetCorrection = false;
+  ClearBoundary();
   m_trueHDoffset = 0;
   m_dataSize = 0;
   m_bufferSize = 0;
@@ -706,6 +819,8 @@ void CDVDAudioCodecPassthrough::ResetLavSyncState()
 {
   if (!m_lavStyleSyncEnabled)
     return;
+
+  ClearBoundary();
 
   m_truehdPtsCache = LOCAL_NOPTS;
   m_truehdPtsCacheValid = false;
