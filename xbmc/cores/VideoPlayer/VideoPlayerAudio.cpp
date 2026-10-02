@@ -132,6 +132,8 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
 {
   m_pAudioCodec = std::move(codec);
+  m_labelling = false;
+  m_packetsDropped = false;
   // a previous CloseStream left the create-abort set
   m_audioSink.AbortCreate(false);
   m_sinkCreateFailed = false;
@@ -448,6 +450,7 @@ void CVideoPlayerAudio::Process()
     {
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
+      m_labelling = false;
       m_audioSink.Flush();
       m_stalled = true;
       m_audioClock = 0;
@@ -489,6 +492,7 @@ void CVideoPlayerAudio::Process()
 
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
+      m_labelling = false;
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
     {
@@ -560,8 +564,11 @@ void CVideoPlayerAudio::Process()
 
       if (bPacketDrop)
       {
-        // the codec does not see the dropped packets: its clock must re-seed
-        m_packetsDropped = true;
+        // the codec does not see the dropped packets: once it has labelled
+        // content, its clock must re-seed. Drops before its first frame (a new
+        // track's packets up to the sync point) leave its own seed exact.
+        if (m_labelling)
+          m_packetsDropped = true;
         if (m_syncState != IDVDStreamPlayer::SYNC_STARTING)
         {
           m_audioSink.Drain();
@@ -616,6 +623,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     {
       return false;
     }
+    m_labelling = true;
 
     audioframe.hasTimestamp = true;
     if (audioframe.pts == DVD_NOPTS_VALUE)

@@ -145,6 +145,7 @@ protected:
   bool m_displayReset = false;
   //! packets were dropped since the last resync: the passthrough labels re-seed
   bool m_packetsDropped = false;
+  bool m_labelling = false; // the codec has emitted a frame since it was opened or reset
   unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
   int m_disconAdjustCounter = 0;
 
