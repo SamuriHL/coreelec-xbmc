@@ -804,6 +804,7 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
 
   m_bAbortRequest = false;
   m_offset_pts = 0.0;
+  m_seamOffsetPts = 0.0;
   m_playSpeed = DVD_PLAYSPEED_NORMAL;
   m_streamPlayerSpeed = DVD_PLAYSPEED_NORMAL;
   m_caching = CACHESTATE_DONE;
@@ -1137,6 +1138,7 @@ bool CVideoPlayer::OpenDemuxStream()
     m_pInputStream->SetReadRate(static_cast<uint32_t>(len * 1000 / tim));
 
   m_offset_pts = 0;
+  m_seamOffsetPts = 0.0;
 
   if (m_updateStreamDetails)
   {
@@ -1388,6 +1390,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
     {
       packet->demuxDts = packet->dts;
       UpdateCorrection(packet, m_offset_pts);
+      packet->m_seamOffsetCorrection += m_seamOffsetPts;
       if(packet->iStreamId < 0)
         return true;
 
@@ -1438,6 +1441,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
     // seamless playitem boundary.
     packet->demuxDts = packet->dts;
     UpdateCorrection(packet, m_offset_pts);
+    packet->m_seamOffsetCorrection += m_seamOffsetPts;
 
     if(packet->iStreamId < 0)
       return true;
@@ -2355,6 +2359,7 @@ void CVideoPlayer::Prepare()
   m_CurrentAudioID3.hint.Clear();
   m_SpeedState.Reset(DVD_NOPTS_VALUE);
   m_offset_pts = 0;
+  m_seamOffsetPts = 0.0;
   m_bdStreamReuseVideo = false;
   m_bdStreamReuseAudio = false;
   m_menuWrapVideoGap = 0.0;
@@ -4220,11 +4225,19 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       }
       m_menuWrapVideoGap = 0.0;
       m_stillJoinCorrection = DVD_NOPTS_VALUE;
+      // a correction closing a glided seam: audio must not take it for a
+      // timeline step of its own (it reaches a parser-delayed outgoing frame)
+      const bool glidedSeam = m_seamStepPending && m_seamStepOverlapOk;
       // the seam has been closed - one boundary, one correction
       m_seamStepPending = false;
       m_seamStepArmedDts = DVD_NOPTS_VALUE;
       m_offset_pts += applied;
       UpdateCorrection(pPacket, applied);
+      if (glidedSeam)
+      {
+        m_seamOffsetPts += applied;
+        pPacket->m_seamOffsetCorrection += applied;
+      }
       lastdts = pPacket->dts;
       CLog::Log(LOGDEBUG, "CVideoPlayer::CheckContinuity - update correction: {:f}", applied);
       if (current.avsync == CCurrentStream::AV_SYNC_CHECK)

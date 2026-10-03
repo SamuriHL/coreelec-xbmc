@@ -50,6 +50,9 @@ extern "C"
 
     //! @brief PTS offset correction applied to the PTS and DTS.
     double m_ptsOffsetCorrection{0};
+    //! @brief The part of m_ptsOffsetCorrection applied at glided (cc 5/6)
+    //! Blu-ray seams, where it can also reach a parser-delayed outgoing frame.
+    double m_seamOffsetCorrection{0};
     //! @brief The demuxer's own dts, captured once at read time and never
     //! rewritten afterwards. dts/pts are the PLAYER's timeline: CheckContinuity
     //! shifts them by m_offset_pts at a discontinuity and blanks them to

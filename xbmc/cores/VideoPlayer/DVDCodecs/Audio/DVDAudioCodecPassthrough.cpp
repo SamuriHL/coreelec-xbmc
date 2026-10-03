@@ -223,9 +223,11 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
   bool boundaryMark = false;
   if (pData)
   {
-    if (m_haveOffsetCorrection && packet.m_ptsOffsetCorrection != m_lastOffsetCorrection)
+    // a glided seam's correction is not a step of this stream
+    const double correction = packet.m_ptsOffsetCorrection - packet.m_seamOffsetCorrection;
+    if (m_haveOffsetCorrection && correction != m_lastOffsetCorrection)
       m_boundaryMarkPending = true;
-    m_lastOffsetCorrection = packet.m_ptsOffsetCorrection;
+    m_lastOffsetCorrection = correction;
     m_haveOffsetCorrection = true;
     if (m_boundaryMarkPending && IsValidPts(packet.pts))
     {

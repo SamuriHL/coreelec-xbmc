@@ -590,9 +590,12 @@ void CVideoPlayerAudio::Process()
         continue;
       }
 
-      if (m_haveOffsetCorrection && pPacket->m_ptsOffsetCorrection != m_lastOffsetCorrection)
+      // a glided seam's correction is not a step of this stream
+      const double correction =
+          pPacket->m_ptsOffsetCorrection - pPacket->m_seamOffsetCorrection;
+      if (m_haveOffsetCorrection && correction != m_lastOffsetCorrection)
         m_boundaryMarkPending = true;
-      m_lastOffsetCorrection = pPacket->m_ptsOffsetCorrection;
+      m_lastOffsetCorrection = correction;
       m_haveOffsetCorrection = true;
       if (m_boundaryMarkPending && pPacket->pts != DVD_NOPTS_VALUE)
       {

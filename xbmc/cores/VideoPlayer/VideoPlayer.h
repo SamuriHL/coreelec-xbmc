@@ -672,6 +672,8 @@ protected:
   } m_SpeedState;
 
   double m_offset_pts;
+  // the part of m_offset_pts applied at glided seams (DemuxPacket::m_seamOffsetCorrection)
+  double m_seamOffsetPts = 0.0;
 
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;
