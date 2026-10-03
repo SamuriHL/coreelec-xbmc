@@ -1666,13 +1666,17 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
               "playitem {} (connection_condition {})",
               m_event.param, next->connection_condition);
     m_pendingSeamlessTransition = true;
-    uint64_t pos = 0;
-    if (m_seamPlaylistStep && bd_get_clip_infos(m_bd, m_event.param, nullptr, nullptr, &pos, nullptr))
+    // reads are split at the clip end, so the incoming clip starts the read
+    // that opened it: the last read that returned data. The clip's own packet
+    // number is not in this domain when the enhancement layer is merged in.
+    uint64_t clipPos = 0;
+    if (m_seamPlaylistStep && m_lastDataReadStart >= 0)
     {
-      m_seamMarks.push_back({static_cast<int64_t>(pos), *m_seamPlaylistStep});
+      bd_get_clip_infos(m_bd, m_event.param, nullptr, nullptr, &clipPos, nullptr);
+      m_seamMarks.push_back({m_lastDataReadStart, *m_seamPlaylistStep});
       CLog::Log(LOGDEBUG,
-                "CDVDInputStreamBluray - seam at title byte {} (read at {}), step {:.3f} ms",
-                pos, bd_tell(m_bd), *m_seamPlaylistStep / 90.0);
+                "CDVDInputStreamBluray - seam at title byte {} (clip info {}), step {:.3f} ms",
+                m_lastDataReadStart, clipPos, *m_seamPlaylistStep / 90.0);
     }
     return true;
   }
@@ -1789,7 +1793,10 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
         || m_hold == HOLD_EXIT)
         return -1;
 
+      const uint64_t readStart = bd_tell(m_bd);
       result = bd_read_ext (m_bd, buf, buf_size, &m_event);
+      if (result > 0)
+        m_lastDataReadStart = static_cast<int64_t>(readStart);
 
       if(result < 0)
       {
@@ -1831,7 +1838,10 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
   }
   else
   {
+    const uint64_t readStart = bd_tell(m_bd);
     result = bd_read(m_bd, buf, buf_size);
+    if (result > 0)
+      m_lastDataReadStart = static_cast<int64_t>(readStart);
     while (bd_get_event(m_bd, &m_event))
     {
       // Direct playlist playback never holds; a seamless playitem seam still

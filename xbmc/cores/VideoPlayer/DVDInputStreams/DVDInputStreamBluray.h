@@ -593,6 +593,7 @@ protected:
   bool m_pendingSeamlessTransition = false;
   std::optional<int64_t> m_seamPlaylistStep;
   std::vector<SeamMark> m_seamMarks;
+  int64_t m_lastDataReadStart = -1; // title byte where the last read returning data began
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
    * ended and the disc returned to menu" (drain it). Player thread only.
