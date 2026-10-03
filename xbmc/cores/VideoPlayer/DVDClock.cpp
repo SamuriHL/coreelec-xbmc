@@ -333,31 +333,6 @@ bool CDVDClock::GetScheduledStart(int64_t& startNs, double& startClock, unsigned
   return true;
 }
 
-void CDVDClock::SetStartHeld(bool held)
-{
-  std::unique_lock lock(m_critSection);
-  m_startHeld = held;
-}
-
-bool CDVDClock::GetPendingStart(int64_t& startNs, double& startClock)
-{
-  std::unique_lock lock(m_critSection);
-  const int64_t current = m_videoRefClock->GetTime();
-  if (m_resumeAt && current < m_resumeAt)
-  {
-    startNs = m_scheduleNs;
-    startClock = m_scheduleClock;
-    return true;
-  }
-  if (m_startHeld && m_pauseClock)
-  {
-    startNs = 0;
-    startClock = SystemToPlaying(m_pauseClock);
-    return true;
-  }
-  return false;
-}
-
 void CDVDClock::ApplyScheduledResume(int64_t current)
 {
   if (!m_resumeAt || current < m_resumeAt)

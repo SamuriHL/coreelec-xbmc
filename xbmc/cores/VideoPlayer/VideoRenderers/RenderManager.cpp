@@ -547,7 +547,6 @@ void CRenderManager::PreInit()
   m_dvdClock.ClearVsyncAdjust(true);
   m_sessionModeDecided = false;
   m_startHeld = false;
-  m_startGate = false;
   {
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
@@ -1733,38 +1732,6 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     m_dvdClock.ClearVsyncAdjust(false);
   }
 
-  // A start the clock has yet to make (held for it, or in a scheduled start's
-  // lead): the latency kept while paused would select frames up to the display
-  // latency ahead of a clock that has not started, and they would be on
-  // screen, ahead of the audio, when it does (measured: at 23.976 Hz the first
-  // two frames lost and the picture two frames ahead at the start). Select by
-  // the clock at the instant the frame will be on screen.
-  int64_t startNs = 0;
-  double startClock = 0.0;
-  if (m_dvdClock.GetPendingStart(startNs, startClock))
-  {
-    double clockOnScreen = startClock;
-    if (startNs)
-    {
-      struct timespec now = {};
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      const int64_t nowNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
-      const int64_t onScreenNs =
-          (vblankNs > 0 ? vblankNs : nowNs) +
-          std::llround((m_timingLatencyMs.load() - m_videoDelay) * 1000000.0);
-      clockOnScreen += static_cast<double>(std::max<int64_t>(0, onScreenNs - startNs)) / 1000.0;
-    }
-    renderPts = clockOnScreen + frametime / 2;
-    m_startGate = true;
-  }
-  else if (m_startGate)
-  {
-    bool published = false;
-    m_dvdClock.GetVsyncPhaseGeneration(published);
-    if (published || !m_clockSync.m_enabled)
-      m_startGate = false;
-  }
-
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:.3f} renderPts: {:.3f} nextFramePts: {:.3f} -> diff: {:.3f}  render: {:d} "
               "forceNext: {:d}",
@@ -1865,7 +1832,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
 
     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   }
-  else if (!combined && !centred && !m_startGate && renderPts > (nextFramePts - frametime))
+  else if (!combined && !centred && renderPts > (nextFramePts - frametime))
   {
     m_lateframes = 0;
     m_presentstep = PRESENT_FLIP;
