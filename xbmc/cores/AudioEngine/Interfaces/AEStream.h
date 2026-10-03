@@ -74,6 +74,7 @@ public:
     bool hasDownmix = false;
     double centerMixLevel = 1;
     double padMs = 0; // silence (or a pause) to output before the data
+    double labelLagMs = 0; // pts less the label of the content
   };
 
 public:

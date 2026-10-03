@@ -1450,8 +1450,9 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
                      : static_cast<double>(samples->timestamp);
   const double ptsMs =
       startMs - (rate ? static_cast<double>(samples->pkt_start_offset) * 1000.0 / rate : 0.0);
-  const int64_t values[PRESENTATION::AQ_COUNT] = {static_cast<int64_t>(ptsMs * 1000.0),
-                                                  onPinsNs};
+  const int64_t values[PRESENTATION::AQ_COUNT] = {
+      static_cast<int64_t>(ptsMs * 1000.0), onPinsNs,
+      static_cast<int64_t>((ptsMs - samples->labelLagMs) * 1000.0)};
   PRESENTATION::AudioPinsBoard().Write(values);
   if (!m_shadowAudible)
     CLog::Log(LOGINFO,

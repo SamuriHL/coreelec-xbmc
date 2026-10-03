@@ -174,6 +174,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     {
       ext.pts = audioframe.pts / DVD_TIME_BASE * 1000;
       ext.padMs = audioframe.padBefore / DVD_TIME_BASE * 1000;
+      ext.labelLagMs = audioframe.labelLag / DVD_TIME_BASE * 1000;
     }
     if (audioframe.hasDownmix)
     {

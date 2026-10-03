@@ -63,6 +63,8 @@ public:
   // silence (a pause, for a bitstream) the output writes before this buffer: a
   // step in the labels realised at the output
   double padMs = 0;
+  // pts less the label of the content (DVDAudioFrame::labelLag)
+  double labelLagMs = 0;
   int pkt_start_offset = 0;
   int refCount = 0;
   double centerMixLevel;

@@ -253,11 +253,13 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
   const uint8_t* const *buf = data;
   double pts = 0;
   double padMs = 0;
+  double labelLagMs = 0;
 
   if (extData)
   {
     pts = extData->pts;
     padMs = extData->padMs;
+    labelLagMs = extData->labelLagMs;
   }
 
   m_streamIsFlushed = false;
@@ -305,6 +307,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         m_currentBuffer->ptsUs = std::llround(pts * 1000.0);
         m_currentBuffer->pkt_start_offset = m_currentBuffer->pkt->nb_samples;
         m_currentBuffer->padMs = padMs;
+        m_currentBuffer->labelLagMs = labelLagMs;
       }
 
       for (int i=0; i<planes; i++)
@@ -354,6 +357,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         m_currentBuffer->landNs = 0;
         m_currentBuffer->landEpoch = 0;
         m_currentBuffer->padMs = 0;
+        m_currentBuffer->labelLagMs = 0;
         m_currentBuffer->pkt->nb_samples = 0;
         m_currentBuffer->pkt->pause_burst_ms = 0;
         msg->Release();

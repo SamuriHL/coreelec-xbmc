@@ -522,6 +522,9 @@ void CTimekeeper::Report()
   int64_t steppedBack = 0;
   int pinsN = 0;
   double pinsSum = 0, pinsMin = 1e9, pinsMax = -1e9;
+  // the same by the label of the audio content: a counted audio clock cancels
+  // out of the pts comparison, so a step the codec leaves in place shows only here
+  double labelSum = 0, labelMin = 1e9, labelMax = -1e9;
   double videoVsClockSum = 0, audioVsClockSum = 0;
 
   while (!m_stop)
@@ -643,6 +646,13 @@ void CTimekeeper::Report()
       pinsSum += aheadMs;
       pinsMin = std::min(pinsMin, aheadMs);
       pinsMax = std::max(pinsMax, aheadMs);
+      const double labelAheadMs =
+          (static_cast<double>(aq[AQ_LABEL_US] - vp[VP_PTS_US]) -
+           static_cast<double>(aq[AQ_ON_PINS_NS] - vp[VP_ON_SCREEN_NS]) / 1000.0) /
+          1000.0;
+      labelSum += labelAheadMs;
+      labelMin = std::min(labelMin, labelAheadMs);
+      labelMax = std::max(labelMax, labelAheadMs);
       // each output against CDVDClock at the same instant (the clock runs 1:1)
       const auto clockAt = [&](int64_t ns)
       { return static_cast<double>(cs[CS_CLOCK_US]) + (ns - cs[CS_VBLANK_NS]) / 1000.0; };
@@ -724,14 +734,18 @@ void CTimekeeper::Report()
     if (pinsN)
       CLog::Log(LOGINFO,
                 "TIMEKEEPER pins: audio ahead of video at the outputs mean {:+.2f} ms min {:+.2f} "
-                "max {:+.2f} (n {}) | against CDVDClock: video {:+.2f} ms, audio {:+.2f} ms",
-                pinsSum / pinsN, pinsMin, pinsMax, pinsN, videoVsClockSum / pinsN,
-                audioVsClockSum / pinsN);
+                "max {:+.2f} (n {}) | by label mean {:+.2f} min {:+.2f} max {:+.2f} | against "
+                "CDVDClock: video {:+.2f} ms, audio {:+.2f} ms",
+                pinsSum / pinsN, pinsMin, pinsMax, pinsN, labelSum / pinsN, labelMin, labelMax,
+                videoVsClockSum / pinsN, audioVsClockSum / pinsN);
     pinsN = 0;
     pinsSum = 0;
     videoVsClockSum = 0;
     audioVsClockSum = 0;
     pinsMin = 1e9;
     pinsMax = -1e9;
+    labelSum = 0;
+    labelMin = 1e9;
+    labelMax = -1e9;
   }
 }

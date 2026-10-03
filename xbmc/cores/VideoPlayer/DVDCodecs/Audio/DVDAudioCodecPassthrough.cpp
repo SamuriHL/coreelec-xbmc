@@ -521,6 +521,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   frame.nb_frames = GetData(frame.data);
   frame.framesOut = 0;
   frame.padBefore = 0;
+  frame.labelLag = 0;
 
   if (frame.nb_frames == 0)
     return;
@@ -600,6 +601,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     m_seedUnits = 0;
     m_heldFirstPts = LOCAL_NOPTS;
     m_internalClock = seed;
+    m_labelLag = 0.0;
     m_needsResync = false;
     seeded = true;
     m_jitterTracker.Reset();
@@ -727,6 +729,9 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   // frame duration. Fall back to the demuxer PTS only before the first sync.
   if (IsValidPts(m_internalClock))
   {
+    if (haveDemuxerPts)
+      m_labelLag = m_internalClock - demuxerPts + samplesOffsetTime;
+    frame.labelLag = m_labelLag;
     frame.pts = m_internalClock;
     m_internalClock += frame.duration;
   }

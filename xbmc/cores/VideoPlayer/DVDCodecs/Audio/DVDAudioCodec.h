@@ -45,6 +45,9 @@ typedef struct stDVDAudioFrame
   double centerMixLevel;
   // output silence (a pause, for a bitstream) of this length before the frame
   double padBefore = 0;
+  // how far pts runs ahead of the label of the content (a counted output clock
+  // against the demuxer); the output measures sync by label with it
+  double labelLag = 0;
 } DVDAudioFrame;
 
 class CDVDAudioCodec

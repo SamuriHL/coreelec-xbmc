@@ -87,6 +87,7 @@ CSampleBuffer* CActiveAEBufferPool::GetFreeBuffer()
     buf->landNs = 0;
     buf->landEpoch = 0;
     buf->padMs = 0;
+    buf->labelLagMs = 0;
   }
   return buf;
 }

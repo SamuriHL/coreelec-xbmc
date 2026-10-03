@@ -106,6 +106,7 @@ enum AudioPins
 {
   AQ_PTS_US,     // pts of the first sample of the last audible buffer written
   AQ_ON_PINS_NS, // CLOCK_MONOTONIC at which that sample leaves the HDMI pins
+  AQ_LABEL_US,   // the label of that sample: pts less the codec's label lag
   AQ_COUNT
 };
 

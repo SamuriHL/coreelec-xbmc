@@ -635,6 +635,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   {
     audioframe.hasDownmix = false;
     audioframe.padBefore = 0;
+    audioframe.labelLag = 0;
 
     m_pAudioCodec->GetData(audioframe);
 
@@ -774,6 +775,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
         }
 
         audioframe.pts = m_pcmOutputClock;
+        audioframe.labelLag = m_pcmOutputClock - inputPts;
       }
     }
 
