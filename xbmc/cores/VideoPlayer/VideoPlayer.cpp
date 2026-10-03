@@ -805,6 +805,7 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   m_bAbortRequest = false;
   m_offset_pts = 0.0;
   m_seamOffsetPts = 0.0;
+  ClearSeams();
   m_playSpeed = DVD_PLAYSPEED_NORMAL;
   m_streamPlayerSpeed = DVD_PLAYSPEED_NORMAL;
   m_caching = CACHESTATE_DONE;
@@ -880,6 +881,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   }
   // design §15 step 2.2: a held start resumes at a scheduled instant (A/B flag)
   m_scheduledStart = XFILE::CFile::Exists("special://profile/scheduled_start");
+  // design §15.33: glided seams crossed per stream by byte position (A/B flag)
+  m_seamByPos =
+      aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/seamstep_off");
   // design 5 (4b): the audio output is held for the session; the debug flag
   // turns it off for A/B runs
   if (XFILE::CFile::Exists("special://profile/audiohold_off"))
@@ -1139,6 +1143,7 @@ bool CVideoPlayer::OpenDemuxStream()
 
   m_offset_pts = 0;
   m_seamOffsetPts = 0.0;
+  ClearSeams();
 
   if (m_updateStreamDetails)
   {
@@ -1389,7 +1394,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
     if(packet)
     {
       packet->demuxDts = packet->dts;
-      UpdateCorrection(packet, m_offset_pts);
+      UpdateCorrection(packet, VideoOffsetPts());
       packet->m_seamOffsetCorrection += m_seamOffsetPts;
       if(packet->iStreamId < 0)
         return true;
@@ -1440,8 +1445,35 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
     // CheckContinuity and so misses the correction the base layer receives at a
     // seamless playitem boundary.
     packet->demuxDts = packet->dts;
-    UpdateCorrection(packet, m_offset_pts);
+    double seamOffset = 0.0;
+    double crossed = 0.0;
+    if (m_seamByPos)
+    {
+      // FFmpeg can return the incoming clip's packets before the glide is committed
+      TakeSeamMarks();
+      if (packet->iStreamId >= 0)
+        seamOffset = CrossSeams(packet, crossed);
+    }
+    UpdateCorrection(packet, m_offset_pts + seamOffset);
     packet->m_seamOffsetCorrection += m_seamOffsetPts;
+    if (crossed != 0.0)
+    {
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer - stream {} crossed a seam at byte {}: step {:.3f} ms, offset {:.3f} ms",
+                packet->iStreamId, packet->streamPos, crossed / 1000.0,
+                (m_offset_pts + seamOffset) / 1000.0);
+      // the base layer's restart, judged against its own end before the step
+      // as CheckContinuity's backward restart is
+      if (packet->iStreamId == m_CurrentVideo.id && packet->demuxerId == m_CurrentVideo.demuxerId &&
+          m_playSpeed == DVD_PLAYSPEED_NORMAL && packet->dts != DVD_NOPTS_VALUE &&
+          m_CurrentVideo.dts_end() != DVD_NOPTS_VALUE &&
+          packet->dts + crossed + DVD_MSEC_TO_TIME(1000) < m_CurrentVideo.dts_end())
+      {
+        packet->timelineRestartSeq = ++m_timelineRestartSeq;
+        CLog::Log(LOGDEBUG, "CVideoPlayer - timeline restart #{} stamped at the seam crossing",
+                  m_timelineRestartSeq);
+      }
+    }
 
     if(packet->iStreamId < 0)
       return true;
@@ -1892,7 +1924,8 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // negative step is an overlap and harmless; a positive one is dead time
     // the renderer sits through, and it is a cut, not elapsed content. See
     // CheckContinuity.
-    m_seamStepPending = true;
+    // a glided seam is crossed per stream by byte position instead
+    m_seamStepPending = !(glided && m_seamByPos);
     // Only a glided (cc 5/6) seam may close a backward step; held cc=1 menu
     // loop joins keep their wrapback/resync handling.
     m_seamStepOverlapOk = glided;
@@ -2360,6 +2393,7 @@ void CVideoPlayer::Prepare()
   m_SpeedState.Reset(DVD_NOPTS_VALUE);
   m_offset_pts = 0;
   m_seamOffsetPts = 0.0;
+  ClearSeams();
   m_bdStreamReuseVideo = false;
   m_bdStreamReuseAudio = false;
   m_menuWrapVideoGap = 0.0;
@@ -3970,6 +4004,67 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
   return false;
 }
 
+void CVideoPlayer::TakeSeamMarks()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputBluray)
+  {
+    for (const auto& mark : m_pInputBluray->TakeSeamMarks())
+    {
+      // a re-read (a stream switch reads back without a flush) meets a seam again
+      const auto at = std::lower_bound(m_seamMarks.begin(), m_seamMarks.end(), mark.pos,
+                                       [](const SeamMark& m, int64_t pos) { return m.pos < pos; });
+      if (at == m_seamMarks.end() || at->pos != mark.pos)
+        m_seamMarks.insert(at, {mark.pos, static_cast<double>(mark.step) * DVD_TIME_BASE / 90000.0});
+    }
+  }
+#endif
+}
+
+double CVideoPlayer::CrossSeams(const DemuxPacket* packet, double& crossed)
+{
+  SeamStream& stream = m_seamStreams[{packet->demuxerId, packet->iStreamId}];
+  // a frame that does not start a PES has no position: it is where the last one was
+  if (packet->streamPos >= 0)
+    stream.lastPos = packet->streamPos;
+  // the steps of every seam the stream is past: a read back across one undoes it
+  double offset = 0.0;
+  for (const SeamMark& mark : m_seamMarks)
+  {
+    if (stream.lastPos < mark.pos)
+      break;
+    offset += mark.step;
+  }
+  crossed = offset - stream.offset;
+  stream.offset = offset;
+  return offset;
+}
+
+void CVideoPlayer::FoldSeams()
+{
+  // nothing read before the flush survives it: every stream has crossed every seam
+  TakeSeamMarks();
+  for (const SeamMark& mark : m_seamMarks)
+    m_offset_pts += mark.step;
+  ClearSeams();
+}
+
+void CVideoPlayer::ClearSeams()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputBluray)
+    m_pInputBluray->TakeSeamMarks();
+#endif
+  m_seamMarks.clear();
+  m_seamStreams.clear();
+}
+
+double CVideoPlayer::VideoOffsetPts() const
+{
+  const auto it = m_seamStreams.find({m_CurrentVideo.demuxerId, m_CurrentVideo.id});
+  return m_offset_pts + (it != m_seamStreams.end() ? it->second.offset : 0.0);
+}
+
 void CVideoPlayer::UpdateCorrection(DemuxPacket* pkt, double correction)
 {
   // the packet's total: a boundary packet is corrected again after the read
@@ -4315,7 +4410,7 @@ std::chrono::milliseconds CVideoPlayer::GetEdlTime(const CCurrentStream& current
   if (current.dispTime > 0)
     return std::chrono::milliseconds(current.dispTime);
 
-  return std::chrono::milliseconds(DVD_TIME_TO_MSEC(current.dts + m_offset_pts));
+  return std::chrono::milliseconds(DVD_TIME_TO_MSEC(current.dts + VideoOffsetPts()));
 }
 
 std::chrono::milliseconds CVideoPlayer::GetSourceStreamLength() const
@@ -6023,7 +6118,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       pts = m_CurrentVideo.dts;
     if(pts == DVD_NOPTS_VALUE)
       pts = 0;
-    pts += m_offset_pts;
+    pts += VideoOffsetPts();
     if (!m_pSubtitleDemuxer->SeekTime((int)(1000.0 * pts / (double)DVD_TIME_BASE)))
       CLog::Log(LOGDEBUG, "{} - failed to start subtitle demuxing from: {:f}", __FUNCTION__, pts);
     stream = m_pSubtitleDemuxer->GetStream(demuxerId, iStream);
@@ -6759,6 +6854,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   ClearPendingElPackets();
+  FoldSeams();
   // a flush or seek leaves no picture for a waiting menu page to go with
   if (m_menuPageWaiting)
   {

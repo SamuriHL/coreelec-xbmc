@@ -129,6 +129,8 @@ public:
   // and they are atomics.
   std::atomic<bool> m_brokenFileDetected{false};
   std::atomic<int64_t> m_sourceReadBytes{0};
+  // the input stream's byte position at the start of a read
+  void NoteBytePos(int64_t bytePos);
 
 protected:
   friend class CDemuxStreamAudioFFmpeg;
@@ -168,6 +170,9 @@ protected:
   std::map<int, std::unique_ptr<CDemuxParserFFmpeg>> m_parsers;
 
   AVIOContext* m_ioContext;
+  // AVIO position less the input stream's own byte position, at the last read
+  int64_t m_bytePosOffset{0};
+  bool m_bytePosValid{false};
 
   double   m_currentPts; // used for stream length estimation
   bool     m_bMatroska;

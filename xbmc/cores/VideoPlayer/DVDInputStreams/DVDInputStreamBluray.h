@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <queue>
+#include <utility>
 #include <vector>
 
 extern "C"
@@ -394,6 +395,16 @@ public:
    * ticks: the incoming play item's IN minus the outgoing one's OUT. */
   std::optional<int64_t> GetSeamPlaylistStep() const { return m_seamPlaylistStep; }
 
+  /* A glided seam: the incoming clip starts at title byte pos, and its
+   * timestamps step by step (90 kHz) against the outgoing clip's. */
+  struct SeamMark
+  {
+    int64_t pos;
+    int64_t step;
+  };
+  std::vector<SeamMark> TakeSeamMarks() { return std::exchange(m_seamMarks, {}); }
+  int64_t GetBytePos() override;
+
   /* Drop an armed-but-uncollected glide. The player collects the flag on the
    * iteration AFTER the one that armed it, and a lot can happen in between: a
    * seek or a flush from HandleMessages(), or a second boundary in the same
@@ -581,6 +592,7 @@ protected:
   bool m_seamlessGlideAllowed = false;
   bool m_pendingSeamlessTransition = false;
   std::optional<int64_t> m_seamPlaylistStep;
+  std::vector<SeamMark> m_seamMarks;
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
    * ended and the disc returned to menu" (drain it). Player thread only.

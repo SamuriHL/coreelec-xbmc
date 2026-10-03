@@ -1666,9 +1666,22 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
               "playitem {} (connection_condition {})",
               m_event.param, next->connection_condition);
     m_pendingSeamlessTransition = true;
+    uint64_t pos = 0;
+    if (m_seamPlaylistStep && bd_get_clip_infos(m_bd, m_event.param, nullptr, nullptr, &pos, nullptr))
+    {
+      m_seamMarks.push_back({static_cast<int64_t>(pos), *m_seamPlaylistStep});
+      CLog::Log(LOGDEBUG,
+                "CDVDInputStreamBluray - seam at title byte {} (read at {}), step {:.3f} ms",
+                pos, bd_tell(m_bd), *m_seamPlaylistStep / 90.0);
+    }
     return true;
   }
   return false;
+}
+
+int64_t CDVDInputStreamBluray::GetBytePos()
+{
+  return m_bd ? static_cast<int64_t>(bd_tell(m_bd)) : -1;
 }
 
 // Does the event in m_event hold the stream? Read() and PollEvents() share

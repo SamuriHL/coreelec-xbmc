@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -674,6 +675,27 @@ protected:
   double m_offset_pts;
   // the part of m_offset_pts applied at glided seams (DemuxPacket::m_seamOffsetCorrection)
   double m_seamOffsetPts = 0.0;
+
+  // Glided Blu-ray seams, crossed by each stream at its own byte position: a
+  // stream takes a seam's playlist step from its first packet past the seam.
+  struct SeamMark
+  {
+    int64_t pos;
+    double step;
+  };
+  struct SeamStream
+  {
+    int64_t lastPos = -1;
+    double offset = 0.0;
+  };
+  bool m_seamByPos = false;
+  std::vector<SeamMark> m_seamMarks;
+  std::map<std::pair<int64_t, int>, SeamStream> m_seamStreams;
+  void TakeSeamMarks();
+  double CrossSeams(const DemuxPacket* packet, double& crossed);
+  void FoldSeams();
+  void ClearSeams();
+  double VideoOffsetPts() const;
 
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;

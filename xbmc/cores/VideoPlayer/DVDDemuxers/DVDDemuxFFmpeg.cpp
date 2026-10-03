@@ -183,12 +183,22 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
     return AVERROR_EOF;
 
   std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
+  demuxer->NoteBytePos(pInputStream->GetBytePos());
   int len = pInputStream->Read(buf, size);
   if (len == 0)
     return AVERROR_EOF;
   if (len > 0)
     demuxer->m_sourceReadBytes += len;
   return len;
+}
+
+void CDVDDemuxFFmpeg::NoteBytePos(int64_t bytePos)
+{
+  if (bytePos < 0 || !m_ioContext)
+    return;
+  // the AVIO is not seekable: its pos counts the bytes read, the domain of AVPacket.pos
+  m_bytePosOffset = m_ioContext->pos - bytePos;
+  m_bytePosValid = true;
 }
 
 void CDVDDemuxFFmpeg::MarkBroken()
@@ -1325,6 +1335,8 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
           // store internal id until we know the continuous id presented to player
           // the stream might not have been created yet
           pPacket->iStreamId = m_pkt.pkt.stream_index;
+          if (m_bytePosValid && m_pkt.pkt.pos >= 0)
+            pPacket->streamPos = m_pkt.pkt.pos - m_bytePosOffset;
         }
         if (!keep)
         {
