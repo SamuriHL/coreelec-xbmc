@@ -231,6 +231,7 @@ void CAudioFollower::Run()
   double appliedIntegral = 0;
   double gridStep = GRID_STEP_PPM;
   double driftAtStart = 0;
+  size_t trimmedSeconds = 0;         // seconds under the loop since it engaged
   std::deque<double> appliedRecent; // the applied trim over the fit window
   std::string abortReason;
 
@@ -428,8 +429,9 @@ void CAudioFollower::Run()
       landingPending = true;
     }
 
-    // the drift does not depend on the trim, so it is d0 whatever the loop does
-    if (mode == Mode::WAIT && fitted)
+    // the drift does not depend on the trim, so it is d0 whatever the loop does;
+    // the loop is later judged against it, so it is taken from a full window
+    if (mode == Mode::WAIT && psi.size() >= FIT_SECONDS)
     {
       double achieved = 0;
       int state = 0;
@@ -460,6 +462,7 @@ void CAudioFollower::Run()
           abort("the PLL moved " + std::to_string(fine) + " ppm for 3");
         }
         driftAtStart = driftPpm;
+        trimmedSeconds = 0;
         if (mode == Mode::FINE || mode == Mode::GRID)
           CLog::Log(LOGINFO,
                     "FOLLOWER open {}: {} PLL (step {:.2f} ppm), drift {:+.2f} ppm, achieved {:+.2f} "
@@ -516,9 +519,14 @@ void CAudioFollower::Run()
     else if (mode == Mode::GRID && std::fabs(gridTrim - written) > step / 2 && !write(gridTrim))
       abort(abortReason);
 
-    // a trim that does not act shows as a drift that moves with it
+    // A trim that does not act moves the trim-free drift by minus the trim (its
+    // effect k = (drift change + trim) / trim is 0, and below 0 for a trim acting
+    // the wrong way; 1 when it acts). Judged over a window entirely under the
+    // loop, and only for a trim large enough to tell from the fit's noise: a
+    // smaller one that does not act grows until it is.
     if (mode == Mode::FINE || mode == Mode::GRID)
     {
+      trimmedSeconds++;
       double mean = 0;
       for (double v : appliedRecent)
         mean += v;
@@ -526,10 +534,11 @@ void CAudioFollower::Run()
       const double phiNow = mode == Mode::FINE ? finePhi : gridPhi;
       if (haveDrift && std::fabs(phiNow) > ABORT_PHASE_S)
         abort("phase " + std::to_string(phiNow * 1e6) + " us");
-      else if (fitted && appliedRecent.size() >= FIT_SECONDS &&
-               std::fabs(driftPpm - driftAtStart) > std::max(0.3, 0.5 * std::fabs(mean)))
-        abort("the drift moved from " + std::to_string(driftAtStart) + " to " +
-              std::to_string(driftPpm) + " ppm under a trim of " + std::to_string(mean) + " ppm");
+      else if (fitted && trimmedSeconds >= FIT_SECONDS && std::fabs(mean) >= 0.6 &&
+               (driftPpm - driftAtStart + mean) / mean < 0.5)
+        abort("the trim does not act: the drift moved from " + std::to_string(driftAtStart) +
+              " to " + std::to_string(driftPpm) + " ppm under a trim of " +
+              std::to_string(mean) + " ppm");
     }
 
     if (++seconds < REPORT_SECONDS)
