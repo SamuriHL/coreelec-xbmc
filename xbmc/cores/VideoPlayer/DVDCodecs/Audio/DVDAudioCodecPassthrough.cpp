@@ -611,9 +611,11 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 
   // A timeline correction steps the labels against the content already
   // emitted (an M3GAN menu loop wrap: -6.167 ms of AC-3, every wrap). Present
-  // by label, as a player does: an overlap drops the overlapped incoming frames
-  // and the gap they leave, like a gap in the labels, is padded before the next
-  // frame kept. Frame-sized formats only; TrueHD and E-AC-3 steps are measured.
+  // by label as a player does, in whole frames: the frames the content would
+  // lag its labels by are dropped and the residual, under half a frame either
+  // way, carries to the next boundary. A pause is audible on a receiver, so a
+  // gap is padded only when it would leave the sound early by more than half a
+  // frame. Frame-sized formats only; TrueHD steps are left.
   if (m_boundaryDrops > 0)
   {
     m_boundaryDrops--;
@@ -626,13 +628,6 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     // an exact seed: nothing before it to be continuous with
     ClearBoundary();
   }
-  else if (m_boundaryKeep && haveDemuxerPts)
-  {
-    m_boundaryKeep = false;
-    frame.padBefore = m_boundaryPad;
-    m_boundaryPad = 0.0;
-    m_internalClock = demuxerPts + m_boundaryJitter;
-  }
   else if (boundaryFrame && haveDemuxerPts && IsValidPts(m_internalClock))
   {
     // R: the label less where the content emitted so far ends, against the
@@ -640,39 +635,45 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     const double step = m_lastJitter - (m_internalClock - demuxerPts + samplesOffsetTime);
     const double frameTime = frame.duration;
     const bool frameSized = streamType == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_EAC3 ||
                             streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
                             streamType == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
                             streamType == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_2048;
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_2048 ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD ||
+                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
     const bool realise = m_boundaryEnabled && frameSized && frameTime > 0.0 &&
-                         std::abs(step) >= DVD_MSEC_TO_TIME(1) &&
                          std::abs(step) <= DVD_MSEC_TO_TIME(100);
+    // the content's lag behind its labels once the step is taken
+    const double lag = m_lastJitter - step;
+    // the residual carried reaches half a frame: retiming the clock to it
+    // would hide it from the pins
+    if (realise)
+      m_jitterThreshold = std::max(m_jitterThreshold, frameTime / 2 + DVD_MSEC_TO_TIME(4));
     unsigned int drops = 0;
-    double pad = step;
-    if (realise && step < 0.0)
-    {
-      drops = static_cast<unsigned int>(std::ceil(-step / frameTime - 1e-6));
-      pad = drops * frameTime + step;
-    }
+    double pad = 0.0;
+    if (realise && lag >= frameTime / 2)
+      drops = static_cast<unsigned int>(std::lround(lag / frameTime));
+    else if (realise && lag < -frameTime / 2 && step > 0.0)
+      pad = step;
     CLog::Log(LOGINFO,
               "CDVDAudioCodecPassthrough: timeline step {:+.3f} ms at label {:.3f} ms{}", step / 1000.0,
               demuxerPts / 1000.0,
-              realise ? fmt::format(": {} frames dropped, {:.3f} ms padded", drops, pad / 1000.0)
+              realise ? fmt::format(": lag {:+.3f} ms, {} frames dropped, {:.3f} ms padded",
+                                    lag / 1000.0, drops, pad / 1000.0)
                       : std::string(" left"));
-    if (realise)
+    if (drops > 0)
     {
-      m_boundaryJitter = m_lastJitter;
-      if (drops > 0)
-      {
-        m_boundaryDrops = drops - 1;
-        m_boundaryPad = pad;
-        m_boundaryKeep = true;
-        frame.nb_frames = 0;
-        m_currentPts = LOCAL_NOPTS;
-        return;
-      }
+      m_boundaryDrops = drops - 1;
+      frame.nb_frames = 0;
+      m_currentPts = LOCAL_NOPTS;
+      return;
+    }
+    if (pad > 0.0)
+    {
+      // the residual before the boundary stands
       frame.padBefore = pad;
-      m_internalClock = demuxerPts + m_boundaryJitter;
+      m_internalClock = demuxerPts + m_lastJitter;
     }
   }
 
@@ -779,8 +780,6 @@ void CDVDAudioCodecPassthrough::ClearBoundary()
   m_currentMark = false;
   m_nextMark = false;
   m_boundaryDrops = 0;
-  m_boundaryPad = 0.0;
-  m_boundaryKeep = false;
   m_lastJitter = 0.0;
 }
 

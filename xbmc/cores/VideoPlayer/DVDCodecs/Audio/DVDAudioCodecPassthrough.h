@@ -159,9 +159,6 @@ private:
   bool m_currentMark{false}; // m_currentPts / m_nextPts open the corrected timeline
   bool m_nextMark{false};
   unsigned int m_boundaryDrops{0}; // overlapped incoming frames still to drop
-  double m_boundaryPad{0.0}; // the gap to pad before the next frame kept
-  bool m_boundaryKeep{false}; // the next frame is the first kept after drops
-  double m_boundaryJitter{0.0}; // the standing jitter before the boundary
   double m_lastJitter{0.0};
   // pts less the label of the content emitted (TIMEKEEPER pins by label)
   double m_labelLag{0.0};
