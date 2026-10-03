@@ -693,7 +693,6 @@ protected:
   std::map<std::pair<int64_t, int>, SeamStream> m_seamStreams;
   void TakeSeamMarks();
   double CrossSeams(const DemuxPacket* packet, double& crossed);
-  void FoldSeams();
   void ClearSeams();
   double VideoOffsetPts() const;
 

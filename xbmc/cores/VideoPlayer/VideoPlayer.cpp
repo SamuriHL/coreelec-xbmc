@@ -4040,15 +4040,6 @@ double CVideoPlayer::CrossSeams(const DemuxPacket* packet, double& crossed)
   return offset;
 }
 
-void CVideoPlayer::FoldSeams()
-{
-  // nothing read before the flush survives it: every stream has crossed every seam
-  TakeSeamMarks();
-  for (const SeamMark& mark : m_seamMarks)
-    m_offset_pts += mark.step;
-  ClearSeams();
-}
-
 void CVideoPlayer::ClearSeams()
 {
 #if defined(HAVE_LIBBLURAY)
@@ -6854,7 +6845,9 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   ClearPendingElPackets();
-  FoldSeams();
+  // the seams stay: offsets follow the byte position, so a read from anywhere
+  // in the title, before a seam or past it, takes the steps it should
+  m_seamStreams.clear();
   // a flush or seek leaves no picture for a waiting menu page to go with
   if (m_menuPageWaiting)
   {
