@@ -75,7 +75,8 @@ public:
   //! Resume the clock held at speed 0 at a scheduled instant instead of now
   //! (design §15, step 2.2): it stays paused for `lead` seconds, then runs at
   //! iSpeed anchored exactly at that instant, so the audio output can land its
-  //! first sample there. Any other writer before then cancels the schedule.
+  //! first sample there. Any other writer before then cancels the schedule,
+  //! except SetSpeed at the scheduled speed, which it already applies.
   //! startNs: the instant (CLOCK_MONOTONIC); startClock: the clock there.
   //! false (the clock resumed now) if it was not held at speed 0.
   bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);

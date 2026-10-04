@@ -396,6 +396,12 @@ void CDVDClock::SetSpeed(int iSpeed)
 {
   // this will sometimes be a little bit of due to rounding errors, ie clock might jump a bit when changing speed
   std::unique_lock lock(m_critSection);
+  // the speed a scheduled resume runs at is already set for its instant: the
+  // same speed again (a Play pressed, or the caching state ending, during the
+  // lead) would only move the start off the vsync grid, ahead of the audio's
+  // landing
+  if (m_resumeAt && iSpeed == m_resumeSpeed)
+    return;
   CancelScheduledResume();
   SetSpeedAt(iSpeed, m_videoRefClock->GetTime());
 }
