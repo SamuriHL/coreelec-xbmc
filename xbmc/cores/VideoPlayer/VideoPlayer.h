@@ -912,8 +912,15 @@ protected:
     // non-zero: release BD-J presentation-timing items up to this sequence
     // (libbluray patch 13); menuState/titleUi unused
     uint32_t bdjReleaseSeq = 0;
+    // a held BD-J start read after everything before it was presented: its
+    // first picture is the next segment's, so it waits for that segment
+    bool awaitSegment = false;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   std::deque<DemuxPacket*> m_pendingElPackets;
   void ApplyDiscTimelineEvents(bool flushAll);
+  //! the instant of a held BD-J start's first picture, once known (design §15.48)
+  bool BdjStartInstant(double stampPts, double clock, int64_t& startNs);
+  void ArmBdjStartForSegment();
+  std::optional<std::chrono::steady_clock::time_point> m_bdjStartWaitSince;
 };

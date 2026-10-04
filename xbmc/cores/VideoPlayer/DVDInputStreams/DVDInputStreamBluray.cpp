@@ -825,6 +825,15 @@ bool CDVDInputStreamBluray::Open()
     m_bdjTiming = true;
     m_bdjStampedSeq = 0;
     CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J presentation timing enabled");
+#if defined(BD_BDJ_DEFER_START)
+    // design §15.48: a BD-J playlist player's StartEvent and media clock wait
+    // for its first picture (validated SoCs; A/B flag)
+    m_bdjDeferStart = aml_presentation_validated() &&
+                      !XFILE::CFile::Exists("special://profile/bdjstart_off");
+    bd_bdj_set_defer_start(m_bd, m_bdjDeferStart ? 1 : 0);
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J start at presentation {}",
+              m_bdjDeferStart ? "on" : "off");
+#endif
 #endif
   }
   else
@@ -1177,6 +1186,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
     if (m_bdjTiming)
     {
       m_bdjEndOfTitleRead = true;
+      {
+        uint32_t startSeq = 0;
+        m_bdjEndOfTitleStartSeq = BdjStartPending(startSeq) ? startSeq : 0;
+      }
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       // the newest held batch was stamped with the last data read, so its
       // release is the picture reaching the end; with nothing held, the next
@@ -1523,11 +1536,41 @@ void CDVDInputStreamBluray::WaitForBdjPresentation()
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   if (!m_bdjTiming || !IsBdjTitle())
     return;
+  // the player's start may be held while this read waits (a stub read whole
+  // during a mode change): its release runs from the player's timeline pass
+  if (m_bdjDeferStart && bd_bdj_pending_seq(m_bd) == 0)
+    m_player->OnDiscNavResult(nullptr, BD_EVENT_BDJ_PRESENTATION_STAMP);
   if (bd_bdj_pending_seq(m_bd) != 0)
   {
     m_player->OnDiscNavResult(nullptr, BD_EVENT_BDJ_PRESENTATION_STAMP);
     if (bd_bdj_pending_seq(m_bd) != 0)
     {
+#if defined(BD_BDJ_DEFER_START)
+      // The playlist was read to its end after its start, before the start
+      // was presented (a short stub or still read whole): the player's start
+      // that would release it runs only outside this read, and so does the
+      // release of anything stamped ahead of a held clock. So everything held
+      // is released at the read, as before presentation timing (and as a stub
+      // read before its first picture always was: stamped NOPTS). An idle
+      // reader (prefetched, not started) is not an ended one.
+      // Only when the player cannot release it from here: a held or
+      // scheduled start is released by the timeline pass above.
+      uint32_t startSeq = 0;
+      bool blocked = false;
+      if (BdjStartPending(startSeq) && m_bdjEndOfTitleRead && startSeq == m_bdjEndOfTitleStartSeq &&
+          !bd_bdj_waiting_for_playback(m_bd) && static_cast<int32_t>(m_bdjStampedSeq - startSeq) >= 0)
+        m_player->OnDiscNavResult(&blocked, BD_EVENT_BDJ_START_BLOCKED);
+      if (blocked)
+      {
+        // the application hears the end now: the latch first, or its next
+        // playlist reads as an application jump (see ReleaseBdjEvents)
+        m_bdjAtPlaylistEnd = true;
+        CLog::Log(LOGINFO, "CDVDInputStreamBluray - BD-J start released at the read: "
+                           "its playlist ended before its first picture");
+        bd_bdj_release_ex(m_bd, 0, 0, BD_BDJ_RELEASE_ALL);
+        return;
+      }
+#endif
       KODI::TIME::Sleep(5ms);
       return;
     }
@@ -1540,12 +1583,27 @@ void CDVDInputStreamBluray::WaitForBdjPresentation()
 #endif
 }
 
-void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq)
+void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq, int64_t startNs, bool flush)
 {
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   if (m_bd && m_bdjTiming)
   {
+#if defined(BD_BDJ_DEFER_START)
+    uint32_t startSeq = 0;
+    // a flush keeps a held start's own items, end of playlist included
+    if (flush && m_bdjDeferStart && bd_bdj_start_pending(m_bd, &startSeq) &&
+        static_cast<int32_t>(seq - startSeq) >= 0)
+    {
+      bd_bdj_release_ex(m_bd, seq, 0, BD_BDJ_RELEASE_FLUSH);
+      return;
+    }
+    if (m_bdjDeferStart)
+      bd_bdj_release_ex(m_bd, seq, startNs, flush ? BD_BDJ_RELEASE_FLUSH : 0);
+    else
+      bd_bdj_release(m_bd, seq);
+#else
     bd_bdj_release(m_bd, seq);
+#endif
     // Latch the presented end here, not on "nothing pending" afterwards: the
     // application's end-of-playlist listener runs on its own thread and may
     // start the next playlist - holding a new notification - before
@@ -1556,20 +1614,30 @@ void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq)
 #endif
 }
 
-void CDVDInputStreamBluray::ReleaseAllBdjEvents()
+void CDVDInputStreamBluray::ReleaseAllBdjEvents(bool flush)
 {
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   if (m_bd && m_bdjTiming)
+  {
+#if defined(BD_BDJ_DEFER_START)
+    if (m_bdjDeferStart)
+    {
+      bd_bdj_release_ex(m_bd, 0, 0, BD_BDJ_RELEASE_ALL | (flush ? BD_BDJ_RELEASE_FLUSH : 0));
+      return;
+    }
+#endif
     bd_bdj_release_all(m_bd);
+  }
 #endif
 }
 
-void CDVDInputStreamBluray::ShiftBdjMediaClock(double seconds)
+bool CDVDInputStreamBluray::BdjStartPending(uint32_t& startSeq)
 {
-#if defined(BD_BDJ_MEDIA_CLOCK_SHIFT)
-  if (m_bd && IsBdjTitle() && seconds > 0.0)
-    bd_bdj_shift_media_clock(m_bd, static_cast<uint32_t>(std::lround(seconds * 90000.0)));
+#if defined(BD_BDJ_DEFER_START)
+  if (m_bd && m_bdjTiming && m_bdjDeferStart)
+    return bd_bdj_start_pending(m_bd, &startSeq) != 0;
 #endif
+  return false;
 }
 
 void CDVDInputStreamBluray::PollEvents()
@@ -1831,7 +1899,9 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
       // BD-J application (end of playlist, no playlist)
       if (result == 0 && (event == BD_EVENT_NONE || event == BD_EVENT_END_OF_TITLE ||
                           event == BD_EVENT_IDLE))
+      {
         WaitForBdjPresentation();
+      }
 
     } while(result == 0);
 

@@ -1646,7 +1646,7 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
 {
 #if defined(HAVE_LIBBLURAY)
   if (flushAll && m_pInputBluray)
-    m_pInputBluray->ReleaseAllBdjEvents();
+    m_pInputBluray->ReleaseAllBdjEvents(true);
 #endif
   if (m_discTimelineEvents.empty())
     return;
@@ -1662,9 +1662,47 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
 
 #if defined(HAVE_LIBBLURAY)
   const double clock = m_clock.GetClock();
+  // a BD-J playlist player's start waiting for its first picture (patch 17)
+  uint32_t startSeq = 0;
+  bool startPending = bluray->BdjStartPending(startSeq);
+  if (!startPending || flushAll)
+    m_bdjStartWaitSince.reset();
+  std::deque<SDiscTimelineEvent> keptForStart;
   while (!m_discTimelineEvents.empty())
   {
-    const SDiscTimelineEvent& ev = m_discTimelineEvents.front();
+    SDiscTimelineEvent& ev = m_discTimelineEvents.front();
+    if (ev.bdjReleaseSeq != 0 && startPending &&
+        static_cast<int32_t>(ev.bdjReleaseSeq - startSeq) >= 0)
+    {
+      if (flushAll)
+      {
+        // the start's own items survive a flush (libbluray keeps them): its
+        // first picture is the restart's, so the stamp is void
+        bluray->ReleaseBdjEvents(ev.bdjReleaseSeq, 0, true);
+        ev.stampPts = DVD_NOPTS_VALUE;
+        ev.awaitSegment = false;
+        keptForStart.push_back(ev);
+        m_discTimelineEvents.pop_front();
+        continue;
+      }
+      int64_t startNs = 0;
+      if (ev.awaitSegment || !BdjStartInstant(ev.stampPts, clock, startNs))
+      {
+        // bounded like any held start (BdjStartInstant's own 15 s limit)
+        if (ev.awaitSegment && m_bdjStartWaitSince &&
+            std::chrono::steady_clock::now() - *m_bdjStartWaitSince > 15s)
+          ev.awaitSegment = false;
+        else if (ev.awaitSegment && !m_bdjStartWaitSince)
+          m_bdjStartWaitSince = std::chrono::steady_clock::now();
+        break;
+      }
+      bluray->ReleaseBdjEvents(ev.bdjReleaseSeq, startNs);
+      m_bdjStartWaitSince.reset();
+      m_discTimelineEvents.pop_front();
+      // the start is presented: what was read after it releases by its stamp
+      startPending = bluray->BdjStartPending(startSeq);
+      continue;
+    }
     if (!flushAll && ev.stampPts != DVD_NOPTS_VALUE && clock < ev.stampPts)
     {
       // A stamp further ahead than the maximum queue depth (plus margin)
@@ -1710,9 +1748,84 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
   }
   // a flush also covers what was held but not stamped yet
   if (flushAll)
-    bluray->ReleaseAllBdjEvents();
+  {
+    bluray->ReleaseAllBdjEvents(true);
+    m_discTimelineEvents.insert(m_discTimelineEvents.begin(), keptForStart.begin(),
+                                keptForStart.end());
+  }
 #endif
 }
+
+#if defined(HAVE_LIBBLURAY)
+bool CVideoPlayer::BdjStartInstant(double stampPts, double clock, int64_t& startNs)
+{
+  // a start the application cannot be left waiting on (no sync ever comes:
+  // a stream that never starts); libbluray's own limit is the same
+  if (!m_bdjStartWaitSince)
+    m_bdjStartWaitSince = std::chrono::steady_clock::now();
+  else if (std::chrono::steady_clock::now() - *m_bdjStartWaitSince > 15s)
+  {
+    CLog::Log(LOGWARNING, "CVideoPlayer: BD-J start not presented in 15 s, released");
+    startNs = 0;
+    return true;
+  }
+
+  int64_t ns = 0;
+  double startClock = 0.0;
+  unsigned int epoch = 0;
+  if (m_clock.GetPendingStart(ns, startClock))
+  {
+    // scheduled: released now with its instant, so the application draws
+    // during the lead and its clock starts with the picture; held without a
+    // schedule yet: wait for the release
+    if (ns <= 0)
+      return false;
+    // a stamp past the scheduled start is a later segment's
+    if (stampPts != DVD_NOPTS_VALUE && stampPts > startClock + DVD_MSEC_TO_TIME(50))
+      return false;
+    startNs = ns;
+    CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start released with the scheduled start");
+    return true;
+  }
+  if (m_startHeld)
+    return false;
+  // no stream open: the segment the start belongs to is still to open (a
+  // drain between playlists closes the old streams first)
+  if (m_CurrentVideo.id < 0 && m_CurrentAudio.id < 0)
+    return false;
+  // a start still to come: a stream has not synced yet
+  if ((m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC) ||
+      (m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_INSYNC))
+    return false;
+  if (stampPts == DVD_NOPTS_VALUE)
+  {
+    // its first picture came with a start that has landed (or no stream at
+    // all to time it by): that start's instant, else now
+    if (m_clock.GetScheduledStart(ns, startClock, epoch))
+      startNs = ns;
+    else
+      startNs = 0;
+    CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start released after the start ({})",
+              startNs ? "scheduled instant" : "now");
+    return true;
+  }
+  // a start inside a running timeline (a natural-end loop, a seamless
+  // carry): when the picture reaches the stamp
+  // a stamp further ahead than the queue depth is on a timeline that no
+  // longer exists (as for any disc timeline event): now
+  if (clock < stampPts && stampPts - clock < DVD_SEC_TO_TIME(m_messageQueueTimeSize + 4.0))
+    return false;
+  if (clock < stampPts)
+    stampPts = clock;
+  struct timespec mono = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  startNs = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec -
+            static_cast<int64_t>((clock - stampPts) * (1000000000.0 / DVD_TIME_BASE));
+  CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start released at its stamp {:.3f} (clock {:.3f})",
+            stampPts / DVD_TIME_BASE, clock / DVD_TIME_BASE);
+  return true;
+}
+#endif
 
 // Menu-domain low-latency mode: while a Blu-ray is in menu domain, clamp the
 // A/V queue read-ahead to ~1s so the disc VM (which executes at demux
@@ -1897,6 +2010,9 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // pictures after this boundary are a new segment (6.1); published to the
   // renderer from the process loop, in order with the packets that follow
   ++m_segmentGen;
+  // the segment a held BD-J start was waiting for: its first picture now
+  // comes with this segment's own start
+  ArmBdjStartForSegment();
   const EBdTransition transition = ClassifyBdTransition();
 
   // Not on the seamless path: the pipeline survives the boundary, so a refill
@@ -2054,6 +2170,16 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // (up to the queue depth, or never if the new timeline sits just behind).
   if (!drain)
     ApplyDiscTimelineEvents(true);
+  else if (m_pInputBluray)
+  {
+    // a held BD-J start read here is the next segment's: its stamp is on the
+    // old timeline, and its first picture comes with the new segment's start
+    uint32_t startSeq = 0;
+    if (m_pInputBluray->BdjStartPending(startSeq))
+      for (SDiscTimelineEvent& ev : m_discTimelineEvents)
+        if (ev.bdjReleaseSeq != 0 && static_cast<int32_t>(ev.bdjReleaseSeq - startSeq) >= 0)
+          ev.stampPts = DVD_NOPTS_VALUE;
+  }
 #endif
   // the video tail may still be inside the decoder: start playing it out now,
   // alongside the audio drain, not after it
@@ -2132,6 +2258,19 @@ void CVideoPlayer::ReleaseAudioSessionHold()
     ae->SetSessionHold(false);
 }
 
+void CVideoPlayer::ArmBdjStartForSegment()
+{
+  // A held BD-J start stamped behind the picture waits for the next segment:
+  // a segment transition after the stamp shows it. Not a held start: that
+  // can be the segment before it, still to be shown.
+  for (SDiscTimelineEvent& ev : m_discTimelineEvents)
+    if (ev.awaitSegment)
+    {
+      ev.awaitSegment = false;
+      ev.stampPts = DVD_NOPTS_VALUE;
+    }
+}
+
 void CVideoPlayer::HoldStart()
 {
   m_startHeld = true;
@@ -2189,13 +2328,6 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   else
     m_clock.SetSpeed(m_playSpeed);
 
-#if defined(HAVE_LIBBLURAY)
-  // a BD-J application's media clock ran on during the hold (design 3.6), and
-  // over the scheduled lead; a flush release comes from a seek or a new
-  // playlist, which re-anchor it
-  if (m_pInputBluray && std::string_view(why) != "flush")
-    m_pInputBluray->ShiftBdjMediaClock(held + lead);
-#endif
   // after the schedule: a frame selected meanwhile sees one or the other
   m_clock.SetStartHeld(false);
   m_VideoPlayerVideo->SetStartHeld(false);
@@ -7305,7 +7437,11 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       if (!pData)
       {
         // the input stream is waiting inside the demux read for the BD-J
-        // application: run the timeline so held notifications can release
+        // application: run the timeline so held notifications can release,
+        // and a held start, whose release would otherwise wait for this read
+        // to return (the application may be waiting for that picture)
+        if (m_pInputBluray && m_pInputBluray->BdjDeferStart())
+          CheckHeldStart();
         ApplyDiscTimelineEvents(false);
         break;
       }
@@ -7313,11 +7449,44 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // is the read position of the batch libbluray just held. Consecutive
       // batches at the same position collapse into the newest sequence.
       const uint32_t seq = *static_cast<const uint32_t*>(pData);
+      // a playlist with no video (menu music under BD-J graphics) is timed by
+      // its audio
+      uint32_t startSeq = 0;
+      const bool startPending = m_pInputBluray && m_pInputBluray->BdjStartPending(startSeq);
+      const double stamp =
+          m_CurrentVideo.id < 0 && startPending ? m_CurrentAudio.dts : m_CurrentVideo.dts;
+      // a held start stamped behind the picture: everything read before it is
+      // already presented (the reader waited at the end of a playlist), so its
+      // first picture is the next segment's
+      const bool awaitSegment = startPending && static_cast<int32_t>(seq - startSeq) >= 0 &&
+                                stamp != DVD_NOPTS_VALUE && stamp <= m_clock.GetClock();
+      if (awaitSegment)
+        CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start read at the end of what was presented "
+                            "(stamp {:.3f}): waits for the next segment", stamp / DVD_TIME_BASE);
       if (!m_discTimelineEvents.empty() && m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
-          m_discTimelineEvents.back().stampPts == m_CurrentVideo.dts)
+          m_discTimelineEvents.back().stampPts == stamp)
+      {
         m_discTimelineEvents.back().bdjReleaseSeq = seq;
+        m_discTimelineEvents.back().awaitSegment |= awaitSegment;
+      }
       else
-        m_discTimelineEvents.push_back({m_CurrentVideo.dts, 0, nullptr, seq});
+      {
+        SDiscTimelineEvent ev{stamp, 0, nullptr, seq};
+        ev.awaitSegment = awaitSegment;
+        m_discTimelineEvents.push_back(ev);
+      }
+      break;
+    }
+    case BD_EVENT_BDJ_START_BLOCKED:
+    {
+      // a held BD-J start waits for a stream sync, which runs only in Process
+      int64_t ns = 0;
+      double startClock = 0.0;
+      const bool syncPending =
+          (m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC) ||
+          (m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_INSYNC);
+      *static_cast<bool*>(pData) =
+          !m_startHeld && !m_clock.GetPendingStart(ns, startClock) && syncPending;
       break;
     }
     case BD_EVENT_PLAYLIST_STOP:

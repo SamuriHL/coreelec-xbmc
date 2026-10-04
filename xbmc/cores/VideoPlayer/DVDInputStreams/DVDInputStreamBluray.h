@@ -48,6 +48,9 @@ class CDVDOverlayGroup;
 #define BD_EVENT_ENC_ERROR    -3
 // pData: const uint32_t* - newest held BD-J presentation-timing sequence
 #define BD_EVENT_BDJ_PRESENTATION_STAMP -4
+// query to the player (pData: bool*): a held BD-J start only Process can
+// release (a stream sync is pending), not the timeline pass inside the read
+#define BD_EVENT_BDJ_START_BLOCKED -5
 
 #define HDMV_PID_VIDEO            0x1011
 #define HDMV_PID_VIDEO_EL         0x1015
@@ -345,11 +348,16 @@ public:
    * stamp each newly held batch with the read position (OnDiscNavResult ->
    * the player's disc timeline) and release it when the render clock reaches
    * that stamp. BD-J titles only: HDMV titles and file playback never hold. */
-  void ReleaseBdjEvents(uint32_t seq);
-  void ReleaseAllBdjEvents();
-  //! the player held its clock for seconds after playback started: the BD-J
-  //! application's media clock must not have run on (libbluray patch 16)
-  void ShiftBdjMediaClock(double seconds);
+  //! startNs: the first picture of a start released here (CLOCK_MONOTONIC ns,
+  //! 0 = now); flush: a player flush, which keeps a held start's own items
+  void ReleaseBdjEvents(uint32_t seq, int64_t startNs = 0, bool flush = false);
+  void ReleaseAllBdjEvents(bool flush = false);
+  /* A BD-J playlist player's start waits for its first picture (libbluray
+   * patch 17): its StartEvent and media clock follow the release of its
+   * marker. True while one waits; held items numbered from startSeq on
+   * belong to it. */
+  bool BdjStartPending(uint32_t& startSeq);
+  bool BdjDeferStart() const { return m_bdjDeferStart; }
   /* While the player's queues are full it does not read, and the events the
    * BD-J application queues (a playlist stop after a key press) would wait
    * behind up to the whole buffer. Consume them without reading data. */
@@ -576,6 +584,7 @@ protected:
   void StampBdjPending();
   void WaitForBdjPresentation();
   bool m_bdjTiming = false;
+  bool m_bdjDeferStart = false; //!< libbluray patch 17: BD-J starts wait for their first picture
   uint32_t m_bdjStampedSeq = 0;
   /* the BD-J application seeked or started another playlist since the hold
    * was taken (see ClassifyStreamQueue); set in ProcessEvent, cleared when a
@@ -583,6 +592,7 @@ protected:
   bool m_bdjAppJumpAtHold = false;
   /* the reader reached the end of the playlist (END_OF_TITLE) ... */
   bool m_bdjEndOfTitleRead = false;
+  uint32_t m_bdjEndOfTitleStartSeq = 0; //!< the held start's marker when END_OF_TITLE was read
   /* the held batch that marks the end of the data read (the newest held at
    * END_OF_TITLE, else the next stamped - END_OF_PLAYLIST): its release is
    * the picture reaching the end; 0 = none yet */
