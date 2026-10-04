@@ -444,8 +444,12 @@ void CVideoPlayerVideo::Process()
       if (iPriority)
         continue;
 
-      // a start held for the output mode has its clock paused on purpose
-      if (m_startHeld)
+      // a start held for the output mode, or in its scheduled lead, has its
+      // clock paused on purpose (at 50/60 fps the timeout, 10 frames, is
+      // shorter than the 350 ms lead)
+      int64_t startNs = 0;
+      double startClock = 0.0;
+      if (m_startHeld || m_pClock->GetPendingStart(startNs, startClock))
         continue;
 
       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
