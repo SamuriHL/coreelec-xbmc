@@ -1873,8 +1873,12 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
     // Only take the seamless path from a stable pipeline. Menu entry bursts
     // through playitems rapidly; continuing across a boundary before the
     // streams are in sync feeds from a torn position.
+    // Direct playlist playback has no menu bursts, and no other path that
+    // applies a seam's step: a seam read during a start or just after a seek
+    // still glides.
     if (bluray->IsSeamlessStreamChange() && m_CurrentVideo.id >= 0 &&
-        m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC)
+        (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
+         (m_seamByPos && !bluray->IsNavigationMode())))
       return EBdTransition::SEAMLESS;
   }
 #endif
@@ -1953,10 +1957,10 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // audio is silent. Measured at three boundaries of one capture it sat at
     // 4225.056 - a MENU timeline, 21 seconds stale and 3610s ahead of video -
     // so taking the later of the two armed the deadline in the future and the
-    // bound never expired. ClassifyBdTransition only returns SEAMLESS with
-    // video open and SYNC_INSYNC, so video's dts is the one value here that is
-    // guaranteed current; if it somehow is not, do not arm at all rather than
-    // arm something unboundable.
+    // bound never expired. Without m_seamByPos, ClassifyBdTransition only
+    // returns SEAMLESS with video open and SYNC_INSYNC, so video's dts is the
+    // one value here that is guaranteed current; if it somehow is not, do not
+    // arm at all rather than arm something unboundable.
     m_seamStepPlaylistStep.reset();
 #if defined(HAVE_LIBBLURAY)
     if (m_pInputBluray)
@@ -2821,9 +2825,10 @@ void CVideoPlayer::Process()
     // committed to the incoming clip's bytes.
     if (m_pInputBluray)
     {
-      m_pInputBluray->SetSeamlessGlideAllowed(m_CurrentVideo.id >= 0 &&
-                                              m_CurrentVideo.syncState ==
-                                                  IDVDStreamPlayer::SYNC_INSYNC);
+      m_pInputBluray->SetSeamlessGlideAllowed(
+          m_CurrentVideo.id >= 0 &&
+          (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
+           (m_seamByPos && !m_pInputBluray->IsNavigationMode())));
       if (m_pInputBluray->TakePendingSeamlessTransition())
       {
         // Re-classified here, one iteration after the glide armed it: if the
