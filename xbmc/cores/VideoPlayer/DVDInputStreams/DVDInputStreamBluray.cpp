@@ -2583,6 +2583,52 @@ int CDVDInputStreamBluray::GetTime()
   return m_dispTimeBeforeRead;
 }
 
+bool CDVDInputStreamBluray::CanRecueFrom(int64_t pos)
+{
+  const char* why = nullptr;
+  if (!m_bd || !m_titleInfo)
+    why = "no title";
+  else if (m_bMVCPlayback)
+    why = "MVC";
+  // a BD-J application may act on the re-read; playing a playlist directly
+  // runs none, though m_title can still describe the disc's BD-J title
+  else if (m_navmode && IsBdjTitle())
+    why = "BD-J title";
+  else if (m_hold != HOLD_NONE)
+    why = "read held";
+  else if (m_seamlessHold || m_seamlessCarry || m_pendingSeamlessTransition)
+    why = "seamless transition pending";
+  else if (pos < 0 || m_playItem >= m_titleInfo->clip_count)
+    why = "no position";
+  uint64_t clipStart = 0, clipIn = 0, clipPos = 0;
+  if (!why && !bd_get_clip_infos(m_bd, m_playItem, &clipStart, &clipIn, &clipPos, nullptr))
+    why = "no clip info";
+  // the clip info position runs up to 0.8 MB early on a disc with a merged
+  // enhancement layer (M3GAN): a margin keeps the read inside the playitem
+  constexpr int64_t CLIP_POS_MARGIN = 4 * 1024 * 1024;
+  if (!why && pos < static_cast<int64_t>(clipPos) + CLIP_POS_MARGIN)
+    why = "before the playitem being read";
+  if (why)
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray - no re-cue from title byte {}: {} (playitem {} at byte {}, "
+              "hold {} seamless {}/{}/{})",
+              pos, why, m_playItem, clipPos, static_cast<int>(m_hold), m_seamlessHold,
+              m_seamlessCarry, m_pendingSeamlessTransition);
+  return !why;
+}
+
+bool CDVDInputStreamBluray::Recue(int64_t pos)
+{
+  const int64_t landed = bd_seek(m_bd, static_cast<uint64_t>(pos));
+  if (landed < 0)
+    return false;
+  ResetIsoCacheAccessPattern();
+  while (bd_get_event(m_bd, &m_event))
+    ProcessEvent();
+  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - recue to title byte {} landed at {}", pos, landed);
+  return true;
+}
+
 bool CDVDInputStreamBluray::PosTime(int ms)
 {
   if (m_navmode && (m_uoMask.load() & BLURAY_UO_TIME_SEARCH_MASK))

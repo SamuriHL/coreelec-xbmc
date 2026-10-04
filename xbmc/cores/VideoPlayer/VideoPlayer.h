@@ -696,6 +696,30 @@ protected:
   void ClearSeams();
   double VideoOffsetPts() const;
 
+  // An audio track switch re-cued for the new track only, the picture running
+  // on (design 15.34): the title is read again from just before the clock and
+  // what the other streams were already given is skipped by byte position.
+  struct DeliveredMark
+  {
+    int64_t pos = -1; // the byte the packet's PES began at, inherited when it has none
+    double dts = DVD_NOPTS_VALUE; // the demuxer's own dts (DemuxPacket::demuxDts)
+    int64_t readPos = -1; // the re-read's position in this stream
+    bool el = false; // a Dolby Vision enhancement layer, fed to the video decoder
+    bool unique = false; // one packet per dts (video, enhancement layer)
+  };
+  bool m_recueEnabled = false;
+  std::map<std::pair<int64_t, int>, DeliveredMark> m_delivered;
+  std::deque<std::pair<int64_t, double>> m_videoPosHistory; // current video: byte, corrected dts
+  std::map<std::pair<int64_t, int>, DeliveredMark> m_recueGate;
+  std::chrono::steady_clock::time_point m_recueSince;
+  unsigned int m_recueDropped = 0;
+  bool m_recueJoinPending = false;
+  bool PrepareRecue(int64_t& pos);
+  bool StartRecue(int64_t pos);
+  bool RecueGateDrops(const DemuxPacket* packet);
+  void NoteDelivered(const DemuxPacket* packet);
+  void ClearRecue();
+
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;
 

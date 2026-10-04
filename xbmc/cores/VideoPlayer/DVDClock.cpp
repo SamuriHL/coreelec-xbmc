@@ -285,11 +285,33 @@ bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double
     SetSpeedAt(iSpeed, current);
     return false;
   }
+  m_resumeAt = ScheduleInstant(current, lead);
+  m_resumeSpeed = iSpeed;
+  m_scheduleClock = SystemToPlaying(current);
+  // whatever display phase was held belongs to a clock that started anywhere;
+  // from a vblank it is nil, and the renderer measures it again once playing
+  DropVsyncPhase(false);
+  m_scheduleEpoch = NextScheduleEpoch();
+  m_scheduleValid = true;
+  startNs = m_scheduleNs;
+  startClock = m_scheduleClock;
+  return true;
+}
+
+unsigned int CDVDClock::NextScheduleEpoch()
+{
+  // unique across clocks: the audio output remembers the last start it landed
+  static std::atomic<unsigned int> s_scheduleEpoch{0};
+  return ++s_scheduleEpoch;
+}
+
+int64_t CDVDClock::ScheduleInstant(int64_t current, double lead)
+{
   struct timespec mono = {};
   clock_gettime(CLOCK_MONOTONIC, &mono);
   const int64_t monoNow = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec;
   const int64_t leadSystem = static_cast<int64_t>(lead * m_systemFrequency);
-  m_resumeAt = current + leadSystem;
+  int64_t at = current + leadSystem;
   m_scheduleNs = monoNow + static_cast<int64_t>(lead * 1e9);
 
   // On a vblank: the clock then reads a frame's pts at every vblank, the
@@ -302,20 +324,27 @@ bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double
   {
     const double k =
         std::ceil(static_cast<double>(current + leadSystem - vblankTime) / interval);
-    m_resumeAt = vblankTime + static_cast<int64_t>(std::llround(k * interval));
+    at = vblankTime + static_cast<int64_t>(std::llround(k * interval));
     // host counter (CLOCK_MONOTONIC_RAW, ns) to CLOCK_MONOTONIC
     const int64_t hostToMono = monoNow - CurrentHostCounter();
     m_scheduleNs = vblankHost + static_cast<int64_t>(std::llround(k * hostInterval)) + hostToMono;
   }
+  return at;
+}
 
-  m_resumeSpeed = iSpeed;
-  m_scheduleClock = SystemToPlaying(current);
-  // whatever display phase was held belongs to a clock that started anywhere;
-  // from a vblank it is nil, and the renderer measures it again once playing
-  DropVsyncPhase(false);
-  // unique across clocks: the audio output remembers the last start it landed
-  static std::atomic<unsigned int> s_scheduleEpoch{0};
-  m_scheduleEpoch = ++s_scheduleEpoch;
+bool CDVDClock::ScheduleJoin(double lead, int64_t& startNs, double& startClock)
+{
+  std::unique_lock lock(m_critSection);
+  // a reset clock is re-anchored by its next reader: no start to place on it
+  if (m_paused || m_pauseClock || m_resumeAt || m_bReset || lead <= 0.0)
+    return false;
+  const int64_t current = m_videoRefClock->GetTime();
+  m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
+  m_lastSystemTime = current;
+  const int64_t at = ScheduleInstant(current, lead);
+  // the clock runs on: the start is where it will read then
+  m_scheduleClock = SystemToPlaying(at);
+  m_scheduleEpoch = NextScheduleEpoch();
   m_scheduleValid = true;
   startNs = m_scheduleNs;
   startClock = m_scheduleClock;
@@ -326,6 +355,12 @@ bool CDVDClock::GetScheduledStart(int64_t& startNs, double& startClock, unsigned
 {
   std::unique_lock lock(m_critSection);
   if (!m_scheduleValid)
+    return false;
+  // a start well past its instant landed or was abandoned: a stream starting
+  // later (a reopened sink, a join that did not land) does not take it
+  struct timespec mono = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  if (static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec > m_scheduleNs + 2000000000LL)
     return false;
   startNs = m_scheduleNs;
   startClock = m_scheduleClock;

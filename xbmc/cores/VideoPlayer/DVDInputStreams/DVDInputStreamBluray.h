@@ -414,6 +414,13 @@ public:
    * tears down what was just rebuilt. */
   void CancelPendingSeamlessTransition() { m_pendingSeamlessTransition = false; }
 
+  /* An audio track switch reads the title again from `pos` for the new track
+   * only (design 15.34): only within the playitem being read, with nothing
+   * held or pending, outside BD-J titles (an xlet re-anchors on a seek) and
+   * MVC. Recue seeks there by byte; the read then snaps to an entry point. */
+  bool CanRecueFrom(int64_t pos);
+  bool Recue(int64_t pos);
+
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
    * the JVM's signal handlers) is understood */

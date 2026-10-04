@@ -884,6 +884,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // design §15.33: glided seams crossed per stream by byte position (A/B flag)
   m_seamByPos =
       aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/seamstep_off");
+  // design 15.34: an audio track switch re-cues the audio alone (A/B flag)
+  m_recueEnabled = m_seamByPos && !XFILE::CFile::Exists("special://profile/recue_off");
   // design 5 (4b): the audio output is held for the session; the debug flag
   // turns it off for A/B runs
   if (XFILE::CFile::Exists("special://profile/audiohold_off"))
@@ -1418,7 +1420,15 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 
   // read a data frame from stream.
   if (m_pDemuxer)
+  {
     packet = m_pDemuxer->Read();
+    // an audio track switch reads again what the other streams already have
+    while (packet && !m_recueGate.empty() && RecueGateDrops(packet))
+    {
+      CDVDDemuxUtils::FreeDemuxPacket(packet);
+      packet = m_pDemuxer->Read();
+    }
+  }
 
   if (packet)
   {
@@ -1456,6 +1466,8 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
     }
     UpdateCorrection(packet, m_offset_pts + seamOffset);
     packet->m_seamOffsetCorrection += m_seamOffsetPts;
+    if (m_seamByPos && packet->iStreamId >= 0)
+      NoteDelivered(packet);
     if (crossed != 0.0)
     {
       CLog::Log(LOGDEBUG,
@@ -3675,6 +3687,17 @@ void CVideoPlayer::HandlePlaySpeed()
       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
       m_syncStartDeferred = false;
+      if (m_recueJoinPending)
+      {
+        // the re-cued track lands on the running clock at a vblank, as a start
+        // does: the lead covers what the audio output queues ahead
+        m_recueJoinPending = false;
+        int64_t startNs = 0;
+        double startClock = 0.0;
+        if (m_clock.ScheduleJoin(0.35, startNs, startClock))
+          CLog::Log(LOGINFO, "VideoPlayer: re-cued audio joins the clock at {:.3f} ({} ns)",
+                    startClock / DVD_TIME_BASE, startNs);
+      }
       m_VideoPlayerAudio->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, m_clock.GetClock()), 1);
     }
@@ -4056,6 +4079,217 @@ void CVideoPlayer::ClearSeams()
 #endif
   m_seamMarks.clear();
   m_seamStreams.clear();
+  ClearRecue();
+}
+
+void CVideoPlayer::NoteDelivered(const DemuxPacket* packet)
+{
+  const std::pair<int64_t, int> key{packet->demuxerId, packet->iStreamId};
+  const auto seam = m_seamStreams.find(key);
+  if (seam == m_seamStreams.end() || seam->second.lastPos < 0)
+    return;
+  DeliveredMark& mark = m_delivered[key];
+  mark.pos = seam->second.lastPos;
+  // a packet without a dts (a PES split by the parser) keeps the last one
+  if (packet->demuxDts != DVD_NOPTS_VALUE)
+    mark.dts = packet->demuxDts;
+  mark.el = packet->isELPackage;
+  if (packet->iStreamId == m_CurrentVideo.id && packet->demuxerId == m_CurrentVideo.demuxerId &&
+      packet->streamPos >= 0 && packet->dts != DVD_NOPTS_VALUE)
+  {
+    m_videoPosHistory.emplace_back(packet->streamPos, packet->dts);
+    if (m_videoPosHistory.size() > 1500)
+      m_videoPosHistory.pop_front();
+  }
+}
+
+void CVideoPlayer::ClearRecue()
+{
+  if (!m_recueGate.empty())
+    CLog::Log(LOGINFO, "VideoPlayer: audio re-cue gate cleared with {} streams still in it",
+              m_recueGate.size());
+  m_delivered.clear();
+  m_videoPosHistory.clear();
+  m_recueGate.clear();
+  m_recueJoinPending = false;
+}
+
+bool CVideoPlayer::PrepareRecue(int64_t& pos)
+{
+#if defined(HAVE_LIBBLURAY)
+  const char* refused = !m_recueEnabled                                         ? "off"
+                        : !m_pInputBluray || !m_pDemuxer                          ? "no disc"
+                        : !m_recueGate.empty()                                    ? "re-cue running"
+                        : m_playSpeed != DVD_PLAYSPEED_NORMAL                     ? "speed"
+                        : m_caching != CACHESTATE_DONE                            ? "caching"
+                        : m_startHeld                                             ? "start held"
+                        : m_seamStepPending                                       ? "seam step pending"
+                        : m_CurrentVideo.id < 0                                   ? "no video"
+                        : m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC ? "video not in sync"
+                        : m_pInputBluray->IsInMenu()                              ? "menu"
+                                                                                  : nullptr;
+  if (refused)
+  {
+    CLog::Log(LOGINFO, "VideoPlayer: audio track switch not re-cued: {}", refused);
+    return false;
+  }
+
+  // from the video packet decoded half a second past the clock: the audio
+  // before it would be skipped to land on the clock anyway
+  const double target = m_clock.GetClock() + DVD_MSEC_TO_TIME(500);
+  pos = -1;
+  for (auto it = m_videoPosHistory.rbegin(); it != m_videoPosHistory.rend(); ++it)
+  {
+    if (it->second <= target)
+    {
+      pos = it->first;
+      break;
+    }
+  }
+  const auto video = m_delivered.find({m_CurrentVideo.demuxerId, m_CurrentVideo.id});
+  if (pos < 0 || video == m_delivered.end() || video->second.pos <= pos ||
+      !m_pInputBluray->CanRecueFrom(pos))
+  {
+    CLog::Log(LOGINFO,
+              "VideoPlayer: audio track switch not re-cued: from byte {} (video delivered to {}, "
+              "{} in history), not within the playitem being read",
+              pos, video == m_delivered.end() ? -1 : video->second.pos, m_videoPosHistory.size());
+    return false;
+  }
+
+  m_recueGate.clear();
+  for (const auto& [key, mark] : m_delivered)
+  {
+    // a stream last delivered before the re-read (a sparse subtitle, maybe in
+    // an earlier playitem on another timeline) has nothing in it to drop
+    if (mark.pos < pos)
+      continue;
+    if (mark.el || key == video->first ||
+        (m_CurrentSubtitle.id >= 0 &&
+         key == std::make_pair(static_cast<int64_t>(m_CurrentSubtitle.demuxerId),
+                               m_CurrentSubtitle.id)))
+    {
+      m_recueGate[key] = mark;
+      m_recueGate[key].unique = mark.el || key == video->first;
+    }
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool CVideoPlayer::StartRecue(int64_t pos)
+{
+#if defined(HAVE_LIBBLURAY)
+  // the new track failed to open: nothing to re-read for
+  if (m_CurrentAudio.id < 0)
+  {
+    m_recueGate.clear();
+    return false;
+  }
+  // a stream the switch opened (a forced subtitle) takes everything it reads
+  for (auto it = m_recueGate.begin(); it != m_recueGate.end();)
+  {
+    const bool current =
+        it->second.el ||
+        it->first == std::make_pair(static_cast<int64_t>(m_CurrentVideo.demuxerId),
+                                    m_CurrentVideo.id) ||
+        it->first == std::make_pair(static_cast<int64_t>(m_CurrentSubtitle.demuxerId),
+                                    m_CurrentSubtitle.id);
+    it = current ? std::next(it) : m_recueGate.erase(it);
+  }
+  if (!m_pInputBluray->Recue(pos))
+  {
+    m_recueGate.clear();
+    return false;
+  }
+  m_pDemuxer->Flush();
+  for (auto& [key, mark] : m_recueGate)
+    mark.readPos = -1;
+  m_recueSince = std::chrono::steady_clock::now();
+  m_recueDropped = 0;
+  // what the new track has before the clock is dropped, what it has after
+  // lands on the running clock (a join, not a start)
+  m_CurrentAudio.startpts = m_clock.GetClock();
+  m_recueJoinPending = true;
+  // the video queue drains while the re-read catches up: a stall grace, as a
+  // seek gets at its sync
+  m_syncTimer.Set(3000ms);
+  CLog::Log(LOGINFO,
+            "VideoPlayer: audio track switch re-cued from title byte {} (clock {:.3f}), {} streams "
+            "gated, the picture runs on",
+            pos, m_clock.GetClock() / DVD_TIME_BASE, m_recueGate.size());
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool CVideoPlayer::RecueGateDrops(const DemuxPacket* packet)
+{
+  if (std::chrono::steady_clock::now() - m_recueSince > 10s)
+  {
+    // a sparse stream (subtitles) may send nothing for that long; a video
+    // stream still gated means the re-read never caught up
+    const bool videoGated = std::any_of(m_recueGate.begin(), m_recueGate.end(),
+                                        [](const auto& entry) { return entry.second.unique; });
+    CLog::Log(videoGated ? LOGWARNING : LOGINFO,
+              "VideoPlayer: audio re-cue gate closed after 10 s with {} streams gated{}, {} "
+              "packets dropped",
+              m_recueGate.size(), videoGated ? " (video among them)" : "", m_recueDropped);
+    m_recueGate.clear();
+    // a track that never reached its sync by now joins nothing later
+    m_recueJoinPending = false;
+    return false;
+  }
+  if (packet->iStreamId < 0)
+    return false;
+  const auto it = m_recueGate.find({packet->demuxerId, packet->iStreamId});
+  if (it == m_recueGate.end())
+    return false;
+  DeliveredMark& mark = it->second;
+  // a packet that does not start a PES is where the last one was
+  if (packet->streamPos >= 0)
+    mark.readPos = packet->streamPos;
+  // the demuxer's own dts, as recorded (the gate runs before any correction)
+  const double dts = packet->dts;
+  bool delivered;
+  if (mark.unique && dts != DVD_NOPTS_VALUE && mark.dts != DVD_NOPTS_VALUE)
+  {
+    // Within a playitem (a re-cue never crosses one) a stream's dts rises in
+    // decode order, while the re-read's byte positions need not match the first
+    // read's: measured on M3GAN (FEL), the frame delivered before last came back
+    // past the last delivered byte, and by position both layers took it twice.
+    // A packet sharing the last delivered dts is that frame. Subtitles keep the
+    // position: a PGS segment is one PES whose position the re-read keeps (the
+    // video parser's packet boundaries are what moved), while a display set's
+    // dts need not rise in read order.
+    constexpr double SAME_DTS = DVD_MSEC_TO_TIME(1);
+    delivered = dts <= mark.dts + SAME_DTS;
+  }
+  else
+    delivered = mark.readPos < mark.pos ||
+                (mark.readPos == mark.pos &&
+                 (dts == DVD_NOPTS_VALUE || mark.dts == DVD_NOPTS_VALUE || dts <= mark.dts));
+  if (delivered)
+  {
+    m_recueDropped++;
+    return true;
+  }
+  CLog::Log(LOGINFO,
+            "VideoPlayer: stream {} leaves the re-cue gate at byte {} dts {:.3f} (last delivered "
+            "byte {} dts {:.3f})",
+            packet->iStreamId, mark.readPos, dts / DVD_TIME_BASE, mark.pos,
+            mark.dts / DVD_TIME_BASE);
+  m_recueGate.erase(it);
+  if (m_recueGate.empty())
+    CLog::Log(LOGINFO, "VideoPlayer: audio re-cue gate closed: {} packets dropped in {} ms",
+              m_recueDropped,
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - m_recueSince)
+                  .count());
+  return false;
 }
 
 double CVideoPlayer::VideoOffsetPts() const
@@ -5075,17 +5309,22 @@ void CVideoPlayer::HandleMessages()
 #endif
           if (open)
           {
+            int64_t recuePos = -1;
+            const bool recue = PrepareRecue(recuePos);
             CloseStream(m_CurrentAudio, false);
             OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
             AdaptForcedSubtitles();
 
-            CDVDMsgPlayerSeek::CMode mode;
-            mode.time = (int)GetUpdatedTime();
-            mode.backward = true;
-            mode.accurate = true;
-            mode.trickplay = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            if (!recue || !StartRecue(recuePos))
+            {
+              CDVDMsgPlayerSeek::CMode mode;
+              mode.time = (int)GetUpdatedTime();
+              mode.backward = true;
+              mode.accurate = true;
+              mode.trickplay = true;
+              mode.sync = true;
+              m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            }
           }
         }
       }
@@ -6856,6 +7095,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   // the seams stay: offsets follow the byte position, so a read from anywhere
   // in the title, before a seam or past it, takes the steps it should
   m_seamStreams.clear();
+  ClearRecue();
   // a flush or seek leaves no picture for a waiting menu page to go with
   if (m_menuPageWaiting)
   {

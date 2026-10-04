@@ -80,6 +80,10 @@ public:
   //! startNs: the instant (CLOCK_MONOTONIC); startClock: the clock there.
   //! false (the clock resumed now) if it was not held at speed 0.
   bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);
+  //! A start on the running clock for a stream that joins it (an audio track
+  //! switch, design 15.34): the audio output lands its first sample at a vblank
+  //! `lead` seconds from now. false if the clock is held or a resume pending.
+  bool ScheduleJoin(double lead, int64_t& startNs, double& startClock);
   //! the scheduled resume, while no writer has changed the clock since
   bool GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const;
   //! the player holds the clock for a start (it then resumes or schedules it)
@@ -106,6 +110,10 @@ protected:
   double SystemToAbsolute(int64_t system) const;
   int64_t AbsoluteToSystem(double absolute) const;
   double SystemToPlaying(int64_t system);
+  //! caller holds m_critSection: the reference-clock time of the vblank at
+  //! least `lead` seconds from `current`; sets m_scheduleNs to it
+  int64_t ScheduleInstant(int64_t current, double lead);
+  static unsigned int NextScheduleEpoch();
 
   mutable CCriticalSection m_critSection;
   int64_t m_systemUsed;
