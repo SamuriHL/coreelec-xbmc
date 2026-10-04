@@ -3425,6 +3425,21 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
   // (design 15.36). So frames go back strictly in FIFO order: a shown frame
   // first drops the older frames still out (they can no longer be shown), and
   // a dropped frame waits until the frames ahead of it are back.
+
+  // the decoder can reset the FIFO itself (vmpeg12/vvc1 error recovery send
+  // PROVIDER_RESET); it holds exactly the frames dequeued and not queued back,
+  // the newest ones, so fewer than Kodi's list means the oldest are gone, and
+  // queueing one of those back would empty it again
+  int level = -1;
+  if (amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &level) == 0 && level >= 0 &&
+      static_cast<size_t>(level) < m_outstanding.size())
+  {
+    CLog::Log(LOGINFO, "CAMLCodec::ReleaseFrame - amlvideo holds {} frames, Kodi {}: resynced",
+              level, m_outstanding.size());
+    m_outstanding.erase(m_outstanding.begin(),
+                        m_outstanding.end() - static_cast<std::ptrdiff_t>(level));
+  }
+
   auto it = std::find_if(m_outstanding.begin(), m_outstanding.end(),
                          [index](const OutstandingFrame& f) { return f.index == index; });
   if (it == m_outstanding.end())
