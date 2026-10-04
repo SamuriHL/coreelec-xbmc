@@ -139,7 +139,9 @@ public:
   void SetDisplayLost(bool lost) { m_displayLost = lost; }
   //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
   unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
-  bool IsResolutionUpdatePending() const { return m_bTriggerUpdateResolution; }
+  //! a mode decision is due: the session's first, or one for fullscreen video
+  //! (UpdateResolution decides only then, so a windowed trigger waits for the user)
+  bool IsResolutionUpdatePending() const;
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }

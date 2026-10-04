@@ -1154,6 +1154,21 @@ void CRenderManager::PublishDisplayTiming()
   m_timingEpoch = epoch;
 }
 
+bool CRenderManager::IsResolutionUpdatePending() const
+{
+  // A held start waits for this decision. A session's first start goes
+  // fullscreen just after the hold begins, so it always waits. Later, with the
+  // GUI over the video (a seek there raises the trigger again), none comes
+  // until the user goes fullscreen: the start was held for its 12 s timeout,
+  // the picture frozen (measured on G12B, design 15.40).
+  if (!m_bTriggerUpdateResolution)
+    return false;
+  if (!m_sessionModeDecided)
+    return true;
+  const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  return gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot();
+}
+
 void CRenderManager::UpdateResolution()
 {
   if (m_bTriggerUpdateResolution)
