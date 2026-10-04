@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDClock.h"
+#include "Interface/TimingConstants.h"
 
 #include <string>
 #include <utility>
@@ -85,6 +86,8 @@ struct SStartMsg
   double cachetotal;
   // The worker is still starting and can send an updated timestamp.
   bool timestampPending{false};
+  // audio: the first frame it queued for this start (timestamp is the last)
+  double firstTimestamp{DVD_NOPTS_VALUE};
 };
 
 struct SStateMsg

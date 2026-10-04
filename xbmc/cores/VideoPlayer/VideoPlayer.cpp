@@ -3764,7 +3764,11 @@ void CVideoPlayer::HandlePlaySpeed()
                                  !m_pInputStream->IsRealtime() && (videoStart || audioOnlyStart);
       if (scheduleStart)
       {
-        clock = videoStart ? m_CurrentVideo.starttime : m_CurrentAudio.starttime;
+        // without video the clock starts at the first audio: the audio player
+        // reports the last frame it queued, a sink fill (0.29 s measured) later
+        clock = videoStart                                             ? m_CurrentVideo.starttime
+                : m_CurrentAudio.firststarttime != DVD_NOPTS_VALUE ? m_CurrentAudio.firststarttime
+                                                                   : m_CurrentAudio.starttime;
       }
       else if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
                (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
@@ -5605,6 +5609,7 @@ void CVideoPlayer::HandleMessages()
         m_CurrentAudio.cachetime = msg.cachetime;
         m_CurrentAudio.cachetotal = msg.cachetotal;
         m_CurrentAudio.starttime = msg.timestamp;
+        m_CurrentAudio.firststarttime = msg.firstTimestamp;
       }
       if (msg.player == VideoPlayer_VIDEO)
       {
@@ -7143,6 +7148,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_CurrentAudio.inited = false;
     m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_FORCE;
     m_CurrentAudio.starttime = DVD_NOPTS_VALUE;
+    m_CurrentAudio.firststarttime = DVD_NOPTS_VALUE;
     m_CurrentVideo.inited = false;
     m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_FORCE;
     m_CurrentVideo.starttime = DVD_NOPTS_VALUE;

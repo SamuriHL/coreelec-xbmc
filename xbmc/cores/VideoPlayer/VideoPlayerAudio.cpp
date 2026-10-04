@@ -84,6 +84,7 @@ CVideoPlayerAudio::CVideoPlayerAudio(CDVDClock* pClock,
   m_stalled = true;
   m_paused = false;
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+  m_startFirstPts = DVD_NOPTS_VALUE;
   m_synctype = SYNC_DISCON;
   m_prevsynctype = -1;
   m_prevskipped = false;
@@ -187,6 +188,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 
   m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_AVCHANGE));
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+  m_startFirstPts = DVD_NOPTS_VALUE;
 
   // LAV PCM: reset jitter tracking on stream open
   if (m_lavStylePcmSyncEnabled)
@@ -461,6 +463,7 @@ void CVideoPlayerAudio::Process()
       m_audioClock = 0;
       audioframe.nb_frames = 0;
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+      m_startFirstPts = DVD_NOPTS_VALUE;
 
       // LAV PCM: reset jitter tracking on reset
       if (m_lavStylePcmSyncEnabled)
@@ -492,6 +495,7 @@ void CVideoPlayerAudio::Process()
       if (sync)
       {
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+        m_startFirstPts = DVD_NOPTS_VALUE;
         m_audioSink.Pause();
       }
 
@@ -581,6 +585,7 @@ void CVideoPlayerAudio::Process()
           audioframe.nb_frames = 0;
         }
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+        m_startFirstPts = DVD_NOPTS_VALUE;
         continue;
       }
 
@@ -949,6 +954,9 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   }
 
   int framesOutput = m_audioSink.AddPackets(audioframe);
+  if (m_syncState == IDVDStreamPlayer::SYNC_STARTING && m_startFirstPts == DVD_NOPTS_VALUE &&
+      framesOutput > 0 && audioframe.hasTimestamp)
+    m_startFirstPts = audioframe.pts;
 
   // guess next pts
   m_audioClock += audioframe.duration * ((double)framesOutput / audioframe.nb_frames);
@@ -977,6 +985,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       msg.cachetotal = m_audioSink.GetMaxDelay() * DVD_TIME_BASE;
       msg.cachetime = m_audioSink.GetDelay();
       msg.timestamp = audioframe.hasTimestamp ? audioframe.pts : DVD_NOPTS_VALUE;
+      msg.firstTimestamp = m_startFirstPts;
       m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
 
       m_streaminfo.channels = audioframe.format.m_channelLayout.Count();

@@ -138,6 +138,7 @@ public:
   unsigned int packets;
   IDVDStreamPlayer::ESyncState syncState;
   double starttime;
+  double firststarttime; // audio: the first frame queued for the start
   bool starttimePending;
   double cachetime;
   double cachetotal;
@@ -176,6 +177,7 @@ public:
     packets = 0;
     syncState = IDVDStreamPlayer::SYNC_STARTING;
     starttime = DVD_NOPTS_VALUE;
+    firststarttime = DVD_NOPTS_VALUE;
     starttimePending = false;
     startpts = DVD_NOPTS_VALUE;
     lastdts = DVD_NOPTS_VALUE;

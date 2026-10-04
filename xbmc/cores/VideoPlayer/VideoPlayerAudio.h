@@ -118,6 +118,7 @@ protected:
   bool m_stalled;
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
+  double m_startFirstPts = DVD_NOPTS_VALUE; // the first frame queued for this start
   XbmcThreads::EndTime<> m_syncTimer;
   // Longer settle for the SYNC_DISCON correction gate: post-resync sink
   // transients can still measure 40-80ms at the 3s stall-timer mark (BD wrap
