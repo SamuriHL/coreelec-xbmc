@@ -672,6 +672,9 @@ static std::atomic<bool> s_dv_disc_engaged = false;
 // that carries a DV picture. atomic: requested on the player thread, applied on
 // the GUI thread (CreateNewWindow).
 static std::atomic<bool> s_dv_disc_engage_pending{false};
+// The engage applied for a file (no disc session). atomic: applied on the GUI
+// thread, read and released on the video thread.
+static std::atomic<bool> s_dv_file_engaged{false};
 void aml_dv_set_disc_session(bool active)
 {
   std::unique_lock lock(s_dv_disc_mutex);
@@ -751,7 +754,10 @@ static void aml_dv_engage_disc_session_now()
              2u /* AMDV_FORCE_OUTPUT_MODE */);
   const unsigned int mode = aml_dv_resolve_tunnel_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
-  s_dv_disc_engaged = true;
+  if (s_dv_disc_session)
+    s_dv_disc_engaged = true;
+  else
+    s_dv_file_engaged = true;
   // Mixed disc coming back from a released (non-DV) title: re-arm the session
   // VSIF hold that the release dropped. Idempotent at disc open, where
   // aml_dv_set_disc_session(true) has just armed it.
@@ -797,11 +803,18 @@ void aml_dv_engage_pending_disc_session(bool dvPicture)
               "disc engage not applied", mode);
     return;
   }
-  if (s_dv_disc_session && !s_dv_disc_engaged)
+  if (!s_dv_disc_engaged && !s_dv_file_engaged)
     aml_dv_engage_disc_session_now();
 }
 
 bool aml_dv_disc_engage_pending() { return s_dv_disc_engage_pending.load(); }
+
+void aml_dv_request_file_engage()
+{
+  if (!s_dv_disc_engage_pending.exchange(true))
+    CLog::Log(LOGINFO, "aml_dv_request_file_engage: DV output engage deferred to the "
+              "file's mode set");
+}
 
 // The ordered DV teardown. Shared by the disc-session release and by the
 // stale-session recovery at startup, because getting this order wrong is what
@@ -927,6 +940,27 @@ void aml_dv_release_disc_engage()
 }
 
 bool aml_dv_disc_engaged() { return s_dv_disc_engaged.load(); }
+
+bool aml_dv_file_engaged() { return s_dv_file_engaged.load(); }
+
+void aml_dv_release_file_engage()
+{
+  std::unique_lock lock(s_dv_disc_mutex);
+  s_dv_disc_engage_pending = false;
+  if (!s_dv_file_engaged)
+    return;
+  s_dv_file_engaged = false;
+  dv_teardown_to_bypass();
+  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  CLog::Log(LOGINFO, "aml_dv_release_file_engage: DV output released to native signalling");
+}
+
+void aml_dv_cancel_file_engage_request()
+{
+  std::unique_lock lock(s_dv_disc_mutex);
+  if (!s_dv_disc_session)
+    s_dv_disc_engage_pending = false;
+}
 
 unsigned int aml_vs10_by_setting(const std::string& setting)
 {

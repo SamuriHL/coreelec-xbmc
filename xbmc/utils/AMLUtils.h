@@ -148,6 +148,18 @@ void aml_dv_pre_engage_disc_session();
 // engage when the window now shows a DV picture.
 void aml_dv_engage_pending_disc_session(bool dvPicture);
 bool aml_dv_disc_engage_pending();
+// The same engage for a native DV file, which has no disc session: requested at
+// its decoder open, applied by its mode set, released by its decoder close. The
+// sink then switches into DV inside the held start, not after the clock starts.
+void aml_dv_request_file_engage();
+// Whether a file's engage is applied. Kept apart from aml_dv_disc_engaged(), whose
+// session guards (held wire, suppressed live VS10 BYPASS) do not apply to a file.
+bool aml_dv_file_engaged();
+// The file's release: the ordered teardown, run by CloseDecoder once the decoder
+// is closed and the video is off. Clears a request that was never applied.
+void aml_dv_release_file_engage();
+// Drops a file's request its mode set has not applied (no teardown).
+void aml_dv_cancel_file_engage_request();
 // MIXED discs (DV present on the disc, but the selected title is native
 // HDR10/SDR with conform off): actively release the pre-engaged DV output -
 // drop the session VSIF hold and return amdv to follow-source - so the title's
