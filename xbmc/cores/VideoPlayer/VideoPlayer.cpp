@@ -3811,7 +3811,9 @@ void CVideoPlayer::HandlePlaySpeed()
         SetCaching(CACHESTATE_DONE);
       UpdatePlayState(0);
 
-      m_syncTimer.Set(3000ms);
+      // a released start armed the grace for its lead (ReleaseHeldStart)
+      if (!scheduleStart)
+        m_syncTimer.Set(3000ms);
 
       if (!m_State.streamsReady)
         SignalStreamsReady();
