@@ -142,6 +142,7 @@ protected:
   CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   std::atomic_bool m_drainStarted{false};
   std::atomic_bool m_drainAbort{false};
+  std::atomic_bool m_drainFlushed{false}; //!< a flush is queued: the drained stream is gone
   int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder
   std::atomic_bool m_rewindStalled;
   bool m_paused;

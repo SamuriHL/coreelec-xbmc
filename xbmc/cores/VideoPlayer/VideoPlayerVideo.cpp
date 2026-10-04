@@ -177,6 +177,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_drainStarted = false;
   m_drainAbort = false;
+  m_drainFlushed = false;
 
   m_processInfo.GetVideoBufferManager().ReleasePools();
 
@@ -573,6 +574,12 @@ void CVideoPlayerVideo::Process()
 
       m_renderManager.DiscardBuffer();
       FlushMessages();
+      // FlushMessages takes only packets; the flushed stream's end-of-stream
+      // drain (queued when the demuxer hit its end) goes with them
+      m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
+      m_drainStarted = false;
+      m_drainFlushed = false;
+      m_drained.Set();
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -605,7 +612,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
-      while (!m_bStop && m_pVideoCodec && !m_drainAbort)
+      while (!m_bStop && m_pVideoCodec && !m_drainAbort && !m_drainFlushed)
       {
         // a paused clock (a display mode change) holds the output; the tail
         // has not ended, and the decoder is not starved
@@ -621,7 +628,7 @@ void CVideoPlayerVideo::Process()
         if (ProcessDecoderOutput(frametime, pts))
           continue;
         // a paused clock (a display mode change) holds the tail; it has not ended
-        if (m_pClock->IsPaused() && !m_drainAbort && !m_bStop)
+        if (m_pClock->IsPaused() && !m_drainAbort && !m_drainFlushed && !m_bStop)
         {
           CThread::Sleep(20ms);
           continue;
@@ -1014,6 +1021,11 @@ void CVideoPlayerVideo::Flush(bool sync)
   if (m_pVideoCodec)
     m_pVideoCodec->Abort();
 
+  // The flush discards the stream a drain is playing out. A drain in progress
+  // holds while the clock is paused, and a seek or the next file keeps the clock
+  // paused until this player starts again: without this the two wait on each
+  // other until the player's start timeout.
+  m_drainFlushed = true;
   SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
   m_bAbortOutput = true;
 }
