@@ -2126,6 +2126,8 @@ void CVideoPlayer::HoldStart()
   m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
+  // the held start frame is chosen by the clock on validated SoCs only
+  m_clock.SetStartHeld(aml_presentation_validated());
   m_VideoPlayerVideo->SetStartHeld(true);
   m_renderManager.SetStartHeld(true);
   CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {})",
@@ -2178,6 +2180,8 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   if (m_pInputBluray && std::string_view(why) != "flush")
     m_pInputBluray->ShiftBdjMediaClock(held + lead);
 #endif
+  // after the schedule: a frame selected meanwhile sees one or the other
+  m_clock.SetStartHeld(false);
   m_VideoPlayerVideo->SetStartHeld(false);
   m_renderManager.SetStartHeld(false);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);

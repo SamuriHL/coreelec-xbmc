@@ -240,6 +240,9 @@ protected:
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
   std::atomic_bool m_startHeld{false};
+  //! from a start the clock had yet to make until its display phase is measured:
+  //! no early release (it would put a frame up ahead of the start)
+  bool m_startGate = false;
   std::atomic_bool m_sessionModeDecided{false}; //!< this file's first output mode is set
   std::atomic<unsigned int> m_incomingSegmentGen{0}; //!< generation of the pictures queued next
 
