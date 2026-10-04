@@ -139,7 +139,6 @@ protected:
   void ClearShadowPins();
   std::atomic<unsigned int> m_committedStart{0};
   std::atomic<unsigned int> m_abandonedStart{0};
-  int m_landDiag = 40; // TEMP LANDDIAG
   bool m_shadowAudible = false;
   int64_t m_starvedSinceNs = 0; // silence written while the clock runs
   unsigned int m_starvedBuffers = 0;

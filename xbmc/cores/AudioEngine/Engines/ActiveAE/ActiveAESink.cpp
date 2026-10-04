@@ -1233,20 +1233,6 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   // a pause burst leaves the stats' queued time with its own length
   const int pauseMs = samples->pkt->nb_samples == 0 ? samples->pkt->pause_burst_ms : 0;
 
-  // TEMP LANDDIAG (design §15, 2.2): where the buffers after a landing fall
-  // against their own labels' targets
-  if (samples->landNs && samples->landEpoch == m_committedStart.load() && m_landDiag < 40)
-  {
-    AEDelayStatus st;
-    m_sink->GetDelay(st);
-    struct timespec ts = {};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
-    CLog::Log(LOGINFO, "LANDDIAG start {} buffer {} pts {:.3f} ms: lands {:+.3f} ms from its target",
-              samples->landEpoch, ++m_landDiag, samples->ptsUs / 1000.0,
-              (now + static_cast<int64_t>(st.delay * 1e9) - samples->landNs) / 1e6);
-  }
-
   const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
   // the engine counted the pad as queued: from here the device delay has it
   const double padMs = samples->pkt->nb_samples > 0 ? samples->padMs : 0.0;
@@ -1548,7 +1534,6 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   }
   m_committedStart = samples->landEpoch;
   PRESENTATION::AudioLandings().fetch_add(1, std::memory_order_release);
-  m_landDiag = 0;
   // the error: where the first sample written leaves against its own target
   const double errorMs = padNs > 0 ? (total * 1e9 / rate - padNs) / 1e6
                                    : (skipFrames * 1e9 / rate + padNs) / 1e6;
