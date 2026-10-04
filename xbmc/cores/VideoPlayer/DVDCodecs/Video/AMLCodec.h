@@ -152,6 +152,16 @@ private:
   PosixFilePtr     m_amlVideoFile;
   std::mutex       m_amlVideoFileMutex;
   std::atomic<uint32_t> m_sessionGen{0};
+  // amlvideo's FIFO of dequeued frames, Kodi's side (CAMLCodec::ReleaseFrame);
+  // guarded by m_amlVideoFileMutex
+  struct OutstandingFrame
+  {
+    uint32_t index;
+    bool dropped; // released as a drop, waiting for the frames ahead of it
+  };
+  std::deque<OutstandingFrame> m_outstanding;
+  bool m_releaseInOrder = false;
+  int QueueBack(const PosixFilePtr& amlVideoFile, uint32_t index, bool drop);
   std::string      m_defaultVfmMap;
 
   static std::atomic_flag  m_pollSync;

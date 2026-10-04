@@ -35,6 +35,7 @@
 #include "platform/linux/SysfsPath.h"
 
 #include <unistd.h>
+#include <algorithm>
 #include <queue>
 #include <vector>
 #include <signal.h>
@@ -2194,6 +2195,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   {
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     m_sessionGen++;
+    m_outstanding.clear();
+    m_releaseInOrder = aml_presentation_validated();
   }
 
   if (!OpenAmlVideo(hints))
@@ -2981,6 +2984,7 @@ void CAMLCodec::CloseAmlVideo()
   {
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     closing.swap(m_amlVideoFile);
+    m_outstanding.clear();
   }
   closing.reset();
 
@@ -3012,10 +3016,12 @@ void CAMLCodec::Reset()
   m_park_last_data_len = -1;
   SetPollDevice(-1);
 
-  // frames decoded before the reset must not be queued into the reset decoder
+  // frames decoded before the reset must not be queued into the reset decoder,
+  // whose amlvideo FIFO the reset empties
   {
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     m_sessionGen++;
+    m_outstanding.clear();
   }
 
   // set the system blackout_policy to leave the last frame showing
@@ -3398,13 +3404,72 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
     return 0;
   }
 
-  if (drop)
-    vbuf.flags |= V4L2_BUF_FLAG_DONE;
-
   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
 
-  if ((ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
-    CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
+  if (!m_releaseInOrder)
+  {
+    if (drop)
+      vbuf.flags |= V4L2_BUF_FLAG_DONE;
+    if ((ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
+      CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
+    return ret;
+  }
+
+  // amlvideo keeps the frames Kodi dequeued in one FIFO, and a QBUF pops it
+  // from the head up to the queued index, giving every frame it pops that
+  // QBUF's show or drop; an index no longer in it empties the FIFO. Frames
+  // come back out of order (a frame the presenter skips is discarded after the
+  // frame shown in its place), and that drop then emptied the FIFO: the frames
+  // decoded ahead were lost and every later frame was shown under the label of
+  // one up to 14 frames earlier, the picture that far ahead of the sound
+  // (design 15.36). So frames go back strictly in FIFO order: a shown frame
+  // first drops the older frames still out (they can no longer be shown), and
+  // a dropped frame waits until the frames ahead of it are back.
+  auto it = std::find_if(m_outstanding.begin(), m_outstanding.end(),
+                         [index](const OutstandingFrame& f) { return f.index == index; });
+  if (it == m_outstanding.end())
+  {
+    // already dropped by a later frame's show
+    CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d} - already queued back", index);
+    return 0;
+  }
+
+  ret = 0;
+  if (drop)
+    it->dropped = true;
+  else
+  {
+    for (auto older = m_outstanding.begin(); older != it; ++older)
+    {
+      if (!older->dropped)
+        CLog::Log(LOGDEBUG, LOGVIDEO,
+                  "CAMLCodec::ReleaseFrame idx:{:d} - dropped, idx:{:d} shown after it",
+                  older->index, index);
+      QueueBack(amlVideoFile, older->index, true);
+    }
+    m_outstanding.erase(m_outstanding.begin(), it);
+    ret = QueueBack(amlVideoFile, index, false);
+    m_outstanding.pop_front();
+  }
+  while (!m_outstanding.empty() && m_outstanding.front().dropped)
+  {
+    QueueBack(amlVideoFile, m_outstanding.front().index, true);
+    m_outstanding.pop_front();
+  }
+  return ret;
+}
+
+int CAMLCodec::QueueBack(const PosixFilePtr& amlVideoFile, uint32_t index, bool drop)
+{
+  v4l2_buffer vbuf = v4l2_buffer();
+  vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  vbuf.index = index;
+  if (drop)
+    vbuf.flags |= V4L2_BUF_FLAG_DONE;
+  const int ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf);
+  if (ret < 0)
+    CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF idx:{:d} failed: {}", index,
+              strerror(errno));
   return ret;
 }
 
@@ -3456,6 +3521,12 @@ int CAMLCodec::DequeueBuffer()
   			static_cast<double>(m_cur_pts) /  DVD_TIME_BASE, vbuf.index);
 
     m_bufferIndex = vbuf.index;
+    if (m_releaseInOrder)
+    {
+      std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+      if (amlVideoFile == m_amlVideoFile)
+        m_outstanding.push_back({vbuf.index, false});
+    }
   }
   else if (ret != EAGAIN)
   {
