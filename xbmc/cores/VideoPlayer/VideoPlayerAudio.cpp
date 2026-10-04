@@ -483,6 +483,8 @@ void CVideoPlayerAudio::Process()
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
+      // the frames it recorded are gone, resync or not
+      m_startFirstPts = DVD_NOPTS_VALUE;
 
       // LAV PCM: reset jitter tracking on flush
       if (m_lavStylePcmSyncEnabled)
@@ -495,7 +497,6 @@ void CVideoPlayerAudio::Process()
       if (sync)
       {
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
-        m_startFirstPts = DVD_NOPTS_VALUE;
         m_audioSink.Pause();
       }
 

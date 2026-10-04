@@ -541,13 +541,20 @@ void CRenderManager::FrameMove()
   m_overlays.PrepareOverlays(source, segmentGen);
 }
 
-void CRenderManager::PreInit()
+void CRenderManager::BeginFile()
 {
-  // a new file: any phase still pending belongs to the last one
+  // a new file: any phase still pending belongs to the last one, and so does
+  // its output mode decision (a running player opening the next file skips
+  // PreInit; left set, a start from the GUI skipped its hold for the mode)
   m_dvdClock.ClearVsyncAdjust(true);
   m_sessionModeDecided = false;
   m_startHeld = false;
   m_startGate = false;
+}
+
+void CRenderManager::PreInit()
+{
+  BeginFile();
   {
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)

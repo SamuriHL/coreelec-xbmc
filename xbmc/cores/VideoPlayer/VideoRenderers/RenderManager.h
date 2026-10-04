@@ -111,6 +111,8 @@ public:
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
   void SetViewMode(int iViewMode);
   void PreInit();
+  //! a new file in the same session: resets what belongs to the last one
+  void BeginFile();
   void UnInit();
   bool Flush(bool wait, bool saveBuffers);
   bool IsConfigured() const;
