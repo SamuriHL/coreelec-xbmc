@@ -2186,6 +2186,12 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   m_renderManager.SetStartHeld(false);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);
+  // The players start with the clock, so their stall grace does too. Armed at
+  // sync instead, it had run out during a hold through a TV relock (about 6 s),
+  // and the stall check took the scheduled lead for a stall: it started
+  // caching, which paused the clock, cancelling the schedule, and resumed it
+  // some 50 ms later, off the vsync grid and 300 ms early (design 15.38).
+  m_syncTimer.Set(3000ms + std::chrono::milliseconds(std::lround(lead * 1000.0)));
   m_streamPlayerSpeed = m_playSpeed;
   CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", held, why,
             m_clock.GetClock() / DVD_TIME_BASE);
