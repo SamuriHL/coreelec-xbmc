@@ -1742,6 +1742,11 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
   bool startPending = bluray->BdjStartPending(startSeq);
   if (!startPending || flushAll)
     m_bdjStartWaitSince.reset();
+  if (flushAll)
+  {
+    m_discClockWaitSince.reset();
+    m_discClockGateExpired = false;
+  }
   std::deque<SDiscTimelineEvent> keptForStart;
   while (!m_discTimelineEvents.empty())
   {
@@ -1804,9 +1809,13 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
       else
         break;
     }
+    // an entry read before a pending start's marker: the application holds
+    // what it hears until its start, so it never waits ahead of the marker
+    // (it would cost the start its lead, design 15.60)
+    const bool beforeStart = ev.bdjReleaseSeq != 0 && startPending;
     // a mark at its picture is not due while a start's picture is still to
     // come (the scheduled lead): the clock sits at that picture meanwhile
-    if (!flushAll && ev.presentPts != DVD_NOPTS_VALUE)
+    if (!flushAll && ev.presentPts != DVD_NOPTS_VALUE && !beforeStart)
     {
       int64_t pendingNs = 0;
       double pendingClock = 0.0;
@@ -1831,6 +1840,11 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
       if (readerAtEnd && end != DVD_NOPTS_VALUE && end < due)
         due = std::max(end, ev.stampPts);
     }
+    // a due time is on its streams' timeline: not judged by a clock that is
+    // not theirs yet (design 15.60)
+    if (!flushAll && due != DVD_NOPTS_VALUE && !beforeStart &&
+        DiscClockGateHolds(ev.bdjReleaseSeq != 0, readerAtEnd))
+      break;
     if (!flushAll && due != DVD_NOPTS_VALUE && clock < due)
     {
       // A stamp further ahead than the maximum queue depth (plus margin)
@@ -1913,10 +1927,51 @@ double CVideoPlayer::BdjMarkPresentPts(uint32_t pts45, int64_t clipStart, int64_
   return present;
 }
 
-bool CVideoPlayer::ClockOnStreams()
+bool CVideoPlayer::TimelineCommitted() const
 {
   const CCurrentStream& master = m_CurrentVideo.id >= 0 ? m_CurrentVideo : m_CurrentAudio;
-  if (master.id < 0 || master.syncState != IDVDStreamPlayer::SYNC_INSYNC || m_startHeld)
+  return master.id >= 0 && master.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+}
+
+bool CVideoPlayer::DiscClockGateHolds(bool bdjEntry, bool readerAtEnd)
+{
+  const bool streamOpen = m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0;
+  bool hold = false;
+  if (streamOpen && !TimelineCommitted())
+  {
+    // the clock is still the previous timeline's; not while the reader waits
+    // inside a read: the commit runs only once it returns
+    hold = !readerAtEnd;
+  }
+  else if (bdjEntry && streamOpen && !ClockOnStreams())
+  {
+    // the clock waits at a start's first picture (held, or its lead): what the
+    // application hears after its start, it hears from that picture on
+    hold = true;
+  }
+  if (!hold)
+  {
+    m_discClockWaitSince.reset();
+    m_discClockGateExpired = false;
+    return false;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (!m_discClockWaitSince)
+    m_discClockWaitSince = now;
+  else if (now - *m_discClockWaitSince > 15s)
+  {
+    if (!m_discClockGateExpired)
+      CLog::Log(LOGWARNING, "CVideoPlayer: disc timeline waited 15 s for its streams' clock, "
+                            "released");
+    m_discClockGateExpired = true;
+    return false;
+  }
+  return true;
+}
+
+bool CVideoPlayer::ClockOnStreams()
+{
+  if (!TimelineCommitted() || m_startHeld)
     return false;
   int64_t ns = 0;
   double startClock = 0.0;
@@ -7763,11 +7818,20 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // delivered (the start resolved), and its stamp is on the start's
       // timeline or voided by the playlist change's flush, so a segment
       // transition must not wipe it (design 15.57)
+      // judged only against the clock of the stamp's own streams; before the
+      // start's timeline is committed, the stamp is the start's own read-ahead
+      // and the start goes with its schedule: the marker's entry has no stamp
+      // (design 15.60)
       const bool awaitSegment = startPending && static_cast<int32_t>(seq - startSeq) >= 0 &&
-                                stamp != DVD_NOPTS_VALUE && stamp <= m_clock.GetClock();
-      const auto holdsStart = [&](uint32_t from, uint32_t upto) {
-        return awaitSegment && static_cast<int32_t>(startSeq - from) > 0 &&
+                                stamp != DVD_NOPTS_VALUE && ClockOnStreams() &&
+                                stamp <= m_clock.GetClock();
+      const bool voidStartStamp = startPending && stamp != DVD_NOPTS_VALUE && !TimelineCommitted();
+      const auto holdsMarker = [&](uint32_t from, uint32_t upto) {
+        return startPending && static_cast<int32_t>(startSeq - from) > 0 &&
                static_cast<int32_t>(upto - startSeq) >= 0;
+      };
+      const auto holdsStart = [&](uint32_t from, uint32_t upto) {
+        return awaitSegment && holdsMarker(from, upto);
       };
       uint32_t pushed = m_pInputBluray ? m_pInputBluray->StampAfterSeq() : 0;
       if (holdsStart(pushed, seq))
@@ -7779,7 +7843,8 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // behind it). An entry at the stamp never merges into or past a mark.
       const bool endBatch = m_pInputBluray && m_pInputBluray->IsBdjEndBatch(seq);
       const auto push = [&](uint32_t upto, double presentPts) {
-        if (presentPts == DVD_NOPTS_VALUE && !endBatch && !m_discTimelineEvents.empty() &&
+        const bool voided = voidStartStamp && holdsMarker(pushed, upto);
+        if (presentPts == DVD_NOPTS_VALUE && !endBatch && !voided && !m_discTimelineEvents.empty() &&
             m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
             m_discTimelineEvents.back().presentPts == DVD_NOPTS_VALUE &&
             !m_discTimelineEvents.back().endOfPlaylist && !m_discTimelineEvents.back().markPending &&
@@ -7791,7 +7856,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
           pushed = upto;
           return;
         }
-        SDiscTimelineEvent ev{stamp, 0, nullptr, upto};
+        SDiscTimelineEvent ev{voided ? DVD_NOPTS_VALUE : stamp, 0, nullptr, upto};
         ev.awaitSegment = holdsStart(pushed, upto);
         ev.presentPts = presentPts;
         ev.endOfPlaylist = endBatch && upto == seq;

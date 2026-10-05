@@ -856,6 +856,14 @@ protected:
   //! the clock is the timeline of the streams it times: the stream it was
   //! started on is in sync and no start is held or scheduled (design 15.59)
   bool ClockOnStreams();
+  //! the clock was placed on these streams' timeline (the sync commit), even if
+  //! a start still holds it at its first picture (design 15.60)
+  bool TimelineCommitted() const;
+  //! a disc timeline entry with a due time waits: the clock is not (yet) its
+  //! streams' (design 15.60); bounded by 15 s
+  bool DiscClockGateHolds(bool bdjEntry, bool readerAtEnd);
+  std::optional<std::chrono::steady_clock::time_point> m_discClockWaitSince;
+  bool m_discClockGateExpired = false;
   std::chrono::steady_clock::time_point m_boundaryStartWaitSince{};
   //! E1: a full audio queue waiting on the video's first picture (bounded)
   std::chrono::steady_clock::time_point m_firstPictureWaitSince{};
