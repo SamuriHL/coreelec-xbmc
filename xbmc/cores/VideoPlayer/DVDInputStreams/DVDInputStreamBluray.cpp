@@ -840,6 +840,12 @@ bool CDVDInputStreamBluray::Open()
     CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J marks at presentation {}",
               m_bdjMarkTimes ? "on" : "off");
 #endif
+#if defined(BD_BDJ_DEFER_START)
+    // design 15.54: the reader never waits inside the read at a playlist's end
+    m_bdjEofAtEnd = m_bdjDeferStart && !XFILE::CFile::Exists("special://profile/bdjread_off");
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J end of playlist at presentation {}",
+              m_bdjEofAtEnd ? "on" : "off");
+#endif
 #endif
   }
   else
@@ -1201,6 +1207,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
       // the newest held batch was stamped with the last data read, so its
       // release is the picture reaching the end; with nothing held, the next
       // stamped batch (END_OF_PLAYLIST) serves - see StampBdjPending
+      // (with the end read as EOF, design 15.54, the END batch stamped at the
+      // end replaces this: see StampBdjPending)
       if (IsBdjTitle() && m_bdjEndSeq == 0)
         m_bdjEndSeq = bd_bdj_pending_seq(m_bd);
 #endif
@@ -1403,7 +1411,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_IDLE:
-    KODI::TIME::Sleep(100ms);
+    // at a playlist's end the player loop paces the reads (design 15.54)
+    if (!m_bdjReaderAtEnd)
+      KODI::TIME::Sleep(100ms);
     break;
 
   case BD_EVENT_SOUND_EFFECT:
@@ -1541,6 +1551,13 @@ void CDVDInputStreamBluray::StampBdjPending()
   m_bdjStampedSeq = seq;
   if (m_bdjEndOfTitleRead && m_bdjEndSeq == 0)
     m_bdjEndSeq = seq;
+  // at the end, the first batch stamped holds END_OF_PLAYLIST (libbluray posts
+  // it on the read after END_OF_TITLE): that is the playlist's end
+  if (m_bdjReaderAtEnd && m_bdjAtEndEndSeq == 0)
+  {
+    m_bdjAtEndEndSeq = seq;
+    m_bdjEndSeq = seq;
+  }
   // runs on the player thread inside the demux read: the player stamps it
   // with the read position (last delivered video dts)
   m_player->OnDiscNavResult(&seq, BD_EVENT_BDJ_PRESENTATION_STAMP);
@@ -1832,6 +1849,7 @@ bool CDVDInputStreamBluray::HoldForEvent()
           break;
         m_hold = HOLD_HELD;
         m_holdIsBoundary = true;
+        LeaveBdjEnd();
         return true;
       }
       break;
@@ -1843,6 +1861,7 @@ bool CDVDInputStreamBluray::HoldForEvent()
       {
         m_hold = HOLD_HELD;
         m_holdIsBoundary = false;
+        LeaveBdjEnd();
       }
       return true;
 
@@ -1850,6 +1869,61 @@ bool CDVDInputStreamBluray::HoldForEvent()
       break;
   }
   return false;
+}
+
+void CDVDInputStreamBluray::SetBdjDemuxerOpen(bool open)
+{
+  m_bdjDemuxerOpen = open;
+  if (!open)
+    LeaveBdjEnd();
+}
+
+void CDVDInputStreamBluray::LeaveBdjEnd()
+{
+  m_bdjReaderAtEnd = false;
+  m_bdjAtEndEndSeq = 0;
+}
+
+// At a BD-J playlist's end (design 15.54) each read is one real libbluray read
+// and returns: that read is what posts END_OF_PLAYLIST to the application,
+// what the presentation stamps, and the boundary the application's next
+// playlist raises is held as on any read. 0 is EOF to the demuxer.
+int CDVDInputStreamBluray::ReadAtBdjEnd(uint8_t* buf, int buf_size)
+{
+  if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+  {
+    LeaveBdjEnd();
+    return -1;
+  }
+  const uint64_t readStart = bd_tell(m_bd);
+  BeginDataRead(readStart);
+  const int result = bd_read_ext(m_bd, buf, buf_size, &m_event);
+  EndDataRead(readStart, result);
+  if (result < 0)
+  {
+    m_hold = HOLD_ERROR;
+    LeaveBdjEnd();
+    return result;
+  }
+  StampBdjPending();
+  // a hold leaves the end (HoldForEvent)
+  if (HoldForEvent())
+    return result;
+  // as the read loop: the carry guard judges the event against the carry in
+  // force when it was read
+  m_carryAtRead = m_seamlessCarry && m_hold == HOLD_DATA;
+  if (result > 0)
+  {
+    LeaveBdjEnd();
+    m_hold = HOLD_NONE;
+    m_seamlessCarry = false;
+    m_bdjEndOfTitleRead = false;
+    m_bdjEndSeq = 0;
+    m_bdjAtPlaylistEnd = false;
+  }
+  ProcessEvent();
+  m_carryAtRead = false;
+  return result;
 }
 
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
@@ -1905,6 +1979,9 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
   m_dispTimeBeforeRead = static_cast<int>((bd_tell_time(m_bd) / 90));
   if(m_navmode)
   {
+    if (m_bdjReaderAtEnd && m_hold != HOLD_HELD)
+      return ReadAtBdjEnd(buf, buf_size);
+
     do {
 
       if (m_hold == HOLD_HELD)
@@ -1947,6 +2024,20 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
       const uint32_t event = m_event.event;
       ProcessEvent();
       m_carryAtRead = false;
+
+      // A BD-J playlist read to its end: end the stream here (EOF) rather than
+      // wait in this read for the application, which would stop the player
+      // presenting what was read (design 15.54). Not in a probe (no demuxer
+      // yet), not for an idle reader, not an end with nothing read since the
+      // playlist started: those keep the wait below.
+      if (result == 0 && event == BD_EVENT_END_OF_TITLE && m_bdjEofAtEnd && m_bdjDemuxerOpen &&
+          !m_titleByteJump && IsBdjTitle())
+      {
+        CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD-J playlist read to its end: the stream "
+                            "ends here, the player presents it");
+        m_bdjReaderAtEnd = true;
+        return 0;
+      }
 
       // nothing to read and nothing happened: the reader is waiting on the
       // BD-J application (end of playlist, no playlist)
@@ -3068,6 +3159,11 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   if(!m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
     return NEXTSTREAM_NONE;
 
+  // at a BD-J playlist's end with nothing held yet: the stream stays, the
+  // player keeps presenting and reading until the application moves on
+  if (m_bdjReaderAtEnd && m_hold != HOLD_HELD && m_hold != HOLD_STILL)
+    return NEXTSTREAM_RETRY;
+
   // Any boundary that reaches here took the HOLD path, and the transition the
   // player is about to run covers it. An earlier glide that the player has not
   // collected yet is superseded - leaving it armed would fire a second,
@@ -3088,6 +3184,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   if(m_hold == HOLD_STILL)
     return NEXTSTREAM_RETRY;
 
+  LeaveBdjEnd();
   m_hold = HOLD_DATA;
   return NEXTSTREAM_OPEN;
 }

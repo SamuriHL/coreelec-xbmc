@@ -1146,6 +1146,11 @@ bool CVideoPlayer::OpenDemuxStream()
   m_offset_pts = 0;
   m_seamOffsetPts = 0.0;
   ClearSeams();
+#if defined(HAVE_LIBBLURAY)
+  ResetSegmentEnd();
+  if (m_pInputBluray)
+    m_pInputBluray->SetBdjDemuxerOpen(true);
+#endif
 
   if (m_updateStreamDetails)
   {
@@ -1160,12 +1165,24 @@ bool CVideoPlayer::OpenDemuxStream()
   return true;
 }
 
+void CVideoPlayer::ResetSegmentEnd()
+{
+  m_segmentVideoPtsEnd = DVD_NOPTS_VALUE;
+  m_segmentAudioPtsEnd = DVD_NOPTS_VALUE;
+  m_bdjAllDelivered = false;
+}
+
 void CVideoPlayer::CloseDemuxer()
 {
   // held ELs belong to this demuxer's clip; a clip after it can reuse its timestamps
   ClearPendingElPackets();
   m_pDemuxer.reset();
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputBluray)
+    m_pInputBluray->SetBdjDemuxerOpen(false);
+  ResetSegmentEnd();
+#endif
 
   CServiceBroker::GetDataCacheCore().SignalAudioInfoChange();
   CServiceBroker::GetDataCacheCore().SignalVideoInfoChange();
@@ -1709,7 +1726,17 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
     // never be delivered (ffmpeg emits a PES when the next starts), so not
     // after the last one that was
     double due = ev.stampPts;
-    if (ev.presentPts != DVD_NOPTS_VALUE)
+    if (ev.endOfPlaylist && !flushAll)
+    {
+      // the playlist's end: when its last picture (or sound) is presented,
+      // once the demuxer delivered all of it (design 15.54); no stream: now
+      if (!m_bdjAllDelivered)
+        break;
+      due = m_CurrentVideo.id >= 0 ? m_segmentVideoPtsEnd
+            : m_CurrentAudio.id >= 0 ? m_segmentAudioPtsEnd
+                                     : DVD_NOPTS_VALUE;
+    }
+    else if (ev.presentPts != DVD_NOPTS_VALUE)
     {
       due = ev.presentPts;
       const double end = m_CurrentVideo.dts_end();
@@ -3067,7 +3094,14 @@ void CVideoPlayer::Process()
     {
       // when paused, demuxer could be be returning empty
       if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
+      {
+#if defined(HAVE_LIBBLURAY)
+        // at a BD-J end each pass is a libbluray read: pace it
+        if (m_pInputBluray && m_pInputBluray->BdjReaderAtEnd())
+          CThread::Sleep(10ms);
+#endif
         continue;
+      }
 
       // check for a still frame state
       if (std::shared_ptr<CDVDInputStream::IMenus> pStream = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
@@ -3098,6 +3132,16 @@ void CVideoPlayer::Process()
         continue;
       }
 
+#if defined(HAVE_LIBBLURAY)
+      // the demuxer ended at a BD-J playlist's end: everything read is
+      // delivered, and its END_OF_PLAYLIST can come due (design 15.54)
+      const bool bdjAtEnd = m_pInputBluray && m_pInputBluray->BdjReaderAtEnd();
+      if (bdjAtEnd)
+        m_bdjAllDelivered = true;
+#else
+      const bool bdjAtEnd = false;
+#endif
+
       // if there is another stream available, reopen demuxer
       CDVDInputStream::ENextStream next = m_pInputStream->NextStream();
       if(next == CDVDInputStream::NEXTSTREAM_OPEN)
@@ -3106,10 +3150,11 @@ void CVideoPlayer::Process()
         continue;
       }
 
-      // input stream asked us to just retry
+      // input stream asked us to just retry (at a BD-J end: the timeline and
+      // the presentation run in this loop meanwhile)
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
-        CThread::Sleep(100ms);
+        CThread::Sleep(bdjAtEnd ? 10ms : 100ms);
         continue;
       }
 
@@ -3226,6 +3271,8 @@ bool CVideoPlayer::CheckIsCurrent(const CCurrentStream& current,
 
 void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
+  // data again: the end (design 15.54) is not reached yet
+  m_bdjAllDelivered = false;
   // process packet if it belongs to selected stream.
   // for dvd's don't allow automatic opening of streams*/
 
@@ -3340,6 +3387,12 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
   bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
   UpdateTimestamps(m_CurrentAudio, pPacket);
+  if (pPacket->pts != DVD_NOPTS_VALUE)
+  {
+    const double end = pPacket->pts + (pPacket->duration > 0 ? pPacket->duration : 0.0);
+    if (m_segmentAudioPtsEnd == DVD_NOPTS_VALUE || end > m_segmentAudioPtsEnd)
+      m_segmentAudioPtsEnd = end;
+  }
 
   if (checkcont && (m_CurrentAudio.avsync == CCurrentStream::AV_SYNC_CHECK))
     m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
@@ -3380,6 +3433,13 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
     m_videoKeptUnconfirmed = false;
     checkcont = CheckContinuity(m_CurrentVideo, pPacket);
     UpdateTimestamps(m_CurrentVideo, pPacket);
+    // the segment's last picture (design 15.54), on the player's timeline
+    if (pPacket->pts != DVD_NOPTS_VALUE && !m_videoKeptUnconfirmed)
+    {
+      const double end = pPacket->pts + (pPacket->duration > 0 ? pPacket->duration : 0.0);
+      if (m_segmentVideoPtsEnd == DVD_NOPTS_VALUE || end > m_segmentVideoPtsEnd)
+        m_segmentVideoPtsEnd = end;
+    }
     // the packet a BD-J mark read now converts with: its correction is final
     // here (CheckContinuity ran), unless it is an unconfirmed jump's keyframe
     if (pPacket->dts != DVD_NOPTS_VALUE && pPacket->streamPos >= 0 &&
@@ -3584,6 +3644,13 @@ void CVideoPlayer::HandlePlaySpeed()
   const bool isInMenu = IsInMenuInternal();
   const bool tolerateStall =
       isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
+  // at a BD-J playlist's end the stream has ended, not starved (design 15.54):
+  // no stall detection; a start's caching is left alone
+#if defined(HAVE_LIBBLURAY)
+  const bool streamEnded = m_pInputBluray && m_pInputBluray->BdjReaderAtEnd();
+#else
+  const bool streamEnded = false;
+#endif
 
   if (tolerateStall && m_caching != CACHESTATE_DONE)
     SetCaching(CACHESTATE_DONE);
@@ -3662,7 +3729,7 @@ void CVideoPlayer::HandlePlaySpeed()
 
   if (m_caching == CACHESTATE_DONE)
   {
-    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !m_startHeld)
+    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !streamEnded && !m_startHeld)
     {
       // take action if audio or video stream is stalled
       if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
@@ -3743,7 +3810,7 @@ void CVideoPlayer::HandlePlaySpeed()
   // where a long stall is entirely normal.
   const bool brokenFileGate =
       m_pDemuxer && m_pInputStream && !m_pInputStream->IsRealtime() &&
-      m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall &&
+      m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !streamEnded &&
       m_caching == CACHESTATE_DONE && m_CurrentAudio.inited && m_CurrentVideo.inited &&
       m_VideoPlayerAudio->IsStalled() && m_VideoPlayerVideo->IsStalled() &&
       CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
@@ -7316,6 +7383,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   ClearPendingElPackets();
+  ResetSegmentEnd();
   // the seams stay: offsets follow the byte position, so a read from anywhere
   // in the title, before a seam or past it, takes the steps it should
   m_seamStreams.clear();
@@ -7548,10 +7616,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       // marks with their own time is split around each: what was held before
       // it (at the stamp), the mark (at its picture), the rest (at the stamp,
       // behind it). An entry at the stamp never merges into or past a mark.
+      const bool endBatch = m_pInputBluray && m_pInputBluray->IsBdjEndBatch(seq);
       const auto push = [&](uint32_t upto, double presentPts) {
-        if (presentPts == DVD_NOPTS_VALUE && !m_discTimelineEvents.empty() &&
+        if (presentPts == DVD_NOPTS_VALUE && !endBatch && !m_discTimelineEvents.empty() &&
             m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
             m_discTimelineEvents.back().presentPts == DVD_NOPTS_VALUE &&
+            !m_discTimelineEvents.back().endOfPlaylist &&
             m_discTimelineEvents.back().stampPts == stamp)
         {
           m_discTimelineEvents.back().bdjReleaseSeq = upto;
@@ -7561,6 +7631,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         SDiscTimelineEvent ev{stamp, 0, nullptr, upto};
         ev.awaitSegment = awaitSegment;
         ev.presentPts = presentPts;
+        ev.endOfPlaylist = endBatch && upto == seq;
         m_discTimelineEvents.push_back(ev);
       };
       uint32_t pushed = m_pInputBluray ? m_pInputBluray->StampAfterSeq() : 0;

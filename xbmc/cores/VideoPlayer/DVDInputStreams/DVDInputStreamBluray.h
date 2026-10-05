@@ -368,6 +368,14 @@ public:
     int64_t clipEnd;
   };
   bool BdjMarkTimes() const { return m_bdjMarkTimes; }
+  /* At the end of a BD-J playlist the read ends the stream (EOF) instead of
+   * waiting inside it for the application (design 15.54): the player keeps
+   * presenting, and the application hears the end at the last picture. */
+  bool BdjReaderAtEnd() const { return m_bdjReaderAtEnd; }
+  //! the batch holding the playlist's END_OF_PLAYLIST (first stamped after END_OF_TITLE)
+  bool IsBdjEndBatch(uint32_t seq) const { return m_bdjAtEndEndSeq != 0 && seq == m_bdjAtEndEndSeq; }
+  //! the player has a demuxer open on this stream (a probe must not meet the end)
+  void SetBdjDemuxerOpen(bool open);
   const std::vector<BdjMarkTime>& StampMarkTimes() const { return m_stampMarkTimes; }
   uint32_t StampAfterSeq() const { return m_stampAfterSeq; } // the batch is (after, seq]
   /* While the player's queues are full it does not read, and the events the
@@ -601,6 +609,12 @@ protected:
   bool m_bdjTiming = false;
   bool m_bdjDeferStart = false; //!< libbluray patch 17: BD-J starts wait for their first picture
   bool m_bdjMarkTimes = false; //!< libbluray patch 18: marks at their own presentation time
+  bool m_bdjEofAtEnd = false; //!< design 15.54: EOF at a BD-J playlist's end (A/B: bdjread_off)
+  bool m_bdjReaderAtEnd = false;
+  bool m_bdjDemuxerOpen = false;
+  uint32_t m_bdjAtEndEndSeq = 0; //!< the END batch, stamped while at the end
+  void LeaveBdjEnd();
+  int ReadAtBdjEnd(uint8_t* buf, int buf_size);
   std::vector<BdjMarkTime> m_stampMarkTimes;
   uint32_t m_stampAfterSeq = 0;
   uint32_t m_bdjStampedSeq = 0;

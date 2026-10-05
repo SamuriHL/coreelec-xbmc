@@ -930,6 +930,9 @@ protected:
     // a held mark's own picture on the player's timeline (libbluray patch 18,
     // design 15.50); it is due then, not at the stamp
     double presentPts = DVD_NOPTS_VALUE;
+    // the playlist's END_OF_PLAYLIST: due at its last picture, once all of it
+    // was delivered (design 15.54)
+    bool endOfPlaylist = false;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   std::deque<DemuxPacket*> m_pendingElPackets;
@@ -938,6 +941,12 @@ protected:
   double BdjMarkPresentPts(uint32_t pts45, int64_t clipStart, int64_t clipEnd, double stamp,
                            uint32_t readGen) const;
   bool m_videoKeptUnconfirmed = false; //!< CheckContinuity kept an unconfirmed jump's keyframe
+  // design 15.54: the segment's last picture (video, else audio; player timeline)
+  // and whether the demuxer has delivered everything up to a BD-J playlist's end
+  double m_segmentVideoPtsEnd = DVD_NOPTS_VALUE;
+  double m_segmentAudioPtsEnd = DVD_NOPTS_VALUE;
+  bool m_bdjAllDelivered = false;
+  void ResetSegmentEnd();
   //! the instant of a held BD-J start's first picture, once known (design §15.48)
   bool BdjStartInstant(double stampPts, double clock, int64_t& startNs);
   void ArmBdjStartForSegment();
