@@ -51,6 +51,10 @@ public:
                        RESOLUTION_INFO& res) override;
   bool DestroyWindow() override;
 
+  // Implementation of CRenderSystemBase via CRenderSystemGLES
+  bool InitRenderSystem() override;
+  bool DestroyRenderSystem() override;
+
   bool ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop) override;
   bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) override;
 
@@ -127,6 +131,9 @@ private:
   int m_guiCompositeTransfer{0};
   float m_guiCompositePeak{-1.0f};
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+  //! the KODI_LIMITED_RANGE define the kept program was compiled with
+  bool m_compositeShaderLimited{false};
+  bool BuildCompositeShader();
 
   std::unique_ptr<CPresentationCoordinator> m_coordinator;
   // phase 1 of the presentation coordinator design: the timeline in shadow

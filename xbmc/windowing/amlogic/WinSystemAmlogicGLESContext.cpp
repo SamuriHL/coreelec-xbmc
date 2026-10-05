@@ -31,6 +31,8 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
 
+#include <chrono>
+
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
 using namespace std::chrono_literals;
@@ -150,6 +152,9 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
     SetPresentationReady(false);
     m_amlDisplay->aml_set_drmDevice_active(false);
   }
+
+  // normally gone at DestroyRenderSystem already, with the context current
+  m_compositeShader.reset();
 
   m_pGLContext->DestroyContext();
   m_pGLContext->Destroy();
@@ -301,6 +306,56 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (m_amlDisplay->aml_get_display_connected())
     SetPresentationReady(true);
 
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::InitRenderSystem()
+{
+  if (!CRenderSystemGLES::InitRenderSystem())
+    return false;
+
+  // Build the GUI composite program now, with the context current and no
+  // render-manager lock held: built at the first composite Configure instead,
+  // its 19-41 ms compile would stall the presentation coordinator's tick
+  // (design §16.14). Kept for the session on validated hardware.
+  if (aml_presentation_validated())
+  {
+    const auto start = std::chrono::steady_clock::now();
+    const bool built = BuildCompositeShader();
+    CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: GUI composite program {} in {} ms",
+              built ? "built" : "FAILED",
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count());
+  }
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
+{
+  // the last point with the context and surface current (DestroyWindow unbinds it)
+  m_compositeShader.reset();
+  return CRenderSystemGLES::DestroyRenderSystem();
+}
+
+bool CWinSystemAmlogicGLESContext::BuildCompositeShader()
+{
+  // the range is compiled in: a kept program built for the other range is rebuilt
+  const bool limited = UseLimitedColor();
+  if (m_compositeShader && m_compositeShaderLimited == limited)
+    return true;
+
+  std::string defines;
+  if (limited)
+    defines += "#define KODI_LIMITED_RANGE 1\n";
+  m_compositeShaderLimited = limited;
+  m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
+  if (!m_compositeShader->CompileAndLink())
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to compile GUI composite shader");
+    m_compositeShader.reset();
+    return false;
+  }
   return true;
 }
 
@@ -569,19 +624,10 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
 
   if (m_guiCompositing)
   {
-    if (!m_compositeShader)
+    if (!BuildCompositeShader())
     {
-      std::string defines;
-      if (UseLimitedColor())
-        defines += "#define KODI_LIMITED_RANGE 1\n";
-      m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
-      if (!m_compositeShader->CompileAndLink())
-      {
-        CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to compile GUI composite shader");
-        m_compositeShader.reset();
-        m_guiCompositing = false;
-        return false;
-      }
+      m_guiCompositing = false;
+      return false;
     }
 
     // GUI reference white follows videoscreen.guipeakluminance instead of the
@@ -611,7 +657,13 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
     m_hdrFboHeight = 0;
     m_hdrFboHasContent = false;
     m_hdrFboUnavailable = false;
-    m_compositeShader.reset();
+    // Compiling the program takes 19-41 ms (design §16.14), inside
+    // CRenderManager::Configure under the locks the presentation coordinator's
+    // tick needs: every SDR -> composite segment change cost the tick one or two
+    // vblanks. On validated hardware the program is kept for the next composite
+    // segment (its LUTs are rebuilt there, under 1 ms); only the FBOs go.
+    if (!aml_presentation_validated())
+      m_compositeShader.reset();
   }
 
   return m_guiCompositing;
