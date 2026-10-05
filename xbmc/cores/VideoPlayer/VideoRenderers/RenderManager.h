@@ -231,6 +231,8 @@ protected:
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> m_captureBlit;
   OVERLAY::CRenderer m_overlays;
   CDebugRenderer m_debugRenderer;
+  //! one set-up attempt per session when built on first show (a failed one is not retried per frame)
+  bool m_debugRendererTried{false};
   mutable CCriticalSection m_statelock;
   mutable CCriticalSection m_presentlock;
   CCriticalSection m_datalock;

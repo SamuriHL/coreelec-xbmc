@@ -39,6 +39,7 @@ static inline bool aml_disc_mode_anchored() { return true; }
 static inline void aml_set_disc_mode_anchored(bool) {}
 static inline unsigned int aml_presenter_epoch() { return 0; }
 static inline void aml_set_video_presenter_active(bool) {}
+static inline bool aml_presentation_validated() { return false; }
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -580,7 +581,13 @@ void CRenderManager::PreInit()
     CreateRenderer();
   }
 
-  m_debugRenderer.Initialize();
+  // The debug info renderer's set-up (subtitle/libass adapter) takes 18 ms per
+  // open and 111 ms at the first (G12B, design §16.15), here under m_statelock,
+  // which the presentation coordinator's tick needs. On validated hardware it is
+  // built when the debug info is first shown (Render, outside the lock) instead;
+  // most sessions never show it.
+  if (!aml_presentation_validated())
+    m_debugRenderer.Initialize();
 
   UpdateLatencyTweak();
 
@@ -620,6 +627,7 @@ void CRenderManager::UnInit()
   if (CServiceBroker::GetAppMessenger()->IsProcessThread())
     OVERLAY::MarkDirty();
   m_debugRenderer.Dispose();
+  m_debugRendererTried = false;
 
   m_captureBlit.reset();
   if (m_pRenderer)
@@ -992,6 +1000,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     if (m_renderDebug)
     {
+      if (!m_debugRendererTried) // built on first show (see PreInit)
+      {
+        m_debugRendererTried = true;
+        m_debugRenderer.Initialize();
+      }
       if (m_renderDebugVideo)
       {
         DEBUG_INFO_VIDEO video = m_pRenderer->GetDebugInfo(source);
