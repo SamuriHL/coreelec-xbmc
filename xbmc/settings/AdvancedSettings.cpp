@@ -86,7 +86,10 @@ void CAdvancedSettings::OnSettingsLoaded()
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (settings->GetBool(CSettings::SETTING_DEBUG_SHOWLOGINFO))
   {
-    m_logLevel = std::max(m_logLevelHint, LOG_LEVEL_DEBUG_FREEMEM);
+    // samurihl: the GUI setting turns on debug logging only. The on-screen debug
+    // overlay (LOG_LEVEL_DEBUG_FREEMEM; it logs nothing more) stays off unless
+    // advancedsettings.xml asks for it with <loglevel>2</loglevel>.
+    m_logLevel = std::max(m_logLevelHint, LOG_LEVEL_DEBUG);
     CLog::Log(LOGINFO, "Enabled debug logging due to GUI setting ({})", m_logLevel);
   }
   else
@@ -1544,7 +1547,8 @@ void CAdvancedSettings::SetDebugMode(bool debug)
 {
   if (debug)
   {
-    int level = std::max(m_logLevelHint, LOG_LEVEL_DEBUG_FREEMEM);
+    // debug logging without the on-screen overlay (see OnSettingsLoaded)
+    int level = std::max(m_logLevelHint, LOG_LEVEL_DEBUG);
     m_logLevel = level;
     CServiceBroker::GetLogging().SetLogLevel(level);
     CLog::Log(LOGINFO, "Enabled debug logging due to GUI setting. Level {}.", level);
