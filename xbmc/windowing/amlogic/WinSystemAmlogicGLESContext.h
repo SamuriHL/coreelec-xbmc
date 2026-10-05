@@ -135,9 +135,9 @@ private:
   bool m_compositeShaderLimited{false};
   bool BuildCompositeShader();
 
-  std::unique_ptr<CPresentationCoordinator> m_coordinator;
-  // phase 1 of the presentation coordinator design: the timeline in shadow
+  // declared first so it outlives the coordinator, which polls its tick fd
   std::unique_ptr<CTimekeeper> m_timekeeper;
+  std::unique_ptr<CPresentationCoordinator> m_coordinator;
   std::unique_ptr<CGraphicsPlaneAML> m_graphicsPlane;
   bool m_hdrGraphicsThisFrame{false}; //!< the video pass handed them over this GUI frame
   bool m_hdrGraphicsShown{false}; //!< the plane was last given something to show

@@ -8,10 +8,11 @@
 
 #pragma once
 
-// The timekeeper (design: docs/presentation_coordinator_design.md §2.1, §3).
-// Phase 1 runs it in shadow: it keeps the timeline from the vblanks and a
-// low-priority reporter compares it with today's clocks. Nothing reads the
-// timeline to present yet. Enabled by special://profile/timekeeper_shadow.
+// The timekeeper (design: docs/presentation_coordinator_design.md §2.1, §3,
+// §16.3): the one owner of display time. It keeps the timeline from the vblanks
+// and wakes the presentation coordinator at every tick. With shadow, a
+// low-priority reporter also compares the timeline with today's clocks
+// (special://profile/timekeeper_shadow).
 
 #include "AudioFollower.h"
 
@@ -28,8 +29,12 @@ public:
   CTimekeeper(int masterFd, uint32_t crtcId);
   ~CTimekeeper();
 
-  bool Start();
+  bool Start(bool shadow);
   void Stop();
+
+  //! readable after every published tick (an eventfd: read it to clear)
+  int TickFd() const { return m_tickFd; }
+  uint32_t CrtcId() const { return m_crtcId; }
 
 private:
   // the time thread: vblanks in, timeline out; no lock, no log, no allocation
@@ -54,6 +59,8 @@ private:
   uint32_t m_connectorId = 0;
   uint32_t m_fracPropId = 0;
   int m_wakeFd = -1;
+  int m_tickFd = -1;
+  bool m_shadow = false;
   std::thread m_thread;
   std::thread m_reporter;
   CAudioFollower m_follower;

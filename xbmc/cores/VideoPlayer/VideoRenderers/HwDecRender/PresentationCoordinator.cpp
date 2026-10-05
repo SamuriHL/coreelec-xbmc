@@ -96,8 +96,8 @@ const char* StateName(int state)
 }
 } // namespace
 
-CPresentationCoordinator::CPresentationCoordinator(int masterFd)
-  : CThread("PresentCoord"), m_masterFd(masterFd)
+CPresentationCoordinator::CPresentationCoordinator(int masterFd, int tickFd, uint32_t tickCrtc)
+  : CThread("PresentCoord"), m_masterFd(masterFd), m_tickFd(tickFd), m_tickCrtc(tickCrtc)
 {
 }
 
@@ -192,6 +192,12 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
     m_crtc = winSystem->GetDRMCrtcId();
 
   const int64_t start = MonotonicNs();
+  const bool timeline = m_tickFd >= 0 && m_crtc == m_tickCrtc;
+  if (m_tickFd >= 0 && !timeline)
+    CLog::Log(LOGWARNING, "CPresentationCoordinator - crtc {} is not the timekeeper's ({}), "
+                          "queueing its own vblank events", m_crtc.load(), m_tickCrtc);
+  m_attachNs = start;
+  m_useTimeline = timeline;
   m_videoAttached = true;
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
@@ -396,6 +402,11 @@ void CPresentationCoordinator::Process()
     unsigned int epoch = 0;
     // a hold is acknowledged only once the flip in flight has landed
     const bool held = aml_presenter_check_hold(epoch, !UiInFlight());
+    if (epoch != m_seenEpoch)
+    {
+      m_seenEpoch = epoch;
+      m_seenEpochNs = MonotonicNs();
+    }
     if (held)
     {
       SetState(State::HELD, epoch);
@@ -409,7 +420,8 @@ void CPresentationCoordinator::Process()
       CommitUi();
 
     const bool video = m_videoAttached;
-    if (video)
+    const bool timeline = video && m_useTimeline;
+    if (video && !timeline)
       QueueVblank(epoch);
 
     int fence[PLANE_COUNT];
@@ -428,7 +440,7 @@ void CPresentationCoordinator::Process()
     struct pollfd fds[3 + PLANE_COUNT] = {
         {m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0}};
     if (video)
-      fds[2].fd = m_vblankFd;
+      fds[2].fd = timeline ? m_tickFd : m_vblankFd;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
     const int timeout = held ? 20 : (video || inFlight ? 50 : -1);
@@ -462,7 +474,9 @@ void CPresentationCoordinator::Process()
     bool gotTick = false;
     if (fds[1].revents & POLLIN)
       HandleEvents(m_masterFd, tick, gotTick, epoch);
-    if (fds[2].revents & POLLIN)
+    if ((fds[2].revents & POLLIN) && timeline)
+      ReadTimelineTick(tick, gotTick, epoch);
+    else if (fds[2].revents & POLLIN)
       HandleEvents(m_vblankFd, tick, gotTick, epoch);
 
     const int64_t now = MonotonicNs();
@@ -548,9 +562,51 @@ void CPresentationCoordinator::HandleEvents(int fd,
   tick.wokeNs = MonotonicNs();
   tick.epoch = epoch;
   gotTick = true;
+  NoteVblank(tick.vblankNs);
+}
+
+void CPresentationCoordinator::ReadTimelineTick(SPresentTick& tick,
+                                                bool& gotTick,
+                                                unsigned int epoch)
+{
+  uint64_t count;
+  if (read(m_tickFd, &count, sizeof(count)) < 0 && errno != EAGAIN)
+    CLog::Log(LOGDEBUG, "CPresentationCoordinator - tick read failed: {}", strerror(errno));
+
+  int64_t tl[PRESENTATION::TL_COUNT];
+  // timer-made ticks are not vblanks: no vblank keeps the coordinator's own
+  // timer tick, as with its own events
+  if (!PRESENTATION::TimelineBoard().Read(tl) || tl[PRESENTATION::TL_SYNTHETIC] ||
+      tl[PRESENTATION::TL_TICK] == m_lastTimelineTick)
+    return;
+  m_lastTimelineTick = tl[PRESENTATION::TL_TICK];
+  const int64_t vblankNs = tl[PRESENTATION::TL_VBLANK_NS];
+  // published before this attach: not a vblank this attach waits for
+  if (vblankNs <= m_attachNs)
+    return;
+  // before the current display epoch: its time may be the CRTC switching off,
+  // not a vsync (as an event queued before the transaction); the source is
+  // alive, so no timer tick either
+  if (vblankNs <= m_seenEpochNs)
+  {
+    m_report.stale++;
+    m_lastTickNs = MonotonicNs();
+    return;
+  }
+  tick.seq = static_cast<uint64_t>(tl[PRESENTATION::TL_KERNEL_SEQ]);
+  tick.vblankNs = vblankNs;
+  tick.wokeNs = MonotonicNs();
+  tick.epoch = epoch;
+  gotTick = true;
+  m_report.timeline = true;
+  NoteVblank(vblankNs);
+}
+
+void CPresentationCoordinator::NoteVblank(int64_t vblankNs)
+{
   {
     std::unique_lock lock(m_vblankMutex);
-    m_lastVblankNs = tick.vblankNs;
+    m_lastVblankNs = vblankNs;
   }
   m_vblankCond.notify_all();
 }
@@ -915,13 +971,13 @@ void CPresentationCoordinator::LogReport()
     return;
   const int drops = ReadKernelDrops();
   CLog::Log(r.ticks ? LOGINFO : LOGDEBUG,
-            "real_player coordinator: ticks={} missed={} synthetic={} stale={} held={} "
+            "real_player coordinator: ticks={} source={} missed={} synthetic={} stale={} held={} "
             "frames={} repeats={} skipped={} wake mean={:.0f}us max={:.0f}us "
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
             "commits={} failed={} flips={} lost={} commit max={:.0f}us "
             "[<1ms {} <5ms {} <20ms {} >=20ms {}] flip mean={:.0f}us max={:.0f}us "
             "| graphics submits={} replaced={} commits={} placement [<-1 {} -1 {} 0 {} +1 {} >+1 {}]",
-            r.ticks, r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
+            r.ticks, r.timeline ? "timeline" : "own", r.missed, r.synthetic, r.stale, r.held, r.frames, r.repeats, r.skipped,
             r.woke ? r.wakeSum / r.woke : 0.0, r.wakeMax, r.ticks ? r.workSum / r.ticks : 0.0,
             r.workMax, drops >= 0 && m_kernelDrops >= 0 ? drops - m_kernelDrops : -1,
             r.uiSubmits, r.uiReplaced, r.uiCommits, r.uiFailed, r.uiFlips, r.uiLostFlips,

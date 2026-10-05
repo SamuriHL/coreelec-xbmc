@@ -38,7 +38,12 @@ typedef struct _drmModeAtomicReq* drmModeAtomicReqPtr;
 class CPresentationCoordinator : private CThread
 {
 public:
-  explicit CPresentationCoordinator(int masterFd);
+  /*!
+   * \param tickFd the timekeeper's tick eventfd and tickCrtc its CRTC: with
+   * them, video ticks come from the timeline while the CRTC presenting is that
+   * one, and the coordinator queues its own vblank events otherwise.
+   */
+  explicit CPresentationCoordinator(int masterFd, int tickFd = -1, uint32_t tickCrtc = 0);
   ~CPresentationCoordinator() override;
 
   bool Start();
@@ -143,6 +148,8 @@ private:
 
   void QueueVblank(unsigned int epoch);
   void HandleEvents(int fd, SPresentTick& tick, bool& gotTick, unsigned int epoch);
+  void ReadTimelineTick(SPresentTick& tick, bool& gotTick, unsigned int epoch);
+  void NoteVblank(int64_t vblankNs);
   void CommitUi();
   void CommitWorker();
   void OnFlip(uint64_t tag, unsigned int sequence);
@@ -160,6 +167,14 @@ private:
   void LogReport();
 
   const int m_masterFd;
+  const int m_tickFd;
+  const uint32_t m_tickCrtc;
+  //! set at each attach: the timeline drives the video ticks
+  std::atomic<bool> m_useTimeline{false};
+  std::atomic<int64_t> m_attachNs{0};
+  int64_t m_lastTimelineTick = -1;
+  unsigned int m_seenEpoch = 0;
+  int64_t m_seenEpochNs = 0; //!< when this thread first saw the current display epoch
   int m_vblankFd = -1;
   int m_wakeFd = -1;
   std::atomic<uint32_t> m_crtc{0};
@@ -199,6 +214,7 @@ private:
   struct Report
   {
     int ticks = 0;
+    bool timeline = false; //!< the ticks came from the timeline
     int missed = 0; //!< vblanks between consecutive ticks
     int synthetic = 0;
     int stale = 0; //!< events from a previous display epoch, dropped

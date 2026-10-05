@@ -122,7 +122,7 @@ CTimekeeper::~CTimekeeper()
   Stop();
 }
 
-bool CTimekeeper::Start()
+bool CTimekeeper::Start(bool shadow)
 {
   if (m_masterFd < 0 || !m_crtcId)
     return false;
@@ -134,9 +134,11 @@ bool CTimekeeper::Start()
     free(path);
   }
   m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-  if (m_fd < 0 || m_wakeFd < 0)
+  m_tickFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  if (m_fd < 0 || m_wakeFd < 0 || m_tickFd < 0)
   {
-    CLog::Log(LOGWARNING, "CTimekeeper - no fds (drm:{} wake:{})", m_fd, m_wakeFd);
+    CLog::Log(LOGWARNING, "CTimekeeper - no fds (drm:{} wake:{} tick:{})", m_fd, m_wakeFd,
+              m_tickFd);
     Stop();
     return false;
   }
@@ -154,10 +156,21 @@ bool CTimekeeper::Start()
   int64_t notice[MN_COUNT];
   if (ModeBoard().Read(notice))
     m_modeSerial = notice[MN_SERIAL];
-  ShadowActive() = true;
+  m_shadow = shadow;
+  ShadowActive() = shadow;
   m_thread = std::thread(&CTimekeeper::Run, this);
-  m_reporter = std::thread(&CTimekeeper::Report, this);
-  m_follower.Start();
+  sched_param param = {};
+  param.sched_priority = TIME_PRIORITY;
+  m_rtResult = pthread_setschedparam(m_thread.native_handle(), SCHED_FIFO, &param);
+  if (m_rtResult != 0)
+    CLog::Log(LOGWARNING, "CTimekeeper - SCHED_FIFO {} refused: {}", TIME_PRIORITY,
+              strerror(m_rtResult));
+  if (shadow)
+  {
+    m_reporter = std::thread(&CTimekeeper::Report, this);
+    m_follower.Start();
+  }
+  CLog::Log(LOGINFO, "CTimekeeper - started on crtc {}{}", m_crtcId, shadow ? ", with shadow" : "");
   return true;
 }
 
@@ -181,12 +194,15 @@ void CTimekeeper::Stop()
   TimelineTicks().notify_all();
   if (m_reporter.joinable())
     m_reporter.join();
-  m_follower.Stop();
+  if (m_shadow)
+    m_follower.Stop();
   if (m_fd >= 0)
     close(m_fd);
   if (m_wakeFd >= 0)
     close(m_wakeFd);
-  m_fd = m_wakeFd = -1;
+  if (m_tickFd >= 0)
+    close(m_tickFd);
+  m_fd = m_wakeFd = m_tickFd = -1;
 }
 
 void CTimekeeper::FindFracProperty()
@@ -267,9 +283,6 @@ bool CTimekeeper::ReadModeNow(uint64_t& num, uint64_t& den)
 void CTimekeeper::Run()
 {
   pthread_setname_np(pthread_self(), "Timekeeper");
-  sched_param param = {};
-  param.sched_priority = TIME_PRIORITY;
-  m_rtResult = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
 
   drmEventContext context = {};
   context.version = 4;
@@ -499,6 +512,10 @@ void CTimekeeper::Publish(int64_t vblankNs, bool synthetic)
   TimelineBoard().Write(values);
   TimelineTicks().fetch_add(1, std::memory_order_release);
   TimelineTicks().notify_all();
+  const uint64_t one = 1;
+  if (write(m_tickFd, &one, sizeof(one)) < 0)
+  {
+  }
 }
 
 void CTimekeeper::Report()

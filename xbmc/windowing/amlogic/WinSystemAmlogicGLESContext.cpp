@@ -97,24 +97,34 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     m_eglFence = std::make_unique<KODI::UTILS::EGL::CEGLFence>(GetEGLDisplay());
   }
 
-  if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoPresentationCoordinator)
-  {
-    m_coordinator =
-        std::make_unique<CPresentationCoordinator>(m_amlDisplay->aml_get_Device_handle());
-    if (!m_coordinator->Start())
-      m_coordinator.reset();
-  }
-
-  // the timeline clock needs the timekeeper; the shadow comparison runs with it
+  const bool coordinator =
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoPresentationCoordinator;
+  // On validated hardware the timekeeper owns display time and drives the
+  // coordinator's video ticks. The timeline clock needs it; the shadow
+  // comparison runs with it.
+  const bool tickOwner = coordinator && aml_presentation_validated() &&
+                         !XFILE::CFile::Exists("special://profile/tickowner_off");
   const bool timelineClock = XFILE::CFile::Exists("special://profile/timeline_clock");
-  if (timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow"))
+  const bool shadow =
+      timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow");
+  if (tickOwner || shadow)
   {
     m_timekeeper = std::make_unique<CTimekeeper>(m_amlDisplay->aml_get_Device_handle(),
                                                  m_amlDisplay->aml_get_Device_crtc_id());
-    if (!m_timekeeper->Start())
+    if (!m_timekeeper->Start(shadow))
       m_timekeeper.reset();
     else if (timelineClock)
       PRESENTATION::TimelineClockActive() = true;
+  }
+
+  if (coordinator)
+  {
+    const bool ticks = tickOwner && m_timekeeper;
+    m_coordinator = std::make_unique<CPresentationCoordinator>(
+        m_amlDisplay->aml_get_Device_handle(), ticks ? m_timekeeper->TickFd() : -1,
+        ticks ? m_timekeeper->CrtcId() : 0);
+    if (!m_coordinator->Start())
+      m_coordinator.reset();
   }
 
   const int graphicsPlane =
