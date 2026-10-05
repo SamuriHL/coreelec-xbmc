@@ -147,6 +147,12 @@ public:
   // stuff to handle starting after seek
   double startpts;
   double lastdts;
+  // video: the last packet a BD-J mark's own time converts with (design
+  // 15.50) - its player dts, raw 90 kHz dts and title byte with generation
+  double markRefDts;
+  int64_t markRefRawDts;
+  int64_t markRefPos;
+  uint32_t markRefGen;
 
   enum
   {
@@ -181,6 +187,10 @@ public:
     starttimePending = false;
     startpts = DVD_NOPTS_VALUE;
     lastdts = DVD_NOPTS_VALUE;
+    markRefDts = DVD_NOPTS_VALUE;
+    markRefRawDts = 0;
+    markRefPos = -1;
+    markRefGen = 0;
     avsync = AV_SYNC_FORCE;
   }
 
@@ -684,10 +694,12 @@ protected:
   {
     int64_t pos;
     double step;
+    uint32_t gen; // the title-byte generation of pos
   };
   struct SeamStream
   {
     int64_t lastPos = -1;
+    uint32_t lastGen = 0;
     double offset = 0.0;
   };
   bool m_seamByPos = false;
@@ -915,10 +927,17 @@ protected:
     // a held BD-J start read after everything before it was presented: its
     // first picture is the next segment's, so it waits for that segment
     bool awaitSegment = false;
+    // a held mark's own picture on the player's timeline (libbluray patch 18,
+    // design 15.50); it is due then, not at the stamp
+    double presentPts = DVD_NOPTS_VALUE;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   std::deque<DemuxPacket*> m_pendingElPackets;
-  void ApplyDiscTimelineEvents(bool flushAll);
+  //! readerAtEnd: the input waits at the end of a BD-J playlist
+  void ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd = false);
+  double BdjMarkPresentPts(uint32_t pts45, int64_t clipStart, int64_t clipEnd, double stamp,
+                           uint32_t readGen) const;
+  bool m_videoKeptUnconfirmed = false; //!< CheckContinuity kept an unconfirmed jump's keyframe
   //! the instant of a held BD-J start's first picture, once known (design §15.48)
   bool BdjStartInstant(double stampPts, double clock, int64_t& startNs);
   void ArmBdjStartForSegment();

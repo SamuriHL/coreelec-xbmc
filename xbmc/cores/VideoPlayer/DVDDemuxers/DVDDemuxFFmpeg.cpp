@@ -183,22 +183,37 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
     return AVERROR_EOF;
 
   std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
-  demuxer->NoteBytePos(pInputStream->GetBytePos());
+  // the AVIO is not seekable: its pos counts the bytes read, the domain of AVPacket.pos
+  const int64_t ioPos = demuxer->ReadIoPos();
   int len = pInputStream->Read(buf, size);
   if (len == 0)
     return AVERROR_EOF;
   if (len > 0)
+  {
     demuxer->m_sourceReadBytes += len;
+    demuxer->NoteReadAnchor(ioPos);
+  }
   return len;
 }
 
-void CDVDDemuxFFmpeg::NoteBytePos(int64_t bytePos)
+int64_t CDVDDemuxFFmpeg::ReadIoPos() const
 {
-  if (bytePos < 0 || !m_ioContext)
+  return m_ioContext ? m_ioContext->pos : -1;
+}
+
+void CDVDDemuxFFmpeg::NoteReadAnchor(int64_t ioPos)
+{
+  int64_t bytePos = -1;
+  uint32_t gen = 0;
+  if (ioPos < 0 || !m_pInput->GetLastReadAnchor(bytePos, gen))
     return;
-  // the AVIO is not seekable: its pos counts the bytes read, the domain of AVPacket.pos
-  m_bytePosOffset = m_ioContext->pos - bytePos;
-  m_bytePosValid = true;
+  if (!m_readAnchors.empty() && m_readAnchors.back().gen == gen &&
+      m_readAnchors.back().ioPos - m_readAnchors.back().bytePos == ioPos - bytePos)
+    return;
+  m_readAnchors.push_back({ioPos, bytePos, gen});
+  // far more than the packets ffmpeg can hold back between reads
+  while (m_readAnchors.size() > 64)
+    m_readAnchors.pop_front();
 }
 
 void CDVDDemuxFFmpeg::MarkBroken()
@@ -790,6 +805,7 @@ void CDVDDemuxFFmpeg::Dispose()
             fmt::ptr(this));
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
+  m_readAnchors.clear();
 
   delete m_pSSIF;
   m_pSSIF = nullptr;
@@ -1300,6 +1316,9 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
               ConvertTimestamp(m_pkt.pkt.pts, stream->time_base.den, stream->time_base.num);
           pPacket->dts =
               ConvertTimestamp(m_pkt.pkt.dts, stream->time_base.den, stream->time_base.num);
+          if (m_pkt.pkt.dts != AV_NOPTS_VALUE && stream->time_base.num == 1 &&
+              stream->time_base.den == 90000)
+            pPacket->rawDts = m_pkt.pkt.dts;
           pPacket->duration = DVD_SEC_TO_TIME((double)m_pkt.pkt.duration * stream->time_base.num /
                                               stream->time_base.den);
 
@@ -1335,8 +1354,18 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
           // store internal id until we know the continuous id presented to player
           // the stream might not have been created yet
           pPacket->iStreamId = m_pkt.pkt.stream_index;
-          if (m_bytePosValid && m_pkt.pkt.pos >= 0)
-            pPacket->streamPos = m_pkt.pkt.pos - m_bytePosOffset;
+          if (m_pkt.pkt.pos >= 0)
+          {
+            for (auto it = m_readAnchors.rbegin(); it != m_readAnchors.rend(); ++it)
+            {
+              if (it->ioPos <= m_pkt.pkt.pos)
+              {
+                pPacket->streamPos = m_pkt.pkt.pos - it->ioPos + it->bytePos;
+                pPacket->streamGen = it->gen;
+                break;
+              }
+            }
+          }
         }
         if (!keep)
         {

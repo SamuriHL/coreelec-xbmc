@@ -358,6 +358,18 @@ public:
    * belong to it. */
   bool BdjStartPending(uint32_t& startSeq);
   bool BdjDeferStart() const { return m_bdjDeferStart; }
+  /* A held mark carries its own presentation time (libbluray patch 18,
+   * design 15.50): the marks of the batch being stamped, oldest first. */
+  struct BdjMarkTime
+  {
+    uint32_t seq;
+    uint32_t pts45; // in its clip, 45 kHz
+    int64_t clipStart; // its clip's title bytes: [clipStart, clipEnd)
+    int64_t clipEnd;
+  };
+  bool BdjMarkTimes() const { return m_bdjMarkTimes; }
+  const std::vector<BdjMarkTime>& StampMarkTimes() const { return m_stampMarkTimes; }
+  uint32_t StampAfterSeq() const { return m_stampAfterSeq; } // the batch is (after, seq]
   /* While the player's queues are full it does not read, and the events the
    * BD-J application queues (a playlist stop after a key press) would wait
    * behind up to the whole buffer. Consume them without reading data. */
@@ -409,9 +421,12 @@ public:
   {
     int64_t pos;
     int64_t step;
+    uint32_t gen; // the title-byte generation of pos
   };
   std::vector<SeamMark> TakeSeamMarks() { return std::exchange(m_seamMarks, {}); }
-  int64_t GetBytePos() override;
+  bool GetLastReadAnchor(int64_t& bytePos, uint32_t& gen) override;
+  //! the title-byte generation of the read in progress (design 15.50)
+  uint32_t GetReadTitleGen() const { return m_readTitleGen; }
 
   /* Drop an armed-but-uncollected glide. The player collects the flag on the
    * iteration AFTER the one that armed it, and a lot can happen in between: a
@@ -585,6 +600,9 @@ protected:
   void WaitForBdjPresentation();
   bool m_bdjTiming = false;
   bool m_bdjDeferStart = false; //!< libbluray patch 17: BD-J starts wait for their first picture
+  bool m_bdjMarkTimes = false; //!< libbluray patch 18: marks at their own presentation time
+  std::vector<BdjMarkTime> m_stampMarkTimes;
+  uint32_t m_stampAfterSeq = 0;
   uint32_t m_bdjStampedSeq = 0;
   /* the BD-J application seeked or started another playlist since the hold
    * was taken (see ClassifyStreamQueue); set in ProcessEvent, cleared when a
@@ -611,6 +629,12 @@ protected:
   std::optional<int64_t> m_seamPlaylistStep;
   std::vector<SeamMark> m_seamMarks;
   int64_t m_lastDataReadStart = -1; // title byte where the last read returning data began
+  int64_t m_lastDataReadEnd = -1; // and where it ended
+  uint32_t m_titleByteGen = 0; // the generation of m_lastDataReadStart's title bytes
+  uint32_t m_readTitleGen = 0; // the generation of the read in progress
+  bool m_titleByteJump = false; // a playlist or seek event: the next data is a new generation
+  void BeginDataRead(uint64_t readStart);
+  void EndDataRead(uint64_t readStart, int result);
   /* last explicit user menu call (OnMenu) - discriminates "user abandoned
    * the feature for the menu" (discard queued tail) from "the feature
    * ended and the disc returned to menu" (drain it). Player thread only.

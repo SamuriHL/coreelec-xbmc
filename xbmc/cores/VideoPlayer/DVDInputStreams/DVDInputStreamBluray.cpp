@@ -834,6 +834,12 @@ bool CDVDInputStreamBluray::Open()
     CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J start at presentation {}",
               m_bdjDeferStart ? "on" : "off");
 #endif
+#if defined(BD_BDJ_ENTRY_TIMES)
+    // design 15.50: a mark is released when its own picture is presented
+    m_bdjMarkTimes = m_bdjDeferStart && !XFILE::CFile::Exists("special://profile/bdjmarks_off");
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - BD-J marks at presentation {}",
+              m_bdjMarkTimes ? "on" : "off");
+#endif
 #endif
   }
   else
@@ -1108,6 +1114,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
   /* playback control */
 
   case BD_EVENT_SEEK:
+    m_titleByteJump = true;
     // A jump breaks the sequential run the ISO read-ahead is keyed on.
     ResetIsoCacheAccessPattern();
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
@@ -1231,6 +1238,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    m_titleByteJump = true;
     // the background plane lies behind video: once a playlist plays, it is covered
     SetBackgroundVisible(false);
     // a playlist brings the DV engage back (VideoPlayer::OpenStream), and with
@@ -1517,6 +1525,19 @@ void CDVDInputStreamBluray::StampBdjPending()
   uint32_t seq = bd_bdj_pending_seq(m_bd);
   if (seq == 0 || seq == m_bdjStampedSeq)
     return;
+  m_stampMarkTimes.clear();
+  m_stampAfterSeq = m_bdjStampedSeq;
+#if defined(BD_BDJ_ENTRY_TIMES)
+  if (m_bdjMarkTimes)
+  {
+    BD_BDJ_ENTRY_TIME times[16];
+    const unsigned n = bd_bdj_entry_times(m_bd, m_bdjStampedSeq, seq, times, 16);
+    for (unsigned i = 0; i < n; ++i)
+      m_stampMarkTimes.push_back({times[i].seq, times[i].pts45,
+                                  static_cast<int64_t>(times[i].clip_start),
+                                  static_cast<int64_t>(times[i].clip_end)});
+  }
+#endif
   m_bdjStampedSeq = seq;
   if (m_bdjEndOfTitleRead && m_bdjEndSeq == 0)
     m_bdjEndSeq = seq;
@@ -1741,7 +1762,7 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
     if (m_seamPlaylistStep && m_lastDataReadStart >= 0)
     {
       bd_get_clip_infos(m_bd, m_event.param, nullptr, nullptr, &clipPos, nullptr);
-      m_seamMarks.push_back({m_lastDataReadStart, *m_seamPlaylistStep});
+      m_seamMarks.push_back({m_lastDataReadStart, *m_seamPlaylistStep, m_titleByteGen});
       CLog::Log(LOGDEBUG,
                 "CDVDInputStreamBluray - seam at title byte {} (clip info {}), step {:.3f} ms",
                 m_lastDataReadStart, clipPos, *m_seamPlaylistStep / 90.0);
@@ -1751,9 +1772,41 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
   return false;
 }
 
-int64_t CDVDInputStreamBluray::GetBytePos()
+bool CDVDInputStreamBluray::GetLastReadAnchor(int64_t& bytePos, uint32_t& gen)
 {
-  return m_bd ? static_cast<int64_t>(bd_tell(m_bd)) : -1;
+  if (m_lastDataReadStart < 0)
+    return false;
+  bytePos = m_lastDataReadStart;
+  gen = m_titleByteGen;
+  return true;
+}
+
+// Title bytes restart with every playlist (and jump at a loop or a seek), so
+// a position alone can't tell two playlists apart: a read that doesn't start
+// where the last one ended opens a new generation. It is known before the
+// read, so what libbluray holds during the read is tagged with it.
+void CDVDInputStreamBluray::BeginDataRead(uint64_t readStart)
+{
+  m_readTitleGen = !m_titleByteJump && static_cast<int64_t>(readStart) == m_lastDataReadEnd
+                       ? m_titleByteGen
+                       : m_titleByteGen + 1;
+}
+
+void CDVDInputStreamBluray::EndDataRead(uint64_t readStart, int result)
+{
+  if (result <= 0)
+    return;
+  // the BD-J thread can select a playlist between bd_tell and the read
+  const uint64_t after = bd_tell(m_bd);
+  if (after >= static_cast<uint64_t>(result) && after - result != readStart)
+  {
+    readStart = after - result;
+    m_readTitleGen = m_titleByteGen + 1;
+  }
+  m_titleByteJump = false;
+  m_lastDataReadStart = static_cast<int64_t>(readStart);
+  m_lastDataReadEnd = m_lastDataReadStart + result;
+  m_titleByteGen = m_readTitleGen;
 }
 
 // Does the event in m_event hold the stream? Read() and PollEvents() share
@@ -1862,9 +1915,9 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
         return -1;
 
       const uint64_t readStart = bd_tell(m_bd);
+      BeginDataRead(readStart);
       result = bd_read_ext (m_bd, buf, buf_size, &m_event);
-      if (result > 0)
-        m_lastDataReadStart = static_cast<int64_t>(readStart);
+      EndDataRead(readStart, result);
 
       if(result < 0)
       {
@@ -1909,9 +1962,9 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
   else
   {
     const uint64_t readStart = bd_tell(m_bd);
+    BeginDataRead(readStart);
     result = bd_read(m_bd, buf, buf_size);
-    if (result > 0)
-      m_lastDataReadStart = static_cast<int64_t>(readStart);
+    EndDataRead(readStart, result);
     while (bd_get_event(m_bd, &m_event))
     {
       // Direct playlist playback never holds; a seamless playitem seam still

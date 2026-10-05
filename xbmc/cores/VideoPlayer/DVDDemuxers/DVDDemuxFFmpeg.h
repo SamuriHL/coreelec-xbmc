@@ -13,6 +13,7 @@
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
 #include <atomic>
+#include <deque>
 #include <map>
 #include <memory>
 #include <vector>
@@ -129,8 +130,10 @@ public:
   // and they are atomics.
   std::atomic<bool> m_brokenFileDetected{false};
   std::atomic<int64_t> m_sourceReadBytes{0};
-  // the input stream's byte position at the start of a read
-  void NoteBytePos(int64_t bytePos);
+  // after a read: where its data began, in the AVIO and in the input stream
+  void NoteReadAnchor(int64_t ioPos);
+  // the AVIO position of the next read (its pos counts the bytes read)
+  int64_t ReadIoPos() const;
 
 protected:
   friend class CDemuxStreamAudioFFmpeg;
@@ -170,9 +173,18 @@ protected:
   std::map<int, std::unique_ptr<CDemuxParserFFmpeg>> m_parsers;
 
   AVIOContext* m_ioContext;
-  // AVIO position less the input stream's own byte position, at the last read
-  int64_t m_bytePosOffset{0};
-  bool m_bytePosValid{false};
+  // Where each read's data began in the AVIO (AVPacket.pos) and in the input
+  // stream's own byte domain, with that domain's generation; one entry per
+  // change. The AVIO is not seekable, so its positions only grow, and a packet
+  // takes the last anchor at or before its pos: the read its bytes came from.
+  // Demux thread only (the read callback runs inside av_read_frame).
+  struct ReadAnchor
+  {
+    int64_t ioPos;
+    int64_t bytePos;
+    uint32_t gen;
+  };
+  std::deque<ReadAnchor> m_readAnchors;
 
   double   m_currentPts; // used for stream length estimation
   bool     m_bMatroska;

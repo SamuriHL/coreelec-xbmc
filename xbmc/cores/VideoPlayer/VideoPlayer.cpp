@@ -1642,7 +1642,7 @@ void CVideoPlayer::HandleDynamicBufferLevel()
 // flushAll: a seek/jump/flush invalidates the stamps' timeline - snap the
 // presented state to the latest demux truth instead of waiting on a clock
 // position that may never arrive.
-void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
+void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
 {
 #if defined(HAVE_LIBBLURAY)
   if (flushAll && m_pInputBluray)
@@ -1680,6 +1680,7 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
         // first picture is the restart's, so the stamp is void
         bluray->ReleaseBdjEvents(ev.bdjReleaseSeq, 0, true);
         ev.stampPts = DVD_NOPTS_VALUE;
+        ev.presentPts = DVD_NOPTS_VALUE;
         ev.awaitSegment = false;
         keptForStart.push_back(ev);
         m_discTimelineEvents.pop_front();
@@ -1703,7 +1704,19 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
       startPending = bluray->BdjStartPending(startSeq);
       continue;
     }
-    if (!flushAll && ev.stampPts != DVD_NOPTS_VALUE && clock < ev.stampPts)
+    // a held mark is due when its own picture is presented (design 15.50);
+    // while the reader waits at the playlist's end, the last frame read may
+    // never be delivered (ffmpeg emits a PES when the next starts), so not
+    // after the last one that was
+    double due = ev.stampPts;
+    if (ev.presentPts != DVD_NOPTS_VALUE)
+    {
+      due = ev.presentPts;
+      const double end = m_CurrentVideo.dts_end();
+      if (readerAtEnd && end != DVD_NOPTS_VALUE && end < due)
+        due = std::max(end, ev.stampPts);
+    }
+    if (!flushAll && due != DVD_NOPTS_VALUE && clock < due)
     {
       // A stamp further ahead than the maximum queue depth (plus margin)
       // cannot be a real future position - the clock was corrected
@@ -1712,7 +1725,7 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
       // exists. Derived from the configured queue depth, not a constant:
       // raising queuetimesize via advancedsettings must not silently turn
       // legitimate deferred events into "stale" early-applies (review).
-      if (ev.stampPts - clock < DVD_SEC_TO_TIME(m_messageQueueTimeSize + 4.0))
+      if (due - clock < DVD_SEC_TO_TIME(m_messageQueueTimeSize + 4.0))
         break;
     }
     if (ev.bdjReleaseSeq != 0)
@@ -1757,6 +1770,34 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll)
 }
 
 #if defined(HAVE_LIBBLURAY)
+// A held mark is reached when the reader passes the entry point before it, up
+// to a GOP before its picture (design 15.50). Its own time converts onto the
+// player's timeline with the last video packet processed, the one the read
+// was stamped with: same clip, same correction. Only when that packet is
+// provably in the mark's clip (same title-byte generation, inside its byte
+// range, still the stamp) and the result lies after the stamp by less than a
+// GOP plus the decode lead; otherwise the stamp stands (NOPTS).
+double CVideoPlayer::BdjMarkPresentPts(uint32_t pts45, int64_t clipStart, int64_t clipEnd,
+                                       double stamp, uint32_t readGen) const
+{
+  const CCurrentStream& video = m_CurrentVideo;
+  if (stamp == DVD_NOPTS_VALUE || video.markRefDts == DVD_NOPTS_VALUE ||
+      video.markRefDts != video.dts || video.markRefGen != readGen ||
+      video.markRefPos < clipStart || video.markRefPos >= clipEnd)
+    return DVD_NOPTS_VALUE;
+  // ffmpeg unwraps the 33-bit timestamps: compare modulo 2^33
+  constexpr int64_t wrap = int64_t{1} << 33;
+  int64_t delta = (static_cast<int64_t>(pts45) * 2 - video.markRefRawDts) % wrap;
+  if (delta < 0)
+    delta += wrap;
+  if (delta >= wrap / 2)
+    delta -= wrap;
+  const double present = video.markRefDts + static_cast<double>(delta) * DVD_TIME_BASE / 90000.0;
+  if (present < stamp || present > stamp + DVD_SEC_TO_TIME(2.5))
+    return DVD_NOPTS_VALUE;
+  return present;
+}
+
 bool CVideoPlayer::BdjStartInstant(double stampPts, double clock, int64_t& startNs)
 {
   // a start the application cannot be left waiting on (no sync ever comes:
@@ -2172,13 +2213,21 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     ApplyDiscTimelineEvents(true);
   else if (m_pInputBluray)
   {
+    // a mark's own picture may be in the tail the drain loses (the last PES):
+    // past the drain the clock runs on the new timeline, so it goes at its
+    // stamp, the last picture delivered
+    for (SDiscTimelineEvent& ev : m_discTimelineEvents)
+      ev.presentPts = DVD_NOPTS_VALUE;
     // a held BD-J start read here is the next segment's: its stamp is on the
     // old timeline, and its first picture comes with the new segment's start
     uint32_t startSeq = 0;
     if (m_pInputBluray->BdjStartPending(startSeq))
       for (SDiscTimelineEvent& ev : m_discTimelineEvents)
         if (ev.bdjReleaseSeq != 0 && static_cast<int32_t>(ev.bdjReleaseSeq - startSeq) >= 0)
+        {
           ev.stampPts = DVD_NOPTS_VALUE;
+          ev.presentPts = DVD_NOPTS_VALUE;
+        }
   }
 #endif
   // the video tail may still be inside the decoder: start playing it out now,
@@ -2268,6 +2317,7 @@ void CVideoPlayer::ArmBdjStartForSegment()
     {
       ev.awaitSegment = false;
       ev.stampPts = DVD_NOPTS_VALUE;
+      ev.presentPts = DVD_NOPTS_VALUE;
     }
 }
 
@@ -3316,8 +3366,19 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
   if( pPacket->iSize != 4) //don't check the EOF_SEQUENCE of stillframes
   {
+    m_videoKeptUnconfirmed = false;
     checkcont = CheckContinuity(m_CurrentVideo, pPacket);
     UpdateTimestamps(m_CurrentVideo, pPacket);
+    // the packet a BD-J mark read now converts with: its correction is final
+    // here (CheckContinuity ran), unless it is an unconfirmed jump's keyframe
+    if (pPacket->dts != DVD_NOPTS_VALUE && pPacket->streamPos >= 0 &&
+        pPacket->rawDts != INT64_MIN && !m_videoKeptUnconfirmed)
+    {
+      m_CurrentVideo.markRefDts = pPacket->dts;
+      m_CurrentVideo.markRefRawDts = pPacket->rawDts;
+      m_CurrentVideo.markRefPos = pPacket->streamPos;
+      m_CurrentVideo.markRefGen = pPacket->streamGen;
+    }
   }
   if (checkcont && (m_CurrentVideo.avsync == CCurrentStream::AV_SYNC_CHECK))
     m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
@@ -4187,7 +4248,8 @@ void CVideoPlayer::TakeSeamMarks()
       const auto at = std::lower_bound(m_seamMarks.begin(), m_seamMarks.end(), mark.pos,
                                        [](const SeamMark& m, int64_t pos) { return m.pos < pos; });
       if (at == m_seamMarks.end() || at->pos != mark.pos)
-        m_seamMarks.insert(at, {mark.pos, static_cast<double>(mark.step) * DVD_TIME_BASE / 90000.0});
+        m_seamMarks.insert(at, {mark.pos, static_cast<double>(mark.step) * DVD_TIME_BASE / 90000.0,
+                                mark.gen});
     }
   }
 #endif
@@ -4198,13 +4260,20 @@ double CVideoPlayer::CrossSeams(const DemuxPacket* packet, double& crossed)
   SeamStream& stream = m_seamStreams[{packet->demuxerId, packet->iStreamId}];
   // a frame that does not start a PES has no position: it is where the last one was
   if (packet->streamPos >= 0)
+  {
     stream.lastPos = packet->streamPos;
+    stream.lastGen = packet->streamGen;
+  }
   // the steps of every seam the stream is past: a read back across one undoes it
   double offset = 0.0;
   for (const SeamMark& mark : m_seamMarks)
   {
     if (stream.lastPos < mark.pos)
       break;
+    // an older playlist's tail (its title bytes run higher) is not past a seam
+    // of a playlist read after it
+    if (static_cast<int32_t>(mark.gen - stream.lastGen) > 0)
+      continue;
     offset += mark.step;
   }
   crossed = offset - stream.offset;
@@ -4748,6 +4817,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
           m_playSpeed == DVD_PLAYSPEED_NORMAL)
       {
         UpdateCorrection(pPacket, correction);
+        m_videoKeptUnconfirmed = true;
         CLog::Log(LOGDEBUG,
                   "CVideoPlayer::CheckContinuity - {}: keeping the boundary "
                   "keyframe's timestamps (dts {:f}) rather than blanking them",
@@ -7442,7 +7512,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         // to return (the application may be waiting for that picture)
         if (m_pInputBluray && m_pInputBluray->BdjDeferStart())
           CheckHeldStart();
-        ApplyDiscTimelineEvents(false);
+        ApplyDiscTimelineEvents(false, true);
         break;
       }
       // stamped like every disc timeline event: the last delivered video dts
@@ -7463,18 +7533,52 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       if (awaitSegment)
         CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start read at the end of what was presented "
                             "(stamp {:.3f}): waits for the next segment", stamp / DVD_TIME_BASE);
-      if (!m_discTimelineEvents.empty() && m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
-          m_discTimelineEvents.back().stampPts == stamp)
-      {
-        m_discTimelineEvents.back().bdjReleaseSeq = seq;
-        m_discTimelineEvents.back().awaitSegment |= awaitSegment;
-      }
-      else
-      {
-        SDiscTimelineEvent ev{stamp, 0, nullptr, seq};
+      // A release frees everything up to its sequence, so a batch holding
+      // marks with their own time is split around each: what was held before
+      // it (at the stamp), the mark (at its picture), the rest (at the stamp,
+      // behind it). An entry at the stamp never merges into or past a mark.
+      const auto push = [&](uint32_t upto, double presentPts) {
+        if (presentPts == DVD_NOPTS_VALUE && !m_discTimelineEvents.empty() &&
+            m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
+            m_discTimelineEvents.back().presentPts == DVD_NOPTS_VALUE &&
+            m_discTimelineEvents.back().stampPts == stamp)
+        {
+          m_discTimelineEvents.back().bdjReleaseSeq = upto;
+          m_discTimelineEvents.back().awaitSegment |= awaitSegment;
+          return;
+        }
+        SDiscTimelineEvent ev{stamp, 0, nullptr, upto};
         ev.awaitSegment = awaitSegment;
+        ev.presentPts = presentPts;
         m_discTimelineEvents.push_back(ev);
+      };
+      uint32_t pushed = m_pInputBluray ? m_pInputBluray->StampAfterSeq() : 0;
+      bool anyPushed = false;
+      if (m_pInputBluray && m_pInputBluray->BdjMarkTimes())
+      {
+        const uint32_t readGen = m_pInputBluray->GetReadTitleGen();
+        for (const auto& mark : m_pInputBluray->StampMarkTimes())
+        {
+          const double present =
+              BdjMarkPresentPts(mark.pts45, mark.clipStart, mark.clipEnd, stamp, readGen);
+          if (present == DVD_NOPTS_VALUE)
+          {
+            CLog::Log(LOGDEBUG,
+                      "CVideoPlayer: BD-J mark (seq {}) has no picture time here: at its stamp",
+                      mark.seq);
+            continue;
+          }
+          CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) at its picture {:.3f} (stamp {:.3f})",
+                    mark.seq, present / DVD_TIME_BASE, stamp / DVD_TIME_BASE);
+          if (static_cast<int32_t>(mark.seq - 1 - pushed) > 0 && mark.seq - 1 != 0)
+            push(mark.seq - 1, DVD_NOPTS_VALUE);
+          push(mark.seq, present);
+          pushed = mark.seq;
+          anyPushed = true;
+        }
       }
+      if (!anyPushed || pushed != seq)
+        push(seq, DVD_NOPTS_VALUE);
       break;
     }
     case BD_EVENT_BDJ_START_BLOCKED:

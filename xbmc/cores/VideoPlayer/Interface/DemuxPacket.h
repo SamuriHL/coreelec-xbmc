@@ -56,6 +56,12 @@ extern "C"
     //! @brief Byte position of the PES the packet starts in, in the input
     //! stream's own position domain (-1: unknown).
     int64_t streamPos{-1};
+    //! @brief The generation of streamPos's domain (the input stream's: Blu-ray
+    //! title bytes restart with every playlist).
+    uint32_t streamGen{0};
+    //! @brief The stream's own dts in its 90 kHz time base, as read (INT64_MIN:
+    //! none, or another time base).
+    int64_t rawDts{INT64_MIN};
     //! @brief The demuxer's own dts, captured once at read time and never
     //! rewritten afterwards. dts/pts are the PLAYER's timeline: CheckContinuity
     //! shifts them by m_offset_pts at a discontinuity and blanks them to

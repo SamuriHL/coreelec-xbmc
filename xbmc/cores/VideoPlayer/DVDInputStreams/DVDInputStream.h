@@ -214,8 +214,10 @@ public:
 
   bool IsStreamType(DVDStreamType type) const { return m_streamType == type; }
   virtual bool IsEOF() = 0;
-  //! the byte position of the next Read() in the stream's own domain, -1 if none
-  virtual int64_t GetBytePos() { return -1; }
+  //! where the data of the last Read() began in the stream's own byte domain,
+  //! and that domain's generation (it changes whenever the positions jump: a
+  //! new playlist, a loop, a seek). False if the stream has no such positions.
+  virtual bool GetLastReadAnchor(int64_t& bytePos, uint32_t& gen) { return false; }
   virtual BitstreamStats GetBitstreamStats() const { return m_stats; }
 
   bool ContentLookup() { return m_contentLookup; }
