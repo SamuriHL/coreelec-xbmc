@@ -4991,7 +4991,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       }
       m_menuWrapVideoGap = 0.0;
       m_stillJoinCorrection = DVD_NOPTS_VALUE;
-  m_stillJoinOldEnd = false;
+      m_stillJoinOldEnd = false;
       // a correction closing a glided seam: audio must not take it for a
       // timeline step of its own (it reaches a parser-delayed outgoing frame)
       const bool glidedSeam = m_seamStepPending && m_seamStepOverlapOk;
