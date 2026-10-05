@@ -7729,10 +7729,19 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
           m_CurrentVideo.id < 0 && startPending ? m_CurrentAudio.dts : m_CurrentVideo.dts;
       // a held start stamped behind the picture: everything read before it is
       // already presented (the reader waited at the end of a playlist), so its
-      // first picture is the next segment's
+      // first picture is the next segment's. Only the entry holding the start
+      // marker waits: one after it reaches the front once the marker is
+      // delivered (the start resolved), and its stamp is on the start's
+      // timeline or voided by the playlist change's flush, so a segment
+      // transition must not wipe it (design 15.57)
       const bool awaitSegment = startPending && static_cast<int32_t>(seq - startSeq) >= 0 &&
                                 stamp != DVD_NOPTS_VALUE && stamp <= m_clock.GetClock();
-      if (awaitSegment)
+      const auto holdsStart = [&](uint32_t from, uint32_t upto) {
+        return awaitSegment && static_cast<int32_t>(startSeq - from) > 0 &&
+               static_cast<int32_t>(upto - startSeq) >= 0;
+      };
+      uint32_t pushed = m_pInputBluray ? m_pInputBluray->StampAfterSeq() : 0;
+      if (holdsStart(pushed, seq))
         CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start read at the end of what was presented "
                             "(stamp {:.3f}): waits for the next segment", stamp / DVD_TIME_BASE);
       // A release frees everything up to its sequence, so a batch holding
@@ -7747,17 +7756,19 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
             !m_discTimelineEvents.back().endOfPlaylist && !m_discTimelineEvents.back().markPending &&
             m_discTimelineEvents.back().stampPts == stamp)
         {
+          m_discTimelineEvents.back().awaitSegment |=
+              holdsStart(m_discTimelineEvents.back().bdjReleaseSeq, upto);
           m_discTimelineEvents.back().bdjReleaseSeq = upto;
-          m_discTimelineEvents.back().awaitSegment |= awaitSegment;
+          pushed = upto;
           return;
         }
         SDiscTimelineEvent ev{stamp, 0, nullptr, upto};
-        ev.awaitSegment = awaitSegment;
+        ev.awaitSegment = holdsStart(pushed, upto);
         ev.presentPts = presentPts;
         ev.endOfPlaylist = endBatch && upto == seq;
         m_discTimelineEvents.push_back(ev);
+        pushed = upto;
       };
-      uint32_t pushed = m_pInputBluray ? m_pInputBluray->StampAfterSeq() : 0;
       bool anyPushed = false;
       if (m_pInputBluray && m_pInputBluray->BdjMarkTimes())
       {
@@ -7784,7 +7795,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
             if (static_cast<int32_t>(mark.seq - 1 - pushed) > 0 && mark.seq - 1 != 0)
               push(mark.seq - 1, DVD_NOPTS_VALUE);
             SDiscTimelineEvent ev{stamp, 0, nullptr, mark.seq};
-            ev.awaitSegment = awaitSegment;
+            ev.awaitSegment = holdsStart(pushed, mark.seq);
             ev.markPending = true;
             ev.markPts45 = mark.pts45;
             ev.markClipStart = mark.clipStart;
