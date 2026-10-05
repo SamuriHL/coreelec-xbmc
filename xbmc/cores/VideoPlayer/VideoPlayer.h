@@ -859,9 +859,17 @@ protected:
   //! the clock was placed on these streams' timeline (the sync commit), even if
   //! a start still holds it at its first picture (design 15.60)
   bool TimelineCommitted() const;
-  //! a disc timeline entry with a due time waits: the clock is not (yet) its
-  //! streams' (design 15.60); bounded by 15 s
-  bool DiscClockGateHolds(bool bdjEntry, bool readerAtEnd);
+  //! why disc timeline entries with a due time wait: the clock is not (yet)
+  //! their streams' (design 15.60). Worked out once per timeline pass, which
+  //! also keeps its one 15 s bound.
+  enum class DiscClockHold
+  {
+    NONE,
+    UNCOMMITTED, //!< the clock is still the previous timeline's: every entry
+    START, //!< the clock waits at a start's first picture: BD-J entries
+  };
+  DiscClockHold UpdateDiscClockHold(bool readerAtEnd);
+  void ResetDiscClockHold();
   std::optional<std::chrono::steady_clock::time_point> m_discClockWaitSince;
   bool m_discClockGateExpired = false;
   std::chrono::steady_clock::time_point m_boundaryStartWaitSince{};

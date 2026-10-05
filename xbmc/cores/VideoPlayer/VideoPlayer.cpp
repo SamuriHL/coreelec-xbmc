@@ -1723,6 +1723,10 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
   if (flushAll && m_pInputBluray)
     m_pInputBluray->ReleaseAllBdjEvents(true);
 #endif
+  // every pass, the queue empty or not, so the bound runs from the first entry
+  // held to the next pass that holds nothing
+  const DiscClockHold clockHold =
+      flushAll ? (ResetDiscClockHold(), DiscClockHold::NONE) : UpdateDiscClockHold(readerAtEnd);
   if (m_discTimelineEvents.empty())
     return;
 
@@ -1742,11 +1746,6 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
   bool startPending = bluray->BdjStartPending(startSeq);
   if (!startPending || flushAll)
     m_bdjStartWaitSince.reset();
-  if (flushAll)
-  {
-    m_discClockWaitSince.reset();
-    m_discClockGateExpired = false;
-  }
   std::deque<SDiscTimelineEvent> keptForStart;
   while (!m_discTimelineEvents.empty())
   {
@@ -1843,8 +1842,13 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
     // a due time is on its streams' timeline: not judged by a clock that is
     // not theirs yet (design 15.60)
     if (!flushAll && due != DVD_NOPTS_VALUE && !beforeStart &&
-        DiscClockGateHolds(ev.bdjReleaseSeq != 0, readerAtEnd))
+        (clockHold == DiscClockHold::UNCOMMITTED ||
+         (clockHold == DiscClockHold::START && ev.bdjReleaseSeq != 0)))
+    {
+      if (!m_discClockWaitSince)
+        m_discClockWaitSince = std::chrono::steady_clock::now();
       break;
+    }
     if (!flushAll && due != DVD_NOPTS_VALUE && clock < due)
     {
       // A stamp further ahead than the maximum queue depth (plus margin)
@@ -1933,40 +1937,43 @@ bool CVideoPlayer::TimelineCommitted() const
   return master.id >= 0 && master.syncState == IDVDStreamPlayer::SYNC_INSYNC;
 }
 
-bool CVideoPlayer::DiscClockGateHolds(bool bdjEntry, bool readerAtEnd)
+void CVideoPlayer::ResetDiscClockHold()
 {
-  const bool streamOpen = m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0;
-  bool hold = false;
-  if (streamOpen && !TimelineCommitted())
+  m_discClockWaitSince.reset();
+  m_discClockGateExpired = false;
+}
+
+CVideoPlayer::DiscClockHold CVideoPlayer::UpdateDiscClockHold(bool readerAtEnd)
+{
+  // not while the reader waits inside a read: the commit, and a held start's
+  // release, run only once it returns (the bound keeps running)
+  if (readerAtEnd)
+    return DiscClockHold::NONE;
+  DiscClockHold hold = DiscClockHold::NONE;
+  if (m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0)
   {
-    // the clock is still the previous timeline's; not while the reader waits
-    // inside a read: the commit runs only once it returns
-    hold = !readerAtEnd;
+    // the clock is still the previous timeline's; or it waits at a start's
+    // first picture (held, or its lead): what the application hears after its
+    // start, it hears from that picture on
+    if (!TimelineCommitted())
+      hold = DiscClockHold::UNCOMMITTED;
+    else if (!ClockOnStreams())
+      hold = DiscClockHold::START;
   }
-  else if (bdjEntry && streamOpen && !ClockOnStreams())
+  if (hold == DiscClockHold::NONE)
   {
-    // the clock waits at a start's first picture (held, or its lead): what the
-    // application hears after its start, it hears from that picture on
-    hold = true;
+    ResetDiscClockHold();
+    return hold;
   }
-  if (!hold)
-  {
-    m_discClockWaitSince.reset();
-    m_discClockGateExpired = false;
-    return false;
-  }
-  const auto now = std::chrono::steady_clock::now();
-  if (!m_discClockWaitSince)
-    m_discClockWaitSince = now;
-  else if (now - *m_discClockWaitSince > 15s)
+  // armed by the first entry it holds (ApplyDiscTimelineEvents)
+  if (m_discClockWaitSince && std::chrono::steady_clock::now() - *m_discClockWaitSince > 15s)
   {
     if (!m_discClockGateExpired)
       CLog::Log(LOGWARNING, "CVideoPlayer: disc timeline waited 15 s for its streams' clock, "
                             "released");
     m_discClockGateExpired = true;
-    return false;
   }
-  return true;
+  return m_discClockGateExpired ? DiscClockHold::NONE : hold;
 }
 
 bool CVideoPlayer::ClockOnStreams()
@@ -2822,6 +2829,7 @@ void CVideoPlayer::Prepare()
   m_CurrentAudio.lastdts = DVD_NOPTS_VALUE;
   m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
   m_discTimelineEvents.clear();
+  ResetDiscClockHold();
   m_menuDomainClampSeconds = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoMenuDomainQueueTimeSize);
   aml_set_disc_mode_hold(false);
