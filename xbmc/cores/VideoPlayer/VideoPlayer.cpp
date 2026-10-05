@@ -2246,6 +2246,17 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // the close is synchronous: an arm the decoder did not take must not reach
   // a later close (a stop blanks)
   aml_keep_frame_arm(false);
+#if defined(HAVE_LIBBLURAY)
+  // The drained tail is presented now, give or take the render queue (the
+  // closes wait for it, up to 3 s, and only for a stream in sync), and the
+  // timeline could not run meanwhile (this thread was here). What is still
+  // queued is stamped on the old timeline: left in place it waits until the
+  // new segment's clock reaches an old stamp (John Wick 3's feature start:
+  // 8.3 s behind its picture). Apply it, as for a discard; a held start keeps
+  // its own items for the new segment's first picture.
+  if (drain && m_pInputBluray)
+    ApplyDiscTimelineEvents(true);
+#endif
 
   m_CurrentAudio.Clear();
   m_CurrentVideo.Clear();
