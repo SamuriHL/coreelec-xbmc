@@ -851,6 +851,11 @@ protected:
   double m_menuWrapVideoGap = 0.0;
   //! the one correction of a timeline jump joined ahead of the clock after a still
   double m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  //! a jump's join decided onto the old end (every stream of the jump joins its own)
+  bool m_stillJoinOldEnd = false;
+  //! the clock is the timeline of the streams it times: the stream it was
+  //! started on is in sync and no start is held or scheduled (design 15.59)
+  bool ClockOnStreams();
   std::chrono::steady_clock::time_point m_boundaryStartWaitSince{};
   //! E1: a full audio queue waiting on the video's first picture (bounded)
   std::chrono::steady_clock::time_point m_firstPictureWaitSince{};

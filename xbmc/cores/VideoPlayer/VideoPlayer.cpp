@@ -1913,6 +1913,16 @@ double CVideoPlayer::BdjMarkPresentPts(uint32_t pts45, int64_t clipStart, int64_
   return present;
 }
 
+bool CVideoPlayer::ClockOnStreams()
+{
+  const CCurrentStream& master = m_CurrentVideo.id >= 0 ? m_CurrentVideo : m_CurrentAudio;
+  if (master.id < 0 || master.syncState != IDVDStreamPlayer::SYNC_INSYNC || m_startHeld)
+    return false;
+  int64_t ns = 0;
+  double startClock = 0.0;
+  return !m_clock.GetPendingStart(ns, startClock);
+}
+
 bool CVideoPlayer::BdjStartInstant(double stampPts, double clock, int64_t& startNs)
 {
   // a start the application cannot be left waiting on (no sync ever comes:
@@ -2396,6 +2406,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
   m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  m_stillJoinOldEnd = false;
 }
 
 void CVideoPlayer::PublishSegmentGen()
@@ -2746,6 +2757,7 @@ void CVideoPlayer::Prepare()
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
   m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  m_stillJoinOldEnd = false;
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
@@ -4781,14 +4793,29 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
     // ahead of the clock, which would fail the test for the confirming stream
     if (m_stillJoinCorrection != DVD_NOPTS_VALUE)
       return m_stillJoinCorrection;
-    // every stream ran out a second before the clock got here
+    if (m_stillJoinOldEnd)
+      return pPacket->dts - end;
+    // every stream ran out a second before the clock got here - and the clock
+    // is theirs: before a start is presented it is the previous playlist's,
+    // and a jump read then (John Wick 3's menu: the reader at the next
+    // playitem before the start) belongs on the old end (design 15.59)
     if (clock == DVD_NOPTS_VALUE || clock < maxdts + DVD_MSEC_TO_TIME(1000))
       return pPacket->dts - end;
+    if (!ClockOnStreams())
+    {
+      m_stillJoinOldEnd = true;
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer::CheckContinuity - the clock is {:.3f}s past the old stream's end "
+                "but not yet these streams' clock: joining onto the old end",
+                (clock - maxdts) / DVD_TIME_BASE);
+      return pPacket->dts - end;
+    }
     m_stillJoinCorrection = pPacket->dts - (clock + DVD_MSEC_TO_TIME(500));
     CLog::Log(LOGDEBUG,
               "CVideoPlayer::CheckContinuity - the clock ran {:.3f}s past the old stream's end: "
-              "joining ahead of the clock",
-              (clock - maxdts) / DVD_TIME_BASE);
+              "joining ahead of the clock (video sync {}, audio sync {})",
+              (clock - maxdts) / DVD_TIME_BASE, static_cast<int>(m_CurrentVideo.syncState),
+              static_cast<int>(m_CurrentAudio.syncState));
     return m_stillJoinCorrection;
   };
   if( pPacket->dts > maxdts + DVD_MSEC_TO_TIME(1000))
@@ -4964,6 +4991,7 @@ bool CVideoPlayer::CheckContinuity(CCurrentStream& current, DemuxPacket* pPacket
       }
       m_menuWrapVideoGap = 0.0;
       m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  m_stillJoinOldEnd = false;
       // a correction closing a glided seam: audio must not take it for a
       // timeline step of its own (it reaches a parser-delayed outgoing frame)
       const bool glidedSeam = m_seamStepPending && m_seamStepOverlapOk;
@@ -7542,6 +7570,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   m_seamStepPending = false;
   m_seamStepArmedDts = DVD_NOPTS_VALUE;
   m_stillJoinCorrection = DVD_NOPTS_VALUE;
+  m_stillJoinOldEnd = false;
 
 #if defined(HAVE_LIBBLURAY)
   // So does an armed-but-uncollected seamless glide. HandleMessages() runs
