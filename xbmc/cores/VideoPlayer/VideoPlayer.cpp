@@ -1165,6 +1165,64 @@ bool CVideoPlayer::OpenDemuxStream()
   return true;
 }
 
+// A pending mark converts with the first record of its own clip within 2.5 s
+// before it (a record further ahead waits for a nearer one: a short playlist
+// read whole has its marks seconds into the clip); it gives up at any packet
+// of a later title-byte generation or past its clip, at that clip's last
+// record if there is one (design 15.55).
+void CVideoPlayer::ResolvePendingMarks(int64_t packetPos, uint32_t packetGen)
+{
+  const CCurrentStream& ref = m_CurrentVideo.id >= 0 ? m_CurrentVideo : m_CurrentAudio;
+  bool anyPending = false;
+  for (SDiscTimelineEvent& ev : m_discTimelineEvents)
+  {
+    if (!ev.markPending)
+      continue;
+    const bool refInClip = ref.markRefDts != DVD_NOPTS_VALUE && ref.markRefGen == ev.markGen &&
+                           ref.markRefPos >= ev.markClipStart && ref.markRefPos < ev.markClipEnd;
+    if (refInClip)
+    {
+      constexpr int64_t wrap = int64_t{1} << 33;
+      int64_t delta = (static_cast<int64_t>(ev.markPts45) * 2 - ref.markRefRawDts) % wrap;
+      if (delta < 0)
+        delta += wrap;
+      if (delta >= wrap / 2)
+        delta -= wrap;
+      const double offset = static_cast<double>(delta) * DVD_TIME_BASE / 90000.0;
+      if (offset > DVD_SEC_TO_TIME(2.5))
+      {
+        anyPending = true;
+        continue;
+      }
+      ev.presentPts = ref.markRefDts + std::max(offset, 0.0 - DVD_SEC_TO_TIME(1.0));
+      ev.markPending = false;
+      CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) at its picture {:.3f}, with its clip's packets",
+                ev.bdjReleaseSeq, ev.presentPts / DVD_TIME_BASE);
+      continue;
+    }
+    const bool passed =
+        packetPos >= 0 &&
+        (static_cast<int32_t>(packetGen - ev.markGen) > 0 ||
+         (packetGen == ev.markGen && packetPos >= ev.markClipEnd));
+    if (passed)
+    {
+      // the first record past its clip; else (another stream passed it first) the stamp
+      ev.presentPts = ref.markRefDts != DVD_NOPTS_VALUE && ref.markRefGen == ev.markGen &&
+                              ref.markRefPos >= ev.markClipEnd
+                          ? ref.markRefDts
+                          : DVD_NOPTS_VALUE;
+      ev.markPending = false;
+      CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) has no packet in its clip: at {}",
+                ev.bdjReleaseSeq,
+                ev.presentPts != DVD_NOPTS_VALUE ? StringUtils::Format("{:.3f}", ev.presentPts / DVD_TIME_BASE)
+                                                 : std::string("its stamp"));
+      continue;
+    }
+    anyPending = true;
+  }
+  m_bdjMarksPending = anyPending;
+}
+
 void CVideoPlayer::ResetSegmentEnd()
 {
   m_segmentVideoPtsEnd = DVD_NOPTS_VALUE;
@@ -1698,6 +1756,7 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
         bluray->ReleaseBdjEvents(ev.bdjReleaseSeq, 0, true);
         ev.stampPts = DVD_NOPTS_VALUE;
         ev.presentPts = DVD_NOPTS_VALUE;
+        ev.markPending = false;
         ev.awaitSegment = false;
         keptForStart.push_back(ev);
         m_discTimelineEvents.pop_front();
@@ -1725,6 +1784,35 @@ void CVideoPlayer::ApplyDiscTimelineEvents(bool flushAll, bool readerAtEnd)
     // while the reader waits at the playlist's end, the last frame read may
     // never be delivered (ffmpeg emits a PES when the next starts), so not
     // after the last one that was
+    if (ev.markPending && !flushAll)
+    {
+      // waiting for its clip's packets (design 15.55); bounded by the
+      // playlist's end, by a reader waiting inside its read (a probe: no
+      // packet can come until the read returns, which may wait on this mark),
+      // and by 15 s of running clock (and of wall time: a clock jump forward)
+      if (ev.markPendingClock == DVD_NOPTS_VALUE || clock < ev.markPendingClock)
+        ev.markPendingClock = clock;
+      const bool timedOut =
+          clock - ev.markPendingClock > DVD_SEC_TO_TIME(15.0) &&
+          std::chrono::steady_clock::now() - ev.markPendingSince > std::chrono::seconds(15);
+      if (m_bdjAllDelivered || readerAtEnd || timedOut)
+      {
+        CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) released without its clip's packets",
+                  ev.bdjReleaseSeq);
+        ev.markPending = false;
+      }
+      else
+        break;
+    }
+    // a mark at its picture is not due while a start's picture is still to
+    // come (the scheduled lead): the clock sits at that picture meanwhile
+    if (!flushAll && ev.presentPts != DVD_NOPTS_VALUE)
+    {
+      int64_t pendingNs = 0;
+      double pendingClock = 0.0;
+      if (m_clock.GetPendingStart(pendingNs, pendingClock) && ev.presentPts >= pendingClock)
+        break;
+    }
     double due = ev.stampPts;
     if (ev.endOfPlaylist && !flushAll)
     {
@@ -1858,9 +1946,17 @@ bool CVideoPlayer::BdjStartInstant(double stampPts, double clock, int64_t& start
   if (m_startHeld)
     return false;
   // no stream open: the segment the start belongs to is still to open (a
-  // drain between playlists closes the old streams first)
+  // drain between playlists closes the old streams first) - unless its
+  // demuxer is open and has delivered all of it with no stream to play (a
+  // playlist of graphics only): no picture will come, so now (design 15.54)
   if (m_CurrentVideo.id < 0 && m_CurrentAudio.id < 0)
-    return false;
+  {
+    if (!m_pDemuxer || !m_bdjAllDelivered)
+      return false;
+    startNs = 0;
+    CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J start released: its playlist has no stream to play");
+    return true;
+  }
   // a start still to come: a stream has not synced yet
   if ((m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC) ||
       (m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_INSYNC))
@@ -2244,7 +2340,10 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // past the drain the clock runs on the new timeline, so it goes at its
     // stamp, the last picture delivered
     for (SDiscTimelineEvent& ev : m_discTimelineEvents)
+    {
       ev.presentPts = DVD_NOPTS_VALUE;
+      ev.markPending = false;
+    }
     // a held BD-J start read here is the next segment's: its stamp is on the
     // old timeline, and its first picture comes with the new segment's start
     uint32_t startSeq = 0;
@@ -2356,6 +2455,7 @@ void CVideoPlayer::ArmBdjStartForSegment()
       ev.awaitSegment = false;
       ev.stampPts = DVD_NOPTS_VALUE;
       ev.presentPts = DVD_NOPTS_VALUE;
+      ev.markPending = false;
     }
 }
 
@@ -3273,6 +3373,21 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
   // data again: the end (design 15.54) is not reached yet
   m_bdjAllDelivered = false;
+  // marks waiting for their clip's packets: this one may be it (design 15.55);
+  // after the stream's own processing, whose correction it carries
+  const int64_t packetPos = pPacket->streamPos;
+  const uint32_t packetGen = pPacket->streamGen;
+  struct ResolveAfter
+  {
+    CVideoPlayer* player;
+    int64_t pos;
+    uint32_t gen;
+    ~ResolveAfter()
+    {
+      if (player->m_bdjMarksPending)
+        player->ResolvePendingMarks(pos, gen);
+    }
+  } resolveAfter{this, packetPos, packetGen};
   // process packet if it belongs to selected stream.
   // for dvd's don't allow automatic opening of streams*/
 
@@ -3387,6 +3502,14 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
   bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
   UpdateTimestamps(m_CurrentAudio, pPacket);
+  // with no video, a BD-J mark converts with the audio (design 15.55)
+  if (pPacket->dts != DVD_NOPTS_VALUE && pPacket->streamPos >= 0 && pPacket->rawDts != INT64_MIN)
+  {
+    m_CurrentAudio.markRefDts = pPacket->dts;
+    m_CurrentAudio.markRefRawDts = pPacket->rawDts;
+    m_CurrentAudio.markRefPos = pPacket->streamPos;
+    m_CurrentAudio.markRefGen = pPacket->streamGen;
+  }
   if (pPacket->pts != DVD_NOPTS_VALUE)
   {
     const double end = pPacket->pts + (pPacket->duration > 0 ? pPacket->duration : 0.0);
@@ -7621,7 +7744,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         if (presentPts == DVD_NOPTS_VALUE && !endBatch && !m_discTimelineEvents.empty() &&
             m_discTimelineEvents.back().bdjReleaseSeq != 0 &&
             m_discTimelineEvents.back().presentPts == DVD_NOPTS_VALUE &&
-            !m_discTimelineEvents.back().endOfPlaylist &&
+            !m_discTimelineEvents.back().endOfPlaylist && !m_discTimelineEvents.back().markPending &&
             m_discTimelineEvents.back().stampPts == stamp)
         {
           m_discTimelineEvents.back().bdjReleaseSeq = upto;
@@ -7645,9 +7768,36 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
               BdjMarkPresentPts(mark.pts45, mark.clipStart, mark.clipEnd, stamp, readGen);
           if (present == DVD_NOPTS_VALUE)
           {
-            CLog::Log(LOGDEBUG,
-                      "CVideoPlayer: BD-J mark (seq {}) has no picture time here: at its stamp",
+            // its clip's packets have not arrived yet: it waits for them
+            // (design 15.55); otherwise the stamp stands
+            const CCurrentStream& ref = m_CurrentVideo.id >= 0 ? m_CurrentVideo : m_CurrentAudio;
+            const bool notYet = ref.markRefDts == DVD_NOPTS_VALUE ||
+                                static_cast<int32_t>(readGen - ref.markRefGen) > 0 ||
+                                (ref.markRefGen == readGen && ref.markRefPos < mark.clipStart);
+            if (!notYet)
+            {
+              CLog::Log(LOGDEBUG,
+                        "CVideoPlayer: BD-J mark (seq {}) has no picture time here: at its stamp",
+                        mark.seq);
+              continue;
+            }
+            if (static_cast<int32_t>(mark.seq - 1 - pushed) > 0 && mark.seq - 1 != 0)
+              push(mark.seq - 1, DVD_NOPTS_VALUE);
+            SDiscTimelineEvent ev{stamp, 0, nullptr, mark.seq};
+            ev.awaitSegment = awaitSegment;
+            ev.markPending = true;
+            ev.markPts45 = mark.pts45;
+            ev.markClipStart = mark.clipStart;
+            ev.markClipEnd = mark.clipEnd;
+            ev.markGen = readGen;
+            ev.markPendingSince = std::chrono::steady_clock::now();
+            ev.endOfPlaylist = endBatch && mark.seq == seq;
+            m_discTimelineEvents.push_back(ev);
+            m_bdjMarksPending = true;
+            CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) waits for its clip's packets",
                       mark.seq);
+            pushed = mark.seq;
+            anyPushed = true;
             continue;
           }
           CLog::Log(LOGDEBUG, "CVideoPlayer: BD-J mark (seq {}) at its picture {:.3f} (stamp {:.3f})",

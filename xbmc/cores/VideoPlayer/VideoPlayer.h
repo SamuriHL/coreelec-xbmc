@@ -933,6 +933,16 @@ protected:
     // the playlist's END_OF_PLAYLIST: due at its last picture, once all of it
     // was delivered (design 15.54)
     bool endOfPlaylist = false;
+    // a held mark whose clip's packets had not arrived when it was read (a
+    // clip's first frame, a playlist read before its first picture): it
+    // converts with the first record in its clip (design 15.55)
+    bool markPending = false;
+    uint32_t markPts45 = 0;
+    int64_t markClipStart = 0;
+    int64_t markClipEnd = 0;
+    uint32_t markGen = 0;
+    double markPendingClock = DVD_NOPTS_VALUE;
+    std::chrono::steady_clock::time_point markPendingSince{};
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
   std::deque<DemuxPacket*> m_pendingElPackets;
@@ -947,6 +957,8 @@ protected:
   double m_segmentAudioPtsEnd = DVD_NOPTS_VALUE;
   bool m_bdjAllDelivered = false;
   void ResetSegmentEnd();
+  bool m_bdjMarksPending = false;
+  void ResolvePendingMarks(int64_t packetPos, uint32_t packetGen);
   //! the instant of a held BD-J start's first picture, once known (design §15.48)
   bool BdjStartInstant(double stampPts, double clock, int64_t& startNs);
   void ArmBdjStartForSegment();
