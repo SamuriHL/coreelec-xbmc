@@ -2211,7 +2211,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // its cache and the DV output stays black (M3GAN intro MEL -> FEL menu).
   // Dual-stream MEL joins take the keep fine (M3GAN's screensaver clip). Tear
   // down as a plain close does and let this join go black.
+  m_felKeepStage = 0;
   if (aml_frame_kept() && (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7) &&
+      doviIsFEL && XFILE::CFile::Exists("special://profile/felkeep_on"))
+  {
+    // TEST (open-issues item 5): the reset waits for this decoder's first
+    // frame, so the joined picture stays until then instead of black
+    m_felKeepStage = 1;
+    CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - FEL open keeps the joined picture to its first frame (test)");
+  }
+  else if (aml_frame_kept() && (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7) &&
       doviIsFEL)
   {
     aml_drop_kept_frame("the next stream composites an enhancement layer");
@@ -2832,6 +2841,10 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 
 void CAMLCodec::CloseDecoder()
 {
+  // TEST (felkeep_on): closed before its first frame - the kept picture goes
+  // as a plain FEL open would have dropped it
+  if (m_felKeepStage.exchange(0) == 1)
+    aml_drop_kept_frame("FEL closed before its first frame (test)");
   auto* AmlDisplay =
       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
   int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
@@ -3953,6 +3966,31 @@ void CAMLCodec::SetSpeed(int speed)
   }
 }
 
+// TEST (open-issues item 5): the reset a FEL open does under a kept picture,
+// done when its first frame is up: VD1 off and on again, the DV layers reset
+// Returns true when the layer was just switched off: it comes back on at the
+// next call, a vsync or more later (an off and on in the same vsync merge).
+bool CAMLCodec::StepDeferredFelKeep()
+{
+  int stage = 1;
+  if (m_felKeepStage.compare_exchange_strong(stage, 2))
+  {
+    aml_drop_kept_frame("FEL first frame (test: deferred from the open)");
+    auto* display =
+        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+    // as the open does for this stream after its own reset
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 1");
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 1");
+    return true;
+  }
+  stage = 2;
+  m_felKeepStage.compare_exchange_strong(stage, 0);
+  return false;
+}
+
 void CAMLCodec::ShowMainVideo(const bool show)
 {
   // called from the decoder and the render threads
@@ -4101,7 +4139,8 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
   if (!update)
   {
     // mainvideo 'should' be showing already if we get here, make sure.
-    ShowMainVideo(true);
+    if (!(m_opened && StepDeferredFelKeep()))
+      ShowMainVideo(true);
     // this decoder's frame is on: a picture kept at the join is replaced.
     // Not a closed decoder's: its frames still in the render queue present
     // after the close
@@ -4217,7 +4256,8 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
 
   // we only get called once gui has changed to something
   // that would show video playback, so show it.
-  ShowMainVideo(true);
+  if (!(m_opened && StepDeferredFelKeep()))
+    ShowMainVideo(true);
   if (m_opened)
     aml_set_frame_kept(false);
 }

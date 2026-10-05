@@ -124,6 +124,11 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  // TEST (special://profile/felkeep_on, open-issues item 5): a FEL open keeps
+  // the joined picture and resets the layers at its own first frame
+  // 0 none, 1 waiting for the first frame, 2 layer off, back on at the next
+  std::atomic<int> m_felKeepStage{0};
+  bool             StepDeferredFelKeep();
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;
