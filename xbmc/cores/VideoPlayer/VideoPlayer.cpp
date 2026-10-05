@@ -1945,10 +1945,15 @@ void CVideoPlayer::ResetDiscClockHold()
 
 CVideoPlayer::DiscClockHold CVideoPlayer::UpdateDiscClockHold(bool readerAtEnd)
 {
-  // not while the reader waits inside a read: the commit, and a held start's
-  // release, run only once it returns (the bound keeps running)
+  // not while the reader waits inside a read: the sync commit runs only once
+  // it returns. Its wait doesn't count against the bound: a hold armed before
+  // it is re-armed (the gate is skipped meanwhile, so nothing waits on it)
   if (readerAtEnd)
+  {
+    if (m_discClockWaitSince && !m_discClockGateExpired)
+      m_discClockWaitSince = std::chrono::steady_clock::now();
     return DiscClockHold::NONE;
+  }
   DiscClockHold hold = DiscClockHold::NONE;
   if (m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0)
   {
