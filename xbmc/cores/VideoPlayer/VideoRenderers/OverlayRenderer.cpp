@@ -231,6 +231,11 @@ void CRenderer::RenderHDROverlays(int idx)
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
+  // the back buffer depth is not cleared while the GUI composites
+  CGraphicContext& gfxContext = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const RENDER_ORDER renderOrder = gfxContext.GetRenderOrder();
+  gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
+
   // idx < 0: no picture presented yet (a disc screen with no playlist, or the
   // gap before a new video's first frame) - only the presentation-time
   // composition applies
@@ -256,6 +261,8 @@ void CRenderer::RenderHDROverlays(int idx)
       Render(o.get());
     }
   }
+
+  gfxContext.SetRenderOrder(renderOrder);
 
   ReleaseUnused();
 }
