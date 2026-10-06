@@ -100,4 +100,6 @@ private:
   // thread's SetVideoRect
   std::mutex m_rectMutex;
   std::shared_ptr<CAMLCodec> m_rectCodec;
+  //! the codec of the last frame on screen: geometry changes apply with no new frame
+  std::weak_ptr<CAMLCodec> m_geometryCodec;
 };

@@ -90,6 +90,11 @@ public:
   void          SignalDecoderEos();
   void          ClearDecoderEos();
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
+  //! SetVideoRect's geometry and picture adjustments only, for a GUI pass
+  //! with no new frame (nothing about whether the layer is on). Without
+  //! decoderRate it leaves the decoder handle alone.
+  void          ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, bool decoderRate);
+  bool          IsOpened() const { return m_opened; }
   void          SetVideoRate(int videoRate);
   uint64_t      GetOMXPts() const { return m_cur_pts; }
   uint32_t      GetBufferIndex() const { return m_bufferIndex; };

@@ -371,7 +371,14 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
       codec = std::move(m_rectCodec);
     }
     if (codec)
+    {
       codec->SetVideoRect(m_sourceRect, m_destRect);
+      m_geometryCodec = codec;
+    }
+    // paused, or between frames: a zoom, view mode or window change shows now
+    else if (const auto shown = m_geometryCodec.lock();
+             shown && shown->IsOpened() && aml_presentation_validated())
+      shown->ApplyVideoGeometry(m_sourceRect, m_destRect, false);
     return;
   }
 

@@ -4044,6 +4044,21 @@ void CAMLCodec::SetVideoSaturation(const int saturation)
 
 void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
 {
+  ApplyVideoGeometry(SrcRect, DestRect, true);
+
+  // we only get called once gui has changed to something
+  // that would show video playback, so show it.
+  if (!(m_opened && StepDeferredFelKeep()))
+    ShowMainVideo(true);
+  // this decoder's frame is on: a picture kept at the join is replaced.
+  // Not a closed decoder's: its frames still in the render queue present
+  // after the close
+  if (m_opened)
+    aml_set_frame_kept(false);
+}
+
+void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, bool decoderRate)
+{
   // this routine gets called every video frame
   // and is in the context of the renderer thread so
   // do not do anything stupid here.
@@ -4056,7 +4071,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
     m_zoom = zoom;
   }
   // enable vadj1
-  if (!m_vadj1_enabled)
+  if (!m_vadj1_enabled && decoderRate)
     m_vadj1_enabled = Enable_vadj1();
   // video contrast adjustment.
   int contrast = m_processInfo.GetVideoSettings().m_Contrast;
@@ -4073,7 +4088,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
     m_brightness = brightness;
   }
   // video rate adjustment.
-  unsigned int video_rate = GetDecoderVideoRate();
+  unsigned int video_rate = decoderRate ? GetDecoderVideoRate() : 0;
   if (video_rate > 0 && video_rate != am_private->video_rate)
   {
     CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
@@ -4137,17 +4152,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
   }
 
   if (!update)
-  {
-    // mainvideo 'should' be showing already if we get here, make sure.
-    if (!(m_opened && StepDeferredFelKeep()))
-      ShowMainVideo(true);
-    // this decoder's frame is on: a picture kept at the join is replaced.
-    // Not a closed decoder's: its frames still in the render queue present
-    // after the close
-    if (m_opened)
-      aml_set_frame_kept(false);
     return;
-  }
 
   CRect gui, display;
 
@@ -4253,13 +4258,6 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
 
   CSysfsPath("/sys/class/video/axis", video_axis);
   CSysfsPath("/sys/class/video/screen_mode", screen_mode);
-
-  // we only get called once gui has changed to something
-  // that would show video playback, so show it.
-  if (!(m_opened && StepDeferredFelKeep()))
-    ShowMainVideo(true);
-  if (m_opened)
-    aml_set_frame_kept(false);
 }
 
 void CAMLCodec::SetVideoRate(int videoRate)
