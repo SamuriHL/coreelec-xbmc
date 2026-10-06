@@ -59,6 +59,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/FontUtils.h"
 #include "utils/MathUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
@@ -879,8 +880,11 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
   }
-  // design §15 step 2.2: a held start resumes at a scheduled instant (A/B flag)
-  m_scheduledStart = XFILE::CFile::Exists("special://profile/scheduled_start");
+  // design §15 step 2.2: a held start resumes at a scheduled instant on the
+  // timeline (A/B flag)
+  m_scheduledStart = (aml_presentation_validated() && PRESENTATION::TimelineClockActive() &&
+                      !XFILE::CFile::Exists("special://profile/scheduled_start_off")) ||
+                     XFILE::CFile::Exists("special://profile/scheduled_start");
   // design §15.33: glided seams crossed per stream by byte position (A/B flag)
   m_seamByPos =
       aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/seamstep_off");
