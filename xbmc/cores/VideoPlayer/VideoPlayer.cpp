@@ -2545,6 +2545,7 @@ void CVideoPlayer::HoldStart()
 {
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
+  m_cachingStall = false;
   m_startHeld = true;
   m_startReleasedClock = DVD_NOPTS_VALUE;
   m_startHeldDecisions = m_renderManager.GetResolutionDecisions();
@@ -6026,6 +6027,7 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_STATE))
     {
+      m_cachingStall = false;
       SetCaching(CACHESTATE_FLUSH);
 
       auto pMsgPlayerSetState = std::static_pointer_cast<CDVDMsgPlayerSetState>(pMsg);
@@ -6116,6 +6118,7 @@ void CVideoPlayer::HandleMessages()
       m_playSpeed = speed;
 
       m_caching = CACHESTATE_DONE;
+      m_cachingStall = false;
       // design §16.22: a user pause keeps the audio not yet heard, for the
       // scheduled resume
       double holdFrom = 0.0;
@@ -6223,6 +6226,11 @@ void CVideoPlayer::HandleMessages()
 
 void CVideoPlayer::SetCaching(ECacheState state)
 {
+  // only the stall check asks for FULL itself; a flush comes as FLUSH
+  const bool stall = state == CACHESTATE_FULL && m_caching == CACHESTATE_DONE &&
+                     m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
+                     m_playSpeed == DVD_PLAYSPEED_NORMAL && m_scheduledStart && !m_startHeld &&
+                     !m_pInputStream->IsRealtime();
   if(state == CACHESTATE_FLUSH)
   {
     CacheInfo cache = GetCachingTimes();
@@ -6235,8 +6243,16 @@ void CVideoPlayer::SetCaching(ECacheState state)
   if(m_caching == state)
     return;
 
-  // only a user pause keeps the output's audio (design §16.22)
-  m_clock.SetHoldFrom(0.0);
+  // a user pause or a stall keeps the output's audio (design §16.22)
+  // (a stall moving on from FULL to INIT is still the same pause)
+  double holdFrom = 0.0;
+  double holdStep = 0.0;
+  if (!(stall && m_renderManager.GetResumePts(holdFrom, holdStep)))
+    holdFrom = 0.0;
+  const bool samePause =
+      m_cachingStall && (state == CACHESTATE_FULL || state == CACHESTATE_INIT);
+  if (!samePause)
+    m_clock.SetHoldFrom(holdFrom);
   CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::SetCaching - caching state {:d} clock:{:.3f} start pts:{:.3f}",
     state, m_clock.GetClock() / 1000000.0,
     m_CurrentVideo.starttime == DVD_NOPTS_VALUE ? -1.0 : m_CurrentVideo.starttime / 1000000.0);
@@ -6248,6 +6264,14 @@ void CVideoPlayer::SetCaching(ECacheState state)
     m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
     m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
     m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
+    if (m_caching == CACHESTATE_DONE)
+    {
+      m_cachingStall = holdFrom > 0.0;
+      m_stallSince = std::chrono::steady_clock::now();
+      if (stall)
+        CLog::Log(LOGINFO, "VideoPlayer: stalled at clock {:.3f}, caching (audio kept from {:.3f})",
+                  m_clock.GetClock() / DVD_TIME_BASE, holdFrom / DVD_TIME_BASE);
+    }
 
     m_cachingTimer.Set(5000ms);
   }
@@ -6255,7 +6279,18 @@ void CVideoPlayer::SetCaching(ECacheState state)
   if (state == CACHESTATE_PLAY ||
      (state == CACHESTATE_DONE && m_caching != CACHESTATE_PLAY))
   {
-    m_clock.SetSpeed(m_playSpeed);
+    // a stall resumes on the vblank grid, its sound landing with the picture
+    const bool scheduled = m_cachingStall && m_streamPlayerSpeed == DVD_PLAYSPEED_PAUSE &&
+                           m_playSpeed == DVD_PLAYSPEED_NORMAL && !m_startHeld &&
+                           !m_displayLost && ScheduleUserResume();
+    if (m_caching == CACHESTATE_FULL || m_caching == CACHESTATE_INIT)
+      CLog::Log(LOGINFO, "VideoPlayer: caching over after {:.3f}s, resume {}",
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - m_stallSince)
+                    .count(),
+                scheduled ? "scheduled" : "at once");
+    m_cachingStall = false;
+    if (!scheduled)
+      m_clock.SetSpeed(m_playSpeed);
     m_VideoPlayerAudio->SetSpeed(m_playSpeed);
     m_VideoPlayerVideo->SetSpeed(m_playSpeed);
     m_streamPlayerSpeed = m_playSpeed;
@@ -7666,6 +7701,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   }
   if (m_startHeld)
     ReleaseHeldStart("flush");
+  m_cachingStall = false;
   m_startReleasedClock = DVD_NOPTS_VALUE;
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");

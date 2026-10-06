@@ -895,6 +895,10 @@ protected:
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;
   bool m_startHeld = false;
+  //! the caching pause is a stall while playing: it keeps the output's audio
+  //! and resumes like a user resume (design §16.25)
+  bool m_cachingStall = false;
+  std::chrono::steady_clock::time_point m_stallSince;
   bool m_keepFrameEnabled = false; //!< design 4.3 debug flag (special://profile/keepframe)
   std::atomic_bool m_audioSessionHold{false}; //!< design 5 debug flag (special://profile/audiohold)
   bool m_startHeldSawLost = false;
