@@ -18,8 +18,10 @@
 #include "system_egl.h"
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
+#include "windowing/Resolution.h"
 
 #include <atomic>
+#include <optional>
 #include <gbm.h>
 
 class IDispResource;
@@ -115,4 +117,6 @@ private:
   struct udev *m_udev;
   struct callback_data m_callback_data;
   std::atomic<bool> m_hotplugPending{false};
+  //! the playing video's mode at the first hotplug of a playback
+  std::optional<RESOLUTION_INFO> m_videoModeAtHotplug;
 };

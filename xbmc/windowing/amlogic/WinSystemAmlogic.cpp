@@ -10,9 +10,12 @@
 
 #include <string.h>
 #include <float.h>
+#include <cmath>
 #include <exception>
 
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
@@ -204,6 +207,15 @@ void CWinSystemAmlogic::HotplugEvent()
 {
   SetPresentationReady(false);
 
+  // a display coming back during playback gets the video's mode, not the
+  // desktop mode; an unplug moves the output to the desktop mode first
+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  if (!appPlayer || !appPlayer->IsPlayingVideo())
+    m_videoModeAtHotplug.reset();
+  else if (!m_videoModeAtHotplug)
+    m_videoModeAtHotplug = CDisplaySettings::GetInstance().GetResolutionInfo(
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution());
+
   // A different panel may now be attached, so the cached VSVDB - which
   // describes one specific display - can no longer be trusted.
   aml_display_vsvdb_invalidate();
@@ -257,6 +269,25 @@ void CWinSystemAmlogic::HotplugEvent()
   else
     CLog::Log(LOGWARNING, "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
       CDisplaySettings::GetInstance().GetResolutionInfo(res).strId);
+
+  if (m_videoModeAtHotplug && connection == DRM_MODE_CONNECTED)
+  {
+    for (size_t i = RES_DESKTOP; i < CDisplaySettings::GetInstance().ResolutionInfoSize(); i++)
+    {
+      const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(i);
+      if (StringUtils::EqualsNoCase(info.strId, m_videoModeAtHotplug->strId) &&
+          std::abs(info.fRefreshRate - m_videoModeAtHotplug->fRefreshRate) < 0.01f &&
+          info.dwFlags == m_videoModeAtHotplug->dwFlags)
+      {
+        res = static_cast<RESOLUTION>(i);
+        CLog::Log(LOGINFO, "CWinSystemAmlogic - HotplugEvent, restoring the video's mode {} @ {:.3f}",
+                  info.strId, info.fRefreshRate);
+        // kept until applied: a display may come back with fewer modes first
+        m_videoModeAtHotplug.reset();
+        break;
+      }
+    }
+  }
 
   m_amlDisplay->SetHotPlug();
   CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, true);
