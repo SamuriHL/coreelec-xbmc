@@ -52,6 +52,8 @@ public:
   double GetCacheTotal() override;
   unsigned int AddPackets(uint8_t **data, unsigned int frames, unsigned int offset) override;
   void Drain() override;
+  unsigned int Rewind(unsigned int frames) override;
+  uint64_t GetWrittenFrames() override { return m_shadowWritten; }
 
 private:
   CAEChannelInfo GetChannelLayoutRaw(const AEAudioFormat& format);

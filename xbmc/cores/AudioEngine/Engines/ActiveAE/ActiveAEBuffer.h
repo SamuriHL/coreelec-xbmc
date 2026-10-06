@@ -66,6 +66,9 @@ public:
   // pts less the label of the content (DVDAudioFrame::labelLag)
   double labelLagMs = 0;
   int pkt_start_offset = 0;
+  // the engine holds a reference for the output, which keeps the buffer until
+  // it has played (a pause takes back what has not)
+  bool sinkHold = false;
   int refCount = 0;
   double centerMixLevel;
 };

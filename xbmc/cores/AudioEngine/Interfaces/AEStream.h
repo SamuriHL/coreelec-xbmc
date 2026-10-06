@@ -36,6 +36,9 @@ public:
   {
     return false;
   }
+  //! a user pause (design §16.22): the pts in ms from which the output keeps
+  //! what it has not played, for the resume; 0: none
+  virtual double GetHoldFrom() { return 0.0; }
 };
 
 class CAESyncInfo

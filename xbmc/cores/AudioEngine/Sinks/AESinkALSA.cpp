@@ -1420,6 +1420,23 @@ void CAESinkALSA::HandleError(const char* name, int err)
   }
 }
 
+unsigned int CAESinkALSA::Rewind(unsigned int frames)
+{
+  // all or nothing: the caller maps the frames to the buffers it wrote
+  if (!m_pcm || snd_pcm_rewindable(m_pcm) < static_cast<snd_pcm_sframes_t>(frames))
+    return 0;
+  const snd_pcm_sframes_t rewound = snd_pcm_rewind(m_pcm, frames);
+  if (rewound <= 0)
+    return 0;
+  if (rewound != static_cast<snd_pcm_sframes_t>(frames))
+  {
+    snd_pcm_forward(m_pcm, rewound);
+    return 0;
+  }
+  m_shadowWritten -= static_cast<uint64_t>(rewound);
+  return static_cast<unsigned int>(rewound);
+}
+
 void CAESinkALSA::Drain()
 {
   if (!m_pcm)

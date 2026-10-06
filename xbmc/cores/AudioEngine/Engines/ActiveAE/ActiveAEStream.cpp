@@ -764,6 +764,19 @@ void CActiveAEStreamBuffers::Flush()
   }
 }
 
+void CActiveAEStreamBuffers::Prepend(std::deque<CSampleBuffer*>& older)
+{
+  // oldest first; a bitstream passes the resample and tempo stages unchanged
+  for (auto* queue : {&m_outputSamples, &m_atempoBuffers->m_outputSamples,
+                      &m_atempoBuffers->m_inputSamples, &m_resampleBuffers->m_outputSamples,
+                      &m_resampleBuffers->m_inputSamples, &m_inputSamples})
+  {
+    older.insert(older.end(), queue->begin(), queue->end());
+    queue->clear();
+  }
+  m_inputSamples.swap(older);
+}
+
 void CActiveAEStreamBuffers::SetDrain(bool drain)
 {
   m_resampleBuffers->SetDrain(drain);

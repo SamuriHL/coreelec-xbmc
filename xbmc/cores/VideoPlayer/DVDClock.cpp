@@ -305,6 +305,18 @@ unsigned int CDVDClock::NextScheduleEpoch()
   return ++s_scheduleEpoch;
 }
 
+void CDVDClock::SetHoldFrom(double pts)
+{
+  std::unique_lock lock(m_critSection);
+  m_holdFrom = pts;
+}
+
+double CDVDClock::GetHoldFrom() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_holdFrom;
+}
+
 bool CDVDClock::ScheduleResumeAt(
     double clock, double maxStep, double lead, int64_t& startNs, double& startClock)
 {

@@ -400,6 +400,11 @@ double CAudioSinkAE::GetClockPhase()
   return m_pClock ? m_pClock->GetVsyncAdjust() / DVD_TIME_BASE * 1000 : 0.0;
 }
 
+double CAudioSinkAE::GetHoldFrom()
+{
+  return m_pClock ? m_pClock->GetHoldFrom() / DVD_TIME_BASE * 1000 : 0.0;
+}
+
 bool CAudioSinkAE::GetScheduledStart(int64_t& startNs, double& startClockMs, unsigned int& epoch)
 {
   double startClock = 0.0;

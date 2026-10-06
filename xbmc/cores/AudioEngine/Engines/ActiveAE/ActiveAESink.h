@@ -21,9 +21,11 @@
 #include "utils/StringUtils.h"
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 class CAEBitstreamPacker;
 
@@ -69,6 +71,7 @@ public:
     SETSILENCETIMEOUT,
     SETNOISETYPE,
     HOLDBURSTS,
+    HOLD,
   };
   enum InSignal
   {
@@ -151,6 +154,15 @@ protected:
   bool WritePacked(unsigned int frames);
   //! write PCM silence, retrying a full device
   bool WriteZeros(unsigned int frames);
+  //! a user pause (design §16.22): take back the written buffers from pts
+  //! fromMs on that have not played, and those not yet written; they go to
+  //! m_handBack, oldest first, for the engine to queue again
+  void Hold(double fromMs);
+  //! give the engine its reference to buffers the device has played
+  void ReleasePlayed();
+  //! give the engine every held reference (the device's positions end)
+  void ReleaseHeld();
+  void ReleaseBuffer(CSampleBuffer* samples);
 
   void GenerateNoise();
 
@@ -196,6 +208,17 @@ protected:
   std::unique_ptr<CAEBitstreamPacker> m_packer;
   bool m_needIecPack{false};
   bool m_streamNoise;
+  //! buffers written and held until they have played (CSampleBuffer::sinkHold)
+  struct HeldWrite
+  {
+    uint64_t start; //!< the device frame of its first frame
+    unsigned int frames;
+    CSampleBuffer* samples;
+    double ptsMs;
+  };
+  std::deque<HeldWrite> m_heldWrites;
+  std::vector<CSampleBuffer*> m_handBack;
+  bool m_lastHeld = false; //!< OutputSamples kept the buffer it was given
 };
 
 }

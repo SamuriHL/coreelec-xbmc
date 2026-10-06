@@ -280,6 +280,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extSilenceTimer.Set(0ms);
           m_extStreaming = false;
           ReturnBuffers();
+          ReleaseHeld();
           OpenSink();
 
           if (!m_extError)
@@ -322,9 +323,18 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::FLUSH:
           ReturnBuffers();
+          ReleaseHeld();
           ClearShadowPins();
           msg->Reply(CSinkControlProtocol::ACC);
           return;
+
+        case CSinkControlProtocol::HOLD:
+        {
+          Hold(*reinterpret_cast<double*>(msg->data));
+          std::vector<CSampleBuffer*>* handBack = &m_handBack;
+          msg->Reply(CSinkControlProtocol::ACC, &handBack, sizeof(handBack));
+          return;
+        }
 
         case CSinkControlProtocol::APPFOCUSED:
           m_extAppFocused = *(bool*)msg->data;
@@ -426,6 +436,8 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
             CThread::Sleep(std::chrono::milliseconds(1000 * samples->pkt->nb_samples /
                                                      samples->pkt->config.sample_rate));
           msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+          if (samples->sinkHold)
+            ReleaseBuffer(samples);
           m_extTimeout = 0ms;
           return;
         default:
@@ -483,8 +495,11 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           samples = *((CSampleBuffer**)msg->data);
           delay = OutputSamples(samples);
           msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+          if (samples->sinkHold && !m_lastHeld)
+            ReleaseBuffer(samples);
           if (m_extError)
           {
+            ReleaseHeld();
             m_sink->Deinitialize();
             m_sink.reset();
             m_state = S_TOP_CONFIGURED_SUSPEND;
@@ -586,6 +601,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
         switch (signal)
         {
         case CSinkControlProtocol::TIMEOUT:
+          ReleaseHeld();
           m_sink->Deinitialize();
           m_sink.reset();
           m_state = S_TOP_CONFIGURED_SUSPEND;
@@ -633,6 +649,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           OutputSamples(&m_sampleOfSilence);
           if (m_extError)
           {
+            ReleaseHeld();
             m_sink->Deinitialize();
             m_sink.reset();
             m_state = S_TOP_CONFIGURED_SUSPEND;
@@ -1173,6 +1190,7 @@ void CActiveAESink::CloseSink(const bool drain)
   if (drain)
     m_sink->Drain();
 
+  ReleaseHeld();
   m_sink->Deinitialize();
   m_sink.reset();
   ClearShadowPins();
@@ -1188,6 +1206,8 @@ void CActiveAESink::ReturnBuffers()
     {
       samples = *((CSampleBuffer**)msg->data);
       msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+      if (samples->sinkHold)
+        ReleaseBuffer(samples);
     }
     msg->Release();
   }
@@ -1195,6 +1215,7 @@ void CActiveAESink::ReturnBuffers()
 
 unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 {
+  m_lastHeld = false;
   // The engine had nothing while the clock ran: the silence written in its
   // place delays the audio after it by as long, and the follower cannot see it.
   // Only after audible content: before a start lands, silence is the wait.
@@ -1337,6 +1358,7 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   }
 
   int framesOrPackets;
+  const uint64_t writeStart = m_sink->GetWrittenFrames();
 
   while (frames > 0)
   {
@@ -1396,9 +1418,123 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
     if (status.tick == 0)
       m_sink->GetDelay(status);
     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, pauseMs);
+    if (samples->sinkHold && m_needIecPack && samples->pkt->nb_samples > 0 && totalFrames &&
+        writeStart + totalFrames == m_sink->GetWrittenFrames())
+    {
+      const double ptsMs = samples->ptsUs ? samples->ptsUs / 1000.0
+                                          : static_cast<double>(samples->timestamp);
+      m_heldWrites.push_back({writeStart, totalFrames, samples, ptsMs});
+      m_lastHeld = true;
+    }
+    ReleasePlayed();
   }
 
   return status.delay * 1000;
+}
+
+void CActiveAESink::ReleaseBuffer(CSampleBuffer* samples)
+{
+  m_dataPort.SendInMessage(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+}
+
+void CActiveAESink::ReleaseHeld()
+{
+  for (const HeldWrite& write : m_heldWrites)
+    ReleaseBuffer(write.samples);
+  m_heldWrites.clear();
+}
+
+void CActiveAESink::ReleasePlayed()
+{
+  if (m_heldWrites.empty())
+    return;
+  const HeldWrite& last = m_heldWrites.back();
+  const uint64_t written = m_sink ? m_sink->GetWrittenFrames() : 0;
+  // the device restarted (an xrun recovery or a reopen): the positions are gone
+  if (written < last.start + last.frames || m_heldWrites.front().start > last.start)
+  {
+    ReleaseHeld();
+    return;
+  }
+  AEDelayStatus status;
+  m_sink->GetDelay(status);
+  const uint64_t unplayed =
+      static_cast<uint64_t>(std::llround(status.delay * m_sinkFormat.m_sampleRate));
+  const uint64_t played = written > unplayed ? written - unplayed : 0;
+  while (!m_heldWrites.empty() &&
+         m_heldWrites.front().start + m_heldWrites.front().frames <= played)
+  {
+    ReleaseBuffer(m_heldWrites.front().samples);
+    m_heldWrites.pop_front();
+  }
+}
+
+void CActiveAESink::Hold(double fromMs)
+{
+  m_handBack.clear();
+  unsigned int rewound = 0;
+  double firstMs = 0.0;
+  if (m_sink && !m_heldWrites.empty())
+  {
+    AEDelayStatus status;
+    m_sink->GetDelay(status);
+    const uint64_t written = m_sink->GetWrittenFrames();
+    const uint64_t unplayed =
+        static_cast<uint64_t>(std::llround(status.delay * m_sinkFormat.m_sampleRate));
+    // what the device fetches next is beyond reach: a margin past the play position
+    const uint64_t reach = written - std::min(unplayed, written) + m_sinkFormat.m_sampleRate / 500;
+    const double rate = m_sinkFormat.m_sampleRate;
+    auto keep = std::find_if(m_heldWrites.begin(), m_heldWrites.end(),
+                             [&](const HeldWrite& write) {
+                               return write.start >= reach &&
+                                      write.ptsMs + write.frames * 1000.0 / rate > fromMs;
+                             });
+    if (keep != m_heldWrites.end() && written > keep->start)
+    {
+      const unsigned int frames = static_cast<unsigned int>(written - keep->start);
+      rewound = m_sink->Rewind(frames);
+      if (rewound == frames)
+      {
+        firstMs = keep->ptsMs;
+        for (auto it = keep; it != m_heldWrites.end(); ++it)
+          m_handBack.push_back(it->samples);
+        m_heldWrites.erase(keep, m_heldWrites.end());
+        // the rewound span still holds its old bursts: pause bursts over it now,
+        // so the device never stops and the receiver keeps its lock
+        unsigned int pad = rewound;
+        while (pad > 0)
+        {
+          const unsigned int packed =
+              m_packer->PackPauseFrames(m_sinkFormat.m_streamInfo, pad, pad, true);
+          if (!packed || !WritePacked(packed))
+            break;
+          pad -= packed;
+        }
+      }
+      else
+        rewound = 0;
+    }
+  }
+  // queued behind the device: never written
+  Message* msg = nullptr;
+  while (m_dataPort.ReceiveOutMessage(&msg))
+  {
+    if (msg->signal == CSinkDataProtocol::SAMPLE)
+    {
+      CSampleBuffer* samples = *((CSampleBuffer**)msg->data);
+      msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+      if (samples->sinkHold)
+        m_handBack.push_back(samples);
+    }
+    msg->Release();
+  }
+  ClearShadowPins();
+  CLog::Log(LOGINFO,
+            "CActiveAESink: pause from pts {:.3f} ms took back {} buffers, {} frames ({:.1f} ms) "
+            "from the device, first pts {:.3f} ms",
+            fromMs, m_handBack.size(), rewound,
+            m_sinkFormat.m_sampleRate ? rewound * 1000.0 / m_sinkFormat.m_sampleRate : 0.0,
+            firstMs);
 }
 
 void CActiveAESink::ClearShadowPins()

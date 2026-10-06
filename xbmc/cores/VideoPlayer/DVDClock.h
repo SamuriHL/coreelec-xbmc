@@ -94,6 +94,10 @@ public:
   bool GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const;
   //! the player holds the clock for a start (it then resumes or schedules it)
   void SetStartHeld(bool held);
+  //! a user pause: the pts of the first frame not yet released, from which the
+  //! audio output keeps what it has not played (design §16.22); 0: none
+  void SetHoldFrom(double pts);
+  double GetHoldFrom() const;
   //! a start the clock has yet to make: held for it (startNs 0), or scheduled
   //! and not yet reached (startNs its CLOCK_MONOTONIC instant). startClock is
   //! the clock it starts from. A frame shown before then is shown into a clock
@@ -122,6 +126,7 @@ protected:
   static unsigned int NextScheduleEpoch();
 
   mutable CCriticalSection m_critSection;
+  double m_holdFrom = 0.0;
   int64_t m_systemUsed;
   int64_t m_startClock;
   int64_t m_pauseClock;

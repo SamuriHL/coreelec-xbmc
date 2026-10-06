@@ -2543,6 +2543,8 @@ void CVideoPlayer::ArmBdjStartForSegment()
 
 void CVideoPlayer::HoldStart()
 {
+  // only a user pause keeps the output's audio (design §16.22)
+  m_clock.SetHoldFrom(0.0);
   m_startHeld = true;
   m_startReleasedClock = DVD_NOPTS_VALUE;
   m_startHeldDecisions = m_renderManager.GetResolutionDecisions();
@@ -6114,6 +6116,15 @@ void CVideoPlayer::HandleMessages()
       m_playSpeed = speed;
 
       m_caching = CACHESTATE_DONE;
+      // design §16.22: a user pause keeps the audio not yet heard, for the
+      // scheduled resume
+      double holdFrom = 0.0;
+      double holdStep = 0.0;
+      if (!(speed == DVD_PLAYSPEED_PAUSE && m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
+            m_scheduledStart && !m_pInputStream->IsRealtime() &&
+            m_renderManager.GetResumePts(holdFrom, holdStep)))
+        holdFrom = 0.0;
+      m_clock.SetHoldFrom(holdFrom);
       // a held start stays paused: the release applies the speed
       if (m_startHeld)
       {
@@ -6224,6 +6235,8 @@ void CVideoPlayer::SetCaching(ECacheState state)
   if(m_caching == state)
     return;
 
+  // only a user pause keeps the output's audio (design §16.22)
+  m_clock.SetHoldFrom(0.0);
   CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::SetCaching - caching state {:d} clock:{:.3f} start pts:{:.3f}",
     state, m_clock.GetClock() / 1000000.0,
     m_CurrentVideo.starttime == DVD_NOPTS_VALUE ? -1.0 : m_CurrentVideo.starttime / 1000000.0);
@@ -7637,6 +7650,8 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  // only a user pause keeps the output's audio (design §16.22)
+  m_clock.SetHoldFrom(0.0);
   ClearPendingElPackets();
   ResetSegmentEnd();
   // the seams stay: offsets follow the byte position, so a read from anywhere

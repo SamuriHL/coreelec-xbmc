@@ -342,6 +342,11 @@ protected:
   void DiscardStream(CActiveAEStream *stream);
   void SFlushStream(CActiveAEStream *stream);
   void FlushEngine();
+  //! the output keeps what it has not played at a pause (design §16.22)
+  bool HoldOutput() const;
+  //! a user pause: the output and the engine give back what has not played, and
+  //! it goes to the stream's front for the scheduled resume; false: not done
+  bool HoldStream(CActiveAEStream* stream);
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
   void DiscardSound(CActiveAESound *sound);

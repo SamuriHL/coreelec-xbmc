@@ -798,6 +798,12 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
                       "CActiveAE - pause with parked sync error {:f} ms, resume will land there",
                       stream->m_resumeSyncTarget);
           }
+          if (!stream->m_paused && HoldOutput() && stream->m_pClock &&
+              stream->m_pClock->GetHoldFrom() > 0.0 && HoldStream(stream))
+          {
+            stream->m_paused = true;
+            return;
+          }
           if (!stream->m_paused && m_streams.size() == 1)
           {
             FlushEngine();
@@ -1539,7 +1545,9 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
 
         // create buffer pool
         (*it)->m_inputBuffers = std::make_unique<CActiveAEBufferPool>((*it)->m_format);
-        (*it)->m_inputBuffers->Create(MAX_CACHE_LEVEL*1000);
+        // a pause can give back what the output holds (design §16.22)
+        (*it)->m_inputBuffers->Create(MAX_CACHE_LEVEL * 1000 +
+                                      (m_mode == MODE_RAW && aml_presentation_validated() ? 200 : 0));
         (*it)->m_streamSpace = (*it)->m_format.m_frameSize * (*it)->m_format.m_frames;
 
         // if input format does not follow ffmpeg channel mask, we may need to remap channels
@@ -1813,6 +1821,68 @@ void CActiveAE::FlushEngine()
     m_extError = true;
   }
   m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+}
+
+bool CActiveAE::HoldOutput() const
+{
+  // a bitstream packed here, one burst per buffer (E-AC-3 may pack several)
+  return m_mode == MODE_RAW && m_streams.size() == 1 && m_sink.NeedIecPack() &&
+         m_sinkFormat.m_streamInfo.m_type != CAEStreamInfo::STREAM_TYPE_EAC3 &&
+         aml_presentation_validated();
+}
+
+bool CActiveAE::HoldStream(CActiveAEStream* stream)
+{
+  double fromMs = stream->m_pClock->GetHoldFrom();
+  Message* reply;
+  if (!m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::HOLD, &reply, 2s, &fromMs,
+                                                sizeof(fromMs)))
+  {
+    CLog::Log(LOGERROR, "ActiveAE::{} - failed to hold", __FUNCTION__);
+    m_extError = true;
+    return false;
+  }
+  const auto* handBack = *reinterpret_cast<std::vector<CSampleBuffer*>**>(reply->data);
+  std::deque<CSampleBuffer*> older;
+  // a stream that went before this one (a track change) keeps its buffers out
+  const auto keep = [&](CSampleBuffer* samples)
+  {
+    if (samples->pool == stream->m_inputBuffers.get() && samples->pkt->nb_samples > 0)
+      older.push_back(samples);
+    else
+      samples->Return();
+  };
+  for (CSampleBuffer* samples : *handBack)
+    keep(samples);
+  reply->Release();
+
+  // on their way to the output: a bitstream passes the sink pool unchanged
+  for (auto* queue : {&m_sinkBuffers->m_outputSamples, &m_sinkBuffers->m_inputSamples})
+  {
+    for (CSampleBuffer* samples : *queue)
+      keep(samples);
+    queue->clear();
+  }
+  m_sinkBuffers->Flush();
+  if (m_vizBuffers)
+    m_vizBuffers->Flush();
+
+  for (CSampleBuffer* samples : older)
+  {
+    samples->landNs = 0;
+    samples->landEpoch = 0;
+    samples->padMs = 0;
+    samples->sinkHold = false;
+  }
+  const size_t kept = older.size();
+  stream->m_processingBuffers->Prepend(older);
+  // a start landed but not yet reached plays nothing now
+  if (stream->m_schedEpoch)
+    m_sink.AbandonStart(stream->m_schedEpoch);
+  m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+  CLog::Log(LOGINFO, "ActiveAE - pause from pts {:.3f} ms: {} buffers back on the stream", fromMs,
+            kept);
+  return true;
 }
 
 void CActiveAE::ClearDiscardedBuffers()
@@ -2701,11 +2771,16 @@ bool CActiveAE::RunStages()
 
   // serve sink buffers
   busy |= m_sinkBuffers->ResampleBuffers();
+  const bool hold = HoldOutput();
   while(!m_sinkBuffers->m_outputSamples.empty())
   {
     CSampleBuffer *out = NULL;
     out = m_sinkBuffers->m_outputSamples.front();
     m_sinkBuffers->m_outputSamples.pop_front();
+    // a reference for the output, given back when the buffer has played
+    out->sinkHold = hold && out->pool && out->pkt->nb_samples > 0;
+    if (out->sinkHold)
+      out->Acquire();
     m_sink.m_dataPort.SendOutMessage(CSinkDataProtocol::SAMPLE,
         &out, sizeof(CSampleBuffer*));
     busy = true;

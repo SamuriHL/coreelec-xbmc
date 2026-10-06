@@ -72,6 +72,19 @@ public:
    */
   virtual void Drain() {}
 
+  /*!
+   * @brief Take back frames written but not yet played, the newest first
+   * @param frames how many to take back
+   * @return the frames taken back
+   */
+  virtual unsigned int Rewind(unsigned int frames) { return 0; }
+
+  /*!
+   * @brief Frames written since the device was opened, rewound ones excluded
+   * @return 0 when the sink does not count them
+   */
+  virtual uint64_t GetWrittenFrames() { return 0; }
+
   /*
     Indicates if sink can handle volume control.
   */
