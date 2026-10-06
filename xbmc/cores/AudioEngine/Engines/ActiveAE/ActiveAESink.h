@@ -100,6 +100,15 @@ public:
   };
 };
 
+//! the reply to CSinkControlProtocol::HOLD
+struct SinkHoldReply
+{
+  //! a bitstream: the buffers taken back, oldest first
+  std::vector<CSampleBuffer*>* handBack;
+  //! PCM: the pts of the first sample that does not play; 0 = not known
+  double cutMs;
+};
+
 class CActiveAESink : private CThread
 {
 public:
@@ -158,6 +167,13 @@ protected:
   //! fromMs on that have not played, and those not yet written; they go to
   //! m_handBack, oldest first, for the engine to queue again
   void Hold(double fromMs);
+  //! the same for PCM: the device plays up to the cut, fades out over a few
+  //! ms and is silent after; returns the pts at the cut (0: not known)
+  double HoldPcm(double fromMs);
+  //! PCM content written: its position and a copy, for HoldPcm
+  void LogPcmWrite(CSampleBuffer* samples, unsigned int skipFrames, uint64_t writeStart);
+  //! write the copy of [start, start + frames) fading to silence; the frames written
+  unsigned int WriteFadeOut(uint64_t start, unsigned int frames);
   //! give the engine its reference to buffers the device has played
   void ReleasePlayed();
   //! give the engine every held reference (the device's positions end)
@@ -219,6 +235,23 @@ protected:
   std::deque<HeldWrite> m_heldWrites;
   std::vector<CSampleBuffer*> m_handBack;
   bool m_lastHeld = false; //!< OutputSamples kept the buffer it was given
+  //! E-AC-3 buffers gathered in the packer for a burst not yet written
+  struct PendingPack
+  {
+    CSampleBuffer* samples;
+    double ptsMs;
+  };
+  std::vector<PendingPack> m_packPending;
+  //! PCM content written: positions only, the engine keeps the samples
+  struct PcmWrite
+  {
+    uint64_t start;
+    unsigned int frames;
+    double ptsMs;
+  };
+  std::deque<PcmWrite> m_pcmWrites;
+  //! what was written, by device frame (a ring), for the fade at a cut
+  std::vector<uint8_t> m_pcmCopy;
 };
 
 }

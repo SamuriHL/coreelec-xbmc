@@ -40,6 +40,7 @@ using namespace std::chrono_literals;
 namespace
 {
 constexpr float MAX_CACHE_LEVEL = 0.4f; // total cache time of stream in seconds;
+constexpr unsigned int PCM_HISTORY_MS = 800; // more than the water level and the device hold
 constexpr float MAX_WATER_LEVEL = 0.2f; // buffered time after stream stages in seconds;
 constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
 constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
@@ -806,7 +807,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           }
           if (!stream->m_paused && m_streams.size() == 1)
           {
-            FlushEngine();
+            // PCM: the output plays to the cut, the rest waits on the stream
+            if (!(HoldPcm() && stream->m_pClock && stream->m_pClock->GetHoldFrom() > 0.0 &&
+                  HoldStream(stream)))
+              FlushEngine();
             // a held session pauses on pause bursts, as a player's bitstream
             // output does (a held start, a user pause); zeros re-lock the AVR
             if (!m_extSessionHold)
@@ -1546,8 +1550,14 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
         // create buffer pool
         (*it)->m_inputBuffers = std::make_unique<CActiveAEBufferPool>((*it)->m_format);
         // a pause can give back what the output holds (design §16.22)
-        (*it)->m_inputBuffers->Create(MAX_CACHE_LEVEL * 1000 +
-                                      (m_mode == MODE_RAW && aml_presentation_validated() ? 200 : 0));
+        // E-AC-3 counts its pool in bursts; with m_repeat > 1 a buffer is a part of one
+        const bool hold = m_mode == MODE_RAW && aml_presentation_validated();
+        const unsigned int repeat =
+            (*it)->m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3
+                ? std::max(1u, (*it)->m_format.m_streamInfo.m_repeat)
+                : 1;
+        (*it)->m_inputBuffers->Create(hold ? (MAX_CACHE_LEVEL * 1000 + 200) * repeat
+                                           : MAX_CACHE_LEVEL * 1000);
         (*it)->m_streamSpace = (*it)->m_format.m_frameSize * (*it)->m_format.m_frames;
 
         // if input format does not follow ffmpeg channel mask, we may need to remap channels
@@ -1647,6 +1657,21 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
     m_sinkBuffers->Create(MAX_WATER_LEVEL*1000, true, false);
   }
 
+  // PCM history (design §16.24): what the output holds, twice over for a resume
+  ClearHistory();
+  const bool history = m_mode == MODE_PCM && !m_streams.empty() &&
+                       (m_internalFormat.m_dataFormat == AE_FMT_FLOAT ||
+                        m_internalFormat.m_dataFormat == AE_FMT_FLOATP) &&
+                       aml_presentation_validated();
+  if (m_historyBuffers && (!history || !CompareFormat(m_historyBuffers->m_format, m_internalFormat) ||
+                           m_historyBuffers->m_format.m_frames != m_internalFormat.m_frames))
+    m_discardBufferPools.push_back(std::move(m_historyBuffers));
+  if (history && !m_historyBuffers)
+  {
+    m_historyBuffers = std::make_unique<CActiveAEBufferPool>(m_internalFormat);
+    m_historyBuffers->Create(2 * PCM_HISTORY_MS);
+  }
+
   ConfigureLowLatency();
 
   // reset gui sounds
@@ -1739,6 +1764,7 @@ void CActiveAE::DiscardStream(CActiveAEStream *stream)
         m_discardBufferPools.push_back((*it)->m_processingBuffers->GetResampleBuffers());
         m_discardBufferPools.push_back((*it)->m_processingBuffers->GetAtempoBuffers());
       }
+      ClearHistory();
       CLog::Log(LOGDEBUG, "CActiveAE::DiscardStream - audio stream deleted");
       m_stats.RemoveStream((*it)->m_id);
       delete (*it);
@@ -1798,6 +1824,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
 
 void CActiveAE::FlushEngine()
 {
+  ClearHistory();
   if (m_sinkBuffers)
     m_sinkBuffers->Flush();
   if (m_vizBuffers)
@@ -1825,15 +1852,189 @@ void CActiveAE::FlushEngine()
 
 bool CActiveAE::HoldOutput() const
 {
-  // a bitstream packed here, one burst per buffer (E-AC-3 may pack several)
+  // a bitstream packed here (an E-AC-3 burst may carry several buffers)
   return m_mode == MODE_RAW && m_streams.size() == 1 && m_sink.NeedIecPack() &&
-         m_sinkFormat.m_streamInfo.m_type != CAEStreamInfo::STREAM_TYPE_EAC3 &&
          aml_presentation_validated();
+}
+
+bool CActiveAE::HoldPcm() const
+{
+  // the history is labelled in the output's time only without a rate change
+  return m_mode == MODE_PCM && m_streams.size() == 1 && m_historyBuffers &&
+         m_internalFormat.m_sampleRate == m_sinkFormat.m_sampleRate;
+}
+
+namespace
+{
+double StartMs(const CSampleBuffer* buf)
+{
+  const int rate = buf->pkt->config.sample_rate;
+  return (buf->ptsUs ? buf->ptsUs / 1000.0 : static_cast<double>(buf->timestamp)) -
+         (rate ? buf->pkt_start_offset * 1000.0 / rate : 0.0);
+}
+
+double EndMs(const CSampleBuffer* buf)
+{
+  const int rate = buf->pkt->config.sample_rate;
+  return StartMs(buf) + (rate ? buf->pkt->nb_samples * 1000.0 / rate : 0.0);
+}
+
+//! bytes of one frame in one plane
+int PlaneFrameBytes(const CSoundPacket& pkt)
+{
+  return pkt.bytes_per_sample * (pkt.planes == 1 ? pkt.config.channels : 1);
+}
+} // namespace
+
+void CActiveAE::KeepHistory(const CSampleBuffer* out)
+{
+  const CSoundPacket& pkt = *out->pkt;
+  if (!out->timestamp || !pkt.config.sample_rate || m_historyBuffers->m_allSamples.empty())
+  {
+    ClearHistory();
+    return;
+  }
+  // a jump back (a seek the engine was not told of) starts again
+  if (!m_history.empty() && StartMs(out) < StartMs(m_history.back()))
+    ClearHistory();
+  CSampleBuffer* buf = m_historyBuffers->GetFreeBuffer();
+  if (!buf && !m_history.empty())
+  {
+    buf = m_history.front();
+    m_history.pop_front();
+  }
+  const CSoundPacket* shape = m_historyBuffers->m_allSamples.front()->pkt.get();
+  if (!buf || pkt.planes != shape->planes || pkt.bytes_per_sample != shape->bytes_per_sample ||
+      pkt.config.channels != shape->config.channels || pkt.nb_samples > shape->max_nb_samples)
+  {
+    if (buf)
+      buf->Return();
+    ClearHistory();
+    return;
+  }
+  const size_t bytes = static_cast<size_t>(pkt.nb_samples) * PlaneFrameBytes(pkt);
+  for (int i = 0; i < pkt.planes; i++)
+    memcpy(buf->pkt->data[i], pkt.data[i], bytes);
+  buf->pkt->nb_samples = pkt.nb_samples;
+  buf->timestamp = out->timestamp;
+  buf->ptsUs = out->ptsUs;
+  buf->pkt_start_offset = out->pkt_start_offset;
+  buf->padMs = out->padMs;
+  buf->labelLagMs = out->labelLagMs;
+  buf->centerMixLevel = out->centerMixLevel;
+  buf->landNs = 0;
+  buf->landEpoch = 0;
+  m_history.push_back(buf);
+  while (m_history.size() > 1 && EndMs(m_history.back()) - EndMs(m_history.front()) > PCM_HISTORY_MS)
+  {
+    m_history.front()->Return();
+    m_history.pop_front();
+  }
+}
+
+void CActiveAE::ClearHistory()
+{
+  for (CSampleBuffer* buf : m_history)
+    buf->Return();
+  m_history.clear();
+}
+
+bool CActiveAE::HoldHistory(CActiveAEStream* stream, double cutMs)
+{
+  // after volume and conversion: the history has the same samples
+  m_sinkBuffers->Flush();
+  if (m_vizBuffers)
+    m_vizBuffers->Flush();
+  if (cutMs <= 0.0)
+  {
+    ClearHistory();
+    return false;
+  }
+
+  std::deque<CSampleBuffer*> older;
+  for (CSampleBuffer* buf : m_history)
+  {
+    CSoundPacket& pkt = *buf->pkt;
+    if (EndMs(buf) <= cutMs + 0.001)
+    {
+      buf->Return();
+      continue;
+    }
+    const double startMs = StartMs(buf);
+    if (older.empty() && startMs < cutMs)
+    {
+      // the output played the head
+      const int skip = std::min(
+          pkt.nb_samples - 1,
+          static_cast<int>(std::llround((cutMs - startMs) * pkt.config.sample_rate / 1000.0)));
+      const int frameBytes = PlaneFrameBytes(pkt);
+      for (int i = 0; i < pkt.planes; i++)
+        memmove(pkt.data[i], pkt.data[i] + skip * frameBytes,
+                static_cast<size_t>(pkt.nb_samples - skip) * frameBytes);
+      pkt.nb_samples -= skip;
+      buf->pkt_start_offset -= skip;
+    }
+    if (older.empty())
+      buf->padMs = 0;
+    older.push_back(buf);
+  }
+  m_history.clear();
+  // the output has cut: nothing queued again is a gap at the resume, not a flush
+  if (older.empty())
+  {
+    CLog::Log(LOGWARNING, "ActiveAE - pause: nothing after the cut {:.3f} ms in the history",
+              cutMs);
+    if (stream->m_schedEpoch)
+      m_sink.AbandonStart(stream->m_schedEpoch);
+    m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+    return true;
+  }
+
+  const double firstMs = StartMs(older.front());
+  if (firstMs > cutMs + 1.0)
+    CLog::Log(LOGWARNING, "ActiveAE - pause: {:.3f} ms after the cut no longer in the history",
+              firstMs - cutMs);
+  // the output faded out at the cut: fade in from it
+  const int fadeFrames = static_cast<int>(m_internalFormat.m_sampleRate / 250);
+  int faded = 0;
+  for (CSampleBuffer* buf : older)
+  {
+    CSoundPacket& pkt = *buf->pkt;
+    const int perFrame = pkt.planes == 1 ? pkt.config.channels : 1;
+    int i = 0;
+    for (; i < pkt.nb_samples && faded < fadeFrames; i++, faded++)
+    {
+      const float gain = static_cast<float>(faded + 1) / fadeFrames;
+      for (int p = 0; p < pkt.planes; p++)
+      {
+        float* sample = reinterpret_cast<float*>(pkt.data[p]) + i * perFrame;
+        for (int c = 0; c < perFrame; c++)
+          sample[c] *= gain;
+      }
+    }
+    if (faded >= fadeFrames)
+      break;
+  }
+
+  const size_t kept = older.size();
+  stream->m_processingBuffers->PrependOutput(older);
+  if (stream->m_schedEpoch)
+    m_sink.AbandonStart(stream->m_schedEpoch);
+  m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+  CLog::Log(LOGINFO, "ActiveAE - pause at the cut {:.3f} ms: {} buffers from {:.3f} ms back on the stream",
+            cutMs, kept, firstMs);
+  return true;
 }
 
 bool CActiveAE::HoldStream(CActiveAEStream* stream)
 {
   double fromMs = stream->m_pClock->GetHoldFrom();
+  const bool pcm = m_mode != MODE_RAW;
+  if (pcm && m_history.empty())
+    return false;
+  // the cut never goes before what the history still has
+  if (pcm)
+    fromMs = std::max(fromMs, StartMs(m_history.front()));
   Message* reply;
   if (!m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::HOLD, &reply, 2s, &fromMs,
                                                 sizeof(fromMs)))
@@ -1842,7 +2043,13 @@ bool CActiveAE::HoldStream(CActiveAEStream* stream)
     m_extError = true;
     return false;
   }
-  const auto* handBack = *reinterpret_cast<std::vector<CSampleBuffer*>**>(reply->data);
+  const SinkHoldReply hold = *reinterpret_cast<SinkHoldReply*>(reply->data);
+  if (pcm)
+  {
+    reply->Release();
+    return HoldHistory(stream, hold.cutMs);
+  }
+  const auto* handBack = hold.handBack;
   std::deque<CSampleBuffer*> older;
   // a stream that went before this one (a track change) keeps its buffers out
   const auto keep = [&](CSampleBuffer* samples)
@@ -2449,6 +2656,8 @@ bool CActiveAE::RunStages()
               busy = true;
               continue;
             }
+            if (HoldPcm())
+              KeepHistory(out);
 
             int nb_floats = out->pkt->nb_samples * out->pkt->config.channels / out->pkt->planes;
             int nb_loops = 1;

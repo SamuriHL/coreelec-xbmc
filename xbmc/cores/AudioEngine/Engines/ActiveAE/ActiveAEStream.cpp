@@ -777,6 +777,12 @@ void CActiveAEStreamBuffers::Prepend(std::deque<CSampleBuffer*>& older)
   m_inputSamples.swap(older);
 }
 
+void CActiveAEStreamBuffers::PrependOutput(std::deque<CSampleBuffer*>& older)
+{
+  m_outputSamples.insert(m_outputSamples.begin(), older.begin(), older.end());
+  older.clear();
+}
+
 void CActiveAEStreamBuffers::SetDrain(bool drain)
 {
   m_resampleBuffers->SetDrain(drain);

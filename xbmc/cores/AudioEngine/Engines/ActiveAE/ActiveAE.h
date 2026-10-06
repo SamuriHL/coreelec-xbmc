@@ -347,6 +347,13 @@ protected:
   //! a user pause: the output and the engine give back what has not played, and
   //! it goes to the stream's front for the scheduled resume; false: not done
   bool HoldStream(CActiveAEStream* stream);
+  //! PCM: the output plays what it has from the history (design §16.24)
+  bool HoldPcm() const;
+  //! a copy of the stream's output before volume, until it has surely played
+  void KeepHistory(const CSampleBuffer* out);
+  void ClearHistory();
+  //! PCM's half of HoldStream: the history from the output's cut goes back
+  bool HoldHistory(CActiveAEStream* stream, double cutMs);
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
   void DiscardSound(CActiveAESound *sound);
@@ -408,6 +415,8 @@ protected:
 
   // buffers
   std::unique_ptr<CActiveAEBufferPoolResample> m_sinkBuffers;
+  std::unique_ptr<CActiveAEBufferPool> m_historyBuffers;
+  std::deque<CSampleBuffer*> m_history;
   std::unique_ptr<CActiveAEBufferPoolResample> m_vizBuffers;
   std::unique_ptr<CActiveAEBufferPool> m_vizBuffersInput;
   std::unique_ptr<CActiveAEBufferPool>

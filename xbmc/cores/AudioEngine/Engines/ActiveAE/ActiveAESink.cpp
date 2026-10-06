@@ -26,6 +26,7 @@
 #include <cmath>
 #include <new> // for std::bad_alloc
 #include <sstream>
+#include <type_traits>
 #include <vector>
 
 using namespace AE;
@@ -330,9 +331,13 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::HOLD:
         {
-          Hold(*reinterpret_cast<double*>(msg->data));
-          std::vector<CSampleBuffer*>* handBack = &m_handBack;
-          msg->Reply(CSinkControlProtocol::ACC, &handBack, sizeof(handBack));
+          const double fromMs = *reinterpret_cast<double*>(msg->data);
+          SinkHoldReply reply{&m_handBack, 0.0};
+          if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+            Hold(fromMs);
+          else
+            reply.cutMs = HoldPcm(fromMs);
+          msg->Reply(CSinkControlProtocol::ACC, &reply, sizeof(reply));
           return;
         }
 
@@ -1402,6 +1407,9 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       m_stats->UpdateSinkDelay(status, samples->pool ? written : 0);
   }
 
+  if (!raw && aml_presentation_validated())
+    LogPcmWrite(samples, skipFrames, writeStart);
+
   if (PRESENTATION::ShadowActive())
     ShadowOnPins(samples, totalFrames, status);
 
@@ -1418,13 +1426,33 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
     if (status.tick == 0)
       m_sink->GetDelay(status);
     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0, pauseMs);
-    if (samples->sinkHold && m_needIecPack && samples->pkt->nb_samples > 0 && totalFrames &&
-        writeStart + totalFrames == m_sink->GetWrittenFrames())
+    if (samples->sinkHold && m_needIecPack && samples->pkt->nb_samples > 0)
     {
       const double ptsMs = samples->ptsUs ? samples->ptsUs / 1000.0
                                           : static_cast<double>(samples->timestamp);
-      m_heldWrites.push_back({writeStart, totalFrames, samples, ptsMs});
-      m_lastHeld = true;
+      if (!totalFrames)
+      {
+        // E-AC-3: in the packer until its burst is complete
+        m_packPending.push_back({samples, ptsMs});
+        m_lastHeld = true;
+      }
+      else if (writeStart + totalFrames == m_sink->GetWrittenFrames())
+      {
+        // a burst plays as a whole: its buffers share its place and first pts
+        const double firstMs = m_packPending.empty() ? ptsMs : m_packPending.front().ptsMs;
+        for (const PendingPack& pending : m_packPending)
+          m_heldWrites.push_back({writeStart, totalFrames, pending.samples, firstMs});
+        m_packPending.clear();
+        m_heldWrites.push_back({writeStart, totalFrames, samples, firstMs});
+        m_lastHeld = true;
+      }
+      else
+      {
+        // not all written (a recovery): the burst's buffers are no longer placed
+        for (const PendingPack& pending : m_packPending)
+          ReleaseBuffer(pending.samples);
+        m_packPending.clear();
+      }
     }
     ReleasePlayed();
   }
@@ -1442,6 +1470,10 @@ void CActiveAESink::ReleaseHeld()
   for (const HeldWrite& write : m_heldWrites)
     ReleaseBuffer(write.samples);
   m_heldWrites.clear();
+  for (const PendingPack& pending : m_packPending)
+    ReleaseBuffer(pending.samples);
+  m_packPending.clear();
+  m_pcmWrites.clear();
 }
 
 void CActiveAESink::ReleasePlayed()
@@ -1515,6 +1547,12 @@ void CActiveAESink::Hold(double fromMs)
         rewound = 0;
     }
   }
+  // gathered for a burst not yet written
+  for (const PendingPack& pending : m_packPending)
+    m_handBack.push_back(pending.samples);
+  m_packPending.clear();
+  if (m_packer)
+    m_packer->DiscardPartial();
   // queued behind the device: never written
   Message* msg = nullptr;
   while (m_dataPort.ReceiveOutMessage(&msg))
@@ -1535,6 +1573,200 @@ void CActiveAESink::Hold(double fromMs)
             fromMs, m_handBack.size(), rewound,
             m_sinkFormat.m_sampleRate ? rewound * 1000.0 / m_sinkFormat.m_sampleRate : 0.0,
             firstMs);
+}
+
+void CActiveAESink::LogPcmWrite(CSampleBuffer* samples,
+                                unsigned int skipFrames,
+                                uint64_t writeStart)
+{
+  const uint64_t written = m_sink ? m_sink->GetWrittenFrames() : 0;
+  const unsigned int rate = m_sinkFormat.m_sampleRate;
+  const unsigned int frameSize = m_sinkFormat.m_frameSize;
+  const int frames = samples->pkt->nb_samples - static_cast<int>(skipFrames);
+  // a restart (an xrun recovery or a reopen) ends the positions
+  if (!m_pcmWrites.empty() && written < m_pcmWrites.back().start + m_pcmWrites.back().frames)
+    m_pcmWrites.clear();
+  if (!samples->pool || !samples->timestamp || frames <= 0 || samples->pkt->planes != 1 ||
+      !rate || !frameSize || writeStart + frames != written)
+    return;
+
+  // half a second: more than the device holds
+  const size_t ring = static_cast<size_t>(rate / 2) * frameSize;
+  if (m_pcmCopy.size() != ring)
+  {
+    m_pcmCopy.assign(ring, 0);
+    m_pcmWrites.clear();
+  }
+  const uint8_t* src = samples->pkt->data[0] + static_cast<size_t>(skipFrames) * frameSize;
+  size_t bytes = static_cast<size_t>(frames) * frameSize;
+  size_t at = static_cast<size_t>(writeStart % (rate / 2)) * frameSize;
+  while (bytes > 0)
+  {
+    const size_t chunk = std::min(bytes, ring - at);
+    memcpy(m_pcmCopy.data() + at, src, chunk);
+    src += chunk;
+    bytes -= chunk;
+    at = 0;
+  }
+
+  const int srcRate = samples->pkt->config.sample_rate;
+  const double startMs = samples->ptsUs ? static_cast<double>(samples->ptsUs) / 1000.0
+                                        : static_cast<double>(samples->timestamp);
+  const double ptsMs =
+      startMs - (srcRate ? (samples->pkt_start_offset - static_cast<double>(skipFrames)) * 1000.0 /
+                               srcRate
+                         : 0.0);
+  m_pcmWrites.push_back({writeStart, static_cast<unsigned int>(frames), ptsMs});
+
+  AEDelayStatus status;
+  m_sink->GetDelay(status);
+  const uint64_t unplayed = static_cast<uint64_t>(std::llround(status.delay * rate));
+  const uint64_t played = written > unplayed ? written - unplayed : 0;
+  while (!m_pcmWrites.empty() &&
+         m_pcmWrites.front().start + m_pcmWrites.front().frames <= played)
+    m_pcmWrites.pop_front();
+}
+
+unsigned int CActiveAESink::WriteFadeOut(uint64_t start, unsigned int frames)
+{
+  const unsigned int rate = m_sinkFormat.m_sampleRate;
+  const unsigned int frameSize = m_sinkFormat.m_frameSize;
+  const size_t ring = m_pcmCopy.size();
+  if (!frames || !ring || frames > rate / 2)
+    return 0;
+  std::vector<uint8_t> fade(static_cast<size_t>(frames) * frameSize);
+  size_t at = static_cast<size_t>(start % (rate / 2)) * frameSize;
+  for (size_t done = 0; done < fade.size();)
+  {
+    const size_t chunk = std::min(fade.size() - done, ring - at);
+    memcpy(fade.data() + done, m_pcmCopy.data() + at, chunk);
+    done += chunk;
+    at = 0;
+  }
+
+  const auto ramp = [&](auto* sample, unsigned int perFrame)
+  {
+    for (unsigned int i = 0; i < frames; i++)
+    {
+      const double gain = 1.0 - static_cast<double>(i + 1) / frames;
+      for (unsigned int c = 0; c < perFrame; c++, sample++)
+        *sample = static_cast<std::remove_reference_t<decltype(*sample)>>(static_cast<double>(*sample) * gain);
+    }
+  };
+  switch (m_sinkFormat.m_dataFormat)
+  {
+    case AE_FMT_S16NE:
+      ramp(reinterpret_cast<int16_t*>(fade.data()), frameSize / 2);
+      break;
+    case AE_FMT_S32NE:
+    case AE_FMT_S24NE4MSB:
+      ramp(reinterpret_cast<int32_t*>(fade.data()), frameSize / 4);
+      break;
+    case AE_FMT_S24NE4:
+    {
+      // 24 bits in the low bytes, the top byte zero (not sign-extended)
+      uint32_t* sample = reinterpret_cast<uint32_t*>(fade.data());
+      for (unsigned int i = 0; i < frames; i++)
+      {
+        const double gain = 1.0 - static_cast<double>(i + 1) / frames;
+        for (unsigned int c = 0; c < frameSize / 4; c++, sample++)
+        {
+          const int32_t value = static_cast<int32_t>(*sample << 8) >> 8;
+          *sample = static_cast<uint32_t>(std::lround(value * gain)) & 0x00FFFFFF;
+        }
+      }
+      break;
+    }
+    case AE_FMT_FLOAT:
+      ramp(reinterpret_cast<float*>(fade.data()), frameSize / 4);
+      break;
+    case AE_FMT_DOUBLE:
+      ramp(reinterpret_cast<double*>(fade.data()), frameSize / 8);
+      break;
+    default:
+      return 0;
+  }
+
+  uint8_t* data = fade.data();
+  unsigned int done = 0;
+  int retry = 0;
+  while (done < frames)
+  {
+    const unsigned int chunk = std::min(frames - done, m_sinkFormat.m_frames);
+    const unsigned int written = m_sink->AddPackets(&data, chunk, done);
+    if (written == 0)
+    {
+      if (++retry > 4)
+        break;
+      CThread::Sleep(std::chrono::milliseconds(500 * m_sinkFormat.m_frames / rate));
+      continue;
+    }
+    if (written > chunk)
+      break;
+    done += written;
+  }
+  return done;
+}
+
+double CActiveAESink::HoldPcm(double fromMs)
+{
+  m_handBack.clear();
+  // queued behind the device: never written, the engine still has the samples
+  ReturnBuffers();
+  double cutMs = 0.0;
+  unsigned int rewound = 0;
+  unsigned int faded = 0;
+  const unsigned int rate = m_sinkFormat.m_sampleRate;
+  if (m_sink && rate && !m_pcmWrites.empty())
+  {
+    const auto endMs = [&](const PcmWrite& write)
+    { return write.ptsMs + write.frames * 1000.0 / rate; };
+    AEDelayStatus status;
+    m_sink->GetDelay(status);
+    const uint64_t written = m_sink->GetWrittenFrames();
+    const uint64_t unplayed = static_cast<uint64_t>(std::llround(status.delay * rate));
+    // what the device fetches next is beyond reach: a margin past the play position
+    const uint64_t reach = written - std::min(unplayed, written) + rate / 500;
+    auto cutAt = std::find_if(m_pcmWrites.begin(), m_pcmWrites.end(),
+                              [&](const PcmWrite& write) {
+                                return write.start + write.frames > reach &&
+                                       endMs(write) > fromMs;
+                              });
+    cutMs = endMs(m_pcmWrites.back());
+    if (cutAt != m_pcmWrites.end())
+    {
+      uint64_t cut = std::max(reach, cutAt->start);
+      if (fromMs > cutAt->ptsMs)
+        cut = std::max(cut, cutAt->start + static_cast<uint64_t>(
+                                               std::llround((fromMs - cutAt->ptsMs) * rate / 1000.0)));
+      cut = std::min<uint64_t>(cut, cutAt->start + cutAt->frames);
+      const unsigned int frames = written > cut ? static_cast<unsigned int>(written - cut) : 0;
+      if (frames && m_sink->Rewind(frames) == frames)
+      {
+        rewound = frames;
+        cutMs = cutAt->ptsMs + (cut - cutAt->start) * 1000.0 / rate;
+        // the rewound span still holds what was written: a short fade, then silence
+        // only what this write placed is in the copy
+        faded = WriteFadeOut(cut, std::min({frames, rate / 250,
+                                            static_cast<unsigned int>(cutAt->start +
+                                                                      cutAt->frames - cut)}));
+        if (!WriteZeros(rewound - faded))
+          CLog::Log(LOGWARNING, "CActiveAESink: silence after the pause cut not written");
+        if (cutAt->start < cut)
+        {
+          cutAt->frames = static_cast<unsigned int>(cut - cutAt->start);
+          ++cutAt;
+        }
+        m_pcmWrites.erase(cutAt, m_pcmWrites.end());
+      }
+    }
+  }
+  ClearShadowPins();
+  CLog::Log(LOGINFO,
+            "CActiveAESink: pause from pts {:.3f} ms cut PCM at pts {:.3f} ms, {} frames "
+            "({:.1f} ms) taken back, {} faded",
+            fromMs, cutMs, rewound, rate ? rewound * 1000.0 / rate : 0.0, faded);
+  return cutMs;
 }
 
 void CActiveAESink::ClearShadowPins()

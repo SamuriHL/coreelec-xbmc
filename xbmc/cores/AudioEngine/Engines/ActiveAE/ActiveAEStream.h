@@ -114,6 +114,8 @@ public:
   //! buffers that went on ahead and came back (a pause, design §16.22) go in
   //! front of everything the stream holds, all queued as input again
   void Prepend(std::deque<CSampleBuffer*>& older);
+  //! the same for processed buffers (PCM history): in front of the output
+  void PrependOutput(std::deque<CSampleBuffer*>& older);
   void SetDrain(bool drain);
   bool IsDrained();
   void SetRR(double rr, double atempoThreshold);

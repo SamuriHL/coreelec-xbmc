@@ -155,6 +155,12 @@ void CAEBitstreamPacker::Reset()
   m_packedBuffer[0] = 0;
 }
 
+void CAEBitstreamPacker::DiscardPartial()
+{
+  m_eac3Size = 0;
+  m_eac3FramesCount = 0;
+}
+
 void CAEBitstreamPacker::PackDTSHD(CAEStreamInfo &info, uint8_t* data, int size)
 {
   static const uint8_t dtshd_start_code[10] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xfe };

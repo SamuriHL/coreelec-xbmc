@@ -33,6 +33,8 @@ public:
                                unsigned int gapFrames,
                                bool iecBursts);
   void Reset();
+  //! drop the E-AC-3 frames gathered for a burst not yet complete
+  void DiscardPartial();
   uint8_t* GetBuffer();
   unsigned int GetSize() const;
   static unsigned int GetOutputRate(const CAEStreamInfo& info);
