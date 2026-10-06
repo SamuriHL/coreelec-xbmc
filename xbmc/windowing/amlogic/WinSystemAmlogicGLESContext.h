@@ -135,6 +135,11 @@ private:
   bool m_compositeShaderLimited{false};
   bool BuildCompositeShader();
 
+  //! false when there is no CRTC yet or the timekeeper isn't wanted
+  bool StartTimekeeper();
+  bool m_tickOwner{false};
+  bool m_timekeeperShadow{false};
+  bool m_timelineClock{false};
   // declared first so it outlives the coordinator, which polls its tick fd
   std::unique_ptr<CTimekeeper> m_timekeeper;
   std::unique_ptr<CPresentationCoordinator> m_coordinator;

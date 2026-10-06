@@ -181,6 +181,12 @@ void CPresentationCoordinator::Stop()
   CLog::Log(LOGINFO, "CPresentationCoordinator - stopped");
 }
 
+void CPresentationCoordinator::SetTickSource(int tickFd, uint32_t tickCrtc)
+{
+  m_tickCrtc = tickCrtc;
+  m_tickFd = tickFd;
+}
+
 bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
 {
   {
@@ -195,7 +201,7 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
   const bool timeline = m_tickFd >= 0 && m_crtc == m_tickCrtc;
   if (m_tickFd >= 0 && !timeline)
     CLog::Log(LOGWARNING, "CPresentationCoordinator - crtc {} is not the timekeeper's ({}), "
-                          "queueing its own vblank events", m_crtc.load(), m_tickCrtc);
+                          "queueing its own vblank events", m_crtc.load(), m_tickCrtc.load());
   m_attachNs = start;
   m_useTimeline = timeline;
   m_videoAttached = true;
@@ -440,7 +446,7 @@ void CPresentationCoordinator::Process()
     struct pollfd fds[3 + PLANE_COUNT] = {
         {m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0}};
     if (video)
-      fds[2].fd = timeline ? m_tickFd : m_vblankFd;
+      fds[2].fd = timeline ? m_tickFd.load() : m_vblankFd;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
     const int timeout = held ? 20 : (video || inFlight ? 50 : -1);

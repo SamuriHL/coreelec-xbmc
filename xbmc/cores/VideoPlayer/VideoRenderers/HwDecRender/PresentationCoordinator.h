@@ -54,6 +54,8 @@ public:
   //! Starts per-vsync presentation steps for the render manager; true once a
   //! vblank event has arrived to drive them.
   bool AttachVideo(CRenderManager* renderManager);
+  //! a timekeeper started after this coordinator; used from the next attach
+  void SetTickSource(int tickFd, uint32_t tickCrtc);
   //! Returns with no presentation step running.
   void DetachVideo(CRenderManager* renderManager);
 
@@ -167,8 +169,8 @@ private:
   void LogReport();
 
   const int m_masterFd;
-  const int m_tickFd;
-  const uint32_t m_tickCrtc;
+  std::atomic<int> m_tickFd;
+  std::atomic<uint32_t> m_tickCrtc;
   //! set at each attach: the timeline drives the video ticks
   std::atomic<bool> m_useTimeline{false};
   std::atomic<int64_t> m_attachNs{0};

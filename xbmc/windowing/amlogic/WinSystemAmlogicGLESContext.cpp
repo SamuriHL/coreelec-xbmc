@@ -102,24 +102,16 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   // On validated hardware the timekeeper owns display time and drives the
   // coordinator's video ticks. The timeline clock needs it; the shadow
   // comparison runs with it.
-  const bool tickOwner = coordinator && aml_presentation_validated() &&
-                         !XFILE::CFile::Exists("special://profile/tickowner_off");
-  const bool timelineClock = XFILE::CFile::Exists("special://profile/timeline_clock");
-  const bool shadow =
-      timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow");
-  if (tickOwner || shadow)
-  {
-    m_timekeeper = std::make_unique<CTimekeeper>(m_amlDisplay->aml_get_Device_handle(),
-                                                 m_amlDisplay->aml_get_Device_crtc_id());
-    if (!m_timekeeper->Start(shadow))
-      m_timekeeper.reset();
-    else if (timelineClock)
-      PRESENTATION::TimelineClockActive() = true;
-  }
+  m_tickOwner = coordinator && aml_presentation_validated() &&
+                !XFILE::CFile::Exists("special://profile/tickowner_off");
+  m_timelineClock = XFILE::CFile::Exists("special://profile/timeline_clock");
+  m_timekeeperShadow =
+      m_timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow");
+  StartTimekeeper();
 
   if (coordinator)
   {
-    const bool ticks = tickOwner && m_timekeeper;
+    const bool ticks = m_tickOwner && m_timekeeper;
     m_coordinator = std::make_unique<CPresentationCoordinator>(
         m_amlDisplay->aml_get_Device_handle(), ticks ? m_timekeeper->TickFd() : -1,
         ticks ? m_timekeeper->CrtcId() : 0);
@@ -316,6 +308,27 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (m_amlDisplay->aml_get_display_connected())
     SetPresentationReady(true);
 
+  // booted without a display: the timekeeper starts with the first CRTC
+  if (!m_timekeeper && StartTimekeeper() && m_coordinator && m_tickOwner)
+    m_coordinator->SetTickSource(m_timekeeper->TickFd(), m_timekeeper->CrtcId());
+
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::StartTimekeeper()
+{
+  const uint32_t crtc = m_amlDisplay->aml_get_Device_crtc_id();
+  if (!(m_tickOwner || m_timekeeperShadow) || !crtc)
+    return false;
+  m_timekeeper =
+      std::make_unique<CTimekeeper>(m_amlDisplay->aml_get_Device_handle(), crtc);
+  if (!m_timekeeper->Start(m_timekeeperShadow))
+  {
+    m_timekeeper.reset();
+    return false;
+  }
+  if (m_timelineClock)
+    PRESENTATION::TimelineClockActive() = true;
   return true;
 }
 
