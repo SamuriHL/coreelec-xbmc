@@ -4145,7 +4145,10 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   }
 
   RESOLUTION video_res = CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution();
-  if (m_video_res != video_res)
+  const RESOLUTION_INFO& video_res_info = CDisplaySettings::GetInstance().GetResolutionInfo(video_res);
+  // a hotplug rebuilds the resolution list: the same index can be another size
+  const CRect screen(0, 0, video_res_info.iScreenWidth, video_res_info.iScreenHeight);
+  if (m_video_res != video_res || m_display_rect != screen)
   {
     m_video_res = video_res;
     update = true;
@@ -4156,8 +4159,7 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
 
   CRect gui, display;
 
-  const RESOLUTION_INFO& video_res_info = CDisplaySettings::GetInstance().GetResolutionInfo(video_res);
-  display = m_display_rect = CRect(0, 0, video_res_info.iScreenWidth, video_res_info.iScreenHeight);
+  display = m_display_rect = screen;
   gui = CRect(0, 0, video_res_info.iWidth, video_res_info.iHeight);
 
   if (gui != display)
