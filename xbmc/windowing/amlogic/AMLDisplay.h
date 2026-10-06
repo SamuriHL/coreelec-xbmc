@@ -143,6 +143,8 @@ private:
                   int* data_len = nullptr);
   void apply_dv_wire_format();
   bool leaving_dv_wire() const;
+  //! tells the timekeeper the timing a mode set gives the display
+  static void PostModeNotice(const drmModeModeInfo& mode, bool fractional);
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);

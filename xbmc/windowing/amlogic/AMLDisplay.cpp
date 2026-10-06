@@ -1013,6 +1013,17 @@ std::string CAMLDRMUtils::aml_get_drmDevice_preferred_mode()
   return mode;
 }
 
+void CAMLDRMUtils::PostModeNotice(const drmModeModeInfo& mode, bool fractional)
+{
+  uint64_t num, den;
+  PRESENTATION::ModePeriod(mode.htotal, mode.vtotal, mode.clock, mode.vrefresh, fractional, num,
+                           den);
+  static int64_t serial = 0;
+  const int64_t notice[PRESENTATION::MN_COUNT] = {++serial, static_cast<int64_t>(num),
+                                                  static_cast<int64_t>(den)};
+  PRESENTATION::ModeBoard().Write(notice);
+}
+
 bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rate,
   const RenderStereoMode stereo_mode, bool active)
 {
@@ -1067,6 +1078,11 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
   if (!mode_switch_required)
   {
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - mode {} is already set", __FUNCTION__, mode);
+    // a commit the display never ran (to a disconnected connector) posted its
+    // timing anyway; post the timing it runs
+    if (m_crtc && m_crtc->mode_valid)
+      PostModeNotice(m_crtc->mode,
+                     aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1);
     return true;
   }
 
@@ -1090,17 +1106,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
       set_drmProp(m_crtc->crtc_id, "MODE_ID", DRM_MODE_OBJECT_CRTC, mode_blobid, req);
       set_drmProp(m_crtc->crtc_id, "ACTIVE", DRM_MODE_OBJECT_CRTC, active ? 1 : 0, req);
 
-      {
-        // the timekeeper takes the new timing from here, never from the kernel mid-commit
-        uint64_t num, den;
-        PRESENTATION::ModePeriod(drmDevicemode->htotal, drmDevicemode->vtotal,
-                                 drmDevicemode->clock, drmDevicemode->vrefresh,
-                                 fractional_rate == 1, num, den);
-        static int64_t serial = 0;
-        const int64_t notice[PRESENTATION::MN_COUNT] = {++serial, static_cast<int64_t>(num),
-                                                        static_cast<int64_t>(den)};
-        PRESENTATION::ModeBoard().Write(notice);
-      }
+      // the timekeeper takes the new timing from here, never from the kernel mid-commit
+      PostModeNotice(*drmDevicemode, fractional_rate == 1);
       ret = (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0);
       if (!ret)
         CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to set drmDevice mode: {}", __FUNCTION__, drmDevicemode->name);
