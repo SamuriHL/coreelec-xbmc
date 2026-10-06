@@ -1497,11 +1497,18 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
     }
   }
 
+  // only this thread takes m_free's front, so the slot stays free unlocked
+  const int level = m_queued.size() + m_discard.size();
+  const int index = m_free.front();
+  // the overlay lock is held across overlay drawing; don't make the
+  // presentation tick wait behind it
+  lock.unlock();
+
   // make sure overlay buffer is released, this won't happen on AddOverlay
-  m_overlays.Release(m_free.front());
+  m_overlays.Release(index);
 
   // return buffer level
-  return m_queued.size() + m_discard.size();
+  return level;
 }
 
 void CRenderManager::CSampleOffsetStats::Add(double us, bool guiRendered)
