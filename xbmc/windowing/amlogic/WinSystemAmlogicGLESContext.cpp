@@ -373,6 +373,8 @@ bool CWinSystemAmlogicGLESContext::BuildCompositeShader()
     defines += "#define KODI_LIMITED_RANGE 1\n";
   m_compositeShaderLimited = limited;
   m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
+  // a new program has no LUTs
+  m_guiCompositeTransfer = 0;
   if (!m_compositeShader->CompileAndLink())
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to compile GUI composite shader");
@@ -658,6 +660,8 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
     // control here too and means the same thing as on the per-primitive path.
     // At the shipped default this is ~199 nits, i.e. a <2% change from before.
     const float peak(CGuiCompositeShaderGLES::PeakFromPQCode(GetGuiSdrPeakLuminance()));
+    if (colorTransfer == m_guiCompositeTransfer && peak == m_guiCompositePeak)
+      return true;
     m_compositeShader->SetSdrPeak(peak);
 
     if (!m_compositeShader->CreateLUTs(colorTransfer))
