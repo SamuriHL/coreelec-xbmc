@@ -200,7 +200,8 @@ inline std::atomic<uint64_t>& AudioLandings()
 }
 
 // set while the timekeeper runs as the reference clock's vblank source
-// (special://profile/timeline_clock, design §15 step 2.1)
+// (default on validated SoCs, off with special://profile/timelineclock_off; design §15
+// step 2.1)
 inline std::atomic<bool>& TimelineClockActive()
 {
   static std::atomic<bool> active{false};

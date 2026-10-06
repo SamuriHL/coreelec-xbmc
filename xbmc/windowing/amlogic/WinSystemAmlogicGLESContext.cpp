@@ -104,7 +104,9 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   // comparison runs with it.
   m_tickOwner = coordinator && aml_presentation_validated() &&
                 !XFILE::CFile::Exists("special://profile/tickowner_off");
-  m_timelineClock = XFILE::CFile::Exists("special://profile/timeline_clock");
+  m_timelineClock = (aml_presentation_validated() &&
+                     !XFILE::CFile::Exists("special://profile/timelineclock_off")) ||
+                    XFILE::CFile::Exists("special://profile/timeline_clock");
   m_timekeeperShadow =
       m_timelineClock || XFILE::CFile::Exists("special://profile/timekeeper_shadow");
   StartTimekeeper();

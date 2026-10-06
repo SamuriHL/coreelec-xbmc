@@ -9,7 +9,8 @@
 #pragma once
 
 // The reference clock's vblank source when the timekeeper keeps time
-// (special://profile/timeline_clock; design: docs/presentation_coordinator_design.md
+// (default on validated SoCs, off with special://profile/timelineclock_off; design:
+// docs/presentation_coordinator_design.md
 // §15, step 2.1). It reads the timeline instead of the kernel: the timekeeper
 // stays the only vblank reader, and the clock counts its ticks at the
 // timeline's nominal period.
