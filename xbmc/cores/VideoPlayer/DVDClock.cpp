@@ -305,7 +305,35 @@ unsigned int CDVDClock::NextScheduleEpoch()
   return ++s_scheduleEpoch;
 }
 
-int64_t CDVDClock::ScheduleInstant(int64_t current, double lead)
+bool CDVDClock::ScheduleResumeAt(
+    double clock, double maxStep, double lead, int64_t& startNs, double& startClock)
+{
+  std::unique_lock lock(m_critSection);
+  if (m_paused || !m_pauseClock || m_resumeAt || lead <= 0.0)
+    return false;
+  const int64_t current = m_videoRefClock->GetTime();
+  const double step = clock - SystemToPlaying(current);
+  if (step <= 0.0 || step > maxStep)
+    return false;
+  bool onGrid = false;
+  const int64_t at = ScheduleInstant(current, lead, &onGrid);
+  if (!onGrid)
+    return false;
+  CancelScheduledResume();
+  // the held clock moves on to `clock`: the frames up to it are already out
+  m_pauseClock += static_cast<int64_t>(std::llround(step * static_cast<double>(m_systemUsed) / DVD_TIME_BASE));
+  m_resumeAt = at;
+  m_resumeSpeed = DVD_PLAYSPEED_NORMAL;
+  m_scheduleClock = clock;
+  DropVsyncPhase(false);
+  m_scheduleEpoch = NextScheduleEpoch();
+  m_scheduleValid = true;
+  startNs = m_scheduleNs;
+  startClock = m_scheduleClock;
+  return true;
+}
+
+int64_t CDVDClock::ScheduleInstant(int64_t current, double lead, bool* onGrid)
 {
   struct timespec mono = {};
   clock_gettime(CLOCK_MONOTONIC, &mono);
@@ -328,6 +356,8 @@ int64_t CDVDClock::ScheduleInstant(int64_t current, double lead)
     // host counter (CLOCK_MONOTONIC_RAW, ns) to CLOCK_MONOTONIC
     const int64_t hostToMono = monoNow - CurrentHostCounter();
     m_scheduleNs = vblankHost + static_cast<int64_t>(std::llround(k * hostInterval)) + hostToMono;
+    if (onGrid)
+      *onGrid = true;
   }
   return at;
 }

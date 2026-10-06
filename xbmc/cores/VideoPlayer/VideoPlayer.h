@@ -557,6 +557,8 @@ protected:
   void HoldStart();
   void ReleaseAudioSessionHold();
   void CheckHeldStart();
+  //! a user resume landing on the timeline like a start (design §16.21)
+  bool ScheduleUserResume();
   void ReleaseHeldStart(const char* why);
   //! true while a held disc boundary waits for the old streams to finish starting
   bool WaitStartAtBoundary();

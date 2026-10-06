@@ -80,6 +80,12 @@ public:
   //! startNs: the instant (CLOCK_MONOTONIC); startClock: the clock there.
   //! false (the clock resumed now) if it was not held at speed 0.
   bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);
+  //! A user resume as a scheduled start (design §16.21): the clock held at
+  //! speed 0 resumes at normal speed reading `clock` at the vblank `lead`
+  //! seconds from now. false (nothing changed) unless held, with the vblank
+  //! grid known and `clock` ahead of the held clock by at most maxStep.
+  bool ScheduleResumeAt(double clock, double maxStep, double lead, int64_t& startNs,
+                        double& startClock);
   //! A start on the running clock for a stream that joins it (an audio track
   //! switch, design 15.34): the audio output lands its first sample at a vblank
   //! `lead` seconds from now. false if the clock is held or a resume pending.
@@ -112,7 +118,7 @@ protected:
   double SystemToPlaying(int64_t system);
   //! caller holds m_critSection: the reference-clock time of the vblank at
   //! least `lead` seconds from `current`; sets m_scheduleNs to it
-  int64_t ScheduleInstant(int64_t current, double lead);
+  int64_t ScheduleInstant(int64_t current, double lead, bool* onGrid = nullptr);
   static unsigned int NextScheduleEpoch();
 
   mutable CCriticalSection m_critSection;

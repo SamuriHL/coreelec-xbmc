@@ -2570,6 +2570,34 @@ void CVideoPlayer::CheckHeldStart()
     ReleaseHeldStart("no mode decision in 12s");
 }
 
+bool CVideoPlayer::ScheduleUserResume()
+{
+  // the lead of a scheduled start: what the audio output queues ahead
+  constexpr double RESUME_LEAD = 0.35;
+  const double held = m_clock.GetClock();
+  double pts = DVD_NOPTS_VALUE;
+  double maxStep = 0.0;
+  int64_t startNs = 0;
+  double startClock = 0.0;
+  // no frame out yet (the first speed of a file): nothing to resume to
+  if (!m_renderManager.GetResumePts(pts, maxStep))
+    return false;
+  if (!m_clock.ScheduleResumeAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
+  {
+    CLog::Log(LOGINFO,
+              "VideoPlayer: resume not scheduled (clock {:.3f}, next frame {:.3f}, step limit "
+              "{:.1f} ms)",
+              held / DVD_TIME_BASE, pts / DVD_TIME_BASE, maxStep * 1000.0 / DVD_TIME_BASE);
+    return false;
+  }
+  CLog::Log(LOGINFO,
+            "VideoPlayer: scheduled resume: clock {:.3f} -> {:.3f} at {} ns ({:.0f} ms from now)",
+            held / DVD_TIME_BASE, startClock / DVD_TIME_BASE, startNs, RESUME_LEAD * 1000.0);
+  // the stall check would take the lead for a stall (design 15.38)
+  m_syncTimer.Set(std::chrono::milliseconds(std::lround((RESUME_LEAD + 1.0) * 1000.0)));
+  return true;
+}
+
 void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
   const double held =
@@ -6092,7 +6120,11 @@ void CVideoPlayer::HandleMessages()
         CLog::Log(LOGINFO, "VideoPlayer: speed {} kept for the release of the held start", speed);
         continue;
       }
-      m_clock.SetSpeed(speed);
+      // live streams keep resuming at once (not testable here)
+      if (!(m_streamPlayerSpeed == DVD_PLAYSPEED_PAUSE && speed == DVD_PLAYSPEED_NORMAL &&
+            !isTempoSpeed && m_scheduledStart && !m_displayLost &&
+            !m_pInputStream->IsRealtime() && ScheduleUserResume()))
+        m_clock.SetSpeed(speed);
       m_VideoPlayerAudio->SetSpeed(speed);
       m_VideoPlayerVideo->SetSpeed(speed);
       m_streamPlayerSpeed = speed;

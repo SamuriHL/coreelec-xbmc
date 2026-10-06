@@ -181,6 +181,9 @@ public:
    * looking at the end of the queue.
    */
   bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
+  //! the pts of the first frame not yet released, and how far a held clock
+  //! may step to it (the display latency, a vsync and a frame)
+  bool GetResumePts(double& pts, double& maxStep);
 
   /**
    * Video player call this on flush in order to discard any queued frames

@@ -1944,6 +1944,25 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
   return true;
 }
 
+bool CRenderManager::GetResumePts(double& pts, double& maxStep)
+{
+  std::unique_lock lock(m_statelock);
+  if (m_renderState != STATE_CONFIGURED || m_fps <= 0.0f)
+    return false;
+  const double frametime = DVD_TIME_BASE / static_cast<double>(m_fps);
+  std::unique_lock presentLock(m_presentlock);
+  if (!m_queued.empty())
+    pts = m_Queue[m_queued.front()].pts;
+  else if (m_presentsource >= 0)
+    pts = m_Queue[m_presentsource].pts + frametime;
+  else
+    return false;
+  // paused, frames up to a vsync past the clock on screen are released
+  const double vsync = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
+  maxStep = m_displayLatency + vsync + frametime + DVD_MSEC_TO_TIME(5);
+  return pts != DVD_NOPTS_VALUE;
+}
+
 void CRenderManager::CheckEnableClockSync()
 {
   // refresh rate can be a multiple of video fps
