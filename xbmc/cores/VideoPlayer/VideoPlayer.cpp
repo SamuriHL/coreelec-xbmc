@@ -4259,17 +4259,19 @@ void CVideoPlayer::HandlePlaySpeed()
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_processInfo->GetLevelVQ());
 
-      const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
-                             m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
-                             m_CurrentVideo.packets > 0 &&
+      // a scheduled start keeps the audio before an accurate seek's target
+      // (FlushBuffers), so it can report first; the video's packets up to the
+      // target count as dropped although its keyframe is the first picture
+      const bool videoPictured = m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
+                                 (m_CurrentVideo.packets > 0 || m_scheduledStart);
+      const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 && videoPictured &&
                              m_renderManager.IsResolutionUpdatePending();
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
       // ahead with the audio landing there. The clock starts at the first
       // picture (or the first audio, without video); audio queued before it
       // is pre-roll. Live streams keep their own start (a second behind).
-      const bool videoStart =
-          m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0;
+      const bool videoStart = videoPictured;
       const bool audioOnlyStart = m_CurrentVideo.id < 0 &&
                                   m_CurrentAudio.starttime != DVD_NOPTS_VALUE &&
                                   m_CurrentAudio.packets > 0;
@@ -4284,8 +4286,7 @@ void CVideoPlayer::HandlePlaySpeed()
                 : m_CurrentAudio.firststarttime != DVD_NOPTS_VALUE ? m_CurrentAudio.firststarttime
                                                                    : m_CurrentAudio.starttime;
       }
-      else if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && m_CurrentVideo.packets > 0 &&
-               (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
+      else if (videoPictured && (m_playSpeed == DVD_PLAYSPEED_PAUSE || holdStart))
       {
         clock = m_CurrentVideo.starttime;
       }
@@ -4296,7 +4297,7 @@ void CVideoPlayer::HandlePlaySpeed()
         else
           clock = m_CurrentAudio.starttime - m_CurrentAudio.cachetime;
 
-        if (m_CurrentVideo.starttime != DVD_NOPTS_VALUE && (m_CurrentVideo.packets > 0))
+        if (videoPictured)
         {
           if (m_CurrentVideo.starttime - m_CurrentVideo.cachetotal < clock)
           {
@@ -7764,7 +7765,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   ApplyDiscTimelineEvents(true);
 
   m_CurrentAudio.dts         = DVD_NOPTS_VALUE;
-  m_CurrentAudio.startpts    = startpts;
+  // a scheduled start lands the audio with the first picture, which is the
+  // keyframe before an accurate seek's target: the audio between them plays
+  const bool landAudio = m_scheduledStart && m_CurrentVideo.id >= 0 && m_pInputStream &&
+                         !m_pInputStream->IsRealtime();
+  m_CurrentAudio.startpts    = landAudio ? DVD_NOPTS_VALUE : startpts;
   m_CurrentAudio.packets = 0;
 
   m_CurrentVideo.dts         = DVD_NOPTS_VALUE;
