@@ -117,6 +117,18 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   UpdateDialNormSettings();
   m_isEAC3JOC = hints.codec == AV_CODEC_ID_EAC3 && hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
   m_parser.SetCoreOnly(false);
+  // the demuxer's codec: a seek's first bytes are not taken for another one
+  CAEStreamInfo::DataType expected = CAEStreamInfo::STREAM_TYPE_NULL;
+  if (aml_presentation_validated())
+  {
+    if (hints.codec == AV_CODEC_ID_TRUEHD)
+      expected = CAEStreamInfo::STREAM_TYPE_TRUEHD;
+    else if (hints.codec == AV_CODEC_ID_AC3 || hints.codec == AV_CODEC_ID_EAC3)
+      expected = CAEStreamInfo::STREAM_TYPE_AC3;
+    else if (hints.codec == AV_CODEC_ID_DTS)
+      expected = CAEStreamInfo::STREAM_TYPE_DTSHD;
+  }
+  m_parser.SetExpectedType(expected);
   switch (m_format.m_streamInfo.m_type)
   {
     case CAEStreamInfo::STREAM_TYPE_AC3:

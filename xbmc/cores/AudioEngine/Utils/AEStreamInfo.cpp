@@ -11,6 +11,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <climits>
 #include <string.h>
 
 #define DTS_PREAMBLE_14BE 0x1FFFE800
@@ -102,6 +103,7 @@ bool CAEStreamInfo::operator==(const CAEStreamInfo& info) const
 
 void CAEStreamParser::Reset()
 {
+  m_expectSkipped = 0;
   m_skipBytes = 0;
   m_bufferSize = 0;
   m_needBytes = 0;
@@ -720,36 +722,52 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
   unsigned int skipped = 0;
   unsigned int possible = 0;
 
+  // a container that names the wrong codec still plays, after a while
+  constexpr unsigned int EXPECT_LIMIT = 1024 * 1024;
+  CAEStreamInfo::DataType expected = m_expected;
+  if (expected != CAEStreamInfo::STREAM_TYPE_NULL && m_expectSkipped > EXPECT_LIMIT)
+  {
+    if (m_expectSkipped != UINT_MAX)
+      CLog::Log(LOGWARNING, "CAEStreamParser: no sync for the expected codec, trying any");
+    m_expectSkipped = UINT_MAX;
+    expected = CAEStreamInfo::STREAM_TYPE_NULL;
+  }
+  const bool any = expected == CAEStreamInfo::STREAM_TYPE_NULL;
+  const bool wantAC3 = any || expected == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                       expected == CAEStreamInfo::STREAM_TYPE_EAC3;
+  const bool wantTrueHD = any || expected == CAEStreamInfo::STREAM_TYPE_TRUEHD;
+  const bool wantDTS = any || (!wantAC3 && !wantTrueHD);
+
   while (size > 8)
   {
     // if it could be DTS
     unsigned int header = data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3];
-    if (header == DTS_PREAMBLE_14LE || header == DTS_PREAMBLE_14BE || header == DTS_PREAMBLE_16LE ||
-        header == DTS_PREAMBLE_16BE)
+    if (wantDTS && (header == DTS_PREAMBLE_14LE || header == DTS_PREAMBLE_14BE ||
+                    header == DTS_PREAMBLE_16LE || header == DTS_PREAMBLE_16BE))
     {
       unsigned int skip = SyncDTS(data, size);
       if (m_hasSync || m_needBytes)
-        return skipped + skip;
+        return Detected(skipped + skip);
       else
         possible = skipped;
     }
 
     // if it could be AC3
-    if (data[0] == 0x0b && data[1] == 0x77)
+    if (wantAC3 && data[0] == 0x0b && data[1] == 0x77)
     {
       unsigned int skip = SyncAC3(data, size);
       if (m_hasSync || m_needBytes)
-        return skipped + skip;
+        return Detected(skipped + skip);
       else
         possible = skipped;
     }
 
     // if it could be TrueHD
-    if (data[4] == 0xf8 && data[5] == 0x72 && data[6] == 0x6f && data[7] == 0xba)
+    if (wantTrueHD && data[4] == 0xf8 && data[5] == 0x72 && data[6] == 0x6f && data[7] == 0xba)
     {
       unsigned int skip = SyncTrueHD(data, size);
       if (m_hasSync)
-        return skipped + skip;
+        return Detected(skipped + skip);
       else
         possible = skipped;
     }
@@ -760,7 +778,17 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
     ++data;
   }
 
-  return possible ? possible : skipped;
+  const unsigned int skip = possible ? possible : skipped;
+  if (m_expectSkipped != UINT_MAX)
+    m_expectSkipped = std::min<unsigned int>(m_expectSkipped + skip, EXPECT_LIMIT + 1);
+  return skip;
+}
+
+unsigned int CAEStreamParser::Detected(unsigned int skipped)
+{
+  if (m_hasSync)
+    m_expectSkipped = 0;
+  return skipped;
 }
 
 bool CAEStreamParser::TrySyncAC3(uint8_t* data,
