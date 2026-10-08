@@ -258,6 +258,21 @@ void CDVDClock::Pause(bool pause)
   }
 }
 
+bool CDVDClock::UnpauseAt(
+    double clock, double maxStep, double lead, int64_t& startNs, double& startClock)
+{
+  std::unique_lock lock(m_critSection);
+  CancelScheduledResume();
+  if (!m_paused)
+    return false;
+  m_paused = false;
+  if (m_speedAfterPause == DVD_PLAYSPEED_NORMAL &&
+      ScheduleResumeAt(clock, maxStep, lead, startNs, startClock))
+    return true;
+  SetSpeed(m_speedAfterPause);
+  return false;
+}
+
 bool CDVDClock::IsPaused() const
 {
   std::unique_lock lock(m_critSection);

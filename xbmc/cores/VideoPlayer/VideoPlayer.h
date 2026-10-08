@@ -917,6 +917,9 @@ protected:
   // can own the screen and the remote. Read from the GUI thread.
   std::atomic<bool> m_discMenuOnly{false};
   std::atomic<bool> m_repostDiscOverlays{false};
+  //! a display reset resumes the clock on the vblank grid (not for live input)
+  std::atomic<bool> m_displayResumeOnGrid{false};
+  std::atomic<bool> m_displayResumeScheduled{false};
 
   double m_messageQueueTimeSize{0.0};
 

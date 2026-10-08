@@ -86,6 +86,9 @@ public:
   //! grid known and `clock` ahead of the held clock by at most maxStep.
   bool ScheduleResumeAt(double clock, double maxStep, double lead, int64_t& startNs,
                         double& startClock);
+  //! Ends a Pause(true) as ScheduleResumeAt when it was taken at normal
+  //! speed; otherwise, or off the grid, resumes at once as Pause(false).
+  bool UnpauseAt(double clock, double maxStep, double lead, int64_t& startNs, double& startClock);
   //! A start on the running clock for a stream that joins it (an audio track
   //! switch, design 15.34): the audio output lands its first sample at a vblank
   //! `lead` seconds from now. false if the clock is held or a resume pending.

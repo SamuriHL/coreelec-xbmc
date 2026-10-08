@@ -1100,6 +1100,7 @@ bool CVideoPlayer::OpenInputStream()
     } // end loop over all subtitle files
   }
 
+  m_displayResumeOnGrid = m_scheduledStart && !m_pInputStream->IsRealtime();
   m_clock.Reset();
   m_dvd.Clear();
 
@@ -3091,6 +3092,10 @@ void CVideoPlayer::Process()
         bluray->RedrawMenuOverlays();
     }
 #endif
+
+    // the stall check would take a scheduled display resume's lead for a stall
+    if (m_displayResumeScheduled.exchange(false))
+      m_syncTimer.Set(1350ms);
 
     // check if in an edit (cut or commercial break) that should be automatically skipped
     CheckAutoSceneSkip();
@@ -9446,9 +9451,34 @@ void CVideoPlayer::OnResetDisplay()
     return;
 
   CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
+  // resume like a user resume: from the picture on screen, at a vblank, the
+  // audio (its sink just reopened) landing there instead of joining a clock
+  // already running; the players resume after, so their first audio finds
+  // the schedule
+  constexpr double RESUME_LEAD = 0.35;
+  const double held = m_clock.GetClock();
+  double pts = DVD_NOPTS_VALUE;
+  double maxStep = 0.0;
+  int64_t startNs = 0;
+  double startClock = 0.0;
+  if (m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep) &&
+      m_clock.UnpauseAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
+  {
+    m_displayResumeScheduled = true;
+    CLog::Log(LOGINFO,
+              "VideoPlayer: display back, resume scheduled: clock {:.3f} -> {:.3f} at {} ns",
+              held / DVD_TIME_BASE, startClock / DVD_TIME_BASE, startNs);
+  }
+  else
+  {
+    if (m_displayResumeOnGrid)
+      CLog::Log(LOGINFO, "VideoPlayer: display back, resume not scheduled (clock {:.3f}, next "
+                "frame {:.3f})", held / DVD_TIME_BASE,
+                pts == DVD_NOPTS_VALUE ? -1.0 : pts / DVD_TIME_BASE);
+    m_clock.Pause(false);
+  }
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
-  m_clock.Pause(false);
   m_displayLost = false;
   m_renderManager.SetDisplayLost(false);
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
