@@ -89,6 +89,8 @@ private:
   // phase 1 timeline shadow: frames written since the position last restarted
   uint64_t m_shadowWritten = 0;
   bool m_shadowMonotonic = false;
+  //! GetDelay returns the delay now, not at the driver's last position update
+  bool m_delayAtNow = false;
   void ShadowRestart();
 
   struct ALSAConfig

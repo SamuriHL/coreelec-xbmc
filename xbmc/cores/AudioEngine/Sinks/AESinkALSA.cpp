@@ -1240,6 +1240,7 @@ bool CAESinkALSA::InitializeSW(const ALSAConfig &inconfig)
   snd_pcm_sw_params_set_tstamp_mode(m_pcm, sw_params, SND_PCM_TSTAMP_ENABLE);
   m_shadowMonotonic =
       snd_pcm_sw_params_set_tstamp_type(m_pcm, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC) == 0;
+  m_delayAtNow = aml_presentation_validated();
 
   if (snd_pcm_sw_params(m_pcm, sw_params) < 0)
   {
@@ -1312,6 +1313,20 @@ void CAESinkALSA::GetDelay(AEDelayStatus& status)
           m_shadowMonotonic ? monoNs : wall.tv_sec * 1000000000LL + wall.tv_nsec,
           open};
       PRESENTATION::AudioBoard().Write(values);
+    }
+    // The delay is the driver's at its last position update (its htstamp),
+    // up to a period ago: what has played since is gone.
+    snd_htimestamp_t ht;
+    snd_pcm_status_get_htstamp(st, &ht);
+    if (m_delayAtNow && frames > 0 && (ht.tv_sec || ht.tv_nsec) &&
+        snd_pcm_status_get_state(st) == SND_PCM_STATE_RUNNING)
+    {
+      struct timespec now = {};
+      clock_gettime(m_shadowMonotonic ? CLOCK_MONOTONIC : CLOCK_REALTIME, &now);
+      const int64_t ageNs = (now.tv_sec - ht.tv_sec) * 1000000000LL + (now.tv_nsec - ht.tv_nsec);
+      if (ageNs > 0 && ageNs < 100000000LL)
+        frames = std::max<snd_pcm_sframes_t>(
+            0, frames - static_cast<snd_pcm_sframes_t>(ageNs * m_format.m_sampleRate / 1000000000LL));
     }
   }
   else

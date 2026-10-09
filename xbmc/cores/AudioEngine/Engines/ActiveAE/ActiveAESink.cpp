@@ -1851,14 +1851,41 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   // queued ahead of this buffer (design §15, step 2.2). The pad is a pause of
   // exactly the output frames up to the landing (IEC 61937 allows any gap), or
   // PCM silence.
+  const double rate = m_sinkFormat.m_sampleRate;
+  const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
   AEDelayStatus status;
   m_sink->GetDelay(status);
-  struct timespec ts = {};
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
-  const double rate = m_sinkFormat.m_sampleRate;
+  const auto monoNs = []
+  {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  };
+  // A device with nothing queued is not running: it starts with the first
+  // write, and when the first sample leaves is not known. Up to a period of
+  // the pad starts it; the rest is measured on the running device.
+  unsigned int primed = 0;
+  if (status.delay <= 0.0)
+  {
+    const int64_t aheadNs = std::max<int64_t>(0, samples->landNs - monoNs());
+    unsigned int prime = static_cast<unsigned int>(
+        std::min<int64_t>(m_sinkFormat.m_frames, std::llround(aheadNs * rate / 2e9)));
+    if (!raw && prime && WriteZeros(prime))
+      primed = prime;
+    while (raw && prime > 0)
+    {
+      const unsigned int packed =
+          m_packer->PackPauseFrames(m_sinkFormat.m_streamInfo, prime, prime, true);
+      if (!packed || !WritePacked(packed))
+        break;
+      primed += packed;
+      prime -= std::min(prime, packed);
+    }
+    if (primed)
+      m_sink->GetDelay(status);
+  }
+  const int64_t now = monoNs();
   const int64_t padNs = samples->landNs - now - static_cast<int64_t>(status.delay * 1e9);
-  const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
   const double frameMs = raw ? m_sinkFormat.m_streamInfo.GetDuration()
                              : samples->pkt->nb_samples * 1000.0 / rate;
   skipFrames = 0;
@@ -1911,9 +1938,10 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   m_sink->GetDelay(after);
   CLog::Log(LOGINFO,
             "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), skip {} frames, "
-            "delay before {:.3f} ms, after {:.3f} ms, landing error {:+.3f} ms{}",
+            "delay before {:.3f} ms, after {:.3f} ms, landing error {:+.3f} ms{}{}",
             samples->landEpoch, total, total * 1000.0 / rate, skipFrames, status.delay * 1000.0,
-            after.delay * 1000.0, errorMs, ok ? "" : " (pad write failed)");
+            after.delay * 1000.0, errorMs, ok ? "" : " (pad write failed)",
+            primed ? fmt::format(", device started with {} frames", primed) : "");
   return true;
 }
 
