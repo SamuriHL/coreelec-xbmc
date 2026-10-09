@@ -481,6 +481,9 @@ void CActiveAEBufferPoolResample::Flush()
   }
   if (m_resampler)
     ChangeResampler();
+  // a label from before the flush is no stand-in for a missing one after it
+  m_lastSamplePts = 0;
+  m_lastSamplePtsUs = 0.0;
 }
 
 void CActiveAEBufferPoolResample::SetDrain(bool drain)
@@ -760,6 +763,11 @@ void CActiveAEBufferPoolAtempo::Flush()
   }
   if (m_pTempoFilter)
     ChangeFilter();
+  // a stream that restarts at pts 0 (a seek to the start) labels its first
+  // buffer 0, read as missing: it must not take the label from before the
+  // flush, or it plays at the wrong place (P4-21)
+  m_lastSamplePts = 0;
+  m_lastSamplePtsUs = 0.0;
 }
 
 float CActiveAEBufferPoolAtempo::GetDelay()
