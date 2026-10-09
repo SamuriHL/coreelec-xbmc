@@ -920,6 +920,12 @@ protected:
   //! a display reset resumes the clock on the vblank grid (not for live input)
   std::atomic<bool> m_displayResumeOnGrid{false};
   std::atomic<bool> m_displayResumeScheduled{false};
+  //! the user's audio offset moves the sound, as a player's audio delay
+  std::atomic<bool> m_audioOffsetToAudio{false};
+  std::atomic<double> m_requestedAudioOffset{0.0};
+  std::atomic<int64_t> m_audioOffsetChangedMs{0};
+  double m_landedAudioOffset = 0.0;
+  void ApplyAudioOffset();
 
   double m_messageQueueTimeSize{0.0};
 

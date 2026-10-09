@@ -326,6 +326,18 @@ void CDVDClock::SetHoldFrom(double pts)
   m_holdFrom = pts;
 }
 
+void CDVDClock::SetAudioOffset(double offset)
+{
+  std::unique_lock lock(m_critSection);
+  m_audioOffset = offset;
+}
+
+double CDVDClock::GetAudioOffset() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_audioOffset;
+}
+
 double CDVDClock::GetHoldFrom() const
 {
   std::unique_lock lock(m_critSection);

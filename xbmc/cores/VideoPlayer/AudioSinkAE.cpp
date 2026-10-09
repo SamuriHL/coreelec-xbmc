@@ -386,7 +386,8 @@ void CAudioSinkAE::SetResampleMode(int mode)
 double CAudioSinkAE::GetClock()
 {
   if (m_pClock)
-    return (m_pClock->GetClock() + m_pClock->GetVsyncAdjust()) / DVD_TIME_BASE * 1000;
+    return (m_pClock->GetClock() + m_pClock->GetVsyncAdjust() + m_pClock->GetAudioOffset()) /
+           DVD_TIME_BASE * 1000;
   else
     return 0.0;
 }
@@ -412,7 +413,8 @@ bool CAudioSinkAE::GetScheduledStart(int64_t& startNs, double& startClockMs, uns
   if (!m_pClock || !m_pClock->GetScheduledStart(startNs, startClock, epoch))
     return false;
   // in GetClock()'s terms, which carry the display phase
-  startClockMs = (startClock + m_pClock->GetVsyncAdjust()) / DVD_TIME_BASE * 1000;
+  startClockMs = (startClock + m_pClock->GetVsyncAdjust() + m_pClock->GetAudioOffset()) /
+                 DVD_TIME_BASE * 1000;
   return true;
 }
 

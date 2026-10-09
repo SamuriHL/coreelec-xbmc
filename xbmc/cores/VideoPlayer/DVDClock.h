@@ -101,6 +101,10 @@ public:
   //! audio output keeps what it has not played (design §16.22); 0: none
   void SetHoldFrom(double pts);
   double GetHoldFrom() const;
+  //! The user's audio offset as the audio output plays it (positive: audio
+  //! earlier), changed only where the audio lands anew
+  void SetAudioOffset(double offset);
+  double GetAudioOffset() const;
   //! a start the clock has yet to make: held for it (startNs 0), or scheduled
   //! and not yet reached (startNs its CLOCK_MONOTONIC instant). startClock is
   //! the clock it starts from. A frame shown before then is shown into a clock
@@ -151,6 +155,7 @@ protected:
   bool m_vSyncAdjustHasPhase = false;
   double m_vSyncAdjustHint = 0.0; // the phase last held before a drop
   bool m_vSyncAdjustHintValid = false;
+  double m_audioOffset = 0.0;
   unsigned int m_vSyncPhaseGeneration = 0;
   double m_frameTime;
 

@@ -1101,6 +1101,21 @@ bool CVideoPlayer::OpenInputStream()
   }
 
   m_displayResumeOnGrid = m_scheduledStart && !m_pInputStream->IsRealtime();
+  // the audio offset moves the sound, landed with every start (P4-20)
+  m_audioOffsetToAudio = m_displayResumeOnGrid.load();
+  {
+    const double offset =
+        m_audioOffsetToAudio
+            ? static_cast<double>(m_processInfo->GetVideoSettings().m_AudioDelay) * DVD_TIME_BASE
+            : 0.0;
+    m_clock.SetAudioOffset(offset);
+    m_requestedAudioOffset = offset;
+    m_landedAudioOffset = offset;
+    m_renderManager.SetDelay(
+        m_audioOffsetToAudio
+            ? 0
+            : static_cast<int>(m_processInfo->GetVideoSettings().m_AudioDelay * 1000.0f));
+  }
   m_clock.Reset();
   m_dvd.Clear();
 
@@ -3096,6 +3111,8 @@ void CVideoPlayer::Process()
     // the stall check would take a scheduled display resume's lead for a stall
     if (m_displayResumeScheduled.exchange(false))
       m_syncTimer.Set(1350ms);
+    if (m_audioOffsetToAudio)
+      ApplyAudioOffset();
 
     // check if in an edit (cut or commercial break) that should be automatically skipped
     CheckAutoSceneSkip();
@@ -6133,6 +6150,9 @@ void CVideoPlayer::HandleMessages()
             m_scheduledStart && !m_pInputStream->IsRealtime() &&
             m_renderManager.GetResumePts(holdFrom, holdStep)))
         holdFrom = 0.0;
+      // the audio heard with that picture is offset from it
+      else
+        holdFrom += m_clock.GetAudioOffset();
       m_clock.SetHoldFrom(holdFrom);
       // a held start stays paused: the release applies the speed
       if (m_startHeld)
@@ -6255,6 +6275,8 @@ void CVideoPlayer::SetCaching(ECacheState state)
   double holdStep = 0.0;
   if (!(stall && m_renderManager.GetResumePts(holdFrom, holdStep)))
     holdFrom = 0.0;
+  else
+    holdFrom += m_clock.GetAudioOffset();
   const bool samePause =
       m_cachingStall && (state == CACHESTATE_FULL || state == CACHESTATE_INIT);
   if (!samePause)
@@ -6706,12 +6728,54 @@ float CVideoPlayer::GetCachePercentage() const
 void CVideoPlayer::SetAVDelay(float fValue)
 {
   m_processInfo->GetVideoSettingsLocked().SetAudioDelay(fValue);
-  m_renderManager.SetDelay(static_cast<int>(fValue * 1000.0f));
+  if (m_audioOffsetToAudio)
+  {
+    m_audioOffsetChangedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    m_requestedAudioOffset = static_cast<double>(fValue) * DVD_TIME_BASE;
+  }
+  else
+    m_renderManager.SetDelay(static_cast<int>(fValue * 1000.0f));
 }
 
 float CVideoPlayer::GetAVDelay()
 {
+  if (m_audioOffsetToAudio)
+    return static_cast<float>(m_requestedAudioOffset.load() / DVD_TIME_BASE);
   return static_cast<float>(m_renderManager.GetDelay()) / 1000.0f;
+}
+
+void CVideoPlayer::ApplyAudioOffset()
+{
+  const double want = m_requestedAudioOffset;
+  if (want == m_landedAudioOffset)
+    return;
+  const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+  // the +/- keys repeat: take the value they settle on
+  if (nowMs - m_audioOffsetChangedMs < 500)
+    return;
+  // paused, at a trick speed, or no audio landed yet: the next start lands
+  // with it
+  if (m_playSpeed != DVD_PLAYSPEED_NORMAL || m_CurrentAudio.id < 0 || !m_CurrentAudio.inited ||
+      m_startHeld ||
+      ((m_caching == CACHESTATE_FULL || m_caching == CACHESTATE_INIT) && !m_cachingStall))
+  {
+    m_clock.SetAudioOffset(want);
+    m_landedAudioOffset = want;
+    CLog::Log(LOGINFO, "VideoPlayer: audio offset {:+.0f} ms, for the next start",
+              want * 1000.0 / DVD_TIME_BASE);
+    return;
+  }
+  // a stall, a display reset or a scheduled lead: after its landing
+  if (m_caching != CACHESTATE_DONE || m_displayLost || m_clock.IsPaused() ||
+      m_streamPlayerSpeed != DVD_PLAYSPEED_NORMAL)
+    return;
+  m_VideoPlayerAudio->SendMessage(
+      std::make_shared<CDVDMsgDouble>(CDVDMsg::PLAYER_AUDIO_RELAND, want), 1);
+  m_landedAudioOffset = want;
 }
 
 void CVideoPlayer::SetSubTitleDelay(float fValue)
@@ -7798,6 +7862,8 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   m_CurrentAudioID3.packets = 0;
 
   m_VideoPlayerAudio->Flush(sync);
+  // a re-land still queued went with the flush: the next start lands the offset
+  m_landedAudioOffset = m_clock.GetAudioOffset();
   m_VideoPlayerVideo->Flush(sync);
   m_VideoPlayerSubtitle->Flush();
   m_VideoPlayerTeletext->Flush();
@@ -9255,7 +9321,15 @@ void CVideoPlayer::SetVideoSettings(CVideoSettings& settings)
 {
   m_processInfo->SetVideoSettings(settings);
   m_renderManager.SetVideoSettings(settings);
-  m_renderManager.SetDelay(static_cast<int>(settings.m_AudioDelay * 1000.0f));
+  if (!m_audioOffsetToAudio)
+    m_renderManager.SetDelay(static_cast<int>(settings.m_AudioDelay * 1000.0f));
+  else if (static_cast<double>(settings.m_AudioDelay) * DVD_TIME_BASE != m_requestedAudioOffset)
+  {
+    m_audioOffsetChangedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    m_requestedAudioOffset = static_cast<double>(settings.m_AudioDelay) * DVD_TIME_BASE;
+  }
   m_renderManager.SetSubtitleVerticalPosition(settings.m_subtitleVerticalPosition,
                                               settings.m_subtitleVerticalPositionSave);
   m_VideoPlayerVideo->EnableSubtitle(settings.m_SubtitleOn);

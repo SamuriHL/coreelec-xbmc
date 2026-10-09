@@ -624,6 +624,32 @@ void CVideoPlayerAudio::Process()
         onlyPrioMsgs = true;
       }
     }
+    else if (pMsg->IsType(CDVDMsg::PLAYER_AUDIO_RELAND))
+    {
+      // a new audio offset, as a player's audio delay: what the output has not
+      // played comes back (from the pts heard now), and the audio lands anew
+      // at a vblank on the running clock with the offset
+      const double offset = std::static_pointer_cast<CDVDMsgDouble>(pMsg)->m_value;
+      const double old = m_pClock->GetAudioOffset();
+      // not playing in sync (a pause or seek came first): its start lands it
+      if (m_syncState != IDVDStreamPlayer::SYNC_INSYNC || m_speed != DVD_PLAYSPEED_NORMAL)
+        m_pClock->SetAudioOffset(offset);
+      else
+      {
+        m_pClock->SetHoldFrom(m_pClock->GetClock() + old);
+        m_audioSink.Pause();
+        m_pClock->SetAudioOffset(offset);
+        int64_t startNs = 0;
+        double startClock = 0.0;
+        const bool joined = m_pClock->ScheduleJoin(0.35, startNs, startClock);
+        m_audioSink.Resume();
+        // no correction against an offset that has not landed
+        m_disconSettleTimer.Set(6000ms);
+        CLog::Log(LOGINFO, "CVideoPlayerAudio: audio offset {:+.0f} -> {:+.0f} ms, {}",
+                  old * 1000.0 / DVD_TIME_BASE, offset * 1000.0 / DVD_TIME_BASE,
+                  joined ? "landing at a vblank" : "not scheduled, start sync");
+      }
+    }
     else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
     {
       m_displayReset = true;
