@@ -74,6 +74,7 @@ public:
   struct ExtData
   {
     double pts = 0;
+    bool hasPts = false; // pts is set: 0 is a pts, not a missing one
     bool hasDownmix = false;
     double centerMixLevel = 1;
     double padMs = 0; // silence (or a pause) to output before the data

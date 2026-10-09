@@ -56,6 +56,9 @@ public:
   // the sync measurement uses); 0 = none. Set by the stream, carried through the
   // resample and atempo pools.
   int64_t ptsUs = 0;
+  // timestamp and ptsUs are set: a stream that starts at pts 0 labels its
+  // first buffer 0, which the values alone can't tell from none
+  bool labelled = false;
   // a scheduled start: CLOCK_MONOTONIC at which this buffer's first sample must
   // leave the output, and the start it belongs to; 0 = play when it comes
   int64_t landNs = 0;
@@ -121,6 +124,8 @@ protected:
   bool m_drain = false;
   int64_t m_lastSamplePts = 0;
   double m_lastSamplePtsUs = 0.0; // the same in µs, unrounded; 0 = none
+  bool m_lastSampleLabelled = false; // m_lastSamplePts comes from a label
+  bool m_lastSampleHasUs = false; // m_lastSamplePtsUs is set (0 is a value)
   bool m_remap = false;
   CSampleBuffer *m_procSample = nullptr;
   std::unique_ptr<IAEResample> m_resampler;
@@ -164,6 +169,7 @@ protected:
   float m_tempo;
   int64_t m_lastSamplePts = 0;
   double m_lastSamplePtsUs = 0.0; // the same in µs, unrounded; 0 = none
+  bool m_lastSampleLabelled = false; // m_lastSamplePts comes from a label
   bool m_fillPackets;
 };
 

@@ -1889,7 +1889,7 @@ int PlaneFrameBytes(const CSoundPacket& pkt)
 void CActiveAE::KeepHistory(const CSampleBuffer* out)
 {
   const CSoundPacket& pkt = *out->pkt;
-  if (!out->timestamp || !pkt.config.sample_rate || m_historyBuffers->m_allSamples.empty())
+  if (!out->labelled || !pkt.config.sample_rate || m_historyBuffers->m_allSamples.empty())
   {
     ClearHistory();
     return;
@@ -1918,6 +1918,7 @@ void CActiveAE::KeepHistory(const CSampleBuffer* out)
   buf->pkt->nb_samples = pkt.nb_samples;
   buf->timestamp = out->timestamp;
   buf->ptsUs = out->ptsUs;
+  buf->labelled = out->labelled;
   buf->pkt_start_offset = out->pkt_start_offset;
   buf->padMs = out->padMs;
   buf->labelLagMs = out->labelLagMs;
@@ -2546,7 +2547,7 @@ bool CActiveAE::RunStages()
         continue;
 
       CSampleBuffer *buf = (*it)->m_processingBuffers->m_outputSamples.front();
-      if (buf->timestamp)
+      if (buf->labelled)
       {
         AEDelayStatus status;
         m_stats.GetDelay(status);
@@ -2915,8 +2916,9 @@ bool CActiveAE::RunStages()
                 (outRate ? static_cast<double>(out->pkt_start_offset) * 1000.0 / outRate : 0.0) -
                 paddingMs;
             buf->pkt_start_offset = 0;
-            buf->timestamp = out->timestamp ? static_cast<int64_t>(std::llround(startMs)) : 0;
-            buf->ptsUs = out->timestamp ? std::llround(startMs * 1000.0) : 0;
+            buf->timestamp = out->labelled ? static_cast<int64_t>(std::llround(startMs)) : 0;
+            buf->ptsUs = out->labelled ? std::llround(startMs * 1000.0) : 0;
+            buf->labelled = out->labelled;
             // a scheduled start lands the frame whose decode carries the mix's
             // sample 0 at its landing: the frame begins the encoder's priming earlier
             if (out->landNs && buf->pkt->nb_samples)
@@ -3129,7 +3131,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       // landed but the clock not yet running: no measurement before the
       // start; buffers stay tagged (the sink ignores tags of a landed start)
       CSampleBuffer* buf = stream->m_processingBuffers->m_outputSamples.front();
-      if (buf->ptsUs || buf->timestamp)
+      if (buf->labelled)
       {
         // the labels name the sample at pkt_start_offset (0 for passthrough):
         // land the first one

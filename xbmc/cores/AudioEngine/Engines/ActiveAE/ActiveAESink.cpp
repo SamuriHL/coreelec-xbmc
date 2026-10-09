@@ -1586,7 +1586,7 @@ void CActiveAESink::LogPcmWrite(CSampleBuffer* samples,
   // a restart (an xrun recovery or a reopen) ends the positions
   if (!m_pcmWrites.empty() && written < m_pcmWrites.back().start + m_pcmWrites.back().frames)
     m_pcmWrites.clear();
-  if (!samples->pool || !samples->timestamp || frames <= 0 || samples->pkt->planes != 1 ||
+  if (!samples->pool || !samples->labelled || frames <= 0 || samples->pkt->planes != 1 ||
       !rate || !frameSize || writeStart + frames != written)
     return;
 
@@ -1784,7 +1784,7 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
                                  const AEDelayStatus& status)
 {
   // pause bursts, keep-alive and muted frames are not audible content
-  if (samples->pkt->nb_samples == 0 || !samples->timestamp || !writtenFrames ||
+  if (samples->pkt->nb_samples == 0 || !samples->labelled || !writtenFrames ||
       !m_sinkFormat.m_sampleRate)
   {
     if (m_shadowAudible)

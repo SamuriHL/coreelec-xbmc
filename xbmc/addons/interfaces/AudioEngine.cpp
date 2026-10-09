@@ -418,6 +418,7 @@ unsigned int Interface_AudioEngine::aestream_add_data(void* kodiBase,
 
   IAEStream::ExtData extData;
   extData.pts = pts;
+  extData.hasPts = pts != 0; // the add-on API has no "no pts" but 0
   extData.hasDownmix = hasDownmix;
   extData.centerMixLevel = centerMixLevel;
   return static_cast<IAEStream*>(streamHandle)->AddData(data, offset, frames, &extData);

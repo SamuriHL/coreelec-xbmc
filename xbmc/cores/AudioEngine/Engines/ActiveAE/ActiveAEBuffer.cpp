@@ -84,6 +84,7 @@ CSampleBuffer* CActiveAEBufferPool::GetFreeBuffer()
     buf->refCount = 1;
     buf->centerMixLevel = M_SQRT1_2;
     buf->ptsUs = 0;
+    buf->labelled = false;
     buf->landNs = 0;
     buf->landEpoch = 0;
     buf->padMs = 0;
@@ -230,6 +231,7 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
       {
         in->timestamp = timestamp;
         in->ptsUs = 0;
+        in->labelled = true;
       }
       m_outputSamples.push_back(in);
       busy = true;
@@ -312,11 +314,13 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
       {
         if (!timestamp)
         {
-          if (in->timestamp)
+          if (in->labelled)
           {
             m_lastSamplePts = in->timestamp;
             m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
                                           : static_cast<double>(in->timestamp) * 1000.0;
+            m_lastSampleLabelled = true;
+            m_lastSampleHasUs = true;
           }
           else
             in->pkt_start_offset = 0;
@@ -325,13 +329,15 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
         {
           m_lastSamplePts = timestamp;
           m_lastSamplePtsUs = 0.0;
+          m_lastSampleLabelled = true;
+          m_lastSampleHasUs = false;
           in->pkt_start_offset = 0;
         }
 
         // pts of last sample we added to the buffer
         m_lastSamplePts += static_cast<int64_t>(in->pkt->nb_samples - in->pkt_start_offset) * 1000 /
                            in->pkt->config.sample_rate;
-        if (m_lastSamplePtsUs != 0.0)
+        if (m_lastSampleHasUs)
           m_lastSamplePtsUs += static_cast<double>(in->pkt->nb_samples - in->pkt_start_offset) *
                                1e6 / in->pkt->config.sample_rate;
       }
@@ -341,8 +347,9 @@ bool CActiveAEBufferPoolResample::ResampleBuffers(int64_t timestamp)
       m_procSample->pkt_start_offset = m_procSample->pkt->nb_samples;
       m_procSample->timestamp =
           m_lastSamplePts - static_cast<int64_t>(bufferedSamples) * 1000 / m_format.m_sampleRate;
+      m_procSample->labelled = m_lastSampleLabelled;
       m_procSample->ptsUs =
-          m_lastSamplePtsUs != 0.0
+          m_lastSampleHasUs
               ? std::llround(m_lastSamplePtsUs -
                              static_cast<double>(bufferedSamples) * 1e6 / m_format.m_sampleRate)
               : 0;
@@ -484,6 +491,8 @@ void CActiveAEBufferPoolResample::Flush()
   // a label from before the flush is no stand-in for a missing one after it
   m_lastSamplePts = 0;
   m_lastSamplePtsUs = 0.0;
+  m_lastSampleLabelled = false;
+  m_lastSampleHasUs = false;
 }
 
 void CActiveAEBufferPoolResample::SetDrain(bool drain)
@@ -571,17 +580,19 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       m_inputSamples.pop_front();
 
       // Update sample PTS and extrapolate missing timestamps for atempo processing
-      if (in->timestamp)
+      if (in->labelled)
       {
         m_lastSamplePts = in->timestamp;
         m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
                                       : static_cast<double>(in->timestamp) * 1000.0;
+        m_lastSampleLabelled = true;
       }
       else
       {
         in->pkt_start_offset = 0;
         in->timestamp = m_lastSamplePts;
         in->ptsUs = std::llround(m_lastSamplePtsUs);
+        in->labelled = m_lastSampleLabelled;
       }
 
       // RAW carries one IEC61937/MAT packet per buffer, and nb_samples is a BYTE
@@ -664,11 +675,12 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
 
       if (in)
       {
-        if (in->timestamp)
+        if (in->labelled)
         {
           m_lastSamplePts = in->timestamp;
           m_lastSamplePtsUs = in->ptsUs ? static_cast<double>(in->ptsUs)
                                         : static_cast<double>(in->timestamp) * 1000.0;
+          m_lastSampleLabelled = true;
         }
         else
           in->pkt_start_offset = 0;
@@ -685,6 +697,7 @@ bool CActiveAEBufferPoolAtempo::ProcessBuffers()
       m_procSample->pkt_start_offset = m_procSample->pkt->nb_samples;
       m_procSample->timestamp =
           m_lastSamplePts - static_cast<int64_t>(bufferedSamples) * 1000 / m_format.m_sampleRate;
+      m_procSample->labelled = m_lastSampleLabelled;
       m_procSample->ptsUs =
           m_lastSamplePtsUs != 0.0
               ? std::llround(m_lastSamplePtsUs -
@@ -763,11 +776,11 @@ void CActiveAEBufferPoolAtempo::Flush()
   }
   if (m_pTempoFilter)
     ChangeFilter();
-  // a stream that restarts at pts 0 (a seek to the start) labels its first
-  // buffer 0, read as missing: it must not take the label from before the
-  // flush, or it plays at the wrong place (P4-21)
+  // a buffer after the flush with no label of its own must not take the
+  // label from before it, or it plays at the wrong place (P4-21)
   m_lastSamplePts = 0;
   m_lastSamplePtsUs = 0.0;
+  m_lastSampleLabelled = false;
 }
 
 float CActiveAEBufferPoolAtempo::GetDelay()
