@@ -20,6 +20,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
@@ -199,6 +200,8 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_ptsTracker.ResetVFRDetection();
   ResetFrameRateCalc();
+  m_cadence.count = 0;
+  m_cadenceSnap = aml_presentation_validated();
 
   m_iDroppedRequest = 0;
   m_iLateFrames = 0;
@@ -560,6 +563,7 @@ void CVideoPlayerVideo::Process()
       m_rewindStalled = false;
 
       m_ptsTracker.Flush();
+      m_cadence.count = 0;
       //we need to recalculate the framerate
       //! @todo this needs to be set on a streamchange instead
       ResetFrameRateCalc();
@@ -760,6 +764,49 @@ void CVideoPlayerVideo::UpdatePlayerInfo()
   m_processInfo.SetVideoQueueDataLevel(std::min(99, m_messageQueue.GetLevel(true)));
 }
 
+double CVideoPlayerVideo::SnapToCadence(double pts)
+{
+  // whole milliseconds at a known, normal-speed frame rate; a pts the decoder
+  // filled in is not whole, and follows a cadence already held
+  if (!m_cadenceSnap || m_bFpsInvalid || m_speed != DVD_PLAYSPEED_NORMAL)
+  {
+    m_cadence.count = 0;
+    return pts;
+  }
+  const double ms = pts / 1000.0;
+  const bool wholeMs = std::abs(ms - std::round(ms)) <= 0.001;
+  const double duration = DVD_TIME_BASE / m_fFrameRate;
+  if (!wholeMs && (m_cadence.count < 2 || m_cadence.duration != duration))
+  {
+    m_cadence.count = 0;
+    return pts;
+  }
+  if (m_cadence.count == 0 || m_cadence.duration != duration)
+  {
+    m_cadence = {pts, duration, 1};
+    return pts;
+  }
+  const double k = std::round((pts - m_cadence.phase) / duration);
+  const double residual = pts - (m_cadence.phase + k * duration);
+  // half a ms of rounding plus as much in the phase: more is not rounding
+  if (std::abs(residual) > DVD_MSEC_TO_TIME(1.1))
+  {
+    if (m_cadence.count > 1)
+      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - pts {:.3f} off the cadence by {:.3f} ms",
+                pts / DVD_TIME_BASE, residual / 1000.0);
+    m_cadence = {pts, duration, 1};
+    return pts;
+  }
+  if (!wholeMs)
+    return m_cadence.phase + k * duration;
+  if (m_cadence.count == 1)
+    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - millisecond pts: on the {:.3f} ms cadence",
+              duration / 1000.0);
+  m_cadence.count = std::min(m_cadence.count + 1, 48);
+  m_cadence.phase += residual / m_cadence.count;
+  return m_cadence.phase + k * duration;
+}
+
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
@@ -928,7 +975,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     // if frame has a pts (usually originating from demux packet), use that
     if (m_picture.pts != DVD_NOPTS_VALUE)
     {
-      pts = m_picture.pts;
+      pts = SnapToCadence(m_picture.pts);
     }
 
     double extraDelay = 0.0;

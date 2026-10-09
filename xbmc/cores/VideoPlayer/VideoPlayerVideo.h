@@ -159,6 +159,19 @@ protected:
   CDVDStreamInfo m_hints;
   std::unique_ptr<CDVDVideoCodec> m_pVideoCodec;
   CPtsTracker m_ptsTracker;
+  // A container with millisecond timestamps (Matroska) rounds each frame's pts
+  // to the ms: 23.976 frames read 41/42 ms apart and the picture wanders up to
+  // 1 ms against the sound (P4-23). The pts are put back on the frame rate's
+  // cadence, its phase the mean of the rounding.
+  struct SCadence
+  {
+    double phase = 0.0;
+    double duration = 0.0;
+    int count = 0;
+  };
+  SCadence m_cadence;
+  bool m_cadenceSnap = false;
+  double SnapToCadence(double pts);
   std::list<DVDMessageListItem> m_packets;
   CDroppingStats m_droppingStats;
   CRenderManager& m_renderManager;
