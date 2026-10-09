@@ -9,6 +9,7 @@
 #include "AudioFollower.h"
 
 #include "filesystem/File.h"
+#include "utils/AMLUtils.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 
@@ -198,9 +199,12 @@ void CAudioFollower::Run()
   pthread_setname_np(pthread_self(), "AudioFollower");
 
   CTrimControl control;
-  const bool enabled = XFILE::CFile::Exists("special://profile/audio_follower");
+  // default on validated SoCs, off with special://profile/audio_follower_off
+  const bool enabled = (aml_presentation_validated() &&
+                        !XFILE::CFile::Exists("special://profile/audio_follower_off")) ||
+                       XFILE::CFile::Exists("special://profile/audio_follower");
   const bool haveControl = enabled && control.Open();
-  CLog::Log(LOGINFO, "FOLLOWER {}", !enabled     ? "log-only (special://profile/audio_follower absent)"
+  CLog::Log(LOGINFO, "FOLLOWER {}", !enabled     ? "log-only (off on this SoC, or audio_follower_off)"
                                     : haveControl ? "enabled"
                                                   : "log-only: no HDMI Audio Clock Trim control");
 
