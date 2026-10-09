@@ -211,6 +211,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
                   m_fps, fps);
         m_fps = fps;
+        m_pictureDuration = 0.0;
         m_pRenderer->SetFps(fps);
         m_bTriggerUpdateResolution = true;
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
@@ -255,6 +256,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     std::unique_lock lock(m_statelock);
     m_picture.SetParams(picture);
     m_fps = fps;
+    m_pictureDuration = 0.0;
     m_orientation = orientation;
     m_NumberBuffers  = buffers;
     m_renderState = STATE_CONFIGURING;
@@ -1311,6 +1313,7 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
   if (width)
   {
     m_fps = fps;
+    m_pictureDuration = 0.0;
     m_picture.iWidth = width;
     m_picture.iHeight = height;
     m_picture.stereoMode = stereomode;
@@ -1353,6 +1356,11 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
       return false;
 
     m_pRenderer->AddVideoPicture(picture, index);
+    // the shortest since the rate was set: a repeated (telecined) picture
+    // lasts longer than the spacing
+    const double held = m_pictureDuration.load();
+    if (picture.iDuration > 0.0 && (held <= 0.0 || picture.iDuration < held))
+      m_pictureDuration = picture.iDuration;
   }
 
 
@@ -1597,6 +1605,16 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     }
   }
   const double frametime = 1.0 / static_cast<double>(m_timingFps.load()) * DVD_TIME_BASE;
+  // A frame shorter than a vblank (48p at 24 Hz, 50p at 25 Hz): selection
+  // centres on half a frame and the phase repeats with the frame. On half a
+  // vblank the next frame sat on the threshold and the frame shown flipped
+  // between neighbours (Turbo 3D at 47.95 on 23.976 Hz).
+  // The pictures' own duration, not the stream rate: interlaced content is
+  // configured at its field rate, its frames twice as long.
+  double phaseFold = frametime;
+  const double pictureDuration = m_pictureDuration.load();
+  if (pictureDuration > 0.0 && aml_presentation_validated())
+    phaseFold = std::min(frametime, pictureDuration);
 
   m_displayLatency =
       DVD_MSEC_TO_TIME(m_timingLatencyMs.load() - m_videoDelay - frameLatencyAdjustment);
@@ -1615,9 +1633,11 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
   const double nextFramePts =
       m_dvdClock.GetClockSpeed() < 0 ? renderPts : m_Queue[m_queued.front()].pts;
 
+  bool syncOffCentred = false;
+  double syncOffMargin = 0.0;
   if (m_clockSync.m_enabled)
   {
-    double err = fmod(renderPts - nextFramePts, frametime);
+    double err = fmod(renderPts - nextFramePts, phaseFold);
     // ★ err is a CIRCULAR quantity sampled on (-frametime, +frametime). When the
     // phase sits near a fmod discontinuity the samples split between two branches
     // one frametime apart, and their LINEAR mean is then a mixing fraction that
@@ -1652,7 +1672,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       if (!published)
         return value;
       return value -
-             frametime * std::round((value + m_dvdClock.GetVsyncAdjust()) / frametime);
+             phaseFold * std::round((value + m_dvdClock.GetVsyncAdjust()) / phaseFold);
     };
     bool clockHasPhase = false;
     const unsigned int phaseGeneration = m_dvdClock.GetVsyncPhaseGeneration(clockHasPhase);
@@ -1690,7 +1710,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       m_clockSync.m_refValid = true;
     }
     else
-      err -= frametime * std::round((err - m_clockSync.m_ref) / frametime);
+      err -= phaseFold * std::round((err - m_clockSync.m_ref) / phaseFold);
     m_sampleOffset.AddPhase(err);
     // Give the audio clock the phase before the first window completes (~31
     // frames): a passthrough start sync that lands without it keeps the
@@ -1782,16 +1802,16 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
         double ref = average;
         if (!std::isfinite(ref))
           ref = 0; // never let a poisoned value stick in the persistent reference
-        else if (ref <= -frametime)
-          ref += frametime;
-        else if (ref > frametime)
-          ref -= frametime;
+        else if (ref <= -phaseFold)
+          ref += phaseFold;
+        else if (ref > phaseFold)
+          ref -= phaseFold;
         m_clockSync.m_ref = ref;
         m_clockSync.m_adjustSeeded = true;
       }
     }
     if (!isPaused)
-      renderPts += frametime / 2 - m_clockSync.m_syncOffset;
+      renderPts += phaseFold / 2 - m_clockSync.m_syncOffset;
   }
   else
   {
@@ -1801,6 +1821,35 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     else if (!isPaused)
       m_clockSync.m_disabledFrames++;
     m_dvdClock.ClearVsyncAdjust(false);
+    // Selection centres here too, as with sync: the newest due frame, none
+    // early or late, the frame shown the one nearest the clock (rates that
+    // don't match: within half a vblank either side, not up to two behind).
+    // A fixed pulldown (23.976 on 59.94: 2:3) puts the clock at `den` points
+    // a vblank/den apart against the frames, and a start on the grid puts one
+    // on half a vblank, where jitter picked the 2:3 alignment and flipped it
+    // mid-play. With den even the margin moves off it by half a spacing, to
+    // the alignment with the picture early rather than the sound. Pictures
+    // shorter than a vblank centre on half a picture, as with sync.
+    if (m_presenterMode && pictureDuration > 0.0 && aml_presentation_validated())
+    {
+      syncOffMargin = phaseFold / 2;
+      const double ratio = pictureDuration / frametime;
+      for (int den = 1; den <= 5; den++)
+      {
+        const double cycles = ratio * den;
+        if (std::abs(cycles - std::round(cycles)) < 0.0005 * den)
+        {
+          if (std::lround(phaseFold * den / frametime) % 2 == 0)
+            syncOffMargin += frametime / (2 * den);
+          break;
+        }
+      }
+      if (!isPaused)
+      {
+        renderPts += syncOffMargin;
+        syncOffCentred = true;
+      }
+    }
   }
 
   // A start the clock has yet to make (held for it, or in a scheduled start's
@@ -1824,7 +1873,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
           std::llround((m_timingLatencyMs.load() - m_videoDelay) * 1000000.0);
       clockOnScreen += static_cast<double>(std::max<int64_t>(0, onScreenNs - startNs)) / 1000.0;
     }
-    renderPts = clockOnScreen + frametime / 2;
+    renderPts = clockOnScreen + (syncOffMargin > 0.0 ? syncOffMargin : phaseFold / 2);
     m_startGate = true;
   }
   else if (m_startGate)
@@ -1856,13 +1905,13 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
   // (measured am9pro: a one-vsync display hold left the picture a frame
   // behind the audio for 7 vsyncs; at 25p on 50 Hz the early release below
   // put every frame on screen a display period, 20 ms, ahead of the audio).
-  bool centred = false;
+  bool centred = m_presenterMode && syncOffCentred;
   if (m_presenterMode && m_clockSync.m_enabled && !isPaused)
   {
     bool published = false;
     m_dvdClock.GetVsyncPhaseGeneration(published);
     centred = published &&
-              std::abs(m_clockSync.m_syncOffset + m_dvdClock.GetVsyncAdjust()) < frametime / 4;
+              std::abs(m_clockSync.m_syncOffset + m_dvdClock.GetVsyncAdjust()) < phaseFold / 4;
   }
 
   if (renderPts >= nextFramePts || m_forceNext)

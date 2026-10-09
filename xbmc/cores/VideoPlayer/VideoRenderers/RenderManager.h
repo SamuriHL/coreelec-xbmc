@@ -315,6 +315,7 @@ protected:
   VideoPicture m_picture{};
 
   float m_fps = 0.0;
+  std::atomic<double> m_pictureDuration{0.0}; // of the last picture added
   unsigned int m_orientation = 0;
   int m_NumberBuffers = 0;
   int m_lateframes = -1;
