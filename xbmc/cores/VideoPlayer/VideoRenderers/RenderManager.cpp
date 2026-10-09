@@ -1749,6 +1749,27 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       if (m_clockSync.m_errCount > 30)
       {
         double average = m_clockSync.m_error / m_clockSync.m_errCount;
+        // after a grid landing (phase published, not measured): the windows
+        // verify it, and a departure is logged once before it is published
+        double landed = 0.0;
+        if (m_dvdClock.GetGridLanding(phaseGeneration, landed))
+        {
+          const double departure = std::abs(-onAudioBranch(average) - landed);
+          if (m_clockSync.m_landingGeneration != phaseGeneration)
+          {
+            m_clockSync.m_landingGeneration = phaseGeneration;
+            m_clockSync.m_landingDeparted = false;
+            CLog::Log(LOGINFO, "RenderManager: phase after a grid landing {:+.3f} ms (published {:+.3f})",
+                      -onAudioBranch(average) / 1000.0, landed / 1000.0);
+          }
+          if (departure > DVD_MSEC_TO_TIME(1) && !m_clockSync.m_landingDeparted)
+          {
+            m_clockSync.m_landingDeparted = true;
+            CLog::Log(LOGWARNING,
+                      "RenderManager: phase moved {:+.3f} ms from its grid landing's {:+.3f}",
+                      -onAudioBranch(average) / 1000.0, landed / 1000.0);
+          }
+        }
         m_dvdClock.SetVsyncAdjust(-average, phaseGeneration);
         average = onAudioBranch(average);
         m_clockSync.m_syncOffset = average;
@@ -2028,6 +2049,7 @@ void CRenderManager::CheckEnableClockSync()
                                                     m_clockSync.m_disabledFrames > 31)));
   }
 
+  m_dvdClock.SetClockSyncEnabled(m_clockSync.m_enabled);
   m_playerPort->UpdateClockSync(m_clockSync.m_enabled);
 }
 

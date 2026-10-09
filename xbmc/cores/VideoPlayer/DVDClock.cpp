@@ -129,22 +129,23 @@ double CDVDClock::ReduceVsyncAdjust(double adjustment) const
   // clock audio is synced against by a whole frame. Keep the side already
   // published while the value stays within 3/4 of a frame (hysteresis), so
   // only a phase that really rotates on changes side.
-  if (m_frameTime > 0.0)
+  const double step = StepTime();
+  if (step > 0.0)
   {
-    adjustment = fmod(adjustment, m_frameTime);
-    if (adjustment > m_frameTime / 2)
-      adjustment -= m_frameTime;
-    else if (adjustment <= -m_frameTime / 2)
-      adjustment += m_frameTime;
+    adjustment = fmod(adjustment, step);
+    if (adjustment > step / 2)
+      adjustment -= step;
+    else if (adjustment <= -step / 2)
+      adjustment += step;
     // After a drop (pause, seek, display loss) the side is kept from the
     // phase last held: a resume lands on the park it measured against that
     // side, and the other would move it by a whole frame.
     if (m_vSyncAdjustHasPhase || m_vSyncAdjustHintValid)
     {
       const double previous = m_vSyncAdjustHasPhase ? m_vSyncAdjust : m_vSyncAdjustHint;
-      const double other = adjustment > 0 ? adjustment - m_frameTime : adjustment + m_frameTime;
+      const double other = adjustment > 0 ? adjustment - step : adjustment + step;
       if (fabs(other - previous) < fabs(adjustment - previous) &&
-          fabs(other) <= m_frameTime * 0.75)
+          fabs(other) <= step * 0.75)
         adjustment = other;
     }
   }
@@ -215,6 +216,36 @@ void CDVDClock::SettleVsyncAdjust()
 {
   std::unique_lock lock(m_critSection);
   m_vSyncAdjustPending = false;
+}
+
+void CDVDClock::SetGridPhase(bool enabled)
+{
+  std::unique_lock lock(m_critSection);
+  m_gridPhase = enabled;
+  m_clockSyncEnabled = false;
+}
+
+void CDVDClock::SetClockSyncEnabled(bool enabled)
+{
+  std::unique_lock lock(m_critSection);
+  m_clockSyncEnabled = enabled;
+}
+
+bool CDVDClock::GetGridLanding(unsigned int phaseGeneration, double& phase) const
+{
+  std::unique_lock lock(m_critSection);
+  if (!m_gridLanded || phaseGeneration != m_gridLandingGeneration)
+    return false;
+  phase = m_gridLandingPhase;
+  return true;
+}
+
+double CDVDClock::StepTime() const
+{
+  // 50p at 25 Hz: a frame is half a vblank, and a step of one is off the grid
+  if (m_gridPhase && m_vblankTime > m_frameTime)
+    return m_vblankTime;
+  return m_frameTime;
 }
 
 unsigned int CDVDClock::GetVsyncPhaseGeneration(bool& hasPhase) const
@@ -290,7 +321,8 @@ void CDVDClock::Reset()
   m_bReset = true;
 }
 
-bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock)
+bool CDVDClock::ScheduleResume(
+    int iSpeed, double lead, int64_t& startNs, double& startClock, bool atFrame)
 {
   std::unique_lock lock(m_critSection);
   CancelScheduledResume();
@@ -300,7 +332,8 @@ bool CDVDClock::ScheduleResume(int iSpeed, double lead, int64_t& startNs, double
     SetSpeedAt(iSpeed, current);
     return false;
   }
-  m_resumeAt = ScheduleInstant(current, lead);
+  m_resumeAt = ScheduleInstant(current, lead, &m_scheduleOnGrid);
+  m_scheduleOnGrid = m_scheduleOnGrid && atFrame;
   m_resumeSpeed = iSpeed;
   m_scheduleClock = SystemToPlaying(current);
   // whatever display phase was held belongs to a clock that started anywhere;
@@ -363,6 +396,7 @@ bool CDVDClock::ScheduleResumeAt(
   m_pauseClock += static_cast<int64_t>(std::llround(step * static_cast<double>(m_systemUsed) / DVD_TIME_BASE));
   m_resumeAt = at;
   m_resumeSpeed = DVD_PLAYSPEED_NORMAL;
+  m_scheduleOnGrid = true;
   m_scheduleClock = clock;
   DropVsyncPhase(false);
   m_scheduleEpoch = NextScheduleEpoch();
@@ -470,11 +504,34 @@ void CDVDClock::ApplyScheduledResume(int64_t current)
   m_resumeAt = 0;
   // anchored at the scheduled instant, not at whenever a reader came by
   SetSpeedAt(m_resumeSpeed, at);
+  // The clock reads the held frame's pts at a vblank: the phase is 0 now, not
+  // after the renderer has measured it. Its first window replaces it, so a
+  // phase that is not 0 after all is published as before.
+  if (m_scheduleOnGrid && m_gridPhase && m_clockSyncEnabled &&
+      m_resumeSpeed == DVD_PLAYSPEED_NORMAL)
+  {
+    m_vSyncAdjust = 0;
+    m_gridLandingPhase = 0;
+    m_vSyncAdjustHasPhase = true;
+    m_vSyncAdjustHintValid = false;
+    m_vSyncAdjustPending = false;
+    m_gridLandingGeneration = ++m_vSyncPhaseGeneration;
+    m_gridLanded = true;
+    CLog::Log(LOGINFO, "CDVDClock: grid landing at clock {:.6f}, phase 0 published",
+              SystemToPlaying(at) / DVD_TIME_BASE);
+  }
+  else if (m_gridPhase)
+    CLog::Log(LOGINFO,
+              "CDVDClock: landing at clock {:.6f} left to the measurement (on a frame at a "
+              "vblank {}, clock sync {})",
+              SystemToPlaying(at) / DVD_TIME_BASE, m_scheduleOnGrid, m_clockSyncEnabled);
+  m_scheduleOnGrid = false;
 }
 
 void CDVDClock::CancelScheduledResume()
 {
   m_scheduleValid = false;
+  m_scheduleOnGrid = false;
   if (!m_resumeAt)
     return;
   // the clock was going to run: run it now (or from the instant, if that has
@@ -531,7 +588,7 @@ void CDVDClock::SetSpeedAt(int iSpeed, int64_t current)
   // change rescales it: either way it now stands at another point of the
   // display's vsync cadence (measured am9pro: the phase moved 4 ms after a
   // resume, under an audio landing already made against the old one).
-  if (m_pauseClock && newfreq == m_systemUsed && m_vSyncAdjustHasPhase && m_frameTime > 0.0)
+  if (m_pauseClock && newfreq == m_systemUsed && m_vSyncAdjustHasPhase && StepTime() > 0.0)
   {
     // A plain resume at the same speed with the phase held throughout: the
     // clock stood still for the pause while the display ran on at its fixed
@@ -542,7 +599,7 @@ void CDVDClock::SetSpeedAt(int iSpeed, int64_t current)
     // generation changes) and replaces it.
     const double paused =
         static_cast<double>(current - m_pauseClock) * DVD_TIME_BASE / m_systemFrequency;
-    m_vSyncAdjust = ReduceVsyncAdjust(m_vSyncAdjust + fmod(paused, m_frameTime));
+    m_vSyncAdjust = ReduceVsyncAdjust(m_vSyncAdjust + fmod(paused, StepTime()));
     m_vSyncPhaseGeneration++;
   }
   else if (m_pauseClock || newfreq != m_systemUsed)
@@ -587,16 +644,17 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
 
   adjustment = error;
 
-  if (m_vSyncAdjust != 0)
+  // a phase of exactly 0 (a grid landing) is a phase too
+  if (m_vSyncAdjustHasPhase)
   {
     // Audio ahead is more noticeable then audio behind video.
     // Correct if aufio is more than 20ms ahead or more then
     // 27ms behind. In a worst case scenario we switch from
     // 20ms ahead to 21ms behind (for fps of 23.976)
     if (error > 0.02 * DVD_TIME_BASE)
-      adjustment = m_frameTime;
+      adjustment = StepTime();
     else if (error < -0.027 * DVD_TIME_BASE)
-      adjustment = -m_frameTime;
+      adjustment = -StepTime();
     else
       adjustment = 0;
   }
@@ -661,6 +719,11 @@ int CDVDClock::UpdateFramerate(double fps, double* interval /*= NULL*/)
 
   if (rate <= 0)
     return -1;
+
+  {
+    std::unique_lock lock(m_critSection);
+    m_vblankTime = DVD_TIME_BASE / rate;
+  }
 
   std::unique_lock lock(m_speedsection);
 

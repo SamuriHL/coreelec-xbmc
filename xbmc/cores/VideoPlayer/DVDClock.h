@@ -67,6 +67,14 @@ public:
   unsigned int GetVsyncPhaseGeneration(bool& hasPhase) const;
   //! no phase is coming soon (no frame is being played): stop waiting for one
   void SettleVsyncAdjust();
+  //! A scheduled (re)start that lands on a vblank publishes its phase, 0, at
+  //! the instant instead of waiting for the renderer to measure it; whole-frame
+  //! steps go by the longer of a frame and a vblank (design 16.29, rev 3a)
+  void SetGridPhase(bool enabled);
+  //! the renderer's clock sync: a phase exists only while it runs
+  void SetClockSyncEnabled(bool enabled);
+  //! the phase published by a grid landing, while its generation holds
+  bool GetGridLanding(unsigned int phaseGeneration, double& phase) const;
 
   void Pause(bool pause);
   bool IsPaused() const;
@@ -79,7 +87,9 @@ public:
   //! except SetSpeed at the scheduled speed, which it already applies.
   //! startNs: the instant (CLOCK_MONOTONIC); startClock: the clock there.
   //! false (the clock resumed now) if it was not held at speed 0.
-  bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock);
+  //! atFrame: the held clock is a frame's pts (not the first audio's)
+  bool ScheduleResume(int iSpeed, double lead, int64_t& startNs, double& startClock,
+                      bool atFrame = false);
   //! A user resume as a scheduled start (design §16.21): the clock held at
   //! speed 0 resumes at normal speed reading `clock` at the vblank `lead`
   //! seconds from now. false (nothing changed) unless held, with the vblank
@@ -124,6 +134,8 @@ protected:
   void ApplyScheduledResume(int64_t current);
   //! caller holds m_critSection
   void CancelScheduledResume();
+  //! caller holds m_critSection: a frame, or a vblank when that is longer
+  double StepTime() const;
   double SystemToAbsolute(int64_t system) const;
   int64_t AbsoluteToSystem(double absolute) const;
   double SystemToPlaying(int64_t system);
@@ -158,6 +170,13 @@ protected:
   double m_audioOffset = 0.0;
   unsigned int m_vSyncPhaseGeneration = 0;
   double m_frameTime;
+  double m_vblankTime = 0.0;
+  bool m_gridPhase = false;
+  bool m_clockSyncEnabled = false;
+  bool m_scheduleOnGrid = false;
+  bool m_gridLanded = false;
+  double m_gridLandingPhase = 0.0;
+  unsigned int m_gridLandingGeneration = 0;
 
   double m_maxspeedadjust;
   CCriticalSection m_speedsection;

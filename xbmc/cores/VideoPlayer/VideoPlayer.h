@@ -923,6 +923,7 @@ protected:
   std::atomic<bool> m_displayResumeScheduled{false};
   //! the user's audio offset moves the sound, as a player's audio delay
   std::atomic<bool> m_audioOffsetToAudio{false};
+  bool m_startAtFrame = false; // the start's clock is a picture's pts
   std::atomic<double> m_requestedAudioOffset{0.0};
   std::atomic<int64_t> m_audioOffsetChangedMs{0};
   double m_landedAudioOffset = 0.0;

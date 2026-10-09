@@ -347,6 +347,8 @@ protected:
     double m_seedPrev = 0.0;
     bool m_seedPrevValid = false;
     unsigned int m_phaseGeneration = 0; // the clock's, when this state was built
+    unsigned int m_landingGeneration = 0; // the grid landing last verified
+    bool m_landingDeparted = false;
     int m_errCount = 0;
     double m_syncOffset = 0.0;
     bool m_enabled = false;

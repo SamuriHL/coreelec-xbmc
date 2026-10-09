@@ -1118,6 +1118,8 @@ bool CVideoPlayer::OpenInputStream()
     // the display latency tweak too: the picture would move by whole frames (P4-24)
     m_renderManager.SetLatencyTweakToAudio(m_audioOffsetToAudio);
   }
+  // with the tweak and offset on the audio, a grid landing's phase is 0
+  m_clock.SetGridPhase(m_audioOffsetToAudio);
   m_clock.Reset();
   m_dvd.Clear();
 
@@ -2641,7 +2643,8 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   {
     int64_t startNs = 0;
     double startClock = 0.0;
-    if (m_clock.ScheduleResume(m_playSpeed, SCHEDULED_START_LEAD, startNs, startClock))
+    if (m_clock.ScheduleResume(m_playSpeed, SCHEDULED_START_LEAD, startNs, startClock,
+                               m_startAtFrame))
     {
       lead = SCHEDULED_START_LEAD;
       CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
@@ -4349,6 +4352,8 @@ void CVideoPlayer::HandlePlaySpeed()
         clock = m_CurrentVideo.starttime - m_CurrentVideo.cachetotal;
       }
 
+      // the start clock is the first picture's pts: its landing is on a frame
+      m_startAtFrame = videoPictured && clock == m_CurrentVideo.starttime;
       m_syncStartPtsWait.reset();
       m_syncStartDeferred = false;
       m_firstPictureWaitSince = {};
