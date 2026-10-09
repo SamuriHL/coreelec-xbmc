@@ -192,6 +192,11 @@ public:
 
   void SetDelay(int delay) { m_videoDelay = delay; }
   int GetDelay() { return m_videoDelay; }
+  //! the display latency tweak moves the sound (the player lands it with the
+  //! audio offset), not the picture
+  void SetLatencyTweakToAudio(bool toAudio) { m_tweakToAudio = toAudio; }
+  //! the display latency tweak in ms
+  double GetLatencyTweak() const { return m_latencyTweakMs; }
 
   void SetVideoSettings(const CVideoSettings& settings);
 
@@ -218,7 +223,8 @@ protected:
   //! Video-only tap: serve VIDEO capture requests from the just-presented frame.
   void ServiceVideoCaptures();
 
-  void UpdateLatencyTweak();
+  //! the tweak for the current mode, or for the mode about to be set
+  void UpdateLatencyTweak(RESOLUTION target = RES_INVALID);
   void CheckEnableClockSync();
   //! render thread: the display timing PrepareNextRender uses, for either thread
   void PublishDisplayTiming();
@@ -283,6 +289,8 @@ protected:
   /// Display latency tweak value from AdvancedSettings for the current refresh rate
   /// in milliseconds
   double m_latencyTweak = 0.0;
+  std::atomic<double> m_latencyTweakMs{0.0};
+  std::atomic<bool> m_tweakToAudio{false};
   /// Display latency updated in PrepareNextRender in DVD clock units, includes m_latencyTweak
   double m_displayLatency = 0.0;
   std::atomic_int m_videoDelay = {};

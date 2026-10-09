@@ -1115,6 +1115,8 @@ bool CVideoPlayer::OpenInputStream()
         m_audioOffsetToAudio
             ? 0
             : static_cast<int>(m_processInfo->GetVideoSettings().m_AudioDelay * 1000.0f));
+    // the display latency tweak too: the picture would move by whole frames (P4-24)
+    m_renderManager.SetLatencyTweakToAudio(m_audioOffsetToAudio);
   }
   m_clock.Reset();
   m_dvd.Clear();
@@ -2621,6 +2623,10 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
   const double held =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
+  // the mode decision can set the latency tweak after this loop's check: the
+  // start lands it, not a re-land after it
+  if (m_audioOffsetToAudio)
+    ApplyAudioOffset();
   m_startHeld = false;
   m_startReleasedClock = m_clock.GetClock();
 
@@ -6759,19 +6765,27 @@ float CVideoPlayer::GetAVDelay()
 
 void CVideoPlayer::ApplyAudioOffset()
 {
-  const double want = m_requestedAudioOffset;
+  // a slow display shows the picture late: the sound waits for it
+  const double want =
+      m_requestedAudioOffset - DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak());
   if (want == m_landedAudioOffset)
     return;
+  // a display reset landed it already
+  if (want == m_clock.GetAudioOffset())
+  {
+    m_landedAudioOffset = want;
+    return;
+  }
   const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count();
   // the +/- keys repeat: take the value they settle on
   if (nowMs - m_audioOffsetChangedMs < 500)
     return;
-  // paused, at a trick speed, or no audio landed yet: the next start lands
-  // with it
+  // paused, at a trick speed, no audio landed yet, or the display lost (a mode
+  // change sets the latency tweak then): the next start lands with it
   if (m_playSpeed != DVD_PLAYSPEED_NORMAL || m_CurrentAudio.id < 0 || !m_CurrentAudio.inited ||
-      m_startHeld ||
+      m_startHeld || m_displayLost ||
       ((m_caching == CACHESTATE_FULL || m_caching == CACHESTATE_INIT) && !m_cachingStall))
   {
     m_clock.SetAudioOffset(want);
@@ -6780,8 +6794,8 @@ void CVideoPlayer::ApplyAudioOffset()
               want * 1000.0 / DVD_TIME_BASE);
     return;
   }
-  // a stall, a display reset or a scheduled lead: after its landing
-  if (m_caching != CACHESTATE_DONE || m_displayLost || m_clock.IsPaused() ||
+  // a stall or a scheduled lead: after its landing
+  if (m_caching != CACHESTATE_DONE || m_clock.IsPaused() ||
       m_streamPlayerSpeed != DVD_PLAYSPEED_NORMAL)
     return;
   m_VideoPlayerAudio->SendMessage(
@@ -9546,6 +9560,10 @@ void CVideoPlayer::OnResetDisplay()
   double maxStep = 0.0;
   int64_t startNs = 0;
   double startClock = 0.0;
+  // a mode change sets the display latency tweak: this landing lands it
+  if (m_audioOffsetToAudio)
+    m_clock.SetAudioOffset(m_requestedAudioOffset -
+                           DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak()));
   if (m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep) &&
       m_clock.UnpauseAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
   {

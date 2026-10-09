@@ -1138,19 +1138,22 @@ void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
   }
 }
 
-void CRenderManager::UpdateLatencyTweak()
+void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
 {
-  float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
-  const RESOLUTION_INFO res = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+  const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const RESOLUTION_INFO res = target != RES_INVALID ? gfx.GetResInfo(target) : gfx.GetResInfo();
+  float fps = target != RES_INVALID ? res.fRefreshRate : gfx.GetFPS();
   const bool isHDREnabled = CServiceBroker::GetWinSystem()->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
   const bool isHDRUsed = isHDREnabled && (m_picture.hdrType != StreamHdrType::HDR_TYPE_NONE);
 
   float refresh = fps;
-  if (CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution() == RES_WINDOW)
+  if ((target != RES_INVALID ? target : gfx.GetVideoResolution()) == RES_WINDOW)
     refresh = 0; // No idea about refresh rate when windowed, just get the default latency
   m_latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, res.iScreenHeight));
+
+  m_latencyTweakMs = m_latencyTweak;
 
   CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}, HDR used: {}",
     m_latencyTweak, refresh, res.iScreenHeight, isHDRUsed);
@@ -1170,7 +1173,7 @@ void CRenderManager::PublishDisplayTiming()
   const double display = vblanks >= 0 && m_timingFps > 0.0f
                              ? vblanks * 1000.0 / static_cast<double>(m_timingFps)
                              : static_cast<double>(gfx.GetDisplayLatency());
-  m_timingLatencyMs = m_latencyTweak + display;
+  m_timingLatencyMs = (m_tweakToAudio ? 0.0 : m_latencyTweak) + display;
   m_timingEpoch = epoch;
 }
 
@@ -1284,6 +1287,10 @@ void CRenderManager::UpdateResolution()
           if (mayChooseMode && !held && width > 0 && height > 0)
             aml_set_disc_mode_anchored(true);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
+          // the tweak before the mode set: with no refresh-change delay the
+          // display reset lands the audio inside it, and lands the new tweak
+          if (m_tweakToAudio)
+            UpdateLatencyTweak(res);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           UpdateLatencyTweak();
           if (m_pRenderer)
