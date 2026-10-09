@@ -1853,8 +1853,6 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   // PCM silence.
   const double rate = m_sinkFormat.m_sampleRate;
   const bool raw = m_requestedFormat.m_dataFormat == AE_FMT_RAW;
-  AEDelayStatus status;
-  m_sink->GetDelay(status);
   const auto monoNs = []
   {
     struct timespec ts = {};
@@ -1865,7 +1863,9 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   // write, and when the first sample leaves is not known. Up to a period of
   // the pad starts it; the rest is measured on the running device.
   unsigned int primed = 0;
-  if (status.delay <= 0.0)
+  int64_t now = 0;
+  double delay = DelayNow(now);
+  if (delay <= 0.0)
   {
     const int64_t aheadNs = std::max<int64_t>(0, samples->landNs - monoNs());
     unsigned int prime = static_cast<unsigned int>(
@@ -1882,10 +1882,11 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
       prime -= std::min(prime, packed);
     }
     if (primed)
-      m_sink->GetDelay(status);
+      delay = DelayNow(now);
+    else
+      now = monoNs();
   }
-  const int64_t now = monoNs();
-  const int64_t padNs = samples->landNs - now - static_cast<int64_t>(status.delay * 1e9);
+  const int64_t padNs = samples->landNs - now - static_cast<int64_t>(delay * 1e9);
   const double frameMs = raw ? m_sinkFormat.m_streamInfo.GetDuration()
                              : samples->pkt->nb_samples * 1000.0 / rate;
   skipFrames = 0;
@@ -1900,7 +1901,7 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   {
     CLog::Log(LOGDEBUG,
               "CActiveAESink: scheduled start {}: frame {:.1f} ms late, dropped (delay {:.1f} ms)",
-              samples->landEpoch, -padNs / 1e6, status.delay * 1000.0);
+              samples->landEpoch, -padNs / 1e6, delay * 1000.0);
     return false;
   }
 
@@ -1939,10 +1940,58 @@ bool CActiveAESink::LandScheduled(CSampleBuffer* samples, unsigned int& skipFram
   CLog::Log(LOGINFO,
             "CActiveAESink: scheduled start {} landed: pad {} frames ({:.3f} ms), skip {} frames, "
             "delay before {:.3f} ms, after {:.3f} ms, landing error {:+.3f} ms{}{}",
-            samples->landEpoch, total, total * 1000.0 / rate, skipFrames, status.delay * 1000.0,
+            samples->landEpoch, total, total * 1000.0 / rate, skipFrames, delay * 1000.0,
             after.delay * 1000.0, errorMs, ok ? "" : " (pad write failed)",
             primed ? fmt::format(", device started with {} frames", primed) : "");
   return true;
+}
+
+double CActiveAESink::DelayNow(int64_t& atNs)
+{
+  // The device reports its position in steps (AML: 128 frames, 2.7 ms at 48
+  // kHz, 0.7 ms at 192 kHz), so one reading is up to a step stale and a landing
+  // on it is early by as much. Each reading plus its time is the instant the
+  // queue runs out, over-stated by the staleness: the least over a step's span
+  // is the reading taken as the position moved.
+  const auto monoNs = []
+  {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  };
+  AEDelayStatus status;
+  m_sink->GetDelay(status);
+  atNs = monoNs();
+  double end = status.delay + atNs / 1e9;
+  if (status.delay <= 0.0)
+    return status.delay;
+  // Brought to now by the age of the driver's timestamp, which is when a step
+  // was first seen, the readings' end stands still until the next step is
+  // seen, then drops by the staleness: one reading after a drop is the truth.
+  const double first = status.delay;
+  const double firstEnd = end;
+  const double frame = 1.0 / m_sinkFormat.m_sampleRate;
+  const int64_t start = atNs;
+  const int64_t until = atNs + 6000000;
+  bool stepped = false;
+  int readings = 1;
+  while (true)
+  {
+    m_sink->GetDelay(status);
+    atNs = monoNs();
+    readings++;
+    end = std::min(end, status.delay + atNs / 1e9);
+    if (stepped || atNs >= until)
+      break;
+    stepped = status.delay + atNs / 1e9 < firstEnd - 2 * frame;
+  }
+  const double delay = std::max(0.0, end - atNs / 1e9);
+  CLog::Log(LOGDEBUG,
+            "CActiveAESink: delay now {:.3f} ms from {} readings over {:.2f} ms, the first "
+            "{:.3f} ms stale",
+            delay * 1000.0, readings, (atNs - start) / 1e6,
+            (first + start / 1e9 - end) * 1000.0);
+  return delay;
 }
 
 bool CActiveAESink::WriteZeros(unsigned int frames)

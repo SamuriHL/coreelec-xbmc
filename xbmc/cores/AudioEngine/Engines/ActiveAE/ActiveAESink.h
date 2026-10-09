@@ -163,6 +163,8 @@ protected:
   bool WritePacked(unsigned int frames);
   //! write PCM silence, retrying a full device
   bool WriteZeros(unsigned int frames);
+  //! the device's delay now, from readings over one position step; *atNs: their instant
+  double DelayNow(int64_t& atNs);
   //! a user pause (design §16.22): take back the written buffers from pts
   //! fromMs on that have not played, and those not yet written; they go to
   //! m_handBack, oldest first, for the engine to queue again
