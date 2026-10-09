@@ -1779,7 +1779,7 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
     if (m_seamPlaylistStep && m_lastDataReadStart >= 0)
     {
       bd_get_clip_infos(m_bd, m_event.param, nullptr, nullptr, &clipPos, nullptr);
-      m_seamMarks.push_back({m_lastDataReadStart, *m_seamPlaylistStep, m_titleByteGen});
+      m_seamMarks.push_back({m_lastDataReadStart, *m_seamPlaylistStep, m_titleByteGen, clipPos});
       CLog::Log(LOGDEBUG,
                 "CDVDInputStreamBluray - seam at title byte {} (clip info {}), step {:.3f} ms",
                 m_lastDataReadStart, clipPos, *m_seamPlaylistStep / 90.0);

@@ -697,6 +697,7 @@ protected:
     int64_t pos;
     double step;
     uint32_t gen; // the title-byte generation of pos
+    uint64_t clipPos; // the clip's start in title bytes: the seam itself
   };
   struct SeamStream
   {

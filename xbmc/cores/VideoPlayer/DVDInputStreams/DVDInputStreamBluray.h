@@ -430,6 +430,7 @@ public:
     int64_t pos;
     int64_t step;
     uint32_t gen; // the title-byte generation of pos
+    uint64_t clipPos; // the clip's start in title bytes: the seam itself
   };
   std::vector<SeamMark> TakeSeamMarks() { return std::exchange(m_seamMarks, {}); }
   bool GetLastReadAnchor(int64_t& bytePos, uint32_t& gen) override;

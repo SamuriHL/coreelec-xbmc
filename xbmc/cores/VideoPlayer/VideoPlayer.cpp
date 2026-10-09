@@ -4583,12 +4583,23 @@ void CVideoPlayer::TakeSeamMarks()
   {
     for (const auto& mark : m_pInputBluray->TakeSeamMarks())
     {
-      // a re-read (a stream switch reads back without a flush) meets a seam again
+      // a seek back meets a seam again, from the first read after libbluray's
+      // event, which can start later than before: the seam keeps one step, at
+      // the earlier position (P4-22)
+      const auto same = std::find_if(m_seamMarks.begin(), m_seamMarks.end(),
+                                     [&mark](const SeamMark& m)
+                                     { return m.clipPos && m.clipPos == mark.clipPos; });
+      if (same != m_seamMarks.end())
+      {
+        if (same->pos <= mark.pos)
+          continue;
+        m_seamMarks.erase(same);
+      }
       const auto at = std::lower_bound(m_seamMarks.begin(), m_seamMarks.end(), mark.pos,
                                        [](const SeamMark& m, int64_t pos) { return m.pos < pos; });
       if (at == m_seamMarks.end() || at->pos != mark.pos)
         m_seamMarks.insert(at, {mark.pos, static_cast<double>(mark.step) * DVD_TIME_BASE / 90000.0,
-                                mark.gen});
+                                mark.gen, mark.clipPos});
     }
   }
 #endif
