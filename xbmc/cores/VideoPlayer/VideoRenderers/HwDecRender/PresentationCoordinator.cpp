@@ -842,7 +842,7 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     m_onScreen.push_back({tick.seq + 2, result.pts});
     m_frameUs = result.frametime;
     if (PRESENTATION::ShadowActive())
-      ShadowFrameOnScreen(tick, result.pts);
+      ShadowFrameOnScreen(tick, result.pts, result.playing);
   }
 
   if (!result.configured)
@@ -855,7 +855,9 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   Account(tick, result, work);
 }
 
-void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick, double pts)
+void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,
+                                                   double pts,
+                                                   bool playing)
 {
   int64_t tl[PRESENTATION::TL_COUNT];
   if (!PRESENTATION::TimelineBoard().Read(tl) || !tl[PRESENTATION::TL_PERIOD_DEN])
@@ -863,7 +865,11 @@ void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick, dou
   const double periodNs = 1e9 * static_cast<double>(tl[PRESENTATION::TL_PERIOD_NUM]) /
                           static_cast<double>(tl[PRESENTATION::TL_PERIOD_DEN]);
   const int64_t onScreenNs = tick.vblankNs + static_cast<int64_t>(2 * periodNs);
-  const int64_t values[PRESENTATION::VP_COUNT] = {static_cast<int64_t>(pts), onScreenNs};
+  // a frame shown while the clock stands still (the first picture of a
+  // scheduled start) is still on screen when the clock reaches its pts: its
+  // own instant doesn't pair with the clock
+  const int64_t values[PRESENTATION::VP_COUNT] = {playing ? static_cast<int64_t>(pts) : 0,
+                                                  playing ? onScreenNs : 0};
   PRESENTATION::VideoPinsBoard().Write(values);
   if (m_shadowStartFrames < 2)
   {

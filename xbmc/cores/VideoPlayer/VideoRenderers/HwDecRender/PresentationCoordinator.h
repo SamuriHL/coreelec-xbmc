@@ -163,7 +163,7 @@ private:
   void ReclaimPlane(int plane); // under m_uiMutex
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
-  void ShadowFrameOnScreen(const SPresentTick& tick, double pts);
+  void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick, const SPresentResult& result, int64_t workNs);
   void LogReport();
