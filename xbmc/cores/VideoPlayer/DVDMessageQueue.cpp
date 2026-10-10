@@ -177,6 +177,8 @@ MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
     return MSGQ_NOT_INITIALIZED;
   }
 
+  // microseconds: a 1 ms poll truncated to whole milliseconds would not wait
+  const XbmcThreads::EndTime<std::chrono::microseconds> endTime{timeout};
   while (!m_bAbortRequest)
   {
     std::list<DVDMessageListItem> &msgs = (priority > 0 || !m_prioMessages.empty()) ? m_prioMessages : m_messages;
@@ -212,8 +214,9 @@ MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
       m_hEvent.Reset();
       lock.unlock();
 
-      // wait for a new message
-      if (!m_hEvent.Wait(timeout))
+      // wait for a new message; every put wakes the wait, so a wait for a
+      // priority message keeps one deadline across the packets it passes
+      if (!m_hEvent.Wait(endTime.GetTimeLeft()))
         return MSGQ_TIMEOUT;
 
       lock.lock();
