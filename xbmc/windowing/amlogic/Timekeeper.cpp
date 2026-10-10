@@ -673,8 +673,18 @@ void CTimekeeper::Report()
       // each output against CDVDClock at the same instant (the clock runs 1:1)
       const auto clockAt = [&](int64_t ns)
       { return static_cast<double>(cs[CS_CLOCK_US]) + (ns - cs[CS_VBLANK_NS]) / 1000.0; };
-      videoVsClockSum += (vp[VP_PTS_US] - clockAt(vp[VP_ON_SCREEN_NS])) / 1000.0;
-      audioVsClockSum += (aq[AQ_PTS_US] - clockAt(aq[AQ_ON_PINS_NS])) / 1000.0;
+      const double videoVsClock = (vp[VP_PTS_US] - clockAt(vp[VP_ON_SCREEN_NS])) / 1000.0;
+      const double audioVsClock = (aq[AQ_PTS_US] - clockAt(aq[AQ_ON_PINS_NS])) / 1000.0;
+      videoVsClockSum += videoVsClock;
+      audioVsClockSum += audioVsClock;
+      if (std::abs(aheadMs) > 5.0)
+        CLog::Log(LOGINFO,
+                  "TIMEKEEPER pins off {:+.2f} ms: video {:+.2f} audio {:+.2f} ms against "
+                  "CDVDClock | video pts {} us on screen at {} ns | audio pts {} us on the pins "
+                  "at {} ns | CDVDClock {} us at vblank {} ns (seq {}) | vblank {} ns",
+                  aheadMs, videoVsClock, audioVsClock, vp[VP_PTS_US], vp[VP_ON_SCREEN_NS],
+                  aq[AQ_PTS_US], aq[AQ_ON_PINS_NS], cs[CS_CLOCK_US], cs[CS_VBLANK_NS],
+                  cs[CS_SEQ], tl[TL_VBLANK_NS]);
       if (pinsN == 1)
         CLog::Log(LOGINFO,
                   "TIMEKEEPER pins sample: video pts {} us on screen at {} ns | audio pts {} us on "
