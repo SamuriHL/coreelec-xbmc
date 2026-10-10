@@ -4373,6 +4373,9 @@ void CVideoPlayer::HandlePlaySpeed()
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
         HoldStart();
+        // the clock ran from the discontinuity to the pause (up to 0.9 ms
+        // measured): stand it at the first picture again
+        m_clock.Discontinuity(clock);
       }
       m_VideoPlayerAudio->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
