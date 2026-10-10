@@ -847,7 +847,16 @@ void CDVDDemuxFFmpeg::Flush()
   if (m_pFormatContext)
   {
     if (m_pFormatContext->pb)
+    {
       avio_flush(m_pFormatContext->pb);
+      // A non-seekable input (a disc) moves without ffmpeg: what follows
+      // doesn't continue the last read. The mpegts demuxer drops the PES it
+      // holds only when the position moved, which a drained buffer doesn't
+      // show; a multiple of every TS packet size (188, 192, 204) keeps the
+      // packet alignment.
+      if (m_pFormatContext->pb == m_ioContext && !m_ioContext->seekable)
+        m_ioContext->pos += 153408;
+    }
     avformat_flush(m_pFormatContext);
   }
 
