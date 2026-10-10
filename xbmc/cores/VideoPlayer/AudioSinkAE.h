@@ -40,6 +40,10 @@ public:
   bool IsValidFormat(const DVDAudioFrame &audioframe);
   void Destroy(bool finish);
   unsigned int AddPackets(const DVDAudioFrame &audioframe);
+  //! a stream worker (design 17): AddPackets copies what fits and returns, and
+  //! the fd is written when the stream frees a buffer (-1 clears)
+  void SetNonBlocking(bool on, int wakeFd);
+  bool HasSpace();
   double GetPlayingPts();
   double GetCacheTime();
   double GetCacheTotal(); // returns total time a stream can buffer
@@ -74,6 +78,8 @@ public:
 
 protected:
   IAE::StreamPtr m_pAudioStream;
+  bool m_nonBlocking = false;
+  int m_wakeFd = -1;
   double m_playingPts;
   double m_timeOfPts;
   double m_syncError;

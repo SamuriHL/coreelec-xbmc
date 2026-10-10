@@ -100,6 +100,8 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
   );
   if (!m_pAudioStream)
     return false;
+  m_pAudioStream->SetNoWait(m_nonBlocking);
+  m_pAudioStream->SetWakeFd(m_wakeFd);
 
   m_dataFormat = audioframe.format.m_dataFormat;
   m_sampleRate = audioframe.format.m_sampleRate;
@@ -118,6 +120,7 @@ void CAudioSinkAE::Destroy(bool finish)
 
   if (m_pAudioStream)
   {
+    m_pAudioStream->SetWakeFd(-1);
     m_pAudioStream.get_deleter().setFinish(finish);
     m_pAudioStream.reset();
   }
@@ -128,6 +131,24 @@ void CAudioSinkAE::Destroy(bool finish)
   m_bPassthrough = false;
   m_bPaused = true;
   m_playingPts = DVD_NOPTS_VALUE;
+}
+
+void CAudioSinkAE::SetNonBlocking(bool on, int wakeFd)
+{
+  std::unique_lock lock(m_critSection);
+  m_nonBlocking = on;
+  m_wakeFd = wakeFd;
+  if (m_pAudioStream)
+  {
+    m_pAudioStream->SetNoWait(on);
+    m_pAudioStream->SetWakeFd(wakeFd);
+  }
+}
+
+bool CAudioSinkAE::HasSpace()
+{
+  std::unique_lock lock(m_critSection);
+  return m_pAudioStream && m_pAudioStream->GetSpace() > 0;
 }
 
 unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
@@ -200,6 +221,10 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     offset += copied;
     frames -= copied;
     if (frames <= 0)
+      break;
+
+    // the worker never waits here: it is woken when a buffer comes back
+    if (m_nonBlocking)
       break;
 
     if (copied == 0 && std::chrono::steady_clock::now() >= deadline)

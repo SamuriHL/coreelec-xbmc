@@ -13,6 +13,7 @@
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "utils/log.h"
 
+#include <unistd.h>
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -69,6 +70,18 @@ void CActiveAEStream::IncFreeBuffers()
 {
   std::unique_lock lock(m_streamLock);
   m_streamFreeBuffers++;
+  // after the count: a woken writer sees the space
+  if (m_wakeFd >= 0)
+  {
+    const uint64_t one = 1;
+    [[maybe_unused]] ssize_t n = write(m_wakeFd, &one, sizeof(one));
+  }
+}
+
+void CActiveAEStream::SetWakeFd(int fd)
+{
+  std::unique_lock lock(m_streamLock);
+  m_wakeFd = fd;
 }
 
 void CActiveAEStream::DecFreeBuffers()
@@ -280,7 +293,9 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
       int planes = m_currentBuffer->pkt->planes;
       int bufOffset = (offset + copied)*m_format.m_frameSize/planes;
 
-      if (!copied)
+      // a no-wait writer continues a frame over calls: only its first chunk
+      // (with a pts) is a new packet's start, as in a blocking call
+      if (!copied && (!m_noWait || (extData && extData->hasPts)))
       {
         if (pts < m_lastPts)
         {
@@ -373,7 +388,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         break;
       }
     }
-    if (!m_inMsgEvent.Wait(200ms))
+    if (m_noWait || !m_inMsgEvent.Wait(200ms))
       break;
   }
   return copied;

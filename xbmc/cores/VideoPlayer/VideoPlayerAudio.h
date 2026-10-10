@@ -10,6 +10,7 @@
 
 #include "AudioSinkAE.h"
 #include "DVDClock.h"
+#include "DVDCodecs/Audio/DVDAudioCodec.h"
 #include "DVDCodecs/Audio/FloatingAverage.h"
 #include "DVDMessageQueue.h"
 #include "DVDStreamInfo.h"
@@ -19,6 +20,7 @@
 #include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <utility>
@@ -175,6 +177,25 @@ protected:
   unsigned int m_boundaryTrim{0}; // overlapped samples still to trim
   double m_lastPcmJitter{0.0};
   std::vector<uint8_t> m_boundarySilence;
+
+  // Stream worker (design 17, validated SoCs): the same loop and handlers; the
+  // sink is written without waiting, the rest of a frame (and of its silence
+  // pad) stays pending, and the one wait is a poll on m_wakeFd (queue puts, a
+  // stream buffer back).
+  MsgQueueReturnCode WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
+                               std::chrono::milliseconds timeout,
+                               int& priority,
+                               bool immediate,
+                               bool pending);
+  void WorkerFinishPending(DVDAudioFrame& audioframe);
+  bool m_worker = false;
+  int m_wakeFd = -1;
+  bool m_padPending = false;
+  std::atomic_bool m_closeDraining{false};
+  bool m_startOnPartial = false;
+  DVDAudioFrame m_padFrame;
+  std::shared_ptr<CDVDMsgGeneralSynchronize> m_pendingSync;
+  std::chrono::steady_clock::time_point m_pendingProgressAt;
   bool m_pcmStepPositive{false};
 };
 

@@ -32,10 +32,15 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <math.h>
 #include <sstream>
+
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 using namespace std::chrono_literals;
 
@@ -138,6 +143,10 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 {
   m_boundaryEnabled =
       aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/boundary_off");
+  // latched for a thread run: a stream change inside it keeps the mode
+  if (!IsRunning())
+    m_worker = aml_presentation_validated() &&
+               !XFILE::CFile::Exists("special://profile/streamsplit_audio_off");
 
   m_pAudioCodec = std::move(codec);
   m_labelling = false;
@@ -204,6 +213,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 {
   bool bWait = bWaitForBuffers && m_speed > 0 && !CServiceBroker::GetActiveAE()->IsSuspended();
+  m_closeDraining = bWait;
 
   // wait until buffers are empty
   if (bWait)
@@ -326,9 +336,31 @@ void CVideoPlayerAudio::Process()
 
   bool onlyPrioMsgs = false;
 
+  if (m_worker)
+  {
+    m_wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (m_wakeFd < 0)
+      m_worker = false;
+    else
+    {
+      m_messageQueue.SetWakeFd(m_wakeFd);
+      m_audioSink.SetNonBlocking(true, m_wakeFd);
+    }
+  }
+  m_padPending = false;
+  m_startOnPartial = false;
+  m_pendingSync.reset();
+
   while (!m_bStop)
   {
     std::shared_ptr<CDVDMsg> pMsg;
+    // the worker: a frame (or its pad) the sink has not taken whole
+    const bool pending = m_worker && (m_padPending || audioframe.framesOut < audioframe.nb_frames);
+    if (m_worker && m_pendingSync && m_pendingSync->Wait(0ms, SYNCSOURCE_AUDIO))
+    {
+      CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_SYNCHRONIZE");
+      m_pendingSync.reset();
+    }
     auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::duration<double, std::ratio<1>>(m_audioSink.GetCacheTime()));
 
@@ -353,12 +385,17 @@ void CVideoPlayerAudio::Process()
       timeout = 0ms;
     }
 
+    // no packet while a frame is pending (its data is the codec's) or a barrier is
+    if (pending || (m_worker && m_pendingSync))
+      priority = 1;
+
     STREAMDIAG::MaybeReport();
     MsgQueueReturnCode ret;
     {
       STREAMDIAG::Span sd(priority ? STREAMDIAG_SITE("audio wait GetMessage prio")
                                    : STREAMDIAG_SITE("audio wait GetMessage"));
-      ret = m_messageQueue.Get(pMsg, timeout, priority);
+      ret = m_worker ? WorkerGet(pMsg, timeout, priority, onlyPrioMsgs, pending)
+                     : m_messageQueue.Get(pMsg, timeout, priority);
     }
     if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
         pMsg->m_diagPutNs.load() &&
@@ -384,6 +421,9 @@ void CVideoPlayerAudio::Process()
       if (!m_messageQueue.ReceivedAbortRequest())
         CLog::Log(LOGERROR, "MSGQ_IS_ERROR returned true ({})", ret);
 
+      // a closing stream keeps the frame the blocking write would have finished
+      if (m_worker)
+        WorkerFinishPending(audioframe);
       break;
     }
     else if (ret == MSGQ_TIMEOUT)
@@ -408,7 +448,7 @@ void CVideoPlayerAudio::Process()
           m_stalled = true;
         }
       }
-      if (timeout == 0ms)
+      if (timeout == 0ms && !m_worker)
         CThread::Sleep(10ms);
 
       continue;
@@ -420,10 +460,13 @@ void CVideoPlayerAudio::Process()
       bool synced;
       {
         STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait SYNCHRONIZE"));
-        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_AUDIO);
+        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(
+            m_worker ? 0ms : 100ms, SYNCSOURCE_AUDIO);
       }
       if (synced)
         CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_SYNCHRONIZE");
+      else if (m_worker)
+        m_pendingSync = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg);
       else
         m_messageQueue.Put(pMsg, 1); // push back as prio message, to process other prio messages
     }
@@ -438,6 +481,14 @@ void CVideoPlayerAudio::Process()
       if (flushed)
       {
         m_audioSink.Flush();
+        // a frame not yet taken whole belongs to the flushed audio
+        if (m_worker)
+        {
+          audioframe.nb_frames = 0;
+          audioframe.framesOut = 0;
+          m_padPending = false;
+          m_startOnPartial = false;
+        }
       }
       // the content the codec labels was broken (queued audio flushed here, or
       // packets dropped before it)
@@ -491,6 +542,8 @@ void CVideoPlayerAudio::Process()
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
+      m_padPending = false;
+      m_startOnPartial = false;
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
       m_startFirstPts = DVD_NOPTS_VALUE;
 
@@ -512,6 +565,8 @@ void CVideoPlayerAudio::Process()
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
+      m_padPending = false;
+      m_startOnPartial = false;
       // the frames it recorded are gone, resync or not
       m_startFirstPts = DVD_NOPTS_VALUE;
 
@@ -574,6 +629,15 @@ void CVideoPlayerAudio::Process()
       else
       {
         m_audioSink.Pause();
+        // the worker: in FF/RW the paused sink will not take the pending frame,
+        // whose audio is dropped at that speed anyway (a pause keeps it)
+        if (m_worker && speed != DVD_PLAYSPEED_PAUSE)
+        {
+          audioframe.nb_frames = 0;
+          audioframe.framesOut = 0;
+          m_padPending = false;
+          m_startOnPartial = false;
+        }
       }
       m_speed = (int)speed;
     }
@@ -613,6 +677,8 @@ void CVideoPlayerAudio::Process()
           m_audioSink.Drain();
           m_audioSink.Flush();
           audioframe.nb_frames = 0;
+          m_padPending = false;
+          m_startOnPartial = false;
         }
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
         m_startFirstPts = DVD_NOPTS_VALUE;
@@ -688,6 +754,111 @@ void CVideoPlayerAudio::Process()
       CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio - display reset: DISCON settle re-armed");
     }
   }
+
+  if (m_wakeFd >= 0)
+  {
+    // the writers stop under their own locks before the fd goes
+    m_messageQueue.SetWakeFd(-1);
+    m_audioSink.SetNonBlocking(false, -1);
+    close(m_wakeFd);
+    m_wakeFd = -1;
+  }
+}
+
+MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
+                                                std::chrono::milliseconds timeout,
+                                                int& priority,
+                                                bool immediate,
+                                                bool pending)
+{
+  using namespace std::chrono;
+  // consumed before the state is read: an event after this read wakes the poll
+  uint64_t events = 0;
+  [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
+
+  MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, 0ms, priority);
+  if (ret != MSGQ_TIMEOUT || immediate)
+    return ret;
+
+  if (pending)
+  {
+    // a buffer back since the last write is already space: write again
+    if (m_audioSink.HasSpace())
+      return MSGQ_TIMEOUT;
+    // today's write gives up after the sink's delay + the frame + 2 s: log it
+    // the same way (not while paused), keep the frame, and start the count again
+    const auto now = steady_clock::now();
+    const double limit = m_audioSink.GetDelay() / DVD_TIME_BASE + 2.0 + 0.1;
+    if (now - m_pendingProgressAt > duration<double>(limit))
+    {
+      if (m_speed != DVD_PLAYSPEED_PAUSE)
+        CLog::Log(LOGERROR, "CDVDAudio::AddPacketsRenderer - timeout adding data to renderer");
+      m_pendingProgressAt = now;
+      // a start whose frame the sink cannot take whole (a frame longer than the
+      // cache's room) starts on the part written, as the blocking write's give-up did
+      if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
+        m_startOnPartial = true;
+    }
+    // a pending frame waits for a buffer to come back (50 ms backstop)
+    struct pollfd fd = {m_wakeFd, POLLIN, 0};
+    {
+      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
+      poll(&fd, 1, m_pendingSync ? 10 : 50);
+    }
+    return m_messageQueue.Get(pMsg, 0ms, priority);
+  }
+
+  // nothing pending: a timeout means no message for the whole timeout, as a
+  // blocking Get (the stall test reads it so); a buffer back wakes the poll
+  // and is waited past
+  const auto end = steady_clock::now() + (timeout > 0ms ? timeout : milliseconds(10));
+  for (;;)
+  {
+    auto left = duration_cast<milliseconds>(end - steady_clock::now());
+    if (left <= 0ms)
+      return MSGQ_TIMEOUT;
+    if (m_pendingSync)
+      left = std::min(left, milliseconds(10));
+    struct pollfd fd = {m_wakeFd, POLLIN, 0};
+    {
+      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
+      poll(&fd, 1, static_cast<int>(left.count()) + 1);
+    }
+    n = read(m_wakeFd, &events, sizeof(events));
+    ret = m_messageQueue.Get(pMsg, 0ms, priority);
+    if (ret != MSGQ_TIMEOUT || m_pendingSync || m_bStop)
+      return ret;
+  }
+}
+
+void CVideoPlayerAudio::WorkerFinishPending(DVDAudioFrame& audioframe)
+{
+  // a stop (not a draining close) flushes it right after, as today's write never held it
+  if (!m_closeDraining || (!m_padPending && audioframe.framesOut >= audioframe.nb_frames))
+    return;
+  // one deadline, not re-armed: a stopped sink cannot hold the close
+  const auto end = std::chrono::steady_clock::now() +
+                   std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                       std::chrono::duration<double>(m_audioSink.GetDelay() / DVD_TIME_BASE +
+                                                     audioframe.duration / DVD_TIME_BASE + 2.0));
+  while (std::chrono::steady_clock::now() < end)
+  {
+    if (m_padPending)
+    {
+      m_padFrame.framesOut += m_audioSink.AddPackets(m_padFrame);
+      if (m_padFrame.framesOut >= m_padFrame.nb_frames)
+        m_padPending = false;
+    }
+    if (!m_padPending && audioframe.framesOut < audioframe.nb_frames)
+      audioframe.framesOut += m_audioSink.AddPackets(audioframe);
+    if (!m_padPending && audioframe.framesOut >= audioframe.nb_frames)
+      return;
+    uint64_t events = 0;
+    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
+    struct pollfd fd = {m_wakeFd, POLLIN, 0};
+    poll(&fd, 1, 50);
+  }
+  CLog::Log(LOGWARNING, "CVideoPlayerAudio - close: the last frame not taken by the sink in time");
 }
 
 bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
@@ -699,6 +870,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.labelLag = 0;
 
     m_pAudioCodec->GetData(audioframe);
+    m_pendingProgressAt = std::chrono::steady_clock::now();
 
     if (audioframe.nb_frames == 0)
     {
@@ -1004,12 +1176,29 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     m_boundarySilence.assign(static_cast<size_t>(silence.nb_frames) * audioframe.framesize, 0);
     for (unsigned int i = 0; i < silence.planes; i++)
       silence.data[i] = m_boundarySilence.data();
-    if (silence.nb_frames)
+    if (silence.nb_frames && m_worker)
+    {
+      // written ahead of the frame, across wakes
+      silence.framesOut = 0;
+      m_padFrame = silence;
+      m_padPending = true;
+    }
+    else if (silence.nb_frames)
     {
       STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait AddPackets pad"));
       m_audioSink.AddPackets(silence);
     }
     audioframe.padBefore = 0;
+  }
+  if (m_padPending)
+  {
+    const unsigned int written = m_audioSink.AddPackets(m_padFrame);
+    m_padFrame.framesOut += written;
+    if (written)
+      m_pendingProgressAt = std::chrono::steady_clock::now();
+    if (m_padFrame.framesOut < m_padFrame.nb_frames)
+      return written > 0;
+    m_padPending = false;
   }
 
   int framesOutput;
@@ -1033,10 +1222,15 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   }
 
   audioframe.framesOut += framesOutput;
+  if (framesOutput > 0)
+    m_pendingProgressAt = std::chrono::steady_clock::now();
 
-  // signal to our parent that we have initialized
-  if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
+  // signal to our parent that we have initialized (the worker at a frame's
+  // end, where the blocking write always is: the start pts and cache agree)
+  if (m_syncState == IDVDStreamPlayer::SYNC_STARTING &&
+      (!m_worker || audioframe.framesOut >= audioframe.nb_frames || m_startOnPartial))
   {
+    m_startOnPartial = false;
     double cachetotal = m_audioSink.GetCacheTotal();
     double cachetime = m_audioSink.GetCacheTime();
     if (cachetime >= cachetotal * 0.75)
@@ -1060,7 +1254,8 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     }
   }
 
-  return true;
+  // the worker: no progress when the sink took nothing (it waits for a buffer)
+  return !m_worker || framesOutput > 0;
 }
 
 void CVideoPlayerAudio::SetSyncType(bool passthrough)
