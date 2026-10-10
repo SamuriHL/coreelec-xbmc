@@ -113,7 +113,12 @@ public:
   bool IsInited() const { return m_bInitialized; }
   bool IsDataBased() const;
 
+  // a stream worker's eventfd, written at every put, at Abort and when a
+  // draining wait starts (-1 clears; the worker clears it before closing)
+  void SetWakeFd(int fd);
+
 private:
+  void Wake();
   MsgQueueReturnCode Put(const std::shared_ptr<CDVDMsg>& pMsg, int priority, bool front);
   void UpdateTimeFront();
   void UpdateTimeBack();
@@ -124,6 +129,7 @@ private:
   std::atomic<bool> m_bAbortRequest = false;
   bool m_bInitialized;
   bool m_drain = false;
+  int m_wakeFd = -1;
 
   uint64_t m_iDataSize;
   double m_TimeFront;

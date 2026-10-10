@@ -110,6 +110,18 @@ protected:
                                 int& priority);
 
   EOutputState OutputPicture(const VideoPicture* src);
+
+  // Stream worker (design 17, validated SoCs): the same loop and handlers, with
+  // no wait that holds the output on the input side. The one wait is a poll on
+  // m_wakeFd (queue puts, freed render buffers, the forced start picture taken)
+  // and, right after a picture was taken, the decoder's picture fd, until the
+  // decoder's next poll or a duty is due.
+  MsgQueueReturnCode WorkerGetMessage(std::shared_ptr<CDVDMsg>& pMsg,
+                                      std::chrono::milliseconds timeout,
+                                      int& priority);
+  void WorkerDuties();
+  void WorkerDrainStep(double& frametime, double& pts);
+  void WorkerCancelStart();
   void ProcessOverlays(const VideoPicture* pSource, double pts);
   void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
 
@@ -144,6 +156,23 @@ protected:
   std::atomic_bool m_drainAbort{false};
   std::atomic_bool m_drainFlushed{false}; //!< a flush is queued: the drained stream is gone
   int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder
+
+  bool m_worker = false;
+  int m_wakeFd = -1;
+  bool m_workerOutputDue = false; //!< a wake: try the output once
+  bool m_workerTimedOut = false; //!< the stall timeout passed (not an output wake)
+  bool m_armPicture = false; //!< a picture was just taken: wake when the next is ready
+  CDVDVideoCodec::VCReturn m_lastDecoderState = CDVDVideoCodec::VC_NONE;
+  std::chrono::steady_clock::time_point m_idleSince;
+  std::chrono::steady_clock::time_point m_feedBlockedUntil; //!< after a refused packet
+  std::chrono::steady_clock::time_point m_collectHoldoffUntil; //!< rewind throttle, paused drain
+  std::chrono::steady_clock::time_point m_outputRetryAt; //!< no-GUI discard at the clock
+  int m_forceGenCounter = 0;
+  int m_startPendingGen = -1; //!< the forced start picture not yet taken by a tick
+  std::chrono::steady_clock::time_point m_startPendingSince;
+  std::shared_ptr<CDVDMsg> m_startPendingMsg; //!< its PLAYER_STARTED
+  std::shared_ptr<CDVDMsgGeneralSynchronize> m_pendingSync;
+  bool m_draining = false;
   std::atomic_bool m_rewindStalled;
   bool m_paused;
   /* diagnostics only: last keep-alive stamp already reported as expired, so

@@ -22,6 +22,8 @@
 #include <mutex>
 #include <thread>
 
+#include <unistd.h>
+
 using namespace std::chrono_literals;
 
 CDVDMessageQueue::CDVDMessageQueue(const std::string &owner) : m_hEvent(true), m_owner(owner)
@@ -79,6 +81,22 @@ void CDVDMessageQueue::Abort()
 
   // inform waiter for abort action
   m_hEvent.Set();
+  Wake();
+}
+
+void CDVDMessageQueue::SetWakeFd(int fd)
+{
+  std::unique_lock lock(m_section);
+  m_wakeFd = fd;
+}
+
+void CDVDMessageQueue::Wake()
+{
+  if (m_wakeFd >= 0)
+  {
+    const uint64_t one = 1;
+    [[maybe_unused]] ssize_t n = write(m_wakeFd, &one, sizeof(one));
+  }
 }
 
 void CDVDMessageQueue::End()
@@ -163,6 +181,7 @@ MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,
 
   // inform waiter for new packet
   m_hEvent.Set();
+  Wake();
 
   return MSGQ_OK;
 }
@@ -320,6 +339,7 @@ void CDVDMessageQueue::WaitUntilEmpty(const std::function<bool()>& consumerHeld)
   {
     std::unique_lock lock(m_section);
     m_drain = true;
+    Wake();
   }
 
   const size_t entryMsgs = [this] {

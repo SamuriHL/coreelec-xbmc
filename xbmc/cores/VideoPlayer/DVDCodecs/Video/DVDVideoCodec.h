@@ -19,6 +19,7 @@ extern "C" {
 }
 
 #include <vector>
+#include <chrono>
 #include <string>
 #include <map>
 
@@ -272,6 +273,34 @@ public:
   * Get hardware decoder buffer data level.
   */
   virtual int GetDataLevel() const { return 0; }
+
+  /**
+  * A stream worker (design 17): the decoder never sleeps. AddData does not wait
+  * for input space (a refusal is retried at the next poll) and GetPicture does
+  * not wait in a drain. Returns false if the decoder can't.
+  */
+  virtual bool SetNonBlocking(bool on) { return false; }
+
+  /**
+  * In non-blocking mode: the latest time to call GetPicture/ServiceInput again
+  * (the decoder's timers), relative to now.
+  */
+  virtual std::chrono::microseconds GetNextPoll(bool paused)
+  {
+    return std::chrono::microseconds(0);
+  }
+
+  /**
+  * In non-blocking mode: continue writing input the decoder accepted but could
+  * not take whole. True while some is still pending.
+  */
+  virtual bool ServiceInput() { return false; }
+
+  /**
+  * In non-blocking mode: an fd that polls readable when a decoded picture can
+  * be taken, or -1.
+  */
+  virtual int GetPictureWakeFd() { return -1; }
 protected:
   CProcessInfo &m_processInfo;
 };

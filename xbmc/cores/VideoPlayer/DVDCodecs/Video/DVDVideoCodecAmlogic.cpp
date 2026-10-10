@@ -458,6 +458,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_aspect_ratio = m_hints.aspect;
 
   m_Codec = std::shared_ptr<CAMLCodec>(new CAMLCodec(m_processInfo));
+  m_Codec->SetNonBlocking(m_nonBlocking);
   if (!m_Codec)
   {
     CLog::Log(LOGERROR, "{}: Failed to create Amlogic Codec", __MODULE_NAME__);
@@ -722,6 +723,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 {
   // Handle Input, add demuxer packet to input queue, we must accept it or
   // it will be discarded as VideoPlayerVideo has no concept of "try again".
+
+  // a stream worker's decoder still writing a unit it took in part refuses the
+  // next one before any of its side effects (HDR10+ checkin, pairing)
+  if (m_nonBlocking && m_Codec && m_Codec->InputBlocked())
+    return false;
 
   DrainMetadataToClock();
 
@@ -1529,6 +1535,29 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0,
                         (flags & DVD_CODEC_CTRL_DRAIN_EOS) != 0);
   }
+}
+
+bool CDVDVideoCodecAmlogic::SetNonBlocking(bool on)
+{
+  m_nonBlocking = on;
+  if (m_Codec)
+    m_Codec->SetNonBlocking(on);
+  return true;
+}
+
+std::chrono::microseconds CDVDVideoCodecAmlogic::GetNextPoll(bool paused)
+{
+  return m_Codec ? m_Codec->GetNextPoll(paused) : std::chrono::milliseconds(40);
+}
+
+bool CDVDVideoCodecAmlogic::ServiceInput()
+{
+  return m_Codec && m_Codec->ServiceInput();
+}
+
+int CDVDVideoCodecAmlogic::GetPictureWakeFd()
+{
+  return m_Codec ? m_Codec->GetPictureWakeFd() : -1;
 }
 
 int CDVDVideoCodecAmlogic::GetDataLevel() const

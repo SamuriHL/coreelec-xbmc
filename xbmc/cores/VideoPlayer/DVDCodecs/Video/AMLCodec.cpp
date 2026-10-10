@@ -86,6 +86,8 @@ public:
      close(m_fd);
   }
 
+  int Fd() const { return m_fd; }
+
   bool Open(const std::string &pathName, int flags)
   {
     m_fd = open(pathName.c_str(), flags);
@@ -364,6 +366,7 @@ typedef struct am_private_t
 
   int               dumpfile;
   bool              dumpdemux;
+  bool              nonblocking; //!< a stream worker's decoder: no EAGAIN sleep
 } am_private_t;
 
 typedef struct vframe_states
@@ -786,7 +789,8 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
                 // with the same pkt because pkt->isvalid has not been cleared.
                 pkt->data += len;
                 pkt->data_size -= len;
-                usleep(RW_WAIT_TIME);
+                if (!para->nonblocking)
+                  usleep(RW_WAIT_TIME);
                 CLog::Log(LOGDEBUG, "Codec buffer full, try after {:d} ms, len({:d})",
                   RW_WAIT_TIME / 1000, len);
                 return PLAYER_SUCCESS;
@@ -3037,6 +3041,9 @@ void CAMLCodec::Abort()
 void CAMLCodec::Reset()
 {
   m_abort = false;
+  m_pendingInput.clear();
+  m_pendingWritten = 0;
+  m_feedHoldoffUntil = {};
 
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
@@ -3114,6 +3121,9 @@ void CAMLCodec::Reset()
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
+  if (m_nonBlocking && InputBlocked())
+    return false;
+
   if (m_resetAfterEos)
   {
     m_resetAfterEos = false;
@@ -3269,7 +3279,28 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   // PLAYER_SUCCESS means all is ok, not all bytes were written.
   int loop = 0;
   bool write_failed = false;
-  while (am_private->am_pkt.isvalid && loop < 100)
+  if (m_nonBlocking)
+  {
+    // one attempt; a unit taken in part is kept and finished by later calls
+    const int before = am_private->am_pkt.data_size;
+    if (write_av_packet(am_private, &am_private->am_pkt) != PLAYER_SUCCESS)
+      write_failed = true;
+    else if (am_private->am_pkt.isvalid)
+    {
+      // kept even with nothing in yet: its pts is checked in, and a re-sent
+      // unit would check it in again
+      const size_t written = static_cast<size_t>(before - am_private->am_pkt.data_size);
+      m_pendingInput.assign(am_private->am_pkt.data,
+                            am_private->am_pkt.data + am_private->am_pkt.data_size);
+      m_pendingWritten = written;
+      m_pendingSince = std::chrono::steady_clock::now();
+      am_private->am_pkt.data = m_pendingInput.data();
+      am_private->am_pkt.avpkt.data = am_private->am_pkt.data;
+      am_private->am_pkt.avpkt.size = am_private->am_pkt.data_size;
+    }
+    loop = 1;
+  }
+  while (!m_nonBlocking && am_private->am_pkt.isvalid && loop < 100)
   {
     // The packet is about to be discarded by the flush that set this, so stop
     // retrying. Not a write failure: no recovery is owed.
@@ -3357,12 +3388,19 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
       m_tpWrFailLastReset = std::chrono::steady_clock::now();
     }
 
-    usleep(RW_WAIT_TIME);
+    if (!m_nonBlocking)
+      usleep(RW_WAIT_TIME);
     return false;
   }
   m_wrFailActive = false;
   if (iSize > 50000)
-    usleep(2000); // wait 2ms to process larger packets
+  {
+    // wait 2ms to process larger packets
+    if (m_nonBlocking)
+      m_feedHoldoffUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+    else
+      usleep(2000);
+  }
 
   if (iSize > 0)
     CLog::Log(LOGDEBUG, LOGVIDEO,
@@ -3657,6 +3695,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // before.
   const bool level_gate_open =
       (m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain;
+  m_lastGateOpen = level_gate_open;
 
   // TEMP STREAMDIAG: the interval since the previous call, by gate state
   if (STREAMDIAG::Enabled())
@@ -3839,7 +3878,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
            elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout) &&
            !drainInputSettled)
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    // a stream worker polls again at GetNextPoll (2 ms in a drain)
+    if (!m_nonBlocking)
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
   }
   else if (ret == EAGAIN &&
@@ -3923,7 +3964,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
             elapsed_since_last_frame <= std::chrono::seconds(m_decoder_timeout)))
   {
     // a drain polls back to back: do not spin on the ioctl
-    if (m_drain)
+    if (m_drain && !m_nonBlocking)
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
   }
@@ -3940,6 +3981,86 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   }
 
   return CDVDVideoCodec::VC_BUFFER;
+}
+
+void CAMLCodec::SetNonBlocking(bool on)
+{
+  m_nonBlocking = on;
+  if (am_private)
+    am_private->nonblocking = on;
+}
+
+bool CAMLCodec::ServiceInput()
+{
+  if (m_pendingInput.empty())
+    return false;
+  if (m_abort)
+    return true;
+
+  am_packet_t& pkt = am_private->am_pkt;
+  const int before = pkt.data_size;
+  if (write_av_packet(am_private, &pkt) != PLAYER_SUCCESS)
+  {
+    // part of the unit is in the decoder: only a reset clears it (as AddData's
+    // failure after a partial write)
+    CLog::Log(LOGWARNING,
+              "CAMLCodec::{}: codec write failed after accepting {} bytes - resetting and "
+              "dropping the access unit",
+              __FUNCTION__, m_pendingWritten + std::max(0, pkt.partial_write));
+    pkt.partial_write = 0;
+    pkt.isvalid = 0;
+    pkt.data_size = 0;
+    Reset();
+    return false;
+  }
+  m_pendingWritten += static_cast<size_t>(before - pkt.data_size);
+  if (!pkt.isvalid)
+  {
+    m_pendingInput.clear();
+    m_pendingWritten = 0;
+    return false;
+  }
+  // AddData's 100-attempt bound (about 500 ms): the decoder is stuck
+  if (std::chrono::steady_clock::now() - m_pendingSince > std::chrono::milliseconds(500))
+  {
+    CLog::Log(LOGWARNING,
+              "CAMLCodec::{}: decoder took no input for 500 ms with {} bytes of a unit left - "
+              "resetting and dropping it",
+              __FUNCTION__, pkt.data_size);
+    pkt.isvalid = 0;
+    pkt.data_size = 0;
+    Reset();
+    return false;
+  }
+  return true;
+}
+
+bool CAMLCodec::InputBlocked()
+{
+  if (ServiceInput())
+    return true;
+  return std::chrono::steady_clock::now() < m_feedHoldoffUntil;
+}
+
+std::chrono::microseconds CAMLCodec::GetNextPoll(bool paused) const
+{
+  using namespace std::chrono;
+  const unsigned rate = am_private ? am_private->video_rate : 0;
+  const microseconds frame =
+      rate ? microseconds(static_cast<int64_t>(rate) * 1000000 / UNIT_FREQ) : milliseconds(40);
+  if (!m_pendingInput.empty() || m_wrFailActive)
+    return milliseconds(5);
+  const auto now = steady_clock::now();
+  if (now < m_feedHoldoffUntil)
+    return duration_cast<microseconds>(m_feedHoldoffUntil - now);
+  if (m_drain)
+    return milliseconds(2);
+  return paused ? frame * 10 : frame;
+}
+
+int CAMLCodec::GetPictureWakeFd() const
+{
+  return (m_lastGateOpen && m_amlVideoFile) ? m_amlVideoFile->Fd() : -1;
 }
 
 void CAMLCodec::SetSpeed(int speed)

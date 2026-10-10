@@ -100,6 +100,10 @@ public:
   virtual const char* GetName(void) override { return (const char*)m_pFormatName; }
   virtual bool SupportsExtention() { return true; }
   virtual int GetDataLevel() const override;
+  bool SetNonBlocking(bool on) override;
+  std::chrono::microseconds GetNextPoll(bool paused) override;
+  bool ServiceInput() override;
+  int GetPictureWakeFd() override;
   // Non-zero so VideoPlayerVideo buffers recent packets and REPLAYS them
   // after VC_FLUSHED/VC_REOPEN. Without this (base returns 0) a reopened
   // decoder stayed closed until the NEXT demuxer packet - on a still or a
@@ -119,6 +123,7 @@ protected:
   //void            RemoveInfo(CDVDAmlogicInfo* info);
 
   std::shared_ptr<CAMLCodec> m_Codec;
+  bool m_nonBlocking = false;
 
   const char     *m_pFormatName;
   VideoPicture m_videobuffer;

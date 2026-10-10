@@ -19,6 +19,7 @@
 #include <deque>
 #include <mutex>
 #include <atomic>
+#include <vector>
 
 typedef struct am_private_t am_private_t;
 
@@ -73,6 +74,16 @@ public:
   void          Reset();
 
   bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
+
+  //! A stream worker (design 17): no sleeps. Input the decoder took in part is
+  //! kept here (with the bytes already in) and written first by every later
+  //! call; while it is pending, and briefly after a large unit, new input is
+  //! refused before any of its side effects.
+  void          SetNonBlocking(bool on);
+  bool          InputBlocked(); //!< services the kept input first
+  bool          ServiceInput(); //!< true while some is still pending
+  std::chrono::microseconds GetNextPoll(bool paused) const;
+  int           GetPictureWakeFd() const;
   int           AddHDR10PData(uint8_t *pData, size_t iSize);
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture* pVideoPicture);
 
@@ -221,6 +232,13 @@ private:
   // Set by a flush so a write loop in progress gives up. Written from the
   // player thread, read by the video thread.
   std::atomic_bool m_abort{false};
+
+  bool m_nonBlocking = false;
+  std::vector<uint8_t> m_pendingInput; //!< the rest of a unit the decoder took in part
+  size_t m_pendingWritten = 0; //!< bytes of that unit already in the decoder
+  std::chrono::steady_clock::time_point m_pendingSince;
+  std::chrono::steady_clock::time_point m_feedHoldoffUntil;
+  bool m_lastGateOpen = false;
 
   // How long a codec write has been failing, so it can be reset periodically
   // and the packet finally given up on.

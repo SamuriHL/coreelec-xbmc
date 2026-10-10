@@ -10,6 +10,8 @@
 
 #include "cores/VideoPlayer/StreamDiag.h"
 
+#include <unistd.h>
+
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
 #include "HdrGraphics.h"
@@ -394,6 +396,7 @@ bool CRenderManager::Configure()
     m_presentsourcePast = -1;
     for (int i = 0; i < m_QueueSize; i++)
       m_free.push_back(i);
+    NotifyWorker();
 
     m_bRenderGUI = true;
     m_videostarted = std::chrono::steady_clock::now();
@@ -528,8 +531,17 @@ void CRenderManager::FrameMove()
       m_presentTimer.Set(1000ms);
     }
 
+    const bool forced = m_forceNext;
     if (m_presentstep == PRESENT_READY)
       PrepareNextRender(-1);
+    // without the presenter the render thread takes the worker's start picture
+    if (forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
+    {
+      m_forceNext = false;
+      m_forceDoneGen = m_forceGen;
+      m_forceGen = -1;
+      NotifyWorker();
+    }
 
     if (m_presentstep == PRESENT_FLIP)
     {
@@ -547,6 +559,7 @@ void CRenderManager::FrameMove()
         m_overlays.Release(*it);
         m_free.push_back(*it);
         it = m_discard.erase(it);
+        NotifyWorker();
       }
       else
         ++it;
@@ -723,6 +736,13 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
         for (int i = 0; i < m_QueueSize; i++)
           m_free.push_back(i);
       }
+      // a worker's start picture is gone with the queue
+      if (m_forceGen >= 0)
+      {
+        m_forceNext = false;
+        m_forceGen = -1;
+      }
+      NotifyWorker();
 
       m_flushEvent.Set();
     }
@@ -1385,7 +1405,11 @@ void CRenderManager::SetSubtitleVerticalPosition(int value, bool save)
   m_overlays.SetSubtitleVerticalPosition(value, save);
 }
 
-bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait)
+bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
+                                     volatile std::atomic_bool& bStop,
+                                     EINTERLACEMETHOD deintMethod,
+                                     bool wait,
+                                     int forceGen)
 {
   std::unique_lock lock(m_presentlock);
   STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present AddVideoPicture");
@@ -1466,7 +1490,14 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
     m_presentevent.notifyAll();
   }
 
-  if (wait)
+  // a stream worker does not wait: the tick that takes the picture clears the
+  // force and wakes it
+  if (forceGen >= 0)
+  {
+    m_forceNext = true;
+    m_forceGen = forceGen;
+  }
+  else if (wait)
   {
     m_forceNext = true;
     XbmcThreads::EndTime<> endtime(200ms);
@@ -1520,6 +1551,83 @@ bool CRenderManager::Supports(ESCALINGMETHOD method) const
     return m_pRenderer->Supports(method);
   else
     return false;
+}
+
+void CRenderManager::SetWorkerWakeFd(int fd)
+{
+  std::unique_lock lock(m_presentlock);
+  m_workerWakeFd = fd;
+}
+
+// under m_presentlock
+void CRenderManager::NotifyWorker()
+{
+  if (m_workerWakeFd >= 0)
+  {
+    const uint64_t one = 1;
+    [[maybe_unused]] ssize_t n = write(m_workerWakeFd, &one, sizeof(one));
+  }
+}
+
+bool CRenderManager::ForcedPictureTaken(int gen) const
+{
+  return m_forceDoneGen == gen;
+}
+
+void CRenderManager::CancelForce(int gen)
+{
+  std::unique_lock lock(m_presentlock);
+  if (m_forceGen == gen)
+  {
+    m_forceNext = false;
+    m_forceGen = -1;
+  }
+}
+
+int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn)
+{
+  retryIn = 0ms;
+  std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present TryGetBuffer");
+
+  // as WaitForBuffer: with the GUI not rendering, pictures are discarded at
+  // the clock (its wait becomes the caller's retry)
+  if (!m_bRenderGUI || !g_application.GetRenderGUI())
+  {
+    m_bRenderGUI = false;
+    double presenttime = 0;
+    double clock = m_dvdClock.GetClock();
+    if (!m_queued.empty())
+    {
+      int idx = m_queued.front();
+      presenttime = m_Queue[idx].pts;
+    }
+    else
+      presenttime = clock + 0.02;
+
+    auto sleeptime = std::chrono::milliseconds(static_cast<int>((presenttime - clock) * 1000));
+    if (sleeptime < 0ms)
+      sleeptime = 0ms;
+    sleeptime = std::min(sleeptime, 20ms);
+    if (sleeptime > 0ms)
+    {
+      retryIn = sleeptime;
+      return -1;
+    }
+    DiscardBuffer();
+    return 0;
+  }
+
+  if (m_free.empty())
+    return -1;
+
+  const int level = m_queued.size() + m_discard.size();
+  const int index = m_free.front();
+  lock.unlock();
+  sd_lock.End();
+
+  m_overlays.Release(index);
+  return level;
 }
 
 int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
@@ -2316,6 +2424,15 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     result.pts = m_Queue[m_presentsource].pts;
   }
 
+  // a worker's start picture: released where a waiting AddVideoPicture would be
+  if (forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
+  {
+    m_forceNext = false;
+    m_forceDoneGen = m_forceGen;
+    m_forceGen = -1;
+    NotifyWorker();
+  }
+
   // Drops go to the decoder before the new frame shows. Their overlays are
   // released by WaitForBuffer before the buffer is reused: the overlay lock
   // is held across the render thread's overlay pass. The source the render
@@ -2327,6 +2444,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       m_pRenderer->ReleaseBuffer(*it);
       m_free.push_back(*it);
       it = m_discard.erase(it);
+      NotifyWorker();
     }
     else
       ++it;

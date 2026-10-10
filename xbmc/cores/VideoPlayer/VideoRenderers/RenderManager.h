@@ -135,7 +135,13 @@ public:
   void DisplayReset() { m_displayReset = true; }
 
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
-  bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
+  // forceGen >= 0 (a stream worker): force the picture without waiting; the tick
+  // that takes it clears the force, marks the generation taken and wakes the worker
+  bool AddVideoPicture(const VideoPicture& picture,
+                       volatile std::atomic_bool& bStop,
+                       EINTERLACEMETHOD deintMethod,
+                       bool wait,
+                       int forceGen = -1);
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
   void ShowVideo(bool enable);
   void SetDisplayLost(bool lost) { m_displayLost = lost; }
@@ -173,6 +179,15 @@ public:
    * in case no buffer is available. Player may call this in a loop and decides
    * by itself when it wants to drop a frame.
    */
+  // a stream worker (design §17): its eventfd, written when a buffer is freed and
+  // when its forced start picture is taken; -1 clears
+  void SetWorkerWakeFd(int fd);
+  bool ForcedPictureTaken(int gen) const;
+  void CancelForce(int gen);
+  // non-blocking WaitForBuffer: the level, or -1 with no free buffer (retryIn
+  // set while the GUI is not rendering: the discard waits for the clock)
+  int TryGetBuffer(std::chrono::milliseconds& retryIn);
+
   int WaitForBuffer(volatile std::atomic_bool& bStop,
                     std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
 
@@ -201,6 +216,7 @@ public:
   void SetVideoSettings(const CVideoSettings& settings);
 
 protected:
+  void NotifyWorker(); // under m_presentlock
 
   void RenderWithoutPicture(bool gui, bool configured);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
@@ -324,6 +340,9 @@ protected:
   EPRESENTSTEP m_presentstep = PRESENT_IDLE;
   XbmcThreads::EndTime<> m_presentTimer;
   bool m_forceNext = false;
+  int m_forceGen = -1; // a worker's forced start picture (m_presentlock)
+  std::atomic<int> m_forceDoneGen{-1};
+  int m_workerWakeFd = -1; // m_presentlock
   int m_presentsource = -1;
   int m_presentsourcePast = -1;
   XbmcThreads::ConditionVariable m_presentevent;

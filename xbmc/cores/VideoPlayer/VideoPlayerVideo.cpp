@@ -21,6 +21,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/TimeUtils.h"
@@ -31,6 +32,10 @@
 #include "platform/linux/SysfsPath.h"
 
 #include <iomanip>
+
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -245,6 +250,14 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   }
 
   m_pVideoCodec = std::move(codec);
+  // design 17: a decoder that can run without sleeping gets the stream worker
+  // (a stream change on a running thread without its eventfd stays legacy)
+  m_worker = m_pVideoCodec && aml_presentation_validated() &&
+             !XFILE::CFile::Exists("special://profile/streamsplit_video_off") &&
+             !(IsRunning() && m_wakeFd < 0) && m_pVideoCodec->SetNonBlocking(true);
+  // a reused decoder left non-blocking by a previous stream must sleep again
+  if (!m_worker && m_pVideoCodec)
+    m_pVideoCodec->SetNonBlocking(false);
   m_hints = hint;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
@@ -386,8 +399,27 @@ void CVideoPlayerVideo::Process()
   m_rewindStalled = false;
   m_outputSate = OUTPUT_NORMAL;
 
+  if (aml_presentation_validated())
+  {
+    m_wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (m_wakeFd >= 0)
+    {
+      m_messageQueue.SetWakeFd(m_wakeFd);
+      m_renderManager.SetWorkerWakeFd(m_wakeFd);
+    }
+  }
+  if (m_wakeFd < 0 && m_worker)
+  {
+    m_worker = false;
+    m_pVideoCodec->SetNonBlocking(false);
+  }
+  m_idleSince = std::chrono::steady_clock::now();
+
   while (!m_bStop)
   {
+    if (m_worker)
+      WorkerDuties();
+
     auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::duration<double, std::micro>(m_stalled ? frametime : frametime * 10));
     int iPriority = 0;
@@ -404,13 +436,25 @@ void CVideoPlayerVideo::Process()
       timeout = 1ms;
     }
 
+    // the worker takes no packet while a barrier, a drain or the forced start
+    // picture is pending, nor until the decoder's next poll after a refusal
+    if (m_worker)
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (m_pendingSync || m_draining || m_startPendingGen >= 0 || now < m_feedBlockedUntil ||
+          now < m_collectHoldoffUntil || now < m_outputRetryAt ||
+          (m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer))
+        iPriority = 1;
+    }
+
     std::shared_ptr<CDVDMsg> pMsg;
     STREAMDIAG::MaybeReport();
     MsgQueueReturnCode ret;
     {
       STREAMDIAG::Span sd(iPriority ? STREAMDIAG_SITE("video wait GetMessage prio")
                                     : STREAMDIAG_SITE("video wait GetMessage"));
-      ret = GetMessage(pMsg, timeout, iPriority);
+      ret = m_worker ? WorkerGetMessage(pMsg, timeout, iPriority)
+                     : GetMessage(pMsg, timeout, iPriority);
     }
     if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
         pMsg->m_diagPutNs.load() &&
@@ -440,6 +484,18 @@ void CVideoPlayerVideo::Process()
     }
     else if (ret == MSGQ_TIMEOUT)
     {
+      if (m_worker)
+      {
+        const auto now = std::chrono::steady_clock::now();
+        // the forced start picture first, and the duties' hold-offs
+        if (m_startPendingGen >= 0 || now < m_collectHoldoffUntil || now < m_outputRetryAt)
+          continue;
+        if (m_draining)
+        {
+          WorkerDrainStep(frametime, pts);
+          continue;
+        }
+      }
       if (m_outputSate == OUTPUT_AGAIN &&
           m_picture.videoBuffer)
       {
@@ -454,6 +510,7 @@ void CVideoPlayerVideo::Process()
           onlyPrioMsgs = true;
           continue;
         }
+        m_idleSince = std::chrono::steady_clock::now();
       }
       // don't ask for a new frame if we can't deliver it to renderer
       else if ((m_speed != DVD_PLAYSPEED_PAUSE ||
@@ -477,6 +534,10 @@ void CVideoPlayerVideo::Process()
       int64_t startNs = 0;
       double startClock = 0.0;
       if (m_startHeld || m_pClock->GetPendingStart(startNs, startClock))
+        continue;
+
+      // an output wake, not the stall timeout
+      if (m_worker && !m_workerTimedOut)
         continue;
 
       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
@@ -503,21 +564,26 @@ void CVideoPlayerVideo::Process()
         m_outputSate = OutputPicture(&m_picture);
         pts += frametime;
       }
+      m_idleSince = std::chrono::steady_clock::now();
 
       continue;
     }
 
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
+      auto sync = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg);
       bool synced;
       {
         STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait SYNCHRONIZE"));
-        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_VIDEO);
+        // the worker registers its arrival and checks the barrier as a duty
+        synced = sync->Wait(m_worker ? 0ms : 100ms, SYNCSOURCE_VIDEO);
       }
       if (synced)
       {
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_SYNCHRONIZE");
       }
+      else if (m_worker)
+        m_pendingSync = sync;
       else
         SendMessage(pMsg, 1); /* push back as prio message, to process other prio messages */
       m_droppingStats.Reset();
@@ -545,6 +611,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      WorkerCancelStart();
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -579,6 +646,11 @@ void CVideoPlayerVideo::Process()
     {
       STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::FLUSH);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
+      WorkerCancelStart();
+      m_draining = false;
+      m_feedBlockedUntil = {};
+      m_collectHoldoffUntil = {};
+      m_outputRetryAt = {};
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -633,6 +705,18 @@ void CVideoPlayerVideo::Process()
 
         if (!cont)
           break;
+        // a stream change drains in place (bounded by the decoder's drain);
+        // the worker's decoder does not sleep there itself, and a picture
+        // waiting for a buffer gets WaitForBuffer's 500 ms
+        if (m_worker && m_lastDecoderState == CDVDVideoCodec::VC_NONE)
+          CThread::Sleep(2ms);
+        for (int i = 0; m_worker && m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer &&
+                        i < 250 && !m_bStop;
+             ++i)
+        {
+          CThread::Sleep(2ms);
+          m_outputSate = OutputPicture(&m_picture);
+        }
       }
 
       OpenStream(msg->m_hints, std::move(msg->m_codec));
@@ -642,6 +726,12 @@ void CVideoPlayerVideo::Process()
         m_picture.videoBuffer->Release();
         m_picture.videoBuffer = nullptr;
       }
+    }
+    else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN) && m_worker)
+    {
+      // a drain is a state: one step per wake (WorkerDrainStep)
+      m_draining = true;
+      m_workerOutputDue = true;
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
@@ -779,8 +869,13 @@ void CVideoPlayerVideo::Process()
       }
       else
       {
-        SendMessageBack(pMsg);
+        // the worker puts a refused replay back at its own priority (ahead of
+        // the replays behind it) and takes no packet until the decoder's next poll
+        SendMessageBack(pMsg, m_worker ? iPriority : 0);
         onlyPrioMsgs = true;
+        if (m_worker)
+          m_feedBlockedUntil = std::chrono::steady_clock::now() +
+                               m_pVideoCodec->GetNextPoll(m_speed == DVD_PLAYSPEED_PAUSE);
       }
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
@@ -789,6 +884,183 @@ void CVideoPlayerVideo::Process()
       m_renderManager.DisplayReset();
     }
   }
+
+  if (m_wakeFd >= 0)
+  {
+    // the writers stop under their own locks before the fd goes
+    m_messageQueue.SetWakeFd(-1);
+    m_renderManager.SetWorkerWakeFd(-1);
+    WorkerCancelStart();
+    close(m_wakeFd);
+    m_wakeFd = -1;
+  }
+}
+
+MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>& pMsg,
+                                                       std::chrono::milliseconds timeout,
+                                                       int& priority)
+{
+  using namespace std::chrono;
+  m_workerTimedOut = false;
+  for (;;)
+  {
+    // consumed before the state is read: an event after this read wakes the poll
+    uint64_t events = 0;
+    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
+
+    MsgQueueReturnCode ret = GetMessage(pMsg, 0ms, priority);
+    if (ret != MSGQ_TIMEOUT)
+    {
+      m_idleSince = steady_clock::now();
+      return ret;
+    }
+    if (m_workerOutputDue)
+    {
+      m_workerOutputDue = false;
+      return MSGQ_TIMEOUT;
+    }
+
+    // the stall timeout runs from the last message or picture (priority-only
+    // waits are no stall)
+    const auto now = steady_clock::now();
+    auto due = now + duration_cast<steady_clock::duration>(
+                         m_pVideoCodec ? m_pVideoCodec->GetNextPoll(m_speed == DVD_PLAYSPEED_PAUSE)
+                                       : microseconds(40000));
+    if (!priority)
+    {
+      const auto stall = m_idleSince + timeout;
+      if (now >= stall)
+      {
+        // each stall wait is a full timeout, as a blocking Get is
+        m_idleSince = now;
+        m_workerTimedOut = true;
+        return MSGQ_TIMEOUT;
+      }
+      due = std::min(due, stall);
+    }
+    // while the output is held the decoder is not polled (as the blocking
+    // loop slept or waited there): the hold's own end is the deadline
+    const auto holdEnd = std::max(m_collectHoldoffUntil, m_outputRetryAt);
+    if (holdEnd > now)
+      due = holdEnd;
+    if (m_startPendingGen >= 0)
+      due = m_startPendingSince + 200ms;
+    if (m_pendingSync)
+      due = std::min(due, now + 10ms);
+    if (m_feedBlockedUntil > now)
+      due = std::min(due, m_feedBlockedUntil);
+
+    struct pollfd fds[2] = {};
+    int nfds = 0;
+    fds[nfds].fd = m_wakeFd;
+    fds[nfds++].events = POLLIN;
+    const int pictureFd = (m_armPicture && m_outputSate != OUTPUT_AGAIN && m_startPendingGen < 0 &&
+                           m_pVideoCodec)
+                              ? m_pVideoCodec->GetPictureWakeFd()
+                              : -1;
+    if (pictureFd >= 0)
+    {
+      fds[nfds].fd = pictureFd;
+      fds[nfds++].events = POLLIN;
+    }
+    const auto wait = duration_cast<microseconds>(due - now);
+    const int waitMs =
+        wait.count() <= 0 ? 0 : static_cast<int>((wait.count() + 999) / 1000);
+    {
+      STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait worker poll"));
+      poll(fds, nfds, waitMs);
+    }
+    if (m_bStop)
+      return MSGQ_TIMEOUT;
+    // any wake or deadline: a message is taken first, else the output is tried once
+    m_workerOutputDue = true;
+    // a picture fd that woke is not armed again until a picture is taken
+    m_armPicture = false;
+  }
+}
+
+void CVideoPlayerVideo::WorkerDuties()
+{
+  const auto now = std::chrono::steady_clock::now();
+
+  // input the decoder took in part is written at every wake, packets or not
+  if (m_pVideoCodec)
+    m_pVideoCodec->ServiceInput();
+
+  if (m_startPendingGen >= 0)
+  {
+    const bool taken = m_renderManager.ForcedPictureTaken(m_startPendingGen);
+    if (taken || now - m_startPendingSince >= 200ms)
+    {
+      if (!taken)
+      {
+        m_renderManager.CancelForce(m_startPendingGen);
+        CLog::Log(LOGWARNING, "CVideoPlayerVideo - timeout waiting for the start picture to render");
+      }
+      m_startPendingGen = -1;
+      if (m_startPendingMsg)
+        m_messageParent.Put(m_startPendingMsg);
+      m_startPendingMsg.reset();
+      m_workerOutputDue = true;
+    }
+  }
+
+  if (m_pendingSync && m_pendingSync->Wait(0ms, SYNCSOURCE_VIDEO))
+  {
+    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_SYNCHRONIZE");
+    m_pendingSync.reset();
+  }
+}
+
+void CVideoPlayerVideo::WorkerCancelStart()
+{
+  if (m_startPendingGen >= 0)
+    m_renderManager.CancelForce(m_startPendingGen);
+  m_startPendingGen = -1;
+  m_startPendingMsg.reset();
+}
+
+void CVideoPlayerVideo::WorkerDrainStep(double& frametime, double& pts)
+{
+  const auto finish = [this] {
+    m_draining = false;
+    m_drained.Set();
+  };
+  if (m_bStop || !m_pVideoCodec || m_drainAbort || m_drainFlushed)
+  {
+    finish();
+    return;
+  }
+  // a paused clock (a display mode change) holds the output; the tail has not
+  // ended, and the decoder is not starved
+  if (m_pClock->IsPaused())
+  {
+    m_collectHoldoffUntil = std::chrono::steady_clock::now() + 20ms;
+    return;
+  }
+  // only a closing stream ends: the end-of-file path also sends VIDEO_DRAIN
+  // at a transient empty read (a seek), after which input resumes
+  // a picture waiting for a render buffer goes first (a freed buffer wakes us)
+  if (m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer)
+  {
+    m_outputSate = OutputPicture(&m_picture);
+    if (m_outputSate == OUTPUT_AGAIN)
+      return;
+  }
+  m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN |
+                                 (m_drainStarted ? DVD_CODEC_CTRL_DRAIN_EOS : 0));
+  if (ProcessDecoderOutput(frametime, pts))
+  {
+    if (m_lastDecoderState != CDVDVideoCodec::VC_NONE && m_outputSate != OUTPUT_AGAIN)
+      m_workerOutputDue = true;
+    return;
+  }
+  if (m_pClock->IsPaused() && !m_drainAbort && !m_drainFlushed && !m_bStop)
+  {
+    m_collectHoldoffUntil = std::chrono::steady_clock::now() + 20ms;
+    return;
+  }
+  finish();
 }
 
 void CVideoPlayerVideo::UpdatePlayerInfo()
@@ -848,6 +1120,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     STREAMDIAG::Span sd(STREAMDIAG_SITE("video GetPicture"));
     decoderState = m_pVideoCodec->GetPicture(&m_picture);
   }
+  m_lastDecoderState = decoderState;
+  m_armPicture = false;
 
   // phase 0 counter (docs/real_player_disc_session_design.md 4.1): a run of
   // VC_NONE starves the priority-0 queue
@@ -1059,6 +1333,9 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       m_iDroppedFrames++;
       m_ptsTracker.Flush();
     }
+    // a picture was taken: the worker wakes for the next one as soon as it is ready
+    m_armPicture = m_worker;
+    m_idleSince = std::chrono::steady_clock::now();
 
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING &&
         m_outputSate != OUTPUT_DROPPED &&
@@ -1089,7 +1366,13 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       }
 
       msg.timestamp = hasTimestamp ? (pts + m_renderManager.GetDelay() * 1000 + diCompensation) : DVD_NOPTS_VALUE;
-      m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
+      auto started = std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg);
+      // the worker sends it when a tick has taken the forced picture, as a
+      // waiting AddVideoPicture would have returned first
+      if (m_worker && m_startPendingGen >= 0)
+        m_startPendingMsg = started;
+      else
+        m_messageParent.Put(started);
     }
 
     frametime = (double)DVD_TIME_BASE / m_fFrameRate;
@@ -1282,7 +1565,11 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
       if (inputPts >= renderPts)
       {
         m_rewindStalled = true;
-        CThread::Sleep(50ms);
+        // the worker holds its collection for the same 50 ms instead
+        if (m_worker)
+          m_collectHoldoffUntil = std::chrono::steady_clock::now() + 50ms;
+        else
+          CThread::Sleep(50ms);
       }
       return OUTPUT_DROPPED;
     }
@@ -1310,7 +1597,17 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   int buffer;
   {
     STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait WaitForBuffer"));
-    buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+    if (m_worker)
+    {
+      // no wait: a freed buffer wakes the worker, and with the GUI not
+      // rendering the discard is retried at the clock
+      std::chrono::milliseconds retryIn{0};
+      buffer = m_renderManager.TryGetBuffer(retryIn);
+      if (buffer < 0 && retryIn > 0ms)
+        m_outputRetryAt = std::chrono::steady_clock::now() + retryIn;
+    }
+    else
+      buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   }
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
@@ -1331,7 +1628,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
       return OUTPUT_DROPPED;
     }
 
-    if (m_speed != DVD_PLAYSPEED_PAUSE)
+    // a worker holds the picture until a buffer frees: no timeout
+    if (m_speed != DVD_PLAYSPEED_PAUSE && !m_worker)
       CLog::Log(LOGWARNING, "{} - timeout waiting for buffer", __FUNCTION__);
 
     return OUTPUT_AGAIN;
@@ -1347,7 +1645,20 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   bool pictureAdded;
   {
     STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait AddVideoPicture"));
-    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
+    if (m_worker && m_syncState == ESyncState::SYNC_STARTING)
+    {
+      // the start picture is forced without waiting; a tick that takes it
+      // releases PLAYER_STARTED (WorkerDuties)
+      const int gen = ++m_forceGenCounter;
+      pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false, gen);
+      if (pictureAdded)
+      {
+        m_startPendingGen = gen;
+        m_startPendingSince = std::chrono::steady_clock::now();
+      }
+    }
+    else
+      pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
   }
   if (!pictureAdded)
   {
