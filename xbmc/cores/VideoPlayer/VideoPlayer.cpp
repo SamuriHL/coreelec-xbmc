@@ -8,6 +8,8 @@
 
 #include "VideoPlayer.h"
 
+#include "cores/VideoPlayer/StreamDiag.h"
+
 #include "cores/VideoPlayer/BDStageTrace.h"
 
 #include "DVDCodecs/DVDCodecUtils.h"
@@ -7788,6 +7790,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::FLUSH); // TEMP STREAMDIAG
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
   ClearPendingElPackets();

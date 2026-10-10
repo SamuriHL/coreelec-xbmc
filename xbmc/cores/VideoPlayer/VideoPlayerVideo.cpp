@@ -9,6 +9,7 @@
 #include "VideoPlayerVideo.h"
 
 #include "cores/VideoPlayer/BDStageTrace.h"
+#include "cores/VideoPlayer/StreamDiag.h"
 
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -404,7 +405,29 @@ void CVideoPlayerVideo::Process()
     }
 
     std::shared_ptr<CDVDMsg> pMsg;
-    MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
+    STREAMDIAG::MaybeReport();
+    MsgQueueReturnCode ret;
+    {
+      STREAMDIAG::Span sd(iPriority ? STREAMDIAG_SITE("video wait GetMessage prio")
+                                    : STREAMDIAG_SITE("video wait GetMessage"));
+      ret = GetMessage(pMsg, timeout, iPriority);
+    }
+    if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
+        pMsg->m_diagPutNs.load() &&
+        !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
+    {
+      static int sites[64] = {};
+      const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
+      if (t >= 0 && t < 64)
+      {
+        if (!sites[t])
+          sites[t] = STREAMDIAG::Site(("msg video " + std::to_string(t)).c_str()) + 1;
+        STREAMDIAG::Record(sites[t] - 1, std::chrono::duration<double, std::micro>(
+                                             std::chrono::steady_clock::now().time_since_epoch() -
+                                             std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
+                                             .count());
+      }
+    }
 
     onlyPrioMsgs = false;
 
@@ -486,7 +509,12 @@ void CVideoPlayerVideo::Process()
 
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
-      if (std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_VIDEO))
+      bool synced;
+      {
+        STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait SYNCHRONIZE"));
+        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_VIDEO);
+      }
+      if (synced)
       {
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_SYNCHRONIZE");
       }
@@ -549,6 +577,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
+      STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::FLUSH);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
@@ -701,7 +730,12 @@ void CVideoPlayerVideo::Process()
         codecControl |= DVD_CODEC_CTRL_ROTATE;
       m_pVideoCodec->SetCodecControl(codecControl);
 
-      if (m_pVideoCodec->AddData(*pPacket))
+      bool added;
+      {
+        STREAMDIAG::Span sd(STREAMDIAG_SITE("video AddData"));
+        added = m_pVideoCodec->AddData(*pPacket);
+      }
+      if (added)
       {
         // buffer packets so we can recover should decoder flush for some reason
         if (m_pVideoCodec->GetConvergeCount() > 0)
@@ -809,7 +843,11 @@ double CVideoPlayerVideo::SnapToCadence(double pts)
 
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
-  CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
+  CDVDVideoCodec::VCReturn decoderState;
+  {
+    STREAMDIAG::Span sd(STREAMDIAG_SITE("video GetPicture"));
+    decoderState = m_pVideoCodec->GetPicture(&m_picture);
+  }
 
   // phase 0 counter (docs/real_player_disc_session_design.md 4.1): a run of
   // VC_NONE starves the priority-0 queue
@@ -837,6 +875,14 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   if (decoderState == CDVDVideoCodec::VC_FLUSHED)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
+    STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::CODECFLUSH);
+    if (STREAMDIAG::Enabled())
+    {
+      size_t bytes = 0;
+      for (const auto& p : m_packets)
+        bytes += std::static_pointer_cast<CDVDMsgDemuxerPacket>(p.message)->GetPacketSize();
+      CLog::Log(LOGINFO, "STREAMDIAG replay VC_FLUSHED packets {} bytes {}", m_packets.size(), bytes);
+    }
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -854,6 +900,14 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_REOPEN)
   {
+    STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::CODECFLUSH);
+    if (STREAMDIAG::Enabled())
+    {
+      size_t bytes = 0;
+      for (const auto& p : m_packets)
+        bytes += std::static_pointer_cast<CDVDMsgDemuxerPacket>(p.message)->GetPacketSize();
+      CLog::Log(LOGINFO, "STREAMDIAG replay VC_REOPEN packets {} bytes {}", m_packets.size(), bytes);
+    }
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -1190,10 +1244,13 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   int orientation = sorient != 0 ? (sorient + m_hints.orientation) % 360
                                  : m_hints.orientation;
 
-  if (!m_renderManager.Configure(*pPicture,
-                                static_cast<float>(config_framerate),
-                                orientation,
-                                m_pVideoCodec->GetAllowedReferences()))
+  bool configured;
+  {
+    STREAMDIAG::Span sd(STREAMDIAG_SITE("video Configure"));
+    configured = m_renderManager.Configure(*pPicture, static_cast<float>(config_framerate),
+                                           orientation, m_pVideoCodec->GetAllowedReferences());
+  }
+  if (!configured)
   {
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
     return OUTPUT_ABORT;
@@ -1250,7 +1307,11 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (m_speed > DVD_PLAYSPEED_NORMAL)
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
-  int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+  int buffer;
+  {
+    STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait WaitForBuffer"));
+    buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+  }
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
   // Only once we are actually due and have a buffer: that is the first frame the
@@ -1283,7 +1344,12 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (!m_processInfo.Supports(deintMethod))
     deintMethod = m_processInfo.GetDeinterlacingMethodDefault();
 
-  if (!m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING)))
+  bool pictureAdded;
+  {
+    STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait AddVideoPicture"));
+    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
+  }
+  if (!pictureAdded)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
     return OUTPUT_DROPPED;

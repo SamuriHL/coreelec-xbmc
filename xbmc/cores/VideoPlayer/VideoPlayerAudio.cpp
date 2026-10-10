@@ -8,6 +8,8 @@
 
 #include "VideoPlayerAudio.h"
 
+#include "cores/VideoPlayer/StreamDiag.h"
+
 #include "DVDCodecs/Audio/DVDAudioCodec.h"
 #include "DVDCodecs/Audio/DVDAudioCodecPassthrough.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -351,7 +353,29 @@ void CVideoPlayerAudio::Process()
       timeout = 0ms;
     }
 
-    MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, timeout, priority);
+    STREAMDIAG::MaybeReport();
+    MsgQueueReturnCode ret;
+    {
+      STREAMDIAG::Span sd(priority ? STREAMDIAG_SITE("audio wait GetMessage prio")
+                                   : STREAMDIAG_SITE("audio wait GetMessage"));
+      ret = m_messageQueue.Get(pMsg, timeout, priority);
+    }
+    if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
+        pMsg->m_diagPutNs.load() &&
+        !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
+    {
+      static int sites[64] = {};
+      const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
+      if (t >= 0 && t < 64)
+      {
+        if (!sites[t])
+          sites[t] = STREAMDIAG::Site(("msg audio " + std::to_string(t)).c_str()) + 1;
+        STREAMDIAG::Record(sites[t] - 1, std::chrono::duration<double, std::micro>(
+                                             std::chrono::steady_clock::now().time_since_epoch() -
+                                             std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
+                                             .count());
+      }
+    }
 
     onlyPrioMsgs = false;
 
@@ -393,7 +417,12 @@ void CVideoPlayerAudio::Process()
     // handle messages
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
-      if (std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_AUDIO))
+      bool synced;
+      {
+        STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait SYNCHRONIZE"));
+        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(100ms, SYNCSOURCE_AUDIO);
+      }
+      if (synced)
         CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_SYNCHRONIZE");
       else
         m_messageQueue.Put(pMsg, 1); // push back as prio message, to process other prio messages
@@ -976,11 +1005,18 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     for (unsigned int i = 0; i < silence.planes; i++)
       silence.data[i] = m_boundarySilence.data();
     if (silence.nb_frames)
+    {
+      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait AddPackets pad"));
       m_audioSink.AddPackets(silence);
+    }
     audioframe.padBefore = 0;
   }
 
-  int framesOutput = m_audioSink.AddPackets(audioframe);
+  int framesOutput;
+  {
+    STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait AddPackets frame"));
+    framesOutput = m_audioSink.AddPackets(audioframe);
+  }
   if (m_syncState == IDVDStreamPlayer::SYNC_STARTING && m_startFirstPts == DVD_NOPTS_VALUE &&
       framesOutput > 0 && audioframe.hasTimestamp)
     m_startFirstPts = audioframe.pts;

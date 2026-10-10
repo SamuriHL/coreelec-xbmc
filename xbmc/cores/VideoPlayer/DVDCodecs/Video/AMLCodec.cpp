@@ -10,6 +10,7 @@
 #include "AMLCodec.h"
 
 #include "cores/VideoPlayer/BDStageTrace.h"
+#include "cores/VideoPlayer/StreamDiag.h"
 #include "DynamicDll.h"
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
@@ -3656,6 +3657,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // before.
   const bool level_gate_open =
       (m_buffer_level_ready && buffer_level > m_minimum_buffer_level) || m_drain;
+
+  // TEMP STREAMDIAG: the interval since the previous call, by gate state
+  if (STREAMDIAG::Enabled())
+  {
+    static thread_local std::chrono::steady_clock::time_point s_lastCall{};
+    const auto nowCall = std::chrono::steady_clock::now();
+    if (s_lastCall.time_since_epoch().count())
+      STREAMDIAG::Record(level_gate_open ? STREAMDIAG_SITE("aml GetPicture interval gate open")
+                                         : STREAMDIAG_SITE("aml GetPicture interval gate closed"),
+                         std::chrono::duration<double, std::micro>(nowCall - s_lastCall).count());
+    s_lastCall = nowCall;
+  }
 
   // A segment can decode a picture without ever crossing the fill threshold and
   // without draining - a short single-stream clip, a menu segment, or the tail

@@ -8,6 +8,8 @@
 
 #include "RenderManager.h"
 
+#include "cores/VideoPlayer/StreamDiag.h"
+
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
 #include "HdrGraphics.h"
@@ -159,6 +161,7 @@ CRenderManager::~CRenderManager()
 void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state GetVideoRect");
   if (m_pRenderer)
     m_pRenderer->GetVideoRect(source, dest, view);
 }
@@ -166,6 +169,7 @@ void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
 float CRenderManager::GetAspectRatio() const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state GetAspectRatio");
   if (m_pRenderer)
     return m_pRenderer->GetAspectRatio();
   else
@@ -175,6 +179,7 @@ float CRenderManager::GetAspectRatio() const
 unsigned int CRenderManager::GetOrientation() const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state GetOrientation");
   if (m_pRenderer)
     return m_pRenderer->GetOrientation();
   else
@@ -184,6 +189,7 @@ unsigned int CRenderManager::GetOrientation() const
 void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state SetVideoSettings");
   if (m_pRenderer)
   {
     m_pRenderer->SetVideoSettings(settings);
@@ -199,6 +205,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // check if something has changed
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Configure");
 
     if (!m_bRenderGUI)
       return true;
@@ -218,6 +225,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         {
           // PrepareNextRender publishes under m_presentlock
           std::unique_lock presentLock(m_presentlock);
+          STREAMDIAG_HOLD(sd_presentLock, STREAMDIAG::Lock::PRESENT, "hold present Configure");
           m_clockSync.Reset();
           m_dvdClock.ResetVsyncAdjust();
         }
@@ -227,6 +235,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     }
   }
 
+  STREAMDIAG::CtxScope sd_ctx(STREAMDIAG::Ctx::FORMAT);
+  STREAMDIAG::FormatPicturePending();
   const std::string hdrStr = CStreamDetails::HdrTypeToString(picture.hdrType);
   CLog::Log(LOGDEBUG,
             "CRenderManager::Configure - change configuration. {}x{}. display: {}x{}. framerate: "
@@ -237,6 +247,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // make sure any queued frame was fully presented
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present Configure");
     XbmcThreads::EndTime<> endtime(5000ms);
     m_forceNext = true;
     while (m_presentstep != PRESENT_IDLE)
@@ -247,13 +258,14 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_forceNext = false;
         return false;
       }
-      m_presentevent.wait(lock, endtime.GetTimeLeft());
+      { STREAMDIAG::CvWait sd_cw; m_presentevent.wait(lock, endtime.GetTimeLeft()); }
     }
     m_forceNext = false;
   }
 
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Configure");
     m_picture.SetParams(picture);
     m_fps = fps;
     m_pictureDuration = 0.0;
@@ -267,6 +279,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_pConfigPicture->CopyRef(picture);
 
     std::unique_lock lock2(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present Configure");
     m_presentstep = PRESENT_READY;
     m_presentevent.notifyAll();
   }
@@ -275,10 +288,12 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   {
     CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Configure");
     return false;
   }
 
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Configure");
   if (m_renderState != STATE_CONFIGURED)
   {
     CLog::Log(LOGWARNING, "CRenderManager::Configure - failed to configure");
@@ -297,6 +312,7 @@ bool CRenderManager::HasVisibleOverlay() const
   int source;
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present HasVisibleOverlay");
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
@@ -305,9 +321,12 @@ bool CRenderManager::HasVisibleOverlay() const
 
 bool CRenderManager::Configure()
 {
+  STREAMDIAG::CtxScope sd_ctx(STREAMDIAG::Ctx::FORMAT);
   // lock all interfaces
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state ConfigureGui");
   std::unique_lock lock2(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present ConfigureGui");
   std::unique_lock lock3(m_datalock);
 
   if (m_pRenderer)
@@ -407,6 +426,7 @@ bool CRenderManager::Configure()
 bool CRenderManager::IsConfigured() const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state IsConfigured");
   if (m_renderState == STATE_CONFIGURED)
     return true;
   else
@@ -424,8 +444,9 @@ void CRenderManager::FrameWait(std::chrono::milliseconds duration)
 {
   XbmcThreads::EndTime<> timeout{duration};
   std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present FrameWait");
   while(m_presentstep == PRESENT_IDLE && !timeout.IsTimePast())
-    m_presentevent.wait(lock, timeout.GetTimeLeft());
+    { STREAMDIAG::CvWait sd_cw; m_presentevent.wait(lock, timeout.GetTimeLeft()); }
 }
 
 bool CRenderManager::IsPresenting()
@@ -434,6 +455,7 @@ bool CRenderManager::IsPresenting()
     return false;
 
   std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present IsPresenting");
   if (!m_presentTimer.IsTimePast())
     return true;
   else
@@ -446,9 +468,11 @@ void CRenderManager::FrameMove()
 
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state FrameMove");
     if (m_renderState == STATE_UNCONFIGURED)
     {
       lock.unlock();
+      sd_lock.End();
       // No video configured. A disc can still show a screen with no playlist
       // (BD-J); keep its presentation-time composition current for Render().
       // No display-mode decision without a picture: the first Configure()
@@ -463,12 +487,14 @@ void CRenderManager::FrameMove()
 
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state FrameMove");
 
     if (m_renderState == STATE_UNCONFIGURED)
       return;
     else if (m_renderState == STATE_CONFIGURING)
     {
       lock.unlock();
+      sd_lock.End();
       if (!Configure())
         return;
       UpdateLatencyTweak();
@@ -483,6 +509,7 @@ void CRenderManager::FrameMove()
   if (m_presenterMode)
   {
     std::unique_lock lock2(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present FrameMove");
     m_bRenderGUI = true;
     source = m_presentsource;
     m_renderSource = source;
@@ -490,6 +517,7 @@ void CRenderManager::FrameMove()
   else
   {
     std::unique_lock lock2(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present FrameMove");
 
     if (m_queued.empty())
     {
@@ -539,6 +567,7 @@ void CRenderManager::FrameMove()
   if (source >= 0 && source < NUM_BUFFERS)
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present FrameMove");
     segmentGen = m_Queue[source].segmentGen;
   }
   m_overlays.PrepareOverlays(source, segmentGen);
@@ -560,6 +589,7 @@ void CRenderManager::PreInit()
   BeginFile();
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state PreInit");
     if (m_renderState != STATE_UNCONFIGURED)
       return;
   }
@@ -577,6 +607,7 @@ void CRenderManager::PreInit()
   StartCoordinator();
 
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state PreInit");
 
   if (!m_pRenderer)
   {
@@ -619,6 +650,7 @@ void CRenderManager::UnInit()
   StopCoordinator();
 
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state UnInit");
   m_presenterMode = false;
 
   m_overlays.UnInit();
@@ -646,6 +678,7 @@ void CRenderManager::UnInit()
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers)
 {
+  STREAMDIAG::CtxScope sd_ctx(STREAMDIAG::Ctx::FLUSH);
   if (!m_pRenderer)
     return true;
 
@@ -659,7 +692,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 #endif
 
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Flush");
     std::unique_lock lock2(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present Flush");
     std::unique_lock lock3(m_datalock);
 
     if (m_pRenderer)
@@ -819,6 +854,7 @@ void CRenderManager::ServiceVideoCaptures()
 void CRenderManager::SetViewMode(int iViewMode)
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state SetViewMode");
   if (m_pRenderer)
     m_pRenderer->SetViewMode(iViewMode);
   m_playerPort->VideoParamsChange();
@@ -889,6 +925,7 @@ bool CRenderManager::GraphicsWithheld()
   // only a configured video start: a BD-J screen with no playlist behind it
   // has no mode to wait for (a fullscreen toggle also raises the trigger)
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state GraphicsWithheld");
   return m_renderState == STATE_CONFIGURED &&
          std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
 }
@@ -917,16 +954,19 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   int source;
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present Render");
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
 
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Render");
     if (source == -1 || (m_renderState != STATE_CONFIGURED))
     {
       const bool configured = m_renderState == STATE_CONFIGURED;
       lock.unlock();
+      sd_lock.End();
       RenderWithoutPicture(gui, configured);
       return;
     }
@@ -1049,6 +1089,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present Render");
 
     if (m_presentstep == PRESENT_FRAME)
     {
@@ -1074,6 +1115,7 @@ bool CRenderManager::IsGuiLayer()
 {
   {
     std::unique_lock lock(m_statelock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state IsGuiLayer");
 
     if (!m_pRenderer)
       return false;
@@ -1224,6 +1266,7 @@ void CRenderManager::UpdateResolution()
         StreamHdrType hdrType;
         {
           std::unique_lock lock(m_statelock);
+          STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state UpdateResolution");
           fps = m_fps;
           width = m_picture.iWidth;
           height = m_picture.iHeight;
@@ -1310,6 +1353,7 @@ void CRenderManager::UpdateResolution()
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state TriggerUpdateResolution");
   if (width)
   {
     m_fps = fps;
@@ -1344,6 +1388,8 @@ void CRenderManager::SetSubtitleVerticalPosition(int value, bool save)
 bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait)
 {
   std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present AddVideoPicture");
+  STREAMDIAG::PictureAdded();
 
   if (m_free.empty())
     return false;
@@ -1426,7 +1472,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
     XbmcThreads::EndTime<> endtime(200ms);
     while (m_presentstep == PRESENT_READY)
     {
-      m_presentevent.wait(lock, 20ms);
+      { STREAMDIAG::CvWait sd_cw; m_presentevent.wait(lock, 20ms); }
       if(endtime.IsTimePast() || bStop)
       {
         if (!bStop)
@@ -1447,6 +1493,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
   int idx;
   {
     std::unique_lock lock(m_presentlock);
+    STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present AddOverlay");
     if (m_free.empty())
       return;
     idx = m_free.front();
@@ -1458,6 +1505,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
 bool CRenderManager::Supports(ERENDERFEATURE feature) const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Supports");
   if (m_pRenderer)
     return m_pRenderer->Supports(feature);
   else
@@ -1467,6 +1515,7 @@ bool CRenderManager::Supports(ERENDERFEATURE feature) const
 bool CRenderManager::Supports(ESCALINGMETHOD method) const
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state Supports");
   if (m_pRenderer)
     return m_pRenderer->Supports(method);
   else
@@ -1477,6 +1526,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
                                   std::chrono::milliseconds timeout)
 {
   std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present WaitForBuffer");
 
   // check if gui is active and discard buffer if not
   // this keeps videoplayer going
@@ -1497,7 +1547,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
     if (sleeptime < 0ms)
       sleeptime = 0ms;
     sleeptime = std::min(sleeptime, 20ms);
-    m_presentevent.wait(lock, sleeptime);
+    { STREAMDIAG::CvWait sd_cw; m_presentevent.wait(lock, sleeptime); }
     DiscardBuffer();
     return 0;
   }
@@ -1505,7 +1555,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   XbmcThreads::EndTime<> endtime{timeout};
   while(m_free.empty())
   {
-    m_presentevent.wait(lock, std::min(50ms, timeout));
+    { STREAMDIAG::CvWait sd_cw; m_presentevent.wait(lock, std::min(50ms, timeout)); }
     if (endtime.IsTimePast() || bStop)
     {
       return -1;
@@ -1518,6 +1568,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   // the overlay lock is held across overlay drawing; don't make the
   // presentation tick wait behind it
   lock.unlock();
+  sd_lock.End();
 
   // make sure overlay buffer is released, this won't happen on AddOverlay
   m_overlays.Release(index);
@@ -1999,6 +2050,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
 void CRenderManager::DiscardBuffer()
 {
   std::unique_lock lock2(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock2, STREAMDIAG::Lock::PRESENT, "hold present DiscardBuffer");
 
   while(!m_queued.empty())
   {
@@ -2014,6 +2066,7 @@ void CRenderManager::DiscardBuffer()
 bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &discard)
 {
   std::unique_lock lock(m_presentlock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::PRESENT, "hold present GetStats");
   lateframes = m_lateframes / 10;
   pts = m_presentpts;
   queued = m_queued.size();
@@ -2024,10 +2077,12 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
 bool CRenderManager::GetResumePts(double& pts, double& maxStep)
 {
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state GetResumePts");
   if (m_renderState != STATE_CONFIGURED || m_fps <= 0.0f)
     return false;
   const double frametime = DVD_TIME_BASE / static_cast<double>(m_fps);
   std::unique_lock presentLock(m_presentlock);
+  STREAMDIAG_HOLD(sd_presentLock, STREAMDIAG::Lock::PRESENT, "hold present GetResumePts");
   if (!m_queued.empty())
     pts = m_Queue[m_queued.front()].pts;
   else if (m_presentsource >= 0)
@@ -2204,6 +2259,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   } diagLog{diag0, diagLock, diagPresent, diagPrepare, diagFrame};
 
   std::unique_lock lock(m_statelock);
+  STREAMDIAG_HOLD(sd_lock, STREAMDIAG::Lock::STATE, "hold state PresentTick");
   diagLock = diagClock::now();
   if (m_renderState != STATE_CONFIGURED || !m_presenterMode || !m_pRenderer)
     return;
@@ -2225,8 +2281,10 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   CheckEnableClockSync();
 
   std::unique_lock presentLock(m_presentlock);
+  STREAMDIAG_HOLD(sd_presentLock, STREAMDIAG::Lock::PRESENT, "hold present PresentTick");
   diagPresent = diagClock::now();
   lock.unlock();
+  sd_lock.End();
 
   // the frame released at the previous vsync is on screen now
   if (m_presentstep == PRESENT_FRAME && m_presentsource >= 0 &&

@@ -173,11 +173,13 @@ public:
 
   // newest entry at or before pts, consuming everything up to it. A miss keeps
   // the queue intact so the caller can hold the last published values.
-  bool Consume(double pts, AMLFrameMetadata& meta)
+  bool Consume(double pts, AMLFrameMetadata& meta, double* oldestPts = nullptr)
   {
     auto it = m_queue.upper_bound(pts + PTS_TOLERANCE);
     if (it == m_queue.begin())
       return false;
+    if (oldestPts) // TEMP STREAMDIAG
+      *oldestPts = m_queue.begin()->first;
     --it;
     meta = it->second;
     m_queue.erase(m_queue.begin(), std::next(it));
