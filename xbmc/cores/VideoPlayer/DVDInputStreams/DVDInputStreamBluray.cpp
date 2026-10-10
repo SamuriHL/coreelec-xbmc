@@ -1773,8 +1773,7 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
               m_event.param, next->connection_condition);
     m_pendingSeamlessTransition = true;
     // reads are split at the clip end, so the incoming clip starts the read
-    // that opened it: the last read that returned data. The clip's own packet
-    // number is not in this domain when the enhancement layer is merged in.
+    // that opened it: the last read that returned data.
     uint64_t clipPos = 0;
     if (m_seamPlaylistStep && m_lastDataReadStart >= 0)
     {
@@ -2817,8 +2816,9 @@ bool CDVDInputStreamBluray::CanRecueFrom(int64_t pos)
   uint64_t clipStart = 0, clipIn = 0, clipPos = 0;
   if (!why && !bd_get_clip_infos(m_bd, m_playItem, &clipStart, &clipIn, &clipPos, nullptr))
     why = "no clip info";
-  // the clip info position runs up to 0.8 MB early on a disc with a merged
-  // enhancement layer (M3GAN): a margin keeps the read inside the playitem
+  // a margin keeps the read inside the playitem (the title bytes ran up to
+  // 0.8 MB ahead of the clip info after a seek on a DV FEL disc until
+  // libbluray patch 20)
   constexpr int64_t CLIP_POS_MARGIN = 4 * 1024 * 1024;
   if (!why && pos < static_cast<int64_t>(clipPos) + CLIP_POS_MARGIN)
     why = "before the playitem being read";
