@@ -460,13 +460,14 @@ void CVideoPlayerVideo::Process()
         pMsg->m_diagPutNs.load() &&
         !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
-      static int sites[64] = {};
+      static int sites[64][2] = {};
       const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
+      const int o = STREAMDIAG::PutBeforeOpenEnd(pMsg->m_diagPutNs.load()) ? 1 : 0;
       if (t >= 0 && t < 64)
       {
-        if (!sites[t])
-          sites[t] = STREAMDIAG::Site(("msg video " + std::to_string(t)).c_str()) + 1;
-        STREAMDIAG::Record(sites[t] - 1, std::chrono::duration<double, std::micro>(
+        if (!sites[t][o])
+          sites[t][o] = STREAMDIAG::Site(("msg video " + std::to_string(t) + (o ? " open" : "")).c_str()) + 1;
+        STREAMDIAG::Record(sites[t][o] - 1, std::chrono::duration<double, std::micro>(
                                              std::chrono::steady_clock::now().time_since_epoch() -
                                              std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
                                              .count());

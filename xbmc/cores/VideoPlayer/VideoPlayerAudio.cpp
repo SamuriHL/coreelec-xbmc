@@ -401,13 +401,14 @@ void CVideoPlayerAudio::Process()
         pMsg->m_diagPutNs.load() &&
         !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
-      static int sites[64] = {};
+      static int sites[64][2] = {};
       const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
+      const int o = STREAMDIAG::PutBeforeOpenEnd(pMsg->m_diagPutNs.load()) ? 1 : 0;
       if (t >= 0 && t < 64)
       {
-        if (!sites[t])
-          sites[t] = STREAMDIAG::Site(("msg audio " + std::to_string(t)).c_str()) + 1;
-        STREAMDIAG::Record(sites[t] - 1, std::chrono::duration<double, std::micro>(
+        if (!sites[t][o])
+          sites[t][o] = STREAMDIAG::Site(("msg audio " + std::to_string(t) + (o ? " open" : "")).c_str()) + 1;
+        STREAMDIAG::Record(sites[t][o] - 1, std::chrono::duration<double, std::micro>(
                                              std::chrono::steady_clock::now().time_since_epoch() -
                                              std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
                                              .count());
@@ -1057,7 +1058,12 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       m_audioSink.Destroy(false);
 
-      if (!m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE))
+      bool created;
+      {
+        STREAMDIAG::OpenSpan sd;
+        created = m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE);
+      }
+      if (!created)
       {
         // Drop this frame so the next one tries again. Keeping it would
         // retry OutputPacket on it forever against a sink that has no stream

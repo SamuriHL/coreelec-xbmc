@@ -94,6 +94,17 @@ private:
   std::chrono::steady_clock::time_point m_t0;
 };
 
+// a blocking open-time call on a stream thread (sink Create): a message put
+// before it ended is recorded apart ("... open"), as the open's wait, not the
+// loop's latency
+class OpenSpan
+{
+public:
+  OpenSpan() = default;
+  ~OpenSpan();
+};
+bool PutBeforeOpenEnd(int64_t putNs); // this thread
+
 // periodic cumulative summary (rate-limited; called from a stream thread)
 void MaybeReport(bool force = false);
 

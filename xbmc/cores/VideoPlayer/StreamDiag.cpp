@@ -147,6 +147,7 @@ struct ThreadHolds
   double subCpuUs[2] = {0.0, 0.0};
 };
 thread_local ThreadHolds t_holds;
+thread_local int64_t t_openEndNs = 0;
 } // namespace
 
 bool Enabled()
@@ -275,6 +276,16 @@ Span::~Span()
     return;
   Record(m_site,
          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_t0).count());
+}
+
+OpenSpan::~OpenSpan()
+{
+  t_openEndNs = std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+bool PutBeforeOpenEnd(int64_t putNs)
+{
+  return putNs < t_openEndNs;
 }
 
 void MaybeReport(bool force)
