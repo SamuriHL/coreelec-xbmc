@@ -918,6 +918,7 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
 {
   using namespace std::chrono;
   m_workerTimedOut = false;
+  m_messageQueue.SetWakePriority(priority);
   for (;;)
   {
     // an event since the last poll is still pending, and wakes the next one

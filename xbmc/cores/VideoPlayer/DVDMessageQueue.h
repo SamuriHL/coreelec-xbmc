@@ -113,9 +113,13 @@ public:
   bool IsInited() const { return m_bInitialized; }
   bool IsDataBased() const;
 
-  // a stream worker's eventfd, written at every put, at Abort and when a
-  // draining wait starts (-1 clears; the worker clears it before closing)
+  // a stream worker's eventfd, written at every put the worker can take, at
+  // Abort and when a draining wait starts (-1 clears; the worker clears it
+  // before closing)
   void SetWakeFd(int fd);
+  // the priority the worker takes from now on (set before its take): a put
+  // below it does not wake the worker
+  void SetWakePriority(int priority);
 
 private:
   void Wake();
@@ -130,6 +134,7 @@ private:
   bool m_bInitialized;
   bool m_drain = false;
   int m_wakeFd = -1;
+  int m_wakePriority = 0;
 
   uint64_t m_iDataSize;
   double m_TimeFront;

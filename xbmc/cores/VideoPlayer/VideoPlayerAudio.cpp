@@ -782,6 +782,7 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
   // an event since the last poll is still pending, and wakes the next one;
   // each poll's events are consumed before the state is read again
   uint64_t events = 0;
+  m_messageQueue.SetWakePriority(priority);
   MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, 0ms, priority);
   if (ret != MSGQ_TIMEOUT || immediate)
     return ret;

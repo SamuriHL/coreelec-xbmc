@@ -88,6 +88,13 @@ void CDVDMessageQueue::SetWakeFd(int fd)
 {
   std::unique_lock lock(m_section);
   m_wakeFd = fd;
+  m_wakePriority = 0;
+}
+
+void CDVDMessageQueue::SetWakePriority(int priority)
+{
+  std::unique_lock lock(m_section);
+  m_wakePriority = priority;
 }
 
 void CDVDMessageQueue::Wake()
@@ -181,7 +188,8 @@ MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,
 
   // inform waiter for new packet
   m_hEvent.Set();
-  Wake();
+  if (priority >= m_wakePriority || m_drain)
+    Wake();
 
   return MSGQ_OK;
 }
