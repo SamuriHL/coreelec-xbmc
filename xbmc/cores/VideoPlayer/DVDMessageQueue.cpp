@@ -190,6 +190,27 @@ MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,
   return MSGQ_OK;
 }
 
+MsgQueueReturnCode CDVDMessageQueue::GetControl(std::shared_ptr<CDVDMsg>& pMsg, int& priority)
+{
+  std::unique_lock lock(m_section);
+
+  if (!m_bInitialized)
+    return MSGQ_NOT_INITIALIZED;
+  if (m_bAbortRequest)
+    return MSGQ_ABORT;
+
+  for (auto it = m_prioMessages.rbegin(); it != m_prioMessages.rend(); ++it)
+  {
+    if (it->message->IsType(CDVDMsg::DEMUXER_PACKET))
+      continue;
+    priority = it->priority;
+    pMsg = std::move(it->message);
+    m_prioMessages.erase(std::next(it).base());
+    return MSGQ_OK;
+  }
+  return MSGQ_TIMEOUT;
+}
+
 MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
                                          std::chrono::milliseconds timeout,
                                          int& priority)

@@ -447,19 +447,24 @@ void CVideoPlayerVideo::Process()
       timeout = 1ms;
     }
 
-    // the worker takes no packet while a barrier, a drain or the forced start
-    // picture is pending, nor until the decoder's next poll after a refusal
+    // the worker takes no packet, not even a replay, while a barrier, a drain
+    // or the forced start picture is pending, nor until the decoder's next
+    // poll after a refusal
+    bool noData = false;
     if (m_worker)
     {
       const auto now = std::chrono::steady_clock::now();
       if (m_pendingSync || m_draining || m_startPendingGen >= 0 || now < m_feedBlockedUntil ||
           now < m_collectHoldoffUntil || now < m_outputRetryAt ||
           (m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer))
+      {
         iPriority = 1;
+        noData = true;
+      }
     }
 
     std::shared_ptr<CDVDMsg> pMsg;
-    MsgQueueReturnCode ret = m_worker ? WorkerGetMessage(pMsg, timeout, iPriority)
+    MsgQueueReturnCode ret = m_worker ? WorkerGetMessage(pMsg, timeout, iPriority, noData)
                                       : GetMessage(pMsg, timeout, iPriority);
 
     onlyPrioMsgs = false;
@@ -881,7 +886,8 @@ void CVideoPlayerVideo::Process()
 
 MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>& pMsg,
                                                        std::chrono::milliseconds timeout,
-                                                       int& priority)
+                                                       int& priority,
+                                                       bool noData)
 {
   using namespace std::chrono;
   m_workerTimedOut = false;
@@ -889,7 +895,8 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
   for (;;)
   {
     // an event since the last poll is still pending, and wakes the next one
-    MsgQueueReturnCode ret = GetMessage(pMsg, 0ms, priority);
+    MsgQueueReturnCode ret =
+        noData ? m_messageQueue.GetControl(pMsg, priority) : GetMessage(pMsg, 0ms, priority);
     if (ret != MSGQ_TIMEOUT)
     {
       m_idleSince = steady_clock::now();

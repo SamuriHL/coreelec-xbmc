@@ -73,6 +73,11 @@ public:
     int priority = 0;
     return Get(pMsg, timeout, priority);
   }
+  /**
+   * A stream worker that takes no data now: the highest priority message that
+   * is not a demuxer packet, ahead of queued replays; no wait
+   */
+  MsgQueueReturnCode GetControl(std::shared_ptr<CDVDMsg>& pMsg, int& priority);
 
   int GetDataSize() const { return m_iDataSize; }
   double GetTimeSize() const;

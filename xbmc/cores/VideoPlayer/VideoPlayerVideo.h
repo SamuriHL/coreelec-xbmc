@@ -120,7 +120,8 @@ protected:
   // decoder's next poll or a duty is due.
   MsgQueueReturnCode WorkerGetMessage(std::shared_ptr<CDVDMsg>& pMsg,
                                       std::chrono::milliseconds timeout,
-                                      int& priority);
+                                      int& priority,
+                                      bool noData);
   void WorkerDuties();
   void WorkerDrainStep(double& frametime, double& pts);
   void WorkerCancelStart();
