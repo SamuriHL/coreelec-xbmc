@@ -8,8 +8,6 @@
 
 #include "AudioSinkAE.h"
 
-#include "cores/VideoPlayer/StreamDiag.h"
-
 #include "DVDClock.h"
 #include "DVDCodecs/Audio/DVDAudioCodec.h"
 #include "ServiceBroker.h"
@@ -205,19 +203,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
       ext.hasDownmix = true;
       ext.centerMixLevel = audioframe.centerMixLevel;
     }
-    unsigned int copied;
-    {
-      // TEMP STREAMDIAG: AE AddData runs with m_critSection held
-      const double cpu0 = STREAMDIAG::Enabled() ? STREAMDIAG::ThreadCpuUs() : 0.0;
-      const auto t0 = std::chrono::steady_clock::now();
-      copied = m_pAudioStream->AddData(audioframe.data, offset, frames, &ext);
-      if (STREAMDIAG::Enabled())
-        STREAMDIAG::Record(STREAMDIAG_SITE("hold audiosink AddData"),
-                           std::chrono::duration<double, std::micro>(
-                               std::chrono::steady_clock::now() - t0)
-                               .count(),
-                           STREAMDIAG::ThreadCpuUs() - cpu0);
-    }
+    unsigned int copied = m_pAudioStream->AddData(audioframe.data, offset, frames, &ext);
     offset += copied;
     frames -= copied;
     if (frames <= 0)
@@ -230,12 +216,6 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     if (copied == 0 && std::chrono::steady_clock::now() >= deadline)
     {
       CLog::Log(LOGERROR, "CDVDAudio::AddPacketsRenderer - timeout adding data to renderer");
-      // TEMP STREAMDIAG: the sink's state at the timeout
-      CLog::Log(LOGINFO,
-                "STREAMDIAG AddPackets timeout: sync state {} delay {:.3f} s cache {:.3f} s "
-                "written {} of {}",
-                static_cast<int>(m_pAudioStream->GetSyncInfo().state), m_pAudioStream->GetDelay(),
-                m_pAudioStream->GetCacheTime(), offset - audioframe.framesOut, total);
       break;
     }
 

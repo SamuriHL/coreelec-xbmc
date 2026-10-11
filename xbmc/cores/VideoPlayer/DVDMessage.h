@@ -12,7 +12,6 @@
 #include "cores/IPlayer.h"
 
 #include <atomic>
-#include <chrono>
 #include <string.h>
 #include <string>
 
@@ -92,9 +91,6 @@ public:
   {
     return m_message;
   }
-
-  // TEMP STREAMDIAG: when the message was queued
-  std::atomic<int64_t> m_diagPutNs{0}; // steady clock, ns
 
 private:
   Message m_message;

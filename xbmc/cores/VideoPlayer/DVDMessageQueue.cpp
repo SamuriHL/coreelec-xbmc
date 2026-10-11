@@ -8,8 +8,6 @@
 
 #include "DVDMessageQueue.h"
 
-#include "cores/VideoPlayer/StreamDiag.h"
-
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "threads/SystemClock.h"
@@ -119,8 +117,6 @@ void CDVDMessageQueue::End()
 
 MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg, int priority)
 {
-  if (pMsg && STREAMDIAG::Enabled()) // TEMP STREAMDIAG
-    pMsg->m_diagPutNs = std::chrono::steady_clock::now().time_since_epoch().count();
   return Put(pMsg, priority, true);
 }
 

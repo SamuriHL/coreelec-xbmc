@@ -16,7 +16,6 @@ set(SOURCES AudioSinkAE.cpp
             Edl/EdlParsers/VideoReDoParser.cpp
             PQGraphicsTransform.cpp
             PTSTracker.cpp
-            StreamDiag.cpp
             VideoPlayer.cpp
             VideoPlayerAudio.cpp
             VideoPlayerAudioID3.cpp
@@ -28,7 +27,6 @@ set(SOURCES AudioSinkAE.cpp
 
 set(HEADERS AudioSinkAE.h
             BDStageTrace.h
-            StreamDiag.h
             DVDClock.h
             DVDDemuxSPU.h
             DVDFileInfo.h

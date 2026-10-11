@@ -12,7 +12,6 @@
 #include "DVDCodecs/DVDFactoryCodec.h"
 #include "utils/MemUtils.h"
 #include "DVDVideoCodecAmlogic.h"
-#include "cores/VideoPlayer/StreamDiag.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
@@ -1295,12 +1294,8 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
   }
 
   AMLFrameMetadata meta;
-  double oldestPts = 0.0;
-  if (m_metadataSequencer.Consume(target, meta, &oldestPts))
+  if (m_metadataSequencer.Consume(target, meta))
   {
-    // TEMP STREAMDIAG: how far past due the oldest published entry was
-    STREAMDIAG::Record(STREAMDIAG_SITE("dv metadata publish lateness"),
-                       std::max(0.0, target - oldestPts));
     CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, meta);
     if (!m_metaLeadLogged)
     {

@@ -8,8 +8,6 @@
 
 #include "VideoPlayerAudio.h"
 
-#include "cores/VideoPlayer/StreamDiag.h"
-
 #include "DVDCodecs/Audio/DVDAudioCodec.h"
 #include "DVDCodecs/Audio/DVDAudioCodecPassthrough.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -389,37 +387,8 @@ void CVideoPlayerAudio::Process()
     if (pending || (m_worker && m_pendingSync))
       priority = 1;
 
-    STREAMDIAG::MaybeReport();
-    MsgQueueReturnCode ret;
-    {
-      STREAMDIAG::Span sd(priority ? STREAMDIAG_SITE("audio wait GetMessage prio")
-                                   : STREAMDIAG_SITE("audio wait GetMessage"));
-      ret = m_worker ? WorkerGet(pMsg, timeout, priority, onlyPrioMsgs, pending)
-                     : m_messageQueue.Get(pMsg, timeout, priority);
-    }
-    if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
-        pMsg->m_diagPutNs.load() &&
-        !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
-    {
-      static int sites[64][2] = {};
-      const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
-      const int o = STREAMDIAG::PutBeforeOpenEnd(pMsg->m_diagPutNs.load()) ? 1 : 0;
-      if (t >= 0 && t < 64)
-      {
-        if (!sites[t][o])
-          sites[t][o] = STREAMDIAG::Site(("msg audio " + std::to_string(t) + (o ? " open" : "")).c_str()) + 1;
-        STREAMDIAG::Record(sites[t][o] - 1, std::chrono::duration<double, std::micro>(
-                                             std::chrono::steady_clock::now().time_since_epoch() -
-                                             std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
-                                             .count());
-        // the priority control messages (RESYNC, FLUSH, PAUSE, SETSPEED,
-        // REQUEST_STATE, DISPLAY_RESET)
-        const int64_t putNs = pMsg->m_diagPutNs.load();
-        if (!o && (t == 1 || t == 2 || t == 6 || t == 20 || t == 21 || t == 28) &&
-            std::chrono::steady_clock::now().time_since_epoch().count() - putNs > 5000000)
-          STREAMDIAG::SlowMessage("audio", t, putNs);
-      }
-    }
+    MsgQueueReturnCode ret = m_worker ? WorkerGet(pMsg, timeout, priority, onlyPrioMsgs, pending)
+                                      : m_messageQueue.Get(pMsg, timeout, priority);
 
     onlyPrioMsgs = false;
 
@@ -464,13 +433,8 @@ void CVideoPlayerAudio::Process()
     // handle messages
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
-      bool synced;
-      {
-        STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait SYNCHRONIZE"));
-        synced = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(
-            m_worker ? 0ms : 100ms, SYNCSOURCE_AUDIO);
-      }
-      if (synced)
+      if (std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg)->Wait(
+              m_worker ? 0ms : 100ms, SYNCSOURCE_AUDIO))
         CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_SYNCHRONIZE");
       else if (m_worker)
         m_pendingSync = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg);
@@ -809,10 +773,7 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
     }
     // a pending frame waits for a buffer to come back (50 ms backstop)
     struct pollfd fd = {m_wakeFd, POLLIN, 0};
-    {
-      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
-      poll(&fd, 1, m_pendingSync ? 10 : 50);
-    }
+    poll(&fd, 1, m_pendingSync ? 10 : 50);
     [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     return m_messageQueue.Get(pMsg, 0ms, priority);
   }
@@ -829,10 +790,7 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
     if (m_pendingSync)
       left = std::min(left, milliseconds(10));
     struct pollfd fd = {m_wakeFd, POLLIN, 0};
-    {
-      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
-      poll(&fd, 1, static_cast<int>(left.count()) + 1);
-    }
+    poll(&fd, 1, static_cast<int>(left.count()) + 1);
     [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     ret = m_messageQueue.Get(pMsg, 0ms, priority);
     if (ret != MSGQ_TIMEOUT || m_pendingSync || m_bStop)
@@ -1066,12 +1024,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       m_audioSink.Destroy(false);
 
-      bool created;
-      {
-        STREAMDIAG::OpenSpan sd;
-        created = m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE);
-      }
-      if (!created)
+      if (!m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE))
       {
         // Drop this frame so the next one tries again. Keeping it would
         // retry OutputPacket on it forever against a sink that has no stream
@@ -1200,10 +1153,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       m_padPending = true;
     }
     else if (silence.nb_frames)
-    {
-      STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait AddPackets pad"));
       m_audioSink.AddPackets(silence);
-    }
     audioframe.padBefore = 0;
   }
   if (m_padPending)
@@ -1217,11 +1167,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     m_padPending = false;
   }
 
-  int framesOutput;
-  {
-    STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait AddPackets frame"));
-    framesOutput = m_audioSink.AddPackets(audioframe);
-  }
+  int framesOutput = m_audioSink.AddPackets(audioframe);
   if (m_syncState == IDVDStreamPlayer::SYNC_STARTING && m_startFirstPts == DVD_NOPTS_VALUE &&
       framesOutput > 0 && audioframe.hasTimestamp)
     m_startFirstPts = audioframe.pts;

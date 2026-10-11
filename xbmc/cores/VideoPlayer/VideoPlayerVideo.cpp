@@ -9,7 +9,6 @@
 #include "VideoPlayerVideo.h"
 
 #include "cores/VideoPlayer/BDStageTrace.h"
-#include "cores/VideoPlayer/StreamDiag.h"
 
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -450,37 +449,8 @@ void CVideoPlayerVideo::Process()
     }
 
     std::shared_ptr<CDVDMsg> pMsg;
-    STREAMDIAG::MaybeReport();
-    MsgQueueReturnCode ret;
-    {
-      STREAMDIAG::Span sd(iPriority ? STREAMDIAG_SITE("video wait GetMessage prio")
-                                    : STREAMDIAG_SITE("video wait GetMessage"));
-      ret = m_worker ? WorkerGetMessage(pMsg, timeout, iPriority)
-                     : GetMessage(pMsg, timeout, iPriority);
-    }
-    if (ret == MSGQ_OK && pMsg && STREAMDIAG::Enabled() &&
-        pMsg->m_diagPutNs.load() &&
-        !pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
-    {
-      static int sites[64][2] = {};
-      const int t = static_cast<int>(pMsg->GetMessageType()) - CDVDMsg::NONE;
-      const int o = STREAMDIAG::PutBeforeOpenEnd(pMsg->m_diagPutNs.load()) ? 1 : 0;
-      if (t >= 0 && t < 64)
-      {
-        if (!sites[t][o])
-          sites[t][o] = STREAMDIAG::Site(("msg video " + std::to_string(t) + (o ? " open" : "")).c_str()) + 1;
-        STREAMDIAG::Record(sites[t][o] - 1, std::chrono::duration<double, std::micro>(
-                                             std::chrono::steady_clock::now().time_since_epoch() -
-                                             std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
-                                             .count());
-        // the priority control messages (RESYNC, FLUSH, PAUSE, SETSPEED,
-        // REQUEST_STATE, DISPLAY_RESET)
-        const int64_t putNs = pMsg->m_diagPutNs.load();
-        if (!o && (t == 1 || t == 2 || t == 6 || t == 20 || t == 21 || t == 28) &&
-            std::chrono::steady_clock::now().time_since_epoch().count() - putNs > 5000000)
-          STREAMDIAG::SlowMessage("video", t, putNs);
-      }
-    }
+    MsgQueueReturnCode ret = m_worker ? WorkerGetMessage(pMsg, timeout, iPriority)
+                                      : GetMessage(pMsg, timeout, iPriority);
 
     onlyPrioMsgs = false;
 
@@ -583,12 +553,8 @@ void CVideoPlayerVideo::Process()
     if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
     {
       auto sync = std::static_pointer_cast<CDVDMsgGeneralSynchronize>(pMsg);
-      bool synced;
-      {
-        STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait SYNCHRONIZE"));
-        // the worker registers its arrival and checks the barrier as a duty
-        synced = sync->Wait(m_worker ? 0ms : 100ms, SYNCSOURCE_VIDEO);
-      }
+      // the worker registers its arrival and checks the barrier as a duty
+      const bool synced = sync->Wait(m_worker ? 0ms : 100ms, SYNCSOURCE_VIDEO);
       if (synced)
       {
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_SYNCHRONIZE");
@@ -655,7 +621,6 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
-      STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::FLUSH);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       WorkerCancelStart();
       m_draining = false;
@@ -663,10 +628,7 @@ void CVideoPlayerVideo::Process()
       m_collectHoldoffUntil = {};
       m_outputRetryAt = {};
       if(m_pVideoCodec)
-      {
-        STREAMDIAG::Span sd(STREAMDIAG_SITE("video codec Reset"));
         m_pVideoCodec->Reset();
-      }
 
       if (m_picture.videoBuffer)
       {
@@ -836,12 +798,7 @@ void CVideoPlayerVideo::Process()
         codecControl |= DVD_CODEC_CTRL_ROTATE;
       m_pVideoCodec->SetCodecControl(codecControl);
 
-      bool added;
-      {
-        STREAMDIAG::Span sd(STREAMDIAG_SITE("video AddData"));
-        added = m_pVideoCodec->AddData(*pPacket);
-      }
-      if (added)
+      if (m_pVideoCodec->AddData(*pPacket))
       {
         // buffer packets so we can recover should decoder flush for some reason
         if (m_pVideoCodec->GetConvergeCount() > 0)
@@ -980,10 +937,7 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
     const auto wait = duration_cast<microseconds>(due - now);
     const int waitMs =
         wait.count() <= 0 ? 0 : static_cast<int>((wait.count() + 999) / 1000);
-    {
-      STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait worker poll"));
-      poll(fds, nfds, waitMs);
-    }
+    poll(fds, nfds, waitMs);
     // consumed before the state is read again: an event after this read wakes
     // the next poll
     uint64_t events = 0;
@@ -1133,11 +1087,7 @@ double CVideoPlayerVideo::SnapToCadence(double pts)
 
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
-  CDVDVideoCodec::VCReturn decoderState;
-  {
-    STREAMDIAG::Span sd(STREAMDIAG_SITE("video GetPicture"));
-    decoderState = m_pVideoCodec->GetPicture(&m_picture);
-  }
+  CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
   m_lastDecoderState = decoderState;
   m_armPicture = false;
 
@@ -1167,14 +1117,6 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   if (decoderState == CDVDVideoCodec::VC_FLUSHED)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
-    STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::CODECFLUSH);
-    if (STREAMDIAG::Enabled())
-    {
-      size_t bytes = 0;
-      for (const auto& p : m_packets)
-        bytes += std::static_pointer_cast<CDVDMsgDemuxerPacket>(p.message)->GetPacketSize();
-      CLog::Log(LOGINFO, "STREAMDIAG replay VC_FLUSHED packets {} bytes {}", m_packets.size(), bytes);
-    }
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -1192,14 +1134,6 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_REOPEN)
   {
-    STREAMDIAG::CtxScope sdctx(STREAMDIAG::Ctx::CODECFLUSH);
-    if (STREAMDIAG::Enabled())
-    {
-      size_t bytes = 0;
-      for (const auto& p : m_packets)
-        bytes += std::static_pointer_cast<CDVDMsgDemuxerPacket>(p.message)->GetPacketSize();
-      CLog::Log(LOGINFO, "STREAMDIAG replay VC_REOPEN packets {} bytes {}", m_packets.size(), bytes);
-    }
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -1545,13 +1479,10 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
   int orientation = sorient != 0 ? (sorient + m_hints.orientation) % 360
                                  : m_hints.orientation;
 
-  bool configured;
-  {
-    STREAMDIAG::Span sd(STREAMDIAG_SITE("video Configure"));
-    configured = m_renderManager.Configure(*pPicture, static_cast<float>(config_framerate),
-                                           orientation, m_pVideoCodec->GetAllowedReferences());
-  }
-  if (!configured)
+  if (!m_renderManager.Configure(*pPicture,
+                                static_cast<float>(config_framerate),
+                                orientation,
+                                m_pVideoCodec->GetAllowedReferences()))
   {
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
     return false;
@@ -1626,20 +1557,17 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
   int buffer;
+  if (m_worker)
   {
-    STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait WaitForBuffer"));
-    if (m_worker)
-    {
-      // no wait: a freed buffer wakes the worker, and with the GUI not
-      // rendering the discard is retried at the clock
-      std::chrono::milliseconds retryIn{0};
-      buffer = m_renderManager.TryGetBuffer(retryIn);
-      if (buffer < 0 && retryIn > 0ms)
-        m_outputRetryAt = std::chrono::steady_clock::now() + retryIn;
-    }
-    else
-      buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+    // no wait: a freed buffer wakes the worker, and with the GUI not
+    // rendering the discard is retried at the clock
+    std::chrono::milliseconds retryIn{0};
+    buffer = m_renderManager.TryGetBuffer(retryIn);
+    if (buffer < 0 && retryIn > 0ms)
+      m_outputRetryAt = std::chrono::steady_clock::now() + retryIn;
   }
+  else
+    buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   if (!retry || buffer >= 0)
     CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
           __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
@@ -1677,23 +1605,20 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     deintMethod = m_processInfo.GetDeinterlacingMethodDefault();
 
   bool pictureAdded;
+  if (m_worker && m_syncState == ESyncState::SYNC_STARTING)
   {
-    STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait AddVideoPicture"));
-    if (m_worker && m_syncState == ESyncState::SYNC_STARTING)
+    // the start picture is forced without waiting; a tick that takes it
+    // releases PLAYER_STARTED (WorkerDuties)
+    const int gen = ++m_forceGenCounter;
+    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false, gen);
+    if (pictureAdded)
     {
-      // the start picture is forced without waiting; a tick that takes it
-      // releases PLAYER_STARTED (WorkerDuties)
-      const int gen = ++m_forceGenCounter;
-      pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false, gen);
-      if (pictureAdded)
-      {
-        m_startPendingGen = gen;
-        m_startPendingSince = std::chrono::steady_clock::now();
-      }
+      m_startPendingGen = gen;
+      m_startPendingSince = std::chrono::steady_clock::now();
     }
-    else
-      pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
   }
+  else
+    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
   if (!pictureAdded)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
