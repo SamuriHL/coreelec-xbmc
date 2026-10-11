@@ -3340,14 +3340,11 @@ void CVideoPlayer::Process()
 
     if (!pPacket)
     {
-      // when paused, demuxer could be be returning empty
+      // when paused, demuxer could be returning empty (at the end of
+      // the input, or at a BD-J end): pace the retry, as a full queue is
       if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
       {
-#if defined(HAVE_LIBBLURAY)
-        // at a BD-J end each pass is a libbluray read: pace it
-        if (m_pInputBluray && m_pInputBluray->BdjReaderAtEnd())
-          CThread::Sleep(10ms);
-#endif
+        CThread::Sleep(10ms);
         continue;
       }
 
