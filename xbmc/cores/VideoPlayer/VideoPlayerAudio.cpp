@@ -764,8 +764,10 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
     // today's write gives up after the sink's delay + the frame + 2 s: log it
     // the same way (not while paused), keep the frame, and start the count again
     const auto now = steady_clock::now();
-    const double limit = m_audioSink.GetDelay() / DVD_TIME_BASE + 2.0 + 0.1;
-    if (now - m_pendingProgressAt > duration<double>(limit))
+    // the sink's delay only past the least limit: it is a call into the engine
+    if (now - m_pendingProgressAt > 2100ms &&
+        now - m_pendingProgressAt >
+            duration<double>(m_audioSink.GetDelay() / DVD_TIME_BASE + 2.0 + 0.1))
     {
       if (m_speed != DVD_PLAYSPEED_PAUSE)
         CLog::Log(LOGERROR, "CDVDAudio::AddPacketsRenderer - timeout adding data to renderer");
