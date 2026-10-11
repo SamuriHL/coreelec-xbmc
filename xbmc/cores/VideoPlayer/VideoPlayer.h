@@ -10,6 +10,7 @@
 
 #include "DVDClock.h"
 #include "DVDMessageQueue.h"
+#include "DiscTimeOwner.h"
 #include "Edl.h"
 #include "FileItem.h"
 #include "IVideoPlayer.h"
@@ -912,6 +913,7 @@ protected:
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;
   bool m_startHeld = false;
+  CDiscTimeOwner m_discTime; //!< design §18.6-18.8: libbluray's disc clock
   //! the caching pause is a stall while playing: it keeps the output's audio
   //! and resumes like a user resume (design §16.25)
   bool m_cachingStall = false;

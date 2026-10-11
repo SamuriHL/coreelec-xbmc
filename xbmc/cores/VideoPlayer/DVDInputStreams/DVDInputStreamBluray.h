@@ -358,6 +358,7 @@ public:
    * belong to it. */
   bool BdjStartPending(uint32_t& startSeq);
   bool BdjDeferStart() const { return m_bdjDeferStart; }
+  bool DiscTimeOn() const { return m_discTimeOn; }
   /* A held mark carries its own presentation time (libbluray patch 18,
    * design 15.50): the marks of the batch being stamped, oldest first. */
   struct BdjMarkTime
@@ -609,6 +610,7 @@ protected:
   void WaitForBdjPresentation();
   bool m_bdjTiming = false;
   bool m_bdjDeferStart = false; //!< libbluray patch 17: BD-J starts wait for their first picture
+  bool m_discTimeOn = false; //!< libbluray patch 22: disc time freezes for output changes
   bool m_bdjMarkTimes = false; //!< libbluray patch 18: marks at their own presentation time
   bool m_bdjEofAtEnd = false; //!< design 15.54: EOF at a BD-J playlist's end (A/B: bdjread_off)
   bool m_bdjReaderAtEnd = false;

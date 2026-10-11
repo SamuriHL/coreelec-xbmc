@@ -577,6 +577,21 @@ bool CDVDInputStreamBluray::Open()
 
   SetupPlayerSettings();
 
+#if defined(BD_DISC_CLOCK)
+  // design §18.8: disc time freezes only for an output change (validated
+  // SoCs; A/B flag). The clock is process-wide: only a playback open (one
+  // with a player, not a thumbnail or stream-details probe) starts a disc.
+  if (m_player)
+  {
+    m_discTimeOn = aml_presentation_validated() &&
+                   !XFILE::CFile::Exists("special://profile/disctime_off");
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISC_TIME_OFF, m_discTimeOn ? 0 : 1);
+    bd_disc_clock_start();
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - disc time {}",
+              m_discTimeOn ? "on" : "off");
+  }
+#endif
+
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - opening {}", CURL::GetRedacted(root));
 
   if (openStream)

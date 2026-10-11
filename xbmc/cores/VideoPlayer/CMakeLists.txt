@@ -1,4 +1,5 @@
 set(SOURCES AudioSinkAE.cpp
+            DiscTimeOwner.cpp
             DVDClock.cpp
             DVDDemuxSPU.cpp
             DVDFileInfo.cpp
@@ -27,6 +28,7 @@ set(SOURCES AudioSinkAE.cpp
 
 set(HEADERS AudioSinkAE.h
             BDStageTrace.h
+            DiscTimeOwner.h
             DVDClock.h
             DVDDemuxSPU.h
             DVDFileInfo.h

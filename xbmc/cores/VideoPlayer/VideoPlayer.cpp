@@ -1049,6 +1049,8 @@ bool CVideoPlayer::OpenInputStream()
 
 #if defined(HAVE_LIBBLURAY)
   m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+  if (m_pInputBluray)
+    m_discTime.Begin(m_pInputBluray->DiscTimeOn());
 #endif
 
   // The dual-dimension queue bound (16s time floor) exists for the disc
@@ -2640,6 +2642,7 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   // queue and device ring, up to 0.2 s each); the sink logs the pad left over.
   constexpr double SCHEDULED_START_LEAD = 0.35;
   double lead = 0.0;
+  int64_t discRunNs = 0;
   if (m_scheduledStart && std::string_view(why) != "flush")
   {
     int64_t startNs = 0;
@@ -2648,12 +2651,14 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
                                m_startAtFrame))
     {
       lead = SCHEDULED_START_LEAD;
+      discRunNs = startNs;
       CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
                 startClock / DVD_TIME_BASE, startNs, lead * 1000.0);
     }
   }
   else
     m_clock.SetSpeed(m_playSpeed);
+  m_discTime.SetStartHeld(false, discRunNs);
 
   // after the schedule: a frame selected meanwhile sees one or the other
   m_clock.SetStartHeld(false);
@@ -3258,6 +3263,7 @@ void CVideoPlayer::Process()
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
     CheckHeldStart();
+    m_discTime.CheckBounds();
     PublishSegmentGen();
     CheckMenuPageWait();
 
@@ -4420,6 +4426,8 @@ void CVideoPlayer::HandlePlaySpeed()
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
         HoldStart();
+        if (holdStart)
+          m_discTime.SetStartHeld(true);
         // the clock ran from the discontinuity to the pause (up to 0.9 ms
         // measured): stand it at the first picture again
         m_clock.Discontinuity(clock);
@@ -5621,6 +5629,7 @@ void CVideoPlayer::OnExit()
   m_pSubtitleDemuxer.reset();
   m_subtitleDemuxerMap.clear();
   m_pCCDemuxer.reset();
+  m_discTime.End();
   m_pInputBluray.reset();
   aml_set_disc_mode_hold(false);
   aml_set_disc_mode_anchored(false);
@@ -5697,6 +5706,7 @@ void CVideoPlayer::HandleMessages()
       m_pSubtitleDemuxer.reset();
       m_subtitleDemuxerMap.clear();
       m_pCCDemuxer.reset();
+      m_discTime.End();
       m_pInputBluray.reset();
       if (m_pInputStream.use_count() > 1)
         throw std::runtime_error("m_pInputStream reference count is greater than 1");
@@ -9627,6 +9637,7 @@ void CVideoPlayer::OnLostDisplay()
   m_clock.Pause(true);
   m_lossState = LossState::LOST;
   m_displayLost = true;
+  m_discTime.SetDisplayLost(true);
   {
     // gate (§18.24): the next frame is never behind the held clock
     double front = DVD_NOPTS_VALUE;
@@ -9674,10 +9685,12 @@ void CVideoPlayer::OnResetDisplay()
   if (m_audioOffsetToAudio)
     m_clock.SetAudioOffset(m_requestedAudioOffset -
                            DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak()));
+  int64_t discRunNs = 0;
   if (m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep) &&
       m_clock.UnpauseAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
   {
     m_displayResumeScheduled = true;
+    discRunNs = startNs;
     CLog::Log(LOGINFO,
               "VideoPlayer: display back, resume scheduled: clock {:.3f} -> {:.3f} at {} ns",
               held / DVD_TIME_BASE, startClock / DVD_TIME_BASE, startNs);
@@ -9698,6 +9711,7 @@ void CVideoPlayer::OnResetDisplay()
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
   m_displayLost = false;
+  m_discTime.SetDisplayLost(false, discRunNs);
   m_renderManager.SetDisplayLost(false);
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
