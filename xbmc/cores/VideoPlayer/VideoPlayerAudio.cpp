@@ -779,10 +779,9 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
                                                 bool pending)
 {
   using namespace std::chrono;
-  // consumed before the state is read: an event after this read wakes the poll
+  // an event since the last poll is still pending, and wakes the next one;
+  // each poll's events are consumed before the state is read again
   uint64_t events = 0;
-  [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
-
   MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, 0ms, priority);
   if (ret != MSGQ_TIMEOUT || immediate)
     return ret;
@@ -812,6 +811,7 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
       STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
       poll(&fd, 1, m_pendingSync ? 10 : 50);
     }
+    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     return m_messageQueue.Get(pMsg, 0ms, priority);
   }
 
@@ -831,7 +831,7 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
       STREAMDIAG::Span sd(STREAMDIAG_SITE("audio wait worker poll"));
       poll(&fd, 1, static_cast<int>(left.count()) + 1);
     }
-    n = read(m_wakeFd, &events, sizeof(events));
+    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     ret = m_messageQueue.Get(pMsg, 0ms, priority);
     if (ret != MSGQ_TIMEOUT || m_pendingSync || m_bStop)
       return ret;

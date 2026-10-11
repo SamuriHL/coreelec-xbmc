@@ -919,10 +919,7 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
   m_workerTimedOut = false;
   for (;;)
   {
-    // consumed before the state is read: an event after this read wakes the poll
-    uint64_t events = 0;
-    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
-
+    // an event since the last poll is still pending, and wakes the next one
     MsgQueueReturnCode ret = GetMessage(pMsg, 0ms, priority);
     if (ret != MSGQ_TIMEOUT)
     {
@@ -985,6 +982,10 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
       STREAMDIAG::Span sd(STREAMDIAG_SITE("video wait worker poll"));
       poll(fds, nfds, waitMs);
     }
+    // consumed before the state is read again: an event after this read wakes
+    // the next poll
+    uint64_t events = 0;
+    [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     if (m_bStop)
       return MSGQ_TIMEOUT;
     // any wake or deadline: a message is taken first, else the output is tried once
