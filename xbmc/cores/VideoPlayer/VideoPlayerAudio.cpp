@@ -412,6 +412,12 @@ void CVideoPlayerAudio::Process()
                                              std::chrono::steady_clock::now().time_since_epoch() -
                                              std::chrono::steady_clock::duration(pMsg->m_diagPutNs.load()))
                                              .count());
+        // the priority control messages (RESYNC, FLUSH, PAUSE, SETSPEED,
+        // REQUEST_STATE, DISPLAY_RESET)
+        const int64_t putNs = pMsg->m_diagPutNs.load();
+        if (!o && (t == 1 || t == 2 || t == 6 || t == 20 || t == 21 || t == 28) &&
+            std::chrono::steady_clock::now().time_since_epoch().count() - putNs > 5000000)
+          STREAMDIAG::SlowMessage("audio", t, putNs);
       }
     }
 

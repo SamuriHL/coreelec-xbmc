@@ -105,6 +105,10 @@ public:
 };
 bool PutBeforeOpenEnd(int64_t putNs); // this thread
 
+// a priority message over 5 ms: log it with this thread's spans over 1 ms
+// since its put
+void SlowMessage(const char* stream, int type, int64_t putNs);
+
 // periodic cumulative summary (rate-limited; called from a stream thread)
 void MaybeReport(bool force = false);
 

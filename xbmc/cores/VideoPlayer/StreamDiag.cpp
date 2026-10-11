@@ -148,6 +148,16 @@ struct ThreadHolds
 };
 thread_local ThreadHolds t_holds;
 thread_local int64_t t_openEndNs = 0;
+
+struct RecentSpan
+{
+  int site = -1;
+  int64_t startNs = 0;
+  int64_t endNs = 0;
+};
+constexpr int RECENT = 32;
+thread_local RecentSpan t_recent[RECENT];
+thread_local int t_recentHead = 0;
 } // namespace
 
 bool Enabled()
@@ -274,8 +284,34 @@ Span::~Span()
 {
   if (!Enabled())
     return;
-  Record(m_site,
-         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_t0).count());
+  const auto now = std::chrono::steady_clock::now();
+  const double us = std::chrono::duration<double, std::micro>(now - m_t0).count();
+  Record(m_site, us);
+  if (us > 1000.0)
+  {
+    RecentSpan& r = t_recent[t_recentHead++ % RECENT];
+    r.site = m_site;
+    r.startNs = m_t0.time_since_epoch().count();
+    r.endNs = now.time_since_epoch().count();
+  }
+}
+
+void SlowMessage(const char* stream, int type, int64_t putNs)
+{
+  if (!Enabled())
+    return;
+  const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+  std::string spans;
+  for (int i = 0; i < RECENT; ++i)
+  {
+    const RecentSpan& r = t_recent[(t_recentHead + i) % RECENT];
+    if (r.site < 0 || r.endNs < putNs)
+      continue;
+    spans += fmt::format(" | {} {:+.1f} ms for {:.1f} ms", g_names[r.site],
+                         (r.startNs - putNs) / 1e6, (r.endNs - r.startNs) / 1e6);
+  }
+  CLog::Log(LOGINFO, "STREAMDIAG slow msg {} {} {:.1f} ms{}", stream, type, (now - putNs) / 1e6,
+            spans);
 }
 
 OpenSpan::~OpenSpan()
