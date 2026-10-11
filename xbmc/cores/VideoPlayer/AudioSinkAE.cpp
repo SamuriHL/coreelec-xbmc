@@ -145,10 +145,10 @@ void CAudioSinkAE::SetNonBlocking(bool on, int wakeFd)
   }
 }
 
-bool CAudioSinkAE::HasSpace()
+bool CAudioSinkAE::ArmSpaceWake()
 {
   std::unique_lock lock(m_critSection);
-  return m_pAudioStream && m_pAudioStream->GetSpace() > 0;
+  return !m_pAudioStream || m_pAudioStream->ArmWake();
 }
 
 unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)

@@ -162,6 +162,7 @@ public:
   unsigned int GetSpace() override;
   void SetNoWait(bool noWait) override { m_noWait = noWait; }
   void SetWakeFd(int fd) override;
+  bool ArmWake() override;
   unsigned int AddData(const uint8_t* const *data, unsigned int offset, unsigned int frames, ExtData *extData) override;
   double GetDelay() override;
   CAESyncInfo GetSyncInfo() override;
@@ -220,6 +221,7 @@ protected:
   int m_streamFreeBuffers;
   std::atomic_bool m_noWait{false};
   int m_wakeFd = -1; // m_streamLock
+  bool m_wakeArmed = false; // m_streamLock
   // Set by the engine thread when a stream starts buffering and cleared by it again
   // in the serve loop, where two of the reads sit in a hot path (one is a while
   // condition) that a lock would distort; IsBuffering() reads it from the caller's

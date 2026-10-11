@@ -91,10 +91,12 @@ public:
   /*!
    * \brief A stream worker (design 17): AddData copies what fits in the buffers
    * already free and returns, and the fd is written when a buffer comes back
-   * (-1 clears)
+   * after ArmWake (-1 clears)
    */
   virtual void SetNoWait(bool noWait) {}
   virtual void SetWakeFd(int fd) {}
+  //! false: a buffer is free now; true: the next one back writes the fd once
+  virtual bool ArmWake() { return true; }
 
   /**
    * Add planar or interleaved PCM data to the stream

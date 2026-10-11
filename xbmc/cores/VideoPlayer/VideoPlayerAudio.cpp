@@ -788,8 +788,9 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
 
   if (pending)
   {
-    // a buffer back since the last write is already space: write again
-    if (m_audioSink.HasSpace())
+    // a buffer back since the last write is already space: write again;
+    // otherwise the next one back wakes the poll
+    if (!m_audioSink.ArmSpaceWake())
       return MSGQ_TIMEOUT;
     // today's write gives up after the sink's delay + the frame + 2 s: log it
     // the same way (not while paused), keep the frame, and start the count again
@@ -863,7 +864,7 @@ void CVideoPlayerAudio::WorkerFinishPending(DVDAudioFrame& audioframe)
     uint64_t events = 0;
     [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     struct pollfd fd = {m_wakeFd, POLLIN, 0};
-    poll(&fd, 1, 50);
+    poll(&fd, 1, m_audioSink.ArmSpaceWake() ? 50 : 1);
   }
   CLog::Log(LOGWARNING, "CVideoPlayerAudio - close: the last frame not taken by the sink in time");
 }

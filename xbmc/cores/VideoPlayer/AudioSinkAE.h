@@ -43,7 +43,8 @@ public:
   //! a stream worker (design 17): AddPackets copies what fits and returns, and
   //! the fd is written when the stream frees a buffer (-1 clears)
   void SetNonBlocking(bool on, int wakeFd);
-  bool HasSpace();
+  //! false: there is space now; true: a buffer back wakes the worker's fd
+  bool ArmSpaceWake();
   double GetPlayingPts();
   double GetCacheTime();
   double GetCacheTotal(); // returns total time a stream can buffer

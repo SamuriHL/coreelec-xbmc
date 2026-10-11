@@ -71,8 +71,9 @@ void CActiveAEStream::IncFreeBuffers()
   std::unique_lock lock(m_streamLock);
   m_streamFreeBuffers++;
   // after the count: a woken writer sees the space
-  if (m_wakeFd >= 0)
+  if (m_wakeFd >= 0 && m_wakeArmed)
   {
+    m_wakeArmed = false;
     const uint64_t one = 1;
     [[maybe_unused]] ssize_t n = write(m_wakeFd, &one, sizeof(one));
   }
@@ -82,6 +83,16 @@ void CActiveAEStream::SetWakeFd(int fd)
 {
   std::unique_lock lock(m_streamLock);
   m_wakeFd = fd;
+  m_wakeArmed = false;
+}
+
+bool CActiveAEStream::ArmWake()
+{
+  std::unique_lock lock(m_streamLock);
+  if (m_streamFreeBuffers > 0)
+    return false;
+  m_wakeArmed = true;
+  return true;
 }
 
 void CActiveAEStream::DecFreeBuffers()
