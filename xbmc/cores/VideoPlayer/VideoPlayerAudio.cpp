@@ -775,9 +775,10 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
       if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
         m_startOnPartial = true;
     }
-    // a pending frame waits for a buffer to come back (50 ms backstop)
+    // a pending frame waits for a buffer to come back (armed above); the
+    // backstop is the blocking write's 200 ms, not the sink's buffer period
     struct pollfd fd = {m_wakeFd, POLLIN, 0};
-    poll(&fd, 1, m_pendingSync ? 10 : 50);
+    poll(&fd, 1, m_pendingSync ? 10 : 200);
     [[maybe_unused]] ssize_t n = read(m_wakeFd, &events, sizeof(events));
     return m_messageQueue.Get(pMsg, 0ms, priority);
   }
