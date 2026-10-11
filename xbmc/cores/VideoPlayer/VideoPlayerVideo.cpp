@@ -509,7 +509,8 @@ void CVideoPlayerVideo::Process()
           m_picture.videoBuffer)
       {
         m_outputSate = OutputPicture(&m_picture);
-        if (m_processInfo.IsVideoHwDecoder())
+        // the worker retries a held picture at every wake: once, when it goes out
+        if (m_processInfo.IsVideoHwDecoder() && (!m_worker || m_outputSate != OUTPUT_AGAIN))
         {
           vfmtCheckCount = 16;
           CLog::Log(LOGDEBUG, "CVideoPlayerVideo - OUTPUT_AGAIN - vfmt, interlace should be checked.");
