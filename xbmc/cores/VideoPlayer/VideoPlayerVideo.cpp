@@ -171,6 +171,7 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
     OpenStream(hint, std::move(codec));
     CLog::Log(LOGINFO, "Creating video thread");
     m_messageQueue.Init();
+    m_flushesQueued = 0;
     m_processInfo.SetLevelVQ(0);
     Create();
   }
@@ -303,6 +304,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   StopThread();
 
   m_messageQueue.End();
+  m_flushesQueued = 0;
 
   CLog::Log(LOGINFO, "deleting video codec");
   m_pVideoCodec.reset();
@@ -686,6 +688,8 @@ void CVideoPlayerVideo::Process()
       m_drainStarted = false;
       m_drainFlushed = false;
       m_drained.Set();
+      if (m_flushesQueued > 0)
+        --m_flushesQueued;
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -1411,6 +1415,8 @@ void CVideoPlayerVideo::Flush(bool sync)
   // paused until this player starts again: without this the two wait on each
   // other until the player's start timeout.
   m_drainFlushed = true;
+  if (m_worker)
+    ++m_flushesQueued;
   SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
   m_bAbortOutput = true;
 }

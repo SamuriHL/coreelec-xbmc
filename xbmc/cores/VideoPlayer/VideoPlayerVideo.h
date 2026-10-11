@@ -73,6 +73,7 @@ public:
   void BeginDrain() override;
   void AbortDrain() override;
   bool IsRewindStalled() const override { return m_rewindStalled; }
+  bool IsFlushQueued() const override { return m_flushesQueued > 0; }
   double GetCurrentPts() override;
   double GetOutputDelay() override; /* returns the expected delay, from that a packet is put in queue */
   std::string GetPlayerInfo() override;
@@ -174,6 +175,7 @@ protected:
   std::shared_ptr<CDVDMsgGeneralSynchronize> m_pendingSync;
   bool m_draining = false;
   std::atomic_bool m_rewindStalled;
+  std::atomic<int> m_flushesQueued{0}; // worker only
   bool m_paused;
   /* diagnostics only: last keep-alive stamp already reported as expired, so
    * the expiry is logged once per composition instead of once per frame */

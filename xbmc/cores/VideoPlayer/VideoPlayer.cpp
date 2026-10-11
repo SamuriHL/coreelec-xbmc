@@ -4484,6 +4484,10 @@ void CVideoPlayer::HandlePlaySpeed()
       else if (m_SpeedState.lastpts == m_VideoPlayerVideo->GetCurrentPts() &&
                (m_SpeedState.lastpts > m_State.dts || m_playSpeed > 0))
         check = false;
+      // no trick-play seek over one the video has not carried out: at speed
+      // the clock test asks for seeks faster than the decoder resets
+      else if (m_VideoPlayerVideo->IsFlushQueued())
+        check = false;
 
       if (check)
       {

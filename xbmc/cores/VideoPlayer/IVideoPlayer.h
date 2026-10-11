@@ -116,6 +116,8 @@ public:
   virtual void SetSubtitleDelay(double delay) = 0;
   bool IsStalled() const override = 0;
   virtual bool IsRewindStalled() const { return false; }
+  //! a flush the stream thread has not finished yet
+  virtual bool IsFlushQueued() const { return false; }
   //! real_player E1: the start is held with the clock paused; not a still
   virtual void SetStartHeld(bool held) {}
   //! start playing the queued segment out ahead of a draining close
