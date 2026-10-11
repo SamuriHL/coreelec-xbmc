@@ -509,8 +509,9 @@ void CVideoPlayerVideo::Process()
           m_picture.videoBuffer)
       {
         m_outputSate = OutputPicture(&m_picture);
-        // the worker retries a held picture at every wake: once, when it goes out
-        if (m_processInfo.IsVideoHwDecoder() && (!m_worker || m_outputSate != OUTPUT_AGAIN))
+        // a picture held for a render buffer is the worker's steady state, not
+        // the blocking wait's timeout
+        if (m_processInfo.IsVideoHwDecoder() && !m_worker)
         {
           vfmtCheckCount = 16;
           CLog::Log(LOGDEBUG, "CVideoPlayerVideo - OUTPUT_AGAIN - vfmt, interlace should be checked.");
@@ -1519,10 +1520,8 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
   }
 }
 
-CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
+bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
 {
-  m_bAbortOutput = false;
-
   if (m_processInfo.GetVideoStereoMode() != pPicture->stereoMode)
   {
     m_processInfo.SetVideoStereoMode(pPicture->stereoMode);
@@ -1554,7 +1553,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (!configured)
   {
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
-    return OUTPUT_ABORT;
+    return false;
   }
 
   //try to calculate the framerate
@@ -1565,6 +1564,19 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   // signal to clock what our framerate is, it may want to adjust it's
   // speed to better match with our video renderer's output speed
   m_pClock->UpdateFramerate(m_fFrameRate);
+  return true;
+}
+
+CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
+{
+  m_bAbortOutput = false;
+
+  // a worker's retry of a held picture: it was prepared when first offered
+  const bool retry =
+      m_worker && pPicture->videoBuffer == m_heldBuffer && pPicture->pts == m_heldPts;
+  m_heldBuffer = nullptr;
+  if (!retry && !PrepareOutput(pPicture))
+    return OUTPUT_ABORT;
 
   // calculate the time we need to delay this picture before displaying
   double iPlayingClock, iCurrentClock;
@@ -1627,8 +1639,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     else
       buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   }
-  CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
-        __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
+  if (!retry || buffer >= 0)
+    CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
+          __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
   // Only once we are actually due and have a buffer: that is the first frame the
   // viewer sees for this segment.
   if (timeToDisplay.count() <= 0 && buffer >= 0)
@@ -1650,6 +1663,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     if (m_speed != DVD_PLAYSPEED_PAUSE && !m_worker)
       CLog::Log(LOGWARNING, "{} - timeout waiting for buffer", __FUNCTION__);
 
+    m_heldBuffer = pPicture->videoBuffer;
+    m_heldPts = pPicture->pts;
     return OUTPUT_AGAIN;
   }
 

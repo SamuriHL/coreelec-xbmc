@@ -111,6 +111,7 @@ protected:
                                 int& priority);
 
   EOutputState OutputPicture(const VideoPicture* src);
+  bool PrepareOutput(const VideoPicture* src);
 
   // Stream worker (design 17, validated SoCs): the same loop and handlers, with
   // no wait that holds the output on the input side. The one wait is a poll on
@@ -176,6 +177,8 @@ protected:
   bool m_draining = false;
   std::atomic_bool m_rewindStalled;
   std::atomic<int> m_flushesQueued{0}; // worker only
+  CVideoBuffer* m_heldBuffer = nullptr; // the worker's held picture, prepared
+  double m_heldPts = 0.0;
   bool m_paused;
   /* diagnostics only: last keep-alive stamp already reported as expired, so
    * the expiry is logged once per composition instead of once per frame */
