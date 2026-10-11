@@ -1080,6 +1080,8 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       if (m_sinkCreateFailed)
         CLog::Log(LOGINFO, "{} - audio renderer created after earlier failures", __FUNCTION__);
       m_sinkCreateFailed = false;
+      // the write's give-up runs from the new sink (Create waits through a mode change)
+      m_pendingProgressAt = std::chrono::steady_clock::now();
 
       m_prevsynctype = -1;
 
