@@ -15,6 +15,20 @@
 #include <utility>
 #include <vector>
 
+#include <pthread.h>
+#include <sched.h>
+
+//! A stream worker (design 17) runs SCHED_FIFO below the timekeeper (45): the
+//! output side outranks the demuxer, whose read bursts held a woken worker on
+//! their CPU for up to 9 ms. Applies to the calling thread; returns 0 or the error.
+inline int SetStreamWorkerScheduling(bool worker)
+{
+  constexpr int STREAM_WORKER_PRIORITY = 40;
+  sched_param param = {};
+  param.sched_priority = worker ? STREAM_WORKER_PRIORITY : 0;
+  return pthread_setschedparam(pthread_self(), worker ? SCHED_FIFO : SCHED_OTHER, &param);
+}
+
 #define VideoPlayer_AUDIO    1
 #define VideoPlayer_VIDEO    2
 #define VideoPlayer_SUBTITLE 3

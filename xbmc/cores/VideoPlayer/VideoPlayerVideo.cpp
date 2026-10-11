@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <iterator>
 #include <memory>
+#include <cstring>
 #include <mutex>
 #include <numeric>
 #include <sstream>
@@ -415,9 +416,18 @@ void CVideoPlayerVideo::Process()
     m_pVideoCodec->SetNonBlocking(false);
   }
   m_idleSince = std::chrono::steady_clock::now();
+  bool realtime = false;
 
   while (!m_bStop)
   {
+    // a stream change can leave worker mode (and enter it again)
+    if (m_worker != realtime)
+    {
+      realtime = m_worker;
+      if (const int rt = SetStreamWorkerScheduling(realtime))
+        CLog::Log(LOGWARNING, "CVideoPlayerVideo - real-time scheduling refused: {}",
+                  strerror(rt));
+    }
     if (m_worker)
       WorkerDuties();
 

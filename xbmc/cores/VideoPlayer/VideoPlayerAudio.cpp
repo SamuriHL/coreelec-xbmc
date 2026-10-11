@@ -36,6 +36,7 @@
 #include <math.h>
 #include <sstream>
 
+#include <cstring>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -343,6 +344,9 @@ void CVideoPlayerAudio::Process()
     {
       m_messageQueue.SetWakeFd(m_wakeFd);
       m_audioSink.SetNonBlocking(true, m_wakeFd);
+      if (const int rt = SetStreamWorkerScheduling(true))
+        CLog::Log(LOGWARNING, "CVideoPlayerAudio - real-time scheduling refused: {}",
+                  strerror(rt));
     }
   }
   m_padPending = false;
