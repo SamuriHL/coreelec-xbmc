@@ -5680,10 +5680,16 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       // native so CDVDVideoCodecAmlogic's 2-stage engage owns it - it converts
       // real HDR10+ (dynamic RPU) and, on a plain-HDR10 miss, re-applies the VS10
       // mapping itself (AddData fallback).
+      // A VS10 mapping to a non-DV output (SDR or HDR10) is the user's choice of
+      // output and wins over the conversion (user ruling 2026-10-11): the stream
+      // then opens exactly as with the conversion off.
+      const bool vs10NonDvTarget = vs10Mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
+                                   vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
+                                   vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR8;
       const bool hdr10plusConvertCandidate =
           (hint.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
            hint.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
-          aml_support_dolby_vision() && aml_display_support_dv() &&
+          !vs10NonDvTarget && aml_support_dolby_vision() && aml_display_support_dv() &&
           CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
               CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
       if (hdr10plusConvertCandidate)
