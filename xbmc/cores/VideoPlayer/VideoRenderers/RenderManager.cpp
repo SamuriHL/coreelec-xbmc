@@ -566,6 +566,11 @@ void CRenderManager::BeginFile()
   m_sessionModeDecided = false;
   m_startHeld = false;
   m_startGate = false;
+  // the kernel's DV wait (amdv_wait_delay vsyncs before the mode set) is
+  // armed by the file's first picture: left at its first value, a second DV
+  // file in one player waited nothing, or never once an SDR file came first
+  if (aml_presentation_validated())
+    m_amdv_wait_delay = -1;
 }
 
 void CRenderManager::PreInit()
