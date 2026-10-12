@@ -252,7 +252,8 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_pVideoCodec = std::move(codec);
   // a decoder opened inside a pause or a display hold starts paused (P4-38)
-  if (m_pVideoCodec && aml_presentation_validated())
+  m_codecSpeedFix = aml_codec_speed_fix();
+  if (m_pVideoCodec && m_codecSpeedFix)
     m_pVideoCodec->SetSpeed(CodecSpeed());
   // design 17: a decoder that can run without sleeping gets the stream worker
   // (a stream change on a running thread without its eventfd stays legacy)
@@ -762,7 +763,7 @@ void CVideoPlayerVideo::Process()
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
       // a display hold is a pause to the decoder too: its last-frame timer
       // must not count it (P4-38)
-      if (m_pVideoCodec && aml_presentation_validated())
+      if (m_pVideoCodec && m_codecSpeedFix)
         m_pVideoCodec->SetSpeed(CodecSpeed());
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
@@ -1365,7 +1366,7 @@ void CVideoPlayerVideo::OnExit()
 int CVideoPlayerVideo::CodecSpeed() const
 {
   // validated SoCs: a display hold (GENERAL_PAUSE) pauses the decoder as well
-  return m_paused && aml_presentation_validated() ? DVD_PLAYSPEED_PAUSE : m_speed;
+  return m_paused && m_codecSpeedFix ? DVD_PLAYSPEED_PAUSE : m_speed;
 }
 
 void CVideoPlayerVideo::SetSpeed(int speed)

@@ -2170,6 +2170,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // first): applied once the decoder is open, below. Overwritten here, the
   // decoder ran its last-frame timer through that pause (P4-38)
   const int speedBeforeOpen = m_speed;
+  m_speedFix = aml_codec_speed_fix();
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_drainPadded = false;
@@ -2742,7 +2743,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_opened = true;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
-  SetSpeed(aml_presentation_validated() ? speedBeforeOpen : m_speed);
+  SetSpeed(m_speedFix ? speedBeforeOpen : m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
   return true;
@@ -4090,7 +4091,7 @@ void CAMLCodec::SetSpeed(int speed)
         m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_I);
       // out of a pause (or a display hold) into a trick speed: the pause is
       // not a starved stream either (P4-38)
-      if (previous == DVD_PLAYSPEED_PAUSE && aml_presentation_validated())
+      if (previous == DVD_PLAYSPEED_PAUSE && m_speedFix)
       {
         m_tp_last_frame = std::chrono::steady_clock::now();
         m_probe_idle_start = m_tp_last_frame;

@@ -42,6 +42,7 @@ static inline void aml_set_disc_mode_anchored(bool) {}
 static inline unsigned int aml_presenter_epoch() { return 0; }
 static inline void aml_set_video_presenter_active(bool) {}
 static inline bool aml_presentation_validated() { return false; }
+static inline bool aml_codec_speed_fix() { return false; }
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -572,7 +573,7 @@ void CRenderManager::BeginFile()
   // the kernel's DV wait (amdv_wait_delay vsyncs before the mode set) is
   // armed by the file's first picture: left at its first value, a second DV
   // file in one player waited nothing, or never once an SDR file came first
-  if (aml_presentation_validated())
+  if (aml_codec_speed_fix())
     m_amdv_wait_delay = -1;
 }
 

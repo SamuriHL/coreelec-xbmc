@@ -94,6 +94,13 @@ bool aml_presentation_validated()
   return id == AML_S6 || id == AML_G12B;
 }
 
+bool aml_codec_speed_fix()
+{
+  // phase 5 step 5.C (P4-38, P5-1); A/B: special://profile/codecspeed_off
+  return aml_presentation_validated() &&
+         !XFILE::CFile::Exists("special://profile/codecspeed_off");
+}
+
 std::string aml_get_cpufamily_name(int cpuid)
 {
   switch(cpuid)

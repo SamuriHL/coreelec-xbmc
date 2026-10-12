@@ -149,6 +149,7 @@ private:
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;
   int              m_speed;
+  bool             m_speedFix = false; //!< 5.C, latched at OpenDecoder
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
   uint32_t         m_bufferIndex;

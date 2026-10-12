@@ -153,6 +153,7 @@ protected:
   float m_fForcedAspectRatio;
   //! the speed the decoder is given: the stream's, or PAUSE in a display hold
   int CodecSpeed() const;
+  bool m_codecSpeedFix = false; //!< 5.C, latched at OpenStream (codecspeed_off)
   int m_speed;
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
