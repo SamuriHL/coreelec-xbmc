@@ -468,6 +468,14 @@ void CRenderManager::FrameMove()
   UpdateResolution();
   PublishDisplayTiming();
 
+  // A GUI pass while graphics were withheld left the plane without them, and
+  // an unchanged composition never dirties the GUI again (TNG's language page
+  // drawn just before a held start, P5-11): repaint once they are released.
+  const bool withheld = GraphicsWithheld();
+  if (m_graphicsWithheld && !withheld)
+    OVERLAY::MarkDirty();
+  m_graphicsWithheld = withheld;
+
   {
     std::unique_lock lock(m_statelock);
 

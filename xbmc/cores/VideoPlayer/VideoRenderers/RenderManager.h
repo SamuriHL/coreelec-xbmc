@@ -271,6 +271,7 @@ protected:
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
   std::atomic_bool m_startHeld{false};
+  bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   //! from a start the clock had yet to make until its display phase is measured:
   //! no early release (it would put a frame up ahead of the start)
   bool m_startGate = false;
