@@ -60,6 +60,7 @@
 #include "utils/FontUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/PresentationTimeline.h"
+#include "windowing/amlogic/WinSystemAmlogic.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
@@ -3074,6 +3075,53 @@ void CVideoPlayer::Prepare()
   UpdatePlayState(0);
 
   SetCaching(CACHESTATE_FLUSH);
+
+  // started while the display is lost: held like the players already open
+  // (what it plays is not known yet: a deferred disc demux, the last device)
+  m_holdOnDisplayLoss = true;
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (winSystem && winSystem->HoldIfDisplayLost(this))
+    CLog::Log(LOGINFO, "VideoPlayer: started while the display is lost, held until it is back");
+}
+
+void CVideoPlayer::PublishHoldOnDisplayLoss()
+{
+  IAE* ae = CServiceBroker::GetActiveAE();
+  m_holdOnDisplayLoss = m_HasVideo || m_discMenuOnly || !ae || ae->OutputIsHdmi();
+}
+
+void CVideoPlayer::ConvertLostDisplayToPause()
+{
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem || winSystem->DisconnectedForMs() < 15000 ||
+      m_playSpeed == DVD_PLAYSPEED_PAUSE || !CanPause())
+    return;
+  LossState expected = LossState::LOST;
+  if (!m_lossState.compare_exchange_strong(expected, LossState::CONVERTING))
+    return;
+  CLog::Log(LOGINFO, "VideoPlayer: display lost for {} ms, now an ordinary pause",
+            winSystem->DisconnectedForMs());
+  // as a user pause (SetSpeed and PLAYER_SETSPEED), without a hold point: the
+  // output's audio was already taken back at the loss. The return waits for
+  // these steps only; the callbacks and the PVR come after
+  m_processInfo->SetNewSpeed(0);
+  m_processInfo->SetSpeed(0.0f);
+  m_processInfo->SetFrameAdvance(false);
+  m_playSpeed = DVD_PLAYSPEED_PAUSE;
+  m_caching = CACHESTATE_DONE;
+  m_cachingStall = false;
+  // the clock is held for the display: this is its speed after the hold
+  m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
+  m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
+  expected = LossState::CONVERTING;
+  if (!m_lossState.compare_exchange_strong(expected, LossState::PAUSED))
+    CLog::Log(LOGERROR, "VideoPlayer: the display came back during the pause conversion");
+  IPlayerCallback* cb = &m_callback;
+  m_outboundEvents->Submit([=]() { cb->OnPlayBackPaused(); });
+  if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
+    std::static_pointer_cast<CInputStreamPVRBase>(m_pInputStream)->Pause(true);
 }
 
 void CVideoPlayer::Process()
@@ -3091,9 +3139,11 @@ void CVideoPlayer::Process()
 
   while (!m_bAbortRequest)
   {
+    PublishHoldOnDisplayLoss();
     // check display lost
     if (m_displayLost)
     {
+      ConvertLostDisplayToPause();
       // nor can a menu page waiting for its picture
       if (m_menuPageWaiting)
         m_menuPageWaitSince = std::chrono::steady_clock::now();
@@ -9546,6 +9596,16 @@ void CVideoPlayer::UpdateVideoRender(bool video)
 // IDispResource interface
 void CVideoPlayer::OnLostDisplay()
 {
+  // one hold however often the loss is announced (a disconnect, then the
+  // reconnect's mode set)
+  if (m_displayLost)
+    return;
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (winSystem && winSystem->IsLostSpanOpen() && !m_holdOnDisplayLoss)
+  {
+    CLog::Log(LOGINFO, "VideoPlayer: display lost, playback runs on (no video, audio not on HDMI)");
+    return;
+  }
   CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
   if (m_VideoPlayerAudio->IsInited())
   {
@@ -9565,7 +9625,16 @@ void CVideoPlayer::OnLostDisplay()
   // before the clock pauses, so the renderer never takes this for a plain pause
   m_renderManager.SetDisplayLost(true);
   m_clock.Pause(true);
+  m_lossState = LossState::LOST;
   m_displayLost = true;
+  {
+    // gate (§18.24): the next frame is never behind the held clock
+    double front = DVD_NOPTS_VALUE;
+    double step = 0.0;
+    if (m_renderManager.GetResumePts(front, step))
+      CLog::Log(LOGINFO, "VideoPlayer: display lost, next frame {:+.1f} ms from the clock",
+                (front - m_clock.GetClock()) * 1000.0 / DVD_TIME_BASE);
+  }
   // Causes https://github.com/xbmc/xbmc/issues/15447
   // FlushRenderer();
 }
@@ -9574,6 +9643,21 @@ void CVideoPlayer::OnResetDisplay()
 {
   if (!m_displayLost)
     return;
+
+  // a conversion to a pause on the player thread finishes first
+  LossState state = LossState::LOST;
+  if (!m_lossState.compare_exchange_strong(state, LossState::RETURNING))
+  {
+    for (int i = 0; state == LossState::CONVERTING && i < 1000; i++)
+    {
+      CThread::Sleep(1ms);
+      state = m_lossState.load();
+    }
+    if (state == LossState::CONVERTING)
+      CLog::Log(LOGERROR, "VideoPlayer: display back while the pause conversion still runs");
+    m_lossState = LossState::RETURNING;
+  }
+  const bool heldAsPause = state == LossState::PAUSED;
 
   CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
   // resume like a user resume: from the picture on screen, at a vblank, the
@@ -9600,10 +9684,15 @@ void CVideoPlayer::OnResetDisplay()
   }
   else
   {
-    if (m_displayResumeOnGrid)
+    if (heldAsPause)
+      CLog::Log(LOGINFO, "VideoPlayer: display back, held as a pause (clock {:.3f})",
+                held / DVD_TIME_BASE);
+    else if (m_displayResumeOnGrid && pts == DVD_NOPTS_VALUE)
+      CLog::Log(LOGINFO, "VideoPlayer: display back, nothing presented yet (clock {:.3f})",
+                held / DVD_TIME_BASE);
+    else if (m_displayResumeOnGrid)
       CLog::Log(LOGINFO, "VideoPlayer: display back, resume not scheduled (clock {:.3f}, next "
-                "frame {:.3f})", held / DVD_TIME_BASE,
-                pts == DVD_NOPTS_VALUE ? -1.0 : pts / DVD_TIME_BASE);
+                "frame {:.3f})", held / DVD_TIME_BASE, pts / DVD_TIME_BASE);
     m_clock.Pause(false);
   }
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
@@ -9616,6 +9705,7 @@ void CVideoPlayer::OnResetDisplay()
   // menu black: no new video frame is presented, so the retained overlay is
   // never re-composed - repost it from the player thread (Process loop)
   m_repostDiscOverlays = true;
+  m_lossState = LossState::NONE;
 }
 
 void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update)

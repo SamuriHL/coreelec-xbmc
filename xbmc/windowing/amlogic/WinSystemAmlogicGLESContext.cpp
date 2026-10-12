@@ -299,12 +299,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   // keep on screen.
   m_guiRepaintFrames = 3;
 
-  if (!m_delayDispReset)
+  if (!m_delayDispReset && DisplayResetAllowed())
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
       (*i)->OnResetDisplay();
+    CloseLostSpan();
   }
 
   if (m_amlDisplay->aml_get_display_connected())
@@ -496,7 +497,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
       std::chrono::steady_clock::now() - m_modeSetAt);
   // a link that never reports lock must not hold the start past the delay + 3 s
   if (m_delayDispReset && m_dispResetTimer.IsTimePast() &&
-      (locked || sinceModeSet > m_resetDelay + 3000ms))
+      (locked || sinceModeSet > m_resetDelay + 3000ms) && DisplayResetAllowed())
   {
     m_delayDispReset = false;
     CLog::Log(LOGINFO, "CWinSystemAmlogic: display reset {} ms after the mode set ({})",
@@ -505,6 +506,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
       (*i)->OnResetDisplay();
+    CloseLostSpan();
   }
 }
 

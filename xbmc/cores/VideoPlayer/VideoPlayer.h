@@ -890,6 +890,22 @@ protected:
   bool m_updateStreamDetails{false};
 
   std::atomic<bool> m_displayLost;
+  //! design §18.24 (P5-8): a lost display as this player sees it; every
+  //! transition is a compare-exchange (the return races the 15 s conversion)
+  enum class LossState
+  {
+    NONE,
+    LOST,
+    CONVERTING,
+    PAUSED,
+    RETURNING,
+  };
+  std::atomic<LossState> m_lossState{LossState::NONE};
+  //! video, a disc menu, or audio on HDMI: this player stops for a lost display
+  std::atomic_bool m_holdOnDisplayLoss{true};
+  void PublishHoldOnDisplayLoss();
+  //! a display gone for 15 s becomes an ordinary pause (user ruling Q6)
+  void ConvertLostDisplayToPause();
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
   //! debug (flag file): BD-J discs take the keep-alive transition, to reproduce

@@ -1028,6 +1028,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         bool displayReset = false;
         switch (signal)
         {
+        case CActiveAEControlProtocol::DISPLAYLOST:
+          // already closed: a second announcement of the same loss
+          msg->Reply(CActiveAEControlProtocol::ACC);
+          return;
         case CActiveAEControlProtocol::DISPLAYRESET:
           m_extDisplayLost = false;
           if (m_extSuspended)
@@ -1401,6 +1405,9 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
     m_currentDeviceFollowsDefault =
         requestedDefaultDevice || !IsSameDevice(m_openedDriver, m_openedDevice, dev);
     initSink = true;
+    m_outputIsHdmi = m_sink.GetDeviceType(m_mode == MODE_PCM ? m_settings.device
+                                                             : m_settings.passthroughdevice) ==
+                     AE_DEVTYPE_HDMI;
     m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
     m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::VOLUME, &m_volume, sizeof(float));
 

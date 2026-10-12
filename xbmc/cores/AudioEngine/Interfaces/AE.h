@@ -138,6 +138,13 @@ public:
   virtual bool KeepsOutputAcrossDisplayReset() { return false; }
 
   /*!
+   * \brief Whether the output device is on HDMI (lock-free)
+   *
+   * A player whose audio is elsewhere need not stop for a lost HDMI display.
+   */
+  virtual bool OutputIsHdmi() { return true; }
+
+  /*!
    * \brief Stop using the audio device so an external media pipeline can have it
    *
    * The device is closed but, unlike Suspend(), the engine stays configured and running.

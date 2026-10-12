@@ -33,6 +33,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
+#include "filesystem/File.h"
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
@@ -197,6 +198,17 @@ void CWinSystemAmlogic::MonitorStop()
 
 bool CWinSystemAmlogic::MessagePump()
 {
+  // a span whose reconnect did not end it (the mode set failed): try again,
+  // backing off, while the output reads connected and no reset is pending
+  if (m_lostOpen && !m_hotplugPending && !m_disconnectedSinceMs &&
+      !(m_delayDispReset && IsPresentationReady()) && m_lostRetry.IsTimePast())
+  {
+    CLog::Log(LOGWARNING, "CWinSystemAmlogic: display back but still lost, retrying the mode set");
+    m_lostRetry.Set(m_lostRetryDelay);
+    m_lostRetryDelay = std::min(m_lostRetryDelay * 2, std::chrono::milliseconds(30000));
+    m_hotplugPending.store(true);
+  }
+
   if (m_hotplugPending.exchange(false))
     HotplugEvent();
 
@@ -228,11 +240,25 @@ void CWinSystemAmlogic::HotplugEvent()
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogic::{} - display rebuild failed: {}", __FUNCTION__,
               e.what());
+    // not known disconnected: an open span retries the rebuild, and the time
+    // stops counting towards the pause
+    m_disconnectedSinceMs = 0;
     return;
   }
 
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
+
+  if (connection == DRM_MODE_CONNECTED)
+    m_disconnectedSinceMs = 0;
+  else if (m_lostAtDisconnect)
+  {
+    if (!m_disconnectedSinceMs)
+      m_disconnectedSinceMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+    OpenLostSpan();
+  }
 
   RefreshDisplayCapabilities();
 
@@ -292,6 +318,52 @@ void CWinSystemAmlogic::HotplugEvent()
   m_amlDisplay->SetHotPlug();
   CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, true);
   CServiceBroker::GetWinSystem()->GetGfxContext().ApplyModeChange(res);
+}
+
+void CWinSystemAmlogic::OpenLostSpan()
+{
+  if (m_lostOpen)
+    return;
+  std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  m_lostOpen = true;
+  m_lostRetryDelay = std::chrono::milliseconds(1000);
+  m_lostRetry.Set(m_lostRetryDelay);
+  CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
+  for (IDispResource* resource : m_resources)
+    resource->OnLostDisplay();
+}
+
+void CWinSystemAmlogic::CloseLostSpan()
+{
+  if (m_lostOpen.exchange(false))
+    CLog::Log(LOGINFO, "CWinSystemAmlogic: display back, the lost span ends");
+}
+
+bool CWinSystemAmlogic::DisplayResetAllowed() const
+{
+  // cleared only by a hotplug that reads the output connected (a mode set
+  // inside the span would make the connector read connected)
+  return !m_lostOpen || !m_disconnectedSinceMs;
+}
+
+int64_t CWinSystemAmlogic::DisconnectedForMs() const
+{
+  const int64_t since = m_disconnectedSinceMs;
+  if (!since)
+    return 0;
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+             .count() -
+         since;
+}
+
+bool CWinSystemAmlogic::HoldIfDisplayLost(IDispResource* resource)
+{
+  std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  if (!m_lostOpen)
+    return false;
+  resource->OnLostDisplay();
+  return true;
 }
 
 void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *data)
@@ -376,6 +448,9 @@ void VS10DvFiller(const SettingConstPtr& setting, std::vector<IntegerSettingOpti
 bool CWinSystemAmlogic::InitWindowSystem()
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  m_lostAtDisconnect = aml_presentation_validated() &&
+                       !XFILE::CFile::Exists("special://profile/lostatdisconnect_off");
 
   // Before anything touches the display: undo a DV core left engaged by a
   // previous run that died before its disc-session teardown. Nothing else can -

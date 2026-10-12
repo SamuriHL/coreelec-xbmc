@@ -70,7 +70,19 @@ public:
   int GetDRMDeviceFd() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_handle() : -1; }
   uint32_t GetDRMCrtcId() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_crtc_id() : 0; }
   bool GetDRMConnected() const { return m_amlDisplay && m_amlDisplay->aml_get_display_connected(); }
+
+  //! design §18.24 (P5-8): a lost display, held from the disconnect until a
+  //! reset with the display connected again
+  bool IsLostSpanOpen() const { return m_lostOpen.load(); }
+  //! how long the output has been disconnected (0 while connected)
+  int64_t DisconnectedForMs() const;
+  //! calls the resource's OnLostDisplay() when a span is open; true if it did
+  bool HoldIfDisplayLost(IDispResource* resource);
 protected:
+  //! no display reset inside an open span while the output is disconnected
+  bool DisplayResetAllowed() const;
+  //! the reset was fanned out with the display back
+  void CloseLostSpan();
   std::string m_framebuffer_name;
   bool IsHotplugPending() const { return m_hotplugPending.load(); }
   bool IsPresentationReady() const { return m_presentationReady; }
@@ -108,6 +120,13 @@ private:
   };
 
   void RefreshResolutions();
+  void OpenLostSpan();
+
+  bool m_lostAtDisconnect{false};
+  std::atomic_bool m_lostOpen{false};
+  std::atomic<int64_t> m_disconnectedSinceMs{0};
+  XbmcThreads::EndTime<> m_lostRetry;
+  std::chrono::milliseconds m_lostRetryDelay{1000};
   void HotplugEvent();
   void RefreshDisplayCapabilities();
   static void FDEventCallback(int id, int fd, short revents, void *data);

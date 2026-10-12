@@ -258,6 +258,7 @@ public:
   bool Resume() override;
   bool IsSuspended() override;
   bool KeepsOutputAcrossDisplayReset() override;
+  bool OutputIsHdmi() override { return m_outputIsHdmi; }
   bool YieldDevice() override;
   bool ReclaimDevice() override;
   void OnSettingsChange();
@@ -389,6 +390,7 @@ protected:
   //! design §18.18: an HDMI sink stays open across a display reset
   std::atomic_bool m_keepOutputAcrossDisplay{false};
   bool m_extDisplayLost = false;
+  std::atomic_bool m_outputIsHdmi{true};
   bool m_heldFormatValid = false;
   AEAudioFormat m_heldFormat;
   bool m_extDeferData;
