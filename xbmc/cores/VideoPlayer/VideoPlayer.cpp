@@ -889,6 +889,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // design §15.33: glided seams crossed per stream by byte position (A/B flag)
   m_seamByPos =
       aml_presentation_validated() && !XFILE::CFile::Exists("special://profile/seamstep_off");
+  // P5-13: a seamless seam read before the start completes glides too (A/B flag)
+  m_earlyGlide = m_seamByPos && !XFILE::CFile::Exists("special://profile/earlyglide_off");
   // design 15.34: an audio track switch re-cues the audio alone (A/B flag)
   m_recueEnabled = m_seamByPos && !XFILE::CFile::Exists("special://profile/recue_off");
   // design 5 (4b): the audio output is held for the session; the debug flag
@@ -2210,7 +2212,7 @@ bool CVideoPlayer::WaitStartAtBoundary()
   return true;
 }
 
-CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
+CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition(bool glided) const
 {
 #if defined(HAVE_LIBBLURAY)
   if (std::shared_ptr<CDVDInputStreamBluray> bluray =
@@ -2257,9 +2259,12 @@ CVideoPlayer::EBdTransition CVideoPlayer::ClassifyBdTransition() const
     // Direct playlist playback has no menu bursts, and no other path that
     // applies a seam's step: a seam read during a start or just after a seek
     // still glides.
+    // A glided seam is a cc 5/6 playitem advance, one continuous transport
+    // stream: holding it before the start completes cuts the incoming clip's
+    // first access unit (JW3's menu background, P5-13).
     if (bluray->IsSeamlessStreamChange() && m_CurrentVideo.id >= 0 &&
         (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
-         (m_seamByPos && !bluray->IsNavigationMode())))
+         (m_seamByPos && !bluray->IsNavigationMode()) || (glided && m_earlyGlide)))
       return EBdTransition::SEAMLESS;
   }
 #endif
@@ -2281,7 +2286,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   // the segment a held BD-J start was waiting for: its first picture now
   // comes with this segment's own start
   ArmBdjStartForSegment();
-  const EBdTransition transition = ClassifyBdTransition();
+  const EBdTransition transition = ClassifyBdTransition(glided);
 
   // Not on the seamless path: the pipeline survives the boundary, so a refill
   // in progress (a network stall at the seam) must be allowed to finish rather
@@ -3352,7 +3357,7 @@ void CVideoPlayer::Process()
       m_pInputBluray->SetSeamlessGlideAllowed(
           m_CurrentVideo.id >= 0 &&
           (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
-           (m_seamByPos && !m_pInputBluray->IsNavigationMode())));
+           (m_seamByPos && !m_pInputBluray->IsNavigationMode()) || m_earlyGlide));
       if (m_pInputBluray->TakePendingSeamlessTransition())
       {
         // Re-classified here, one iteration after the glide armed it: if the
@@ -3364,7 +3369,7 @@ void CVideoPlayer::Process()
         // Direct playlist playback has no navigation to reopen from, so a
         // teardown there would end playback: only the seamless transition runs.
         if (!m_pInputBluray->IsNavigationMode() &&
-            ClassifyBdTransition() != EBdTransition::SEAMLESS)
+            ClassifyBdTransition(true) != EBdTransition::SEAMLESS)
         {
           CLog::Log(LOGDEBUG, "VideoPlayer: glided seam no longer seamless - ignored");
         }

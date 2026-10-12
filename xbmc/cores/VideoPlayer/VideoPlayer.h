@@ -548,7 +548,9 @@ protected:
     DISCARD_CLOSE, // menu->title jump (BD-J): drop queues, full close
     DRAIN, // default: render out the old streams, then close
   };
-  EBdTransition ClassifyBdTransition() const;
+  /* @param glided true for a seam the input stream glided (cc 5/6 playitem
+   *        advance, see BdSegmentTransition) */
+  EBdTransition ClassifyBdTransition(bool glided = false) const;
   /* @param glided true when the seam was crossed without holding the read
    *        (CDVDInputStreamBluray's seamless glide), so the demuxer is part
    *        way through the incoming clip and must not be flushed. */
@@ -707,6 +709,9 @@ protected:
     double offset = 0.0;
   };
   bool m_seamByPos = false;
+  //! a seamless (cc 5/6) playitem seam glides while the video stream is still
+  //! starting, not only once it is in sync (JW3 menu, P5-13; A/B flag)
+  bool m_earlyGlide = false;
   std::vector<SeamMark> m_seamMarks;
   std::map<std::pair<int64_t, int>, SeamStream> m_seamStreams;
   void TakeSeamMarks();
