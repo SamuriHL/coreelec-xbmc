@@ -3123,6 +3123,8 @@ void CVideoPlayer::ConvertLostDisplayToPause()
   expected = LossState::CONVERTING;
   if (!m_lossState.compare_exchange_strong(expected, LossState::PAUSED))
     CLog::Log(LOGERROR, "VideoPlayer: the display came back during the pause conversion");
+  // an ordinary pause: disc time (BD-J and HDMV timers) runs through it
+  m_discTime.SetDisplayLost(false);
   IPlayerCallback* cb = &m_callback;
   m_outboundEvents->Submit([=]() { cb->OnPlayBackPaused(); });
   if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))

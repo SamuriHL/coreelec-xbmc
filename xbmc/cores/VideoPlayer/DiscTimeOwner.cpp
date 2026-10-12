@@ -39,6 +39,10 @@ constexpr auto HELD_CAP = 13s;
 // the display-reset cap (delay + 3 s) counts from the mode set, which the
 // player cannot see: allow for the mode set itself from OnLostDisplay
 constexpr auto MODE_SET_ALLOWANCE = 10s;
+// a lost span opens at the disconnect (§18.24): the mode set follows the
+// reconnect, up to 15 s later (a longer disconnect becomes a pause, and
+// disc time runs from there)
+constexpr auto DISCONNECT_ALLOWANCE = 15s;
 } // namespace
 
 void CDiscTimeOwner::Begin(bool enabled)
@@ -46,7 +50,8 @@ void CDiscTimeOwner::Begin(bool enabled)
   const int delay = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
       "videoscreen.delayrefreshchange");
   std::unique_lock lock(m_lock);
-  m_lostCap = std::chrono::milliseconds(std::max(delay, 0) * 100) + 3s + 1s + MODE_SET_ALLOWANCE;
+  m_lostCap = std::chrono::milliseconds(std::max(delay, 0) * 100) + 3s + 1s + MODE_SET_ALLOWANCE +
+              DISCONNECT_ALLOWANCE;
   m_startHeld = false;
   m_heldExpired = false;
   m_runAtNs = 0;
