@@ -2166,6 +2166,10 @@ void CAMLCodec::WriteDrainPadding()
 
 bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualStream)
 {
+  // the stream's speed, set before the open (a start's caching pause comes
+  // first): applied once the decoder is open, below. Overwritten here, the
+  // decoder ran its last-frame timer through that pause (P4-38)
+  const int speedBeforeOpen = m_speed;
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_drainPadded = false;
@@ -2738,7 +2742,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_opened = true;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
-  SetSpeed(m_speed);
+  SetSpeed(aml_presentation_validated() ? speedBeforeOpen : m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
   return true;

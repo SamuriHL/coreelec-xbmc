@@ -151,6 +151,8 @@ protected:
   bool m_bFpsInvalid;        // needed to ignore fps (e.g. dvd stills)
   bool m_bRenderSubs;
   float m_fForcedAspectRatio;
+  //! the speed the decoder is given: the stream's, or PAUSE in a display hold
+  int CodecSpeed() const;
   int m_speed;
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
