@@ -132,6 +132,9 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
   {
     OpenStream(hints, std::move(codec));
     m_messageQueue.Init();
+    // a close inside a lost display drops the reset that ends its hold
+    m_displayHold = false;
+    ClearDisplayHoldFrom();
     CLog::Log(LOGINFO, "Creating audio thread");
     Create();
   }
@@ -502,7 +505,7 @@ void CVideoPlayerAudio::Process()
         }
       }
 
-      if (m_speed != DVD_PLAYSPEED_PAUSE)
+      if (m_speed != DVD_PLAYSPEED_PAUSE && !HeldForDisplay())
         m_audioSink.Resume();
       m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_syncTimer.Set(3000ms);
@@ -510,6 +513,7 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      ClearDisplayHoldFrom();
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
       m_labelling = false;
@@ -533,6 +537,7 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
+      ClearDisplayHoldFrom();
       m_audioSink.Flush();
       m_audioSink.AbortCreate(false);
       // a Create() the flush cut short may wait again for the new position
@@ -578,7 +583,9 @@ void CVideoPlayerAudio::Process()
         {
           if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
           {
-            m_audioSink.Resume();
+            // a lost display's hold resumes at the return
+            if (!HeldForDisplay())
+              m_audioSink.Resume();
             m_stalled = false;
 
             // Resuming re-runs the ENTIRE AE start-sync: CActiveAE's
@@ -622,9 +629,30 @@ void CVideoPlayerAudio::Process()
       OpenStream(msg->m_hints, std::move(msg->m_codec));
       msg->m_codec = NULL;
     }
+    else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_LOST))
+    {
+      // design §18.18: the output keeps writing through the mode change, so
+      // what it has not played comes back (from the picture on screen, at 1x)
+      // and lands when the display is back
+      m_displayHold = KeepsOutput();
+      const bool held = m_displayHold && m_syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+                        IsPlayingSpeed(m_speed);
+      m_paused = true;
+      if (held)
+      {
+        m_displayHoldTaken = true;
+        const double pts = std::static_pointer_cast<CDVDMsgDouble>(pMsg)->m_value;
+        m_pClock->SetHoldFrom(m_speed == DVD_PLAYSPEED_NORMAL && pts != DVD_NOPTS_VALUE ? pts
+                                                                                       : 0.0);
+        m_audioSink.Pause();
+      }
+      CLog::Log(LOGINFO, "CVideoPlayerAudio: display lost, output {}",
+                held ? "paused" : "left as it is");
+    }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
-      m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
+      // a lost display's hold ends only at the display reset
+      m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value || m_displayHold;
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
@@ -701,8 +729,10 @@ void CVideoPlayerAudio::Process()
       // at a vblank on the running clock with the offset
       const double offset = std::static_pointer_cast<CDVDMsgDouble>(pMsg)->m_value;
       const double old = m_pClock->GetAudioOffset();
-      // not playing in sync (a pause or seek came first): its start lands it
-      if (m_syncState != IDVDStreamPlayer::SYNC_INSYNC || m_speed != DVD_PLAYSPEED_NORMAL)
+      // not playing in sync (a pause or seek came first, or the display is
+      // lost): its start lands it
+      if (m_syncState != IDVDStreamPlayer::SYNC_INSYNC || m_speed != DVD_PLAYSPEED_NORMAL ||
+          HeldForDisplay())
         m_pClock->SetAudioOffset(offset);
       else
       {
@@ -722,6 +752,15 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
     {
+      if (m_displayHold)
+      {
+        // sent after the clock's resume was scheduled: the audio lands on it
+        m_displayHold = false;
+        m_paused = false;
+        if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC && IsPlayingSpeed(m_speed))
+          m_audioSink.Resume();
+        ClearDisplayHoldFrom();
+      }
       m_displayReset = true;
       // the engine reopened the sink and restarts its start-sync (ActiveAE
       // suspend exit) - the transient the settle window exists for
@@ -1053,7 +1092,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       m_prevsynctype = -1;
 
-      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC && !HeldForDisplay())
         m_audioSink.Resume();
 
       // a sink rebuild reproduces the start-sync transient (skip/insert +
@@ -1260,6 +1299,31 @@ void CVideoPlayerAudio::OnExit()
 #endif
 
   CLog::Log(LOGINFO, "thread end: CVideoPlayerAudio::OnExit()");
+}
+
+bool CVideoPlayerAudio::KeepsOutput()
+{
+  IAE* ae = CServiceBroker::GetActiveAE();
+  return ae && ae->KeepsOutputAcrossDisplayReset();
+}
+
+bool CVideoPlayerAudio::HeldForDisplay() const
+{
+  return m_displayHold;
+}
+
+void CVideoPlayerAudio::ClearDisplayHoldFrom()
+{
+  if (!m_displayHoldTaken)
+    return;
+  m_displayHoldTaken = false;
+  m_pClock->SetHoldFrom(0.0);
+}
+
+bool CVideoPlayerAudio::IsPlayingSpeed(int speed)
+{
+  return speed != DVD_PLAYSPEED_PAUSE &&
+         m_processInfo.IsTempoAllowed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
 }
 
 void CVideoPlayerAudio::SetSpeed(int speed)

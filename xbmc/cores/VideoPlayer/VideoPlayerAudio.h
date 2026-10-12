@@ -101,6 +101,14 @@ protected:
    */
   void ConfigureLavAudioSync();
 
+  //! design §18.18: the engine keeps its output across a display reset
+  bool KeepsOutput();
+  //! paused for a lost display while the engine keeps writing
+  bool HeldForDisplay() const;
+  //! the hold took the output's audio back: its hold point ends with it
+  void ClearDisplayHoldFrom();
+  bool IsPlayingSpeed(int speed);
+
   CDVDMessageQueue m_messageQueue;
   CDVDMessageQueue& m_messageParent;
 
@@ -119,6 +127,8 @@ protected:
   int m_speed;
   bool m_stalled;
   bool m_paused;
+  bool m_displayHold = false;
+  bool m_displayHoldTaken = false;
   IDVDStreamPlayer::ESyncState m_syncState;
   double m_startFirstPts = DVD_NOPTS_VALUE; // the first frame queued for this start
   XbmcThreads::EndTime<> m_syncTimer;

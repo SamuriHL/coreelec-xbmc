@@ -129,6 +129,15 @@ public:
   virtual bool IsSuspended() {return true;}
 
   /*!
+   * \brief Whether the output stays open across a display reset
+   *
+   * When true, a player pauses its streams at a lost display and resumes them
+   * when the display is back, since the engine keeps writing meanwhile.
+   * Lock-free; fixed once the engine has started.
+   */
+  virtual bool KeepsOutputAcrossDisplayReset() { return false; }
+
+  /*!
    * \brief Stop using the audio device so an external media pipeline can have it
    *
    * The device is closed but, unlike Suspend(), the engine stays configured and running.

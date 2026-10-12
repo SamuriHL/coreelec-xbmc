@@ -9548,7 +9548,18 @@ void CVideoPlayer::OnLostDisplay()
 {
   CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
   if (m_VideoPlayerAudio->IsInited())
-    m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
+  {
+    // the audio heard with the picture on screen: an output kept open through
+    // the mode change gives back what it has not played from there
+    double holdFrom = DVD_NOPTS_VALUE;
+    double maxStep = 0.0;
+    if (!(m_displayResumeOnGrid && m_renderManager.GetResumePts(holdFrom, maxStep)))
+      holdFrom = DVD_NOPTS_VALUE;
+    else
+      holdFrom += m_clock.GetAudioOffset();
+    m_VideoPlayerAudio->SendMessage(
+        std::make_shared<CDVDMsgDouble>(CDVDMsg::PLAYER_DISPLAY_LOST, holdFrom), 1);
+  }
   if (m_VideoPlayerVideo->IsInited())
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
   // before the clock pauses, so the renderer never takes this for a plain pause

@@ -56,6 +56,7 @@ public:
     PLAYER_REPORT_STATE,
     PLAYER_FRAME_ADVANCE,
     PLAYER_DISPLAY_RESET,           // report display reset event
+    PLAYER_DISPLAY_LOST,            // the display is lost: pause, keeping audio from this pts
     PLAYER_AUDIO_RELAND,            // land the audio anew with this audio offset
 
     // demuxer related messages

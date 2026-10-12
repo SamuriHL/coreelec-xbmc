@@ -16,6 +16,7 @@
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <queue>
@@ -256,6 +257,7 @@ public:
   bool Suspend() override;
   bool Resume() override;
   bool IsSuspended() override;
+  bool KeepsOutputAcrossDisplayReset() override;
   bool YieldDevice() override;
   bool ReclaimDevice() override;
   void OnSettingsChange();
@@ -384,6 +386,9 @@ protected:
   std::chrono::milliseconds m_extKeepConfig;
   //! design 5: the session hold and the input format it keeps between streams
   bool m_extSessionHold = false;
+  //! design §18.18: an HDMI sink stays open across a display reset
+  std::atomic_bool m_keepOutputAcrossDisplay{false};
+  bool m_extDisplayLost = false;
   bool m_heldFormatValid = false;
   AEAudioFormat m_heldFormat;
   bool m_extDeferData;

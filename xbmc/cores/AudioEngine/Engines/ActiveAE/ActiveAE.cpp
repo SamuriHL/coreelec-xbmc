@@ -20,6 +20,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "cores/DataCacheCore.h"
+#include "filesystem/File.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -455,6 +456,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           return;
         }
         case CActiveAEControlProtocol::DISPLAYRESET:
+          m_extDisplayLost = false;
           return;
         case CActiveAEControlProtocol::APPFOCUSED:
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::APPFOCUSED, msg->data, sizeof(bool));
@@ -617,6 +619,8 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         switch (signal)
         {
         case CActiveAEControlProtocol::INIT:
+          m_keepOutputAcrossDisplay = aml_presentation_validated() &&
+                                      !XFILE::CFile::Exists("special://profile/keepsink_off");
           m_extError = false;
           m_sink.EnumerateSinkList(false, "");
           LoadSettings();
@@ -727,6 +731,14 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::DISPLAYLOST:
           if (m_sink.GetDeviceType(m_mode == MODE_PCM ? m_settings.device : m_settings.passthroughdevice) == AE_DEVTYPE_HDMI)
           {
+            // the output keeps its sink across the mode change: the player
+            // takes back what the device has not played and lands it after
+            if (m_keepOutputAcrossDisplay)
+            {
+              m_extDisplayLost = true;
+              msg->Reply(CActiveAEControlProtocol::ACC);
+              return;
+            }
             UnconfigureSink();
             m_stats.SetSuspended(true);
             m_state = AE_TOP_CONFIGURED_SUSPEND;
@@ -735,6 +747,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           msg->Reply(CActiveAEControlProtocol::ACC);
           return;
         case CActiveAEControlProtocol::DEVICECHANGE:
+          // no reopen inside a mode change, as a suspended engine drops it
+          if (m_extDisplayLost)
+            return;
           time_t now;
           time(&now);
           CLog::Log(LOGDEBUG,"CActiveAE - device change event");
@@ -771,10 +786,12 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           }
           return;
         case CActiveAEControlProtocol::DEVICECOUNTCHANGE:
-          HandleDeviceCountChange(reinterpret_cast<const char*>(msg->data), false);
+          if (!m_extDisplayLost)
+            HandleDeviceCountChange(reinterpret_cast<const char*>(msg->data), false);
           return;
         case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
-          HandleDeviceCountChange("", true);
+          if (!m_extDisplayLost)
+            HandleDeviceCountChange("", true);
           return;
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
@@ -1012,6 +1029,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         switch (signal)
         {
         case CActiveAEControlProtocol::DISPLAYRESET:
+          m_extDisplayLost = false;
           if (m_extSuspended)
             return;
           CLog::Log(LOGDEBUG,"CActiveAE - display reset event");
@@ -1848,6 +1866,11 @@ void CActiveAE::FlushEngine()
     m_extError = true;
   }
   m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+}
+
+bool CActiveAE::KeepsOutputAcrossDisplayReset()
+{
+  return m_keepOutputAcrossDisplay;
 }
 
 bool CActiveAE::HoldOutput() const
