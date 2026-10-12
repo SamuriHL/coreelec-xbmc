@@ -195,8 +195,11 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
 bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers)
 {
 
-  if (m_amdv_wait_delay == -1)
-    m_amdv_wait_delay = aml_amdv_wait(picture.hdrType);
+  if (m_amdv_wait_delay.load() == -1)
+  {
+    int unarmed = -1;
+    m_amdv_wait_delay.compare_exchange_strong(unarmed, aml_amdv_wait(picture.hdrType));
+  }
 
   // check if something has changed
   {
@@ -1227,12 +1230,14 @@ void CRenderManager::UpdateResolution()
     {
       auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_videostarted);
 
-      if (m_amdv_wait_delay == -1)
+      int wait = m_amdv_wait_delay.load();
+      if (wait == -1)
         return;
 
-      if (m_amdv_wait_delay > 0)
+      if (wait > 0)
       {
-        m_amdv_wait_delay--;
+        // a new file's reset (BeginFile, another thread) wins over this count
+        m_amdv_wait_delay.compare_exchange_strong(wait, wait - 1);
         return;
       }
       // a held start (E1) has decoded its first picture and paused the clock,

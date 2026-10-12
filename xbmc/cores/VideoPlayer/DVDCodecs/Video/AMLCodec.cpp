@@ -4063,6 +4063,7 @@ void CAMLCodec::SetSpeed(int speed)
 
   // update internal vars regardless
   // of if we are open or not.
+  const int previous = m_speed;
   m_speed = speed;
 
   if (!m_opened)
@@ -4087,6 +4088,13 @@ void CAMLCodec::SetSpeed(int speed)
         m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_FFFB);
       else
         m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_I);
+      // out of a pause (or a display hold) into a trick speed: the pause is
+      // not a starved stream either (P4-38)
+      if (previous == DVD_PLAYSPEED_PAUSE && aml_presentation_validated())
+      {
+        m_tp_last_frame = std::chrono::steady_clock::now();
+        m_probe_idle_start = m_tp_last_frame;
+      }
       break;
   }
 }
