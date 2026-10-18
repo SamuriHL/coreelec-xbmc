@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -435,6 +436,7 @@ public:
   };
   std::vector<SeamMark> TakeSeamMarks() { return std::exchange(m_seamMarks, {}); }
   bool GetLastReadAnchor(int64_t& bytePos, uint32_t& gen) override;
+  bool GlidedSeamWithin(int64_t from, int64_t to, uint32_t gen) const override;
   //! the title-byte generation of the read in progress (design 15.50)
   uint32_t GetReadTitleGen() const { return m_readTitleGen; }
 
@@ -645,6 +647,14 @@ protected:
   bool m_pendingSeamlessTransition = false;
   std::optional<int64_t> m_seamPlaylistStep;
   std::vector<SeamMark> m_seamMarks;
+  //! the last glided seams' title-byte positions, for the demuxer's corrupt-PES judgement
+  //! (D5): unlike m_seamMarks they are kept without a playlist step and never taken
+  struct GlidedSeam
+  {
+    int64_t pos;
+    uint32_t gen;
+  };
+  std::deque<GlidedSeam> m_glidedSeams;
   int64_t m_lastDataReadStart = -1; // title byte where the last read returning data began
   int64_t m_lastDataReadEnd = -1; // and where it ended
   uint32_t m_titleByteGen = 0; // the generation of m_lastDataReadStart's title bytes

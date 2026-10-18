@@ -185,6 +185,24 @@ protected:
     uint32_t gen;
   };
   std::deque<ReadAnchor> m_readAnchors;
+  //! the title-byte position and generation of an AVIO position (false if no anchor covers it)
+  bool TitleBytePos(int64_t ioPos, int64_t& pos, uint32_t& gen) const;
+
+  // D5: ffmpeg sets AV_PKT_FLAG_CORRUPT on a PES, but a frame-delayed parser hands the flag to
+  // the frame it completes while reading that PES: the one BEFORE it. The flag is therefore
+  // judged on the PES it belongs to (that stream's next packet), and excused when the PES spans
+  // a seam the BD input glided (the incoming clip's authored continuity restart).
+  // pesbackstop_off restores judging the flagged packet itself. Demux thread only.
+  bool m_pesBackstop = true;
+  struct CorruptPes
+  {
+    int64_t end; // ffmpeg's read position when the flag surfaced, in title bytes
+    uint32_t gen;
+    int64_t flaggedDts; // the packet the flag arrived on, for the log
+  };
+  std::map<int, CorruptPes> m_corruptPes; // per stream: a flagged PES whose frame is still due
+  bool CutByGlidedSeam(int64_t startIoPos, const CorruptPes& pes) const;
+  static bool ParserReturnsLate(const AVStream* st);
 
   double   m_currentPts; // used for stream length estimation
   bool     m_bMatroska;

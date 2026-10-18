@@ -216,6 +216,56 @@ void CDVDDemuxFFmpeg::NoteReadAnchor(int64_t ioPos)
     m_readAnchors.pop_front();
 }
 
+bool CDVDDemuxFFmpeg::TitleBytePos(int64_t ioPos, int64_t& pos, uint32_t& gen) const
+{
+  if (ioPos < 0)
+    return false;
+  for (auto it = m_readAnchors.rbegin(); it != m_readAnchors.rend(); ++it)
+  {
+    if (it->ioPos <= ioPos)
+    {
+      pos = ioPos - it->ioPos + it->bytePos;
+      gen = it->gen;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CDVDDemuxFFmpeg::ParserReturnsLate(const AVStream* st)
+{
+  // parsers that find a frame's end only at the next frame's start, so the frame they return
+  // while reading a PES is the one before it (D5); the others (TrueHD's, LPCM, PGS: none)
+  // return the PES's own frame
+  if (!st || !av_stream_get_parser(st))
+    return false;
+  switch (st->codecpar->codec_id)
+  {
+    case AV_CODEC_ID_HEVC:
+    case AV_CODEC_ID_H264:
+    case AV_CODEC_ID_H264_MVC:
+    case AV_CODEC_ID_MPEG1VIDEO:
+    case AV_CODEC_ID_VC1:
+    case AV_CODEC_ID_MPEG2VIDEO:
+    case AV_CODEC_ID_AC3:
+    case AV_CODEC_ID_EAC3:
+    case AV_CODEC_ID_DTS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool CDVDDemuxFFmpeg::CutByGlidedSeam(int64_t startIoPos, const CorruptPes& pes) const
+{
+  int64_t start;
+  uint32_t gen;
+  // unplaceable: judged corrupt, as before D5
+  if (pes.end < 0 || !TitleBytePos(startIoPos, start, gen) || gen != pes.gen)
+    return false;
+  return m_pInput->GlidedSeamWithin(start, pes.end, gen);
+}
+
 void CDVDDemuxFFmpeg::MarkBroken()
 {
   m_brokenFileDetected = true;
@@ -318,6 +368,11 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
     return false;
 
   m_pInput = pInput;
+  m_pesBackstop = !XFILE::CFile::Exists("special://profile/pesbackstop_off");
+  if (!m_pesBackstop)
+    CLog::Log(LOGINFO, "CDVDDemuxFFmpeg::Open - pesbackstop_off: BD corrupt flags judged on the "
+                       "packet that carries them (the pre-D5 backstop)");
+  m_corruptPes.clear();
   strFile = m_pInput->GetFileName();
 
   if (!m_pInput->GetContent().empty())
@@ -806,6 +861,7 @@ void CDVDDemuxFFmpeg::Dispose()
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
   m_readAnchors.clear();
+  m_corruptPes.clear();
 
   delete m_pSSIF;
   m_pSSIF = nullptr;
@@ -861,6 +917,8 @@ void CDVDDemuxFFmpeg::Flush()
   }
 
   m_currentPts = DVD_NOPTS_VALUE;
+  // the parsers' held frames die with avformat_flush
+  m_corruptPes.clear();
 
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
@@ -1203,27 +1261,72 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         m_pkt.result = av_read_frame(m_pFormatContext, &m_pkt.pkt);
         m_timeout.SetInfinite();
 
-        // BD glued playitem seams: a packet that still carries the corrupt
-        // flag is the outgoing clip's truncated PES tail (cc=1 authoring
-        // permits mid-body truncation; ffmpeg's eof-flush emits the
-        // fragment when the boundary hold ends the read). The seam flush in
-        // the player normally drops these unemitted - anything that slips
-        // through is garbage the decoders would error-conceal, so surface
-        // it and drop it here rather than deliver it (defect C backstop).
-        // The drop must cost exactly this one packet: falling into the
-        // generic result<0 Flush() below discarded adjacent good PES of ALL
-        // streams per corrupt packet (review finding A3).
-        if (m_pkt.result >= 0 && (m_pkt.pkt.flags & AV_PKT_FLAG_CORRUPT) &&
-            m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+        // BD glued playitem seams: a corrupt PES is the outgoing clip's
+        // truncated tail (cc=1 authoring permits mid-body truncation; ffmpeg's
+        // eof-flush emits the fragment when the boundary hold ends the read).
+        // The seam flush in the player normally drops these unemitted - anything
+        // that slips through is garbage the decoders would error-conceal, so
+        // surface it and drop it here rather than deliver it (defect C backstop).
+        // The drop must cost exactly this one packet: falling into the generic
+        // result<0 Flush() below discarded adjacent good PES of ALL streams per
+        // corrupt packet (review finding A3).
+        if (m_pkt.result >= 0 && m_pInput && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
         {
-          CLog::Log(LOGWARNING,
-                    "CDVDDemuxFFmpeg::Read - dropping corrupt-flagged packet at "
-                    "BD splice: stream:{} dts:{} size:{}",
-                    m_pkt.pkt.stream_index, m_pkt.pkt.dts, m_pkt.pkt.size);
-          m_pkt.result = -1;
-          av_packet_unref(&m_pkt.pkt);
-          bReturnEmpty = true;
-          corruptDropped = true;
+          const int idx = m_pkt.pkt.stream_index;
+          const bool flagged = m_pkt.pkt.flags & AV_PKT_FLAG_CORRUPT;
+          bool drop = false;
+          if (!m_pesBackstop)
+            drop = flagged;
+          else
+          {
+            // D5: the frame of a flagged PES, returned one packet late by its parser
+            if (auto it = m_corruptPes.find(idx); it != m_corruptPes.end())
+            {
+              // only the frame that starts inside the flagged PES is its frame: a stream whose
+              // next packet provably starts after that PES (a later generation, or past its end)
+              // never got it. Anything unplaceable, or older (a PES cut by a title-byte jump), is
+              // judged, as before D5.
+              int64_t start;
+              uint32_t gen;
+              const bool stale = it->second.end >= 0 && TitleBytePos(m_pkt.pkt.pos, start, gen) &&
+                                 (gen > it->second.gen || (gen == it->second.gen && start > it->second.end));
+              if (!stale)
+              {
+                drop = !CutByGlidedSeam(m_pkt.pkt.pos, it->second);
+                if (!drop)
+                  CLog::Log(LOGDEBUG,
+                            "CDVDDemuxFFmpeg::Read - corrupt flag from a glided seam's "
+                            "continuity restart, kept: stream:{} dts:{} (flag reached on dts:{})",
+                            idx, m_pkt.pkt.dts, it->second.flaggedDts);
+              }
+              m_corruptPes.erase(it);
+            }
+            // a packet can both be a flagged PES's frame (judged above) and carry the next flag
+            if (flagged)
+            {
+              if (idx >= 0 && static_cast<unsigned int>(idx) < m_pFormatContext->nb_streams &&
+                  ParserReturnsLate(m_pFormatContext->streams[idx]))
+              {
+                CorruptPes pes{-1, 0, m_pkt.pkt.dts};
+                // ffmpeg's read position now: the flagged PES ends before it
+                TitleBytePos(m_ioContext ? avio_tell(m_ioContext) : -1, pes.end, pes.gen);
+                m_corruptPes[idx] = pes; // this frame precedes the flagged PES: delivered
+              }
+              else
+                drop = true; // the flag is on its own PES (no parser, or one that is not late)
+            }
+          }
+          if (drop)
+          {
+            CLog::Log(LOGWARNING,
+                      "CDVDDemuxFFmpeg::Read - dropping corrupt PES at BD splice: "
+                      "stream:{} dts:{} size:{}",
+                      idx, m_pkt.pkt.dts, m_pkt.pkt.size);
+            m_pkt.result = -1;
+            av_packet_unref(&m_pkt.pkt);
+            bReturnEmpty = true;
+            corruptDropped = true;
+          }
         }
       }
 
@@ -1363,17 +1466,12 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
           // store internal id until we know the continuous id presented to player
           // the stream might not have been created yet
           pPacket->iStreamId = m_pkt.pkt.stream_index;
-          if (m_pkt.pkt.pos >= 0)
+          int64_t streamPos;
+          uint32_t streamGen;
+          if (TitleBytePos(m_pkt.pkt.pos, streamPos, streamGen))
           {
-            for (auto it = m_readAnchors.rbegin(); it != m_readAnchors.rend(); ++it)
-            {
-              if (it->ioPos <= m_pkt.pkt.pos)
-              {
-                pPacket->streamPos = m_pkt.pkt.pos - it->ioPos + it->bytePos;
-                pPacket->streamGen = it->gen;
-                break;
-              }
-            }
+            pPacket->streamPos = streamPos;
+            pPacket->streamGen = streamGen;
           }
         }
         if (!keep)

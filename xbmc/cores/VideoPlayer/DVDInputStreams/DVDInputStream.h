@@ -218,6 +218,9 @@ public:
   //! and that domain's generation (it changes whenever the positions jump: a
   //! new playlist, a loop, a seek). False if the stream has no such positions.
   virtual bool GetLastReadAnchor(int64_t& bytePos, uint32_t& gen) { return false; }
+  //! true when a seam the stream glided (read through without a hold) begins inside
+  //! (from, to] of byte generation gen, in the GetLastReadAnchor domain
+  virtual bool GlidedSeamWithin(int64_t from, int64_t to, uint32_t gen) const { return false; }
   virtual BitstreamStats GetBitstreamStats() const { return m_stats; }
 
   bool ContentLookup() { return m_contentLookup; }

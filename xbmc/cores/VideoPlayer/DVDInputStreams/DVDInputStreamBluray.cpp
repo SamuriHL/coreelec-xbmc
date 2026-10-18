@@ -1789,6 +1789,12 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
     m_pendingSeamlessTransition = true;
     // reads are split at the clip end, so the incoming clip starts the read
     // that opened it: the last read that returned data.
+    if (m_lastDataReadStart >= 0)
+    {
+      m_glidedSeams.push_back({m_lastDataReadStart, m_titleByteGen});
+      while (m_glidedSeams.size() > 8)
+        m_glidedSeams.pop_front();
+    }
     uint64_t clipPos = 0;
     if (m_seamPlaylistStep && m_lastDataReadStart >= 0)
     {
@@ -1801,6 +1807,12 @@ bool CDVDInputStreamBluray::ArmSeamlessGlide()
     return true;
   }
   return false;
+}
+
+bool CDVDInputStreamBluray::GlidedSeamWithin(int64_t from, int64_t to, uint32_t gen) const
+{
+  return std::any_of(m_glidedSeams.begin(), m_glidedSeams.end(), [&](const GlidedSeam& s)
+                     { return s.gen == gen && from < s.pos && s.pos <= to; });
 }
 
 bool CDVDInputStreamBluray::GetLastReadAnchor(int64_t& bytePos, uint32_t& gen)
