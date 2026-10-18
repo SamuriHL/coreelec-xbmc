@@ -8,6 +8,7 @@
 
 #include "Timekeeper.h"
 
+#include "filesystem/File.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
 
@@ -126,6 +127,9 @@ bool CTimekeeper::Start(bool shadow)
 {
   if (m_masterFd < 0 || !m_crtcId)
     return false;
+  m_vblankSkip = !XFILE::CFile::Exists("special://profile/vblankskip_off");
+  if (!m_vblankSkip)
+    CLog::Log(LOGINFO, "TIMEKEEPER: vblankskip_off: a repeated vblank counts as a tick (pre-5.A2)");
   // its own fd: its vblank events never mix with anyone else's
   char* path = drmGetDeviceNameFromFd2(m_masterFd);
   if (path)
@@ -346,6 +350,11 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
   if (m_lastRealNs)
   {
     const int64_t dt = ns - m_lastRealNs;
+    // P5-7: half a period, of the shortest period any mode has (120 Hz): right after a mode set
+    // the period known here may still be the old one, and a faster mode's real vblanks then come
+    // under half of it (60 Hz after 24 Hz); the repeated timestamp comes 0 us after the last.
+    constexpr double SHORTEST_PERIOD_NS = 1e9 / 120.0;
+    const bool duplicate = m_vblankSkip && dt < 0.5 * std::min(NominalNs(), SHORTEST_PERIOD_NS);
     double nominal = NominalNs();
     int64_t steps = std::llround(dt / nominal);
     const bool onGrid = steps >= 1 && std::fabs(dt - steps * nominal) <= 0.02 * nominal;
@@ -390,6 +399,14 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
       }
       else if (onGrid && !gap && ++m_onGridRun >= 3)
         m_suspect = false;
+    }
+    if (duplicate)
+    {
+      // not a vblank of the panel: the epoch switched above as before, the timeline counts none
+      m_dupKseq.store(kernelSeq, std::memory_order_relaxed);
+      m_dupNs.store(ns, std::memory_order_relaxed);
+      m_dupSkipped.fetch_add(1, std::memory_order_release);
+      return;
     }
     if (steps < 1)
       steps = 1;
@@ -538,6 +555,7 @@ void CTimekeeper::Report()
   int64_t maxLag = 0;
   int64_t steppedBack = 0;
   int pinsN = 0;
+  uint64_t dupLogged = 0;
   double pinsSum = 0, pinsMin = 1e9, pinsMax = -1e9;
   // the same by the label of the audio content: a counted audio clock cancels
   // out of the pts comparison, so a step the codec leaves in place shows only here
@@ -566,6 +584,16 @@ void CTimekeeper::Report()
                 TIME_PRIORITY, rt == 0 ? std::string("granted") : "refused: " + std::string(strerror(rt)),
                 tl[TL_PERIOD_NUM], tl[TL_PERIOD_DEN], 1e9 / nominalNs);
       startLogged = true;
+    }
+
+    if (const uint64_t dup = m_dupSkipped.load(std::memory_order_acquire); dup != dupLogged)
+    {
+      CLog::Log(LOGINFO,
+                "TIMEKEEPER: vblank skipped, a repeated timestamp at a mode set (P5-7): kseq {} ns {} "
+                "({} so far)",
+                m_dupKseq.load(std::memory_order_relaxed), m_dupNs.load(std::memory_order_relaxed),
+                dup);
+      dupLogged = dup;
     }
 
     if (tl[TL_EPOCH] != lastEpoch)

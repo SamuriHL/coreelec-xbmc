@@ -90,6 +90,11 @@ private:
   uint64_t m_epochStartTick = 0;
   int64_t m_rateRefNs = 0;
   uint64_t m_rateRefTick = 0;
+  // P5-7 (step 5.A2): at a mode set (drm_crtc_vblank_off) the kernel delivers the last vblank's
+  // timestamp and sequence once more; a vblank under half of min(period, 1/120 s) after the last
+  // real one is that duplicate and is not a tick (vblankskip_off: counted as one, as before).
+  // It still switches the epoch, as it did. Time thread only.
+  bool m_vblankSkip = true;
 
   // counters the reporter reads (written only by the time thread)
   std::atomic<int> m_rtResult{-1};     // 0 if SCHED_FIFO was granted, else errno
@@ -104,6 +109,9 @@ private:
   std::atomic<int64_t> m_validNs{0};
   std::atomic<uint64_t> m_modeOldNum{0}, m_modeOldDen{0};
   std::atomic<uint64_t> m_rateCorrections{0}; // epochs the panel's measured rate started
+  std::atomic<uint64_t> m_dupSkipped{0};       // repeated vblanks not counted (P5-7)
+  std::atomic<uint64_t> m_dupKseq{0};
+  std::atomic<int64_t> m_dupNs{0};
   static constexpr int WAKE_BINS = 401; // 50 µs bins to 20 ms, then overflow
   std::array<std::atomic<uint32_t>, WAKE_BINS> m_wake{};
   std::atomic<int64_t> m_wakeMaxUs{0};
