@@ -131,9 +131,9 @@ private:
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
   int m_fd{-1};
-  // The last mode set left the link in a DV tunnel format: TV-led (RGB/444
-  // 8-bit) or player-led/LLDV (YUV422 12-bit). Either one has to be handed back
-  // to the kernel on the way out - see leaving_dv_wire().
+  // The link may carry a DV tunnel format: TV-led (RGB/444 8-bit) or
+  // player-led/LLDV (YUV422 12-bit), until it is handed back to the kernel on
+  // the way out - see leaving_dv_wire().
   bool m_wireDvTunnel{false};
   int m_width;
   int m_height;
