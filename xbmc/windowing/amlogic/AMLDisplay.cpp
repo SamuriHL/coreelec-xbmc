@@ -10,6 +10,7 @@
 #include <amcodec/codec.h>
 
 #include "AMLDisplay.h"
+#include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "platform/linux/SysfsPath.h"
 #include "linux/fb.h"
@@ -30,6 +31,33 @@ constexpr float FractionalRate(float rate)
   // Divide in double: in float the result lands one ULP low. Widened explicitly
   // for -Werror=double-promotion.
   return static_cast<float>(static_cast<double>(rate) / 1.001);
+}
+
+// dvwireback_off: the DV wire is tracked from the core's state at each mode set, as before
+bool DvWireBackOff()
+{
+  static const bool off = XFILE::CFile::Exists("special://profile/dvwireback_off");
+  return off;
+}
+
+std::string LinkConfig()
+{
+  return CSysfsPath("/sys/class/amhdmitx/amhdmitx0/config").Get<std::string>().value_or("");
+}
+
+// TV-led DV's RGB/YUV444 8-bit
+bool TvLedTunnelFormat(const std::string& cfg)
+{
+  return cfg.find("Colour depth: 8-bit") != std::string::npos &&
+         (cfg.find("Colourspace: YUV444") != std::string::npos ||
+          cfg.find("Colourspace: RGB") != std::string::npos);
+}
+
+// either DV tunnel format; player-led's YUV422 12-bit is often the native one too
+bool DvTunnelFormat(const std::string& cfg)
+{
+  return TvLedTunnelFormat(cfg) || (cfg.find("Colour depth: 12-bit") != std::string::npos &&
+                                    cfg.find("Colourspace: YUV422") != std::string::npos);
 }
 } // unnamed namespace
 
@@ -626,7 +654,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   // colour space and the bit depth. Needed for BOTH tunnel formats: TV-led leaves
   // 8-bit behind, player-led leaves 12-bit YUV422, and an SDR/HDR10 return happily
   // accepts either.
-  if (leaving_dv_wire())
+  const bool handBack = leaving_dv_wire();
+  if (handBack)
   {
     // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
     constexpr unsigned int HDMI_CS_RESERVED6 = 6;
@@ -659,7 +688,16 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
     apply_dv_wire_format();
     // Either tunnel format counts: the leaving path has to hand the wire back
     // whether we pinned it to 8-bit (TV-led) or to 12-bit YUV422 (player-led).
-    m_wireDvTunnel = aml_dv_core_outputs_dv();
+    // Kept until it is handed back: a DV start engages the core after its mode
+    // set, and a DV film can find the link already in the tunnel format.
+    const unsigned int dvOutput = aml_dv_get_output_mode();
+    if (DvWireBackOff())
+      m_wireDvTunnel = aml_dv_core_outputs_dv();
+    else if (aml_dv_core_outputs_dv() || dvOutput == DOLBY_VISION_OUTPUT_MODE_IPT ||
+             dvOutput == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+      m_wireDvTunnel = true;
+    else if (m_wireDvTunnel && (handBack || !DvTunnelFormat(LinkConfig())))
+      m_wireDvTunnel = false;
 
     aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
 
@@ -815,7 +853,8 @@ bool CAMLDRMUtils::aml_output_wire_stale()
 {
   if (aml_dv_disc_engaged())
     return false;
-  return (aml_dv_core_outputs_dv() && aml_dv_wire_format_mismatch()) || leaving_dv_wire();
+  return (aml_dv_core_outputs_dv() && aml_dv_wire_format_mismatch()) ||
+         (leaving_dv_wire() && (DvWireBackOff() || TvLedTunnelFormat(LinkConfig())));
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
