@@ -26,6 +26,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
@@ -2388,7 +2389,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // enable Dolby Vision driver when 'dovi.ko' is available
   bool device_support_dv(aml_support_dolby_vision());
   bool display_support_dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
-  bool user_dv_disable(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  bool user_dv_disable(OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   // VS10 engine can output SDR/HDR10 to a non-DV display, so allow the DV core
   // to be enabled even when the display itself does not advertise DV support.
   bool vs10_active(aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS);
@@ -2402,10 +2403,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // read only where the decision uses it, as the branch below does
   dvIn.displaySupportsPq = !display_support_dv && aml_display_support_hdr_pq();
   dvIn.vs10Pending = aml_dv_get_vs10_pending();
-  dvIn.playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-                       CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
-  dvIn.stockConvert = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-      CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
+  dvIn.playerLed = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+  dvIn.stockConvert = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
   dvIn.discSession = aml_dv_disc_session();
   dvIn.presentationValidated = aml_presentation_validated();
   dvIn.fileEngageOff = XFILE::CFile::Exists("special://profile/dvfile_engage_off");
@@ -2435,8 +2434,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
 
     // use player led mode when enabled
     const bool ll_player_led =
-        (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-             CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
+        (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
          !display_support_dv);
     const unsigned int ll_want =
         ll_player_led ? DOLBY_VISION_LL_YUV422 : DOLBY_VISION_LL_DISABLE;
@@ -2468,11 +2466,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         // (SDR/HDR10/DV) rather than always converting to DV.
         AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, vs10_mode);
         if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-          aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
-            GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+          aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
         dv_output_mode = vs10_mode;
       }
-      else if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
+      else if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
       {
         AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_IPT);
         dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT;
@@ -2505,8 +2502,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       // setting on we leave the mode alone and let the LL policy drive; the core
       // stays engaged either way, which is what makes the comparison possible on
       // profile 7/8 as well as profile 5.
-      const bool stock_convert = CServiceBroker::GetSettingsComponent()->GetSettings()->
-        GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
+      const bool stock_convert = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
       if (!aml_display_support_dv() && stock_convert)
       {
         CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - non-DV display: leaving the "
@@ -2523,8 +2519,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
         if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-          aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
-            GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+          aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
         dv_output_mode = vs10_mode;
       }
       else if (stock_convert && !aml_display_support_dv())

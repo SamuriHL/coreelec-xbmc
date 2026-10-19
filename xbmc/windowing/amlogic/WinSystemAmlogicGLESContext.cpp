@@ -27,6 +27,7 @@
 #include "utils/MathUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
@@ -57,6 +58,7 @@ std::unique_ptr<CWinSystemBase> CWinSystemAmlogicGLESContext::CreateWinSystem()
 bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 {
   OUTPUT::StartAccounting();
+  OUTPUT::CSettingsMirror::Get().Start();
   if (!CWinSystemAmlogic::InitWindowSystem())
   {
     return false;
@@ -172,6 +174,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
   m_pGLContext->DestroyContext();
   m_pGLContext->Destroy();
   const bool destroyed = CWinSystemAmlogic::DestroyWindowSystem();
+  OUTPUT::CSettingsMirror::Get().Stop();
   OUTPUT::StopAccounting();
   return destroyed;
 }

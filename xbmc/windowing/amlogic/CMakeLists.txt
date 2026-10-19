@@ -5,7 +5,8 @@ set(SOURCES WinSystemAmlogic.cpp
             Timekeeper.cpp
             AudioFollower.cpp
             WireClassProbe.cpp
-            OutputWorker.cpp)
+            OutputWorker.cpp
+            SettingsMirror.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h
@@ -14,7 +15,8 @@ set(HEADERS WinSystemAmlogic.h
             Timekeeper.h
             AudioFollower.h
             WireClassProbe.h
-            OutputWorker.h)
+            OutputWorker.h
+            SettingsMirror.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp

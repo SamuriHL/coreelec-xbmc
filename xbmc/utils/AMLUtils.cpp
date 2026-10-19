@@ -16,6 +16,7 @@
 
 #include "AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "utils/StringUtils.h"
 #include "ServiceBroker.h"
 #include "utils/RegExp.h"
@@ -311,7 +312,7 @@ bool aml_support_dolby_vision()
 
 bool aml_dolby_vision_enabled()
 {
-  bool dv_user_enabled(!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
 
   bool dv_enabled = (!!aml_support_dolby_vision() &&
                      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
@@ -327,8 +328,7 @@ bool aml_dv_core_active()
   // DV, and either the display advertises DV or a non-bypass VS10 mode is
   // pending). Mirrors the dv_enable decision in CAMLCodec::OpenDecoder so the
   // BL+EL merge and RPU handling stay consistent with whether the core runs.
-  const bool dv_user_enabled(!CServiceBroker::GetSettingsComponent()->GetSettings()->
-    GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  const bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   if (!aml_support_dolby_vision() || !dv_user_enabled)
     return false;
   return aml_display_support_dv() ||
@@ -341,8 +341,7 @@ bool aml_dv_lldv_output_active()
   // = LL_YUV422, see CAMLCodec::OpenDecoder). It only actually reaches the wire as
   // DV when VS10 is leaving the output as Dolby Vision - a VS10 conversion to
   // HDR10/SDR carries no DV signal at all, so none of the LLDV constraints apply.
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
+  if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
     return false;
   const unsigned int mode = aml_dv_get_vs10_pending();
   return mode != DOLBY_VISION_OUTPUT_MODE_HDR10 &&
@@ -355,8 +354,7 @@ bool aml_dv_tvled_output_active()
   // Mirror of aml_dv_lldv_output_active for the other LED mode. Same VS10
   // caveat: a conversion to HDR10/SDR carries no DV signal, so the sink never
   // sees the RPU and nothing that rewrites it can reach the display.
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_TV_LED)
+  if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_TV_LED)
     return false;
   const unsigned int mode = aml_dv_get_vs10_pending();
   return mode != DOLBY_VISION_OUTPUT_MODE_HDR10 &&
@@ -373,8 +371,7 @@ bool aml_dv_source_engages_core()
   // instead of playing base-layer-only. Reads the DV-source VS10 SETTING, not the
   // per-stream pending (aml_dv_core_active), because the demuxer classifies
   // streams before VideoPlayer resolves the pending mode.
-  const bool dv_user_enabled(!CServiceBroker::GetSettingsComponent()->GetSettings()->
-    GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  const bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   if (!aml_support_dolby_vision() || !dv_user_enabled)
     return false;
   return aml_display_support_dv() ||
@@ -384,14 +381,13 @@ bool aml_dv_source_engages_core()
 
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 {
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  bool dv_user_enabled(!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
+  bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   bool user_convert_to_dv;
 
   if (hdrType == StreamHdrType::HDR_TYPE_NONE)
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
+    user_convert_to_dv = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
   else
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
+    user_convert_to_dv = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
 
   bool convert_to_dv = (!!aml_support_dolby_vision() &&
                         static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
@@ -573,8 +569,7 @@ unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 static void aml_dv_apply_osd_brightness(unsigned int mode)
 {
   if (mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-    aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
-      GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+    aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
   else
     aml_dv_set_hdr10_osd_brightness(0);
 }
@@ -622,8 +617,7 @@ static void aml_dv_publish_follow_source_mode(bool dvEnabled)
 // 12-bit; TV-led (standard) DV tunnels as YUV444/RGB 8-bit.
 bool aml_dv_wire_format_is_lldv()
 {
-  return CServiceBroker::GetSettingsComponent()->GetSettings()->
-    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+  return OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
 }
 
 bool aml_dv_wire_format_mismatch()
@@ -637,8 +631,7 @@ bool aml_dv_wire_format_mismatch()
     return false;
 
   const std::string cfg = config.Get<std::string>().value();
-  const bool player_led = (CServiceBroker::GetSettingsComponent()->GetSettings()->
-    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED);
+  const bool player_led = (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED);
 
   // One-line digest of what the link is actually carrying. The node opens
   // "Colour depth: N-bit\nColourspace: X\nColour range: ...", and a wire that
@@ -752,8 +745,7 @@ static void aml_dv_engage_disc_session_now()
   // (same values; the codec's later writes are idempotent).
   CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_enable", 'Y');
   aml_dv_apply_vsvdb();
-  const bool playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->
-    GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+  const bool playerLed = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
   CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
   if (ll_policy.Exists())
     ll_policy.Set(playerLed ? 1u /* DOLBY_VISION_LL_YUV422 */
@@ -972,7 +964,7 @@ void aml_dv_cancel_file_engage_request()
 
 unsigned int aml_vs10_by_setting(const std::string& setting)
 {
-  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(setting);
+  return OUTPUT::CSettingsMirror::Get().GetInt(setting);
 }
 
 unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitDepth)
@@ -1134,8 +1126,7 @@ unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
   // screen. Mirror the stock SDR2DV/HDR2DV fallback: player-led -> IPT,
   // TV-led -> IPT_TUNNEL.
   if (mode == DOLBY_VISION_OUTPUT_MODE_IPT &&
-      CServiceBroker::GetSettingsComponent()->GetSettings()->
-        GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != AML_DV_PLAYER_LED)
     return DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
   return mode;
 }
@@ -1165,8 +1156,7 @@ void aml_dv_apply_target_overrides(unsigned int mode)
     // Only an explicit user value; 0 leaves the source's mastering values alone.
     // Not auto-detected: the VSVDB peak is an advertised player-led figure, and
     // nothing read from EDID should be restated to the sink behind the user's back.
-    max_nits = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-        CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+    max_nits = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
   }
   min_override.Set(0);
   max_override.Set(max_nits < 0 ? 0 : max_nits);
@@ -1289,8 +1279,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   // engage - here or at a decoder open - writes the param again regardless.
   if (mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
   {
-    const bool playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->
-      GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+    const bool playerLed = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
     CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
     if (ll_policy.Exists())
     {
@@ -1326,7 +1315,7 @@ void aml_dv_apply_graphics_from_sink()
   if (!settings)
     return;
 
-  const bool fromSink = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK);
+  const bool fromSink = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK);
   param.Set(fromSink ? "Y" : "N");
   CLog::Log(LOGINFO, "AMLUtils::{} - DV graphics peak {}", __FUNCTION__,
             fromSink ? "follows the display" : "per-format (300 nits)");
@@ -1487,8 +1476,7 @@ static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 
 void aml_dv_apply_vsvdb()
 {
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE))
+  if (!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE))
   {
     aml_dv_clear_vsvdb();
     return;
@@ -1502,10 +1490,10 @@ void aml_dv_apply_vsvdb()
   // 'Force peak onto display' is on) and no dependency on the peak, so gating
   // the whole injection on a non-zero peak made a colour space the user had
   // explicitly chosen silently do nothing.
-  int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
-  const int cs = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
+  int nits = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+  const int cs = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_COLOURSPACE);
   // 0 = keep the panel's advertised black level, N = min-luminance index N-1.
-  const int blk = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM);
+  const int blk = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MINLUM);
   if (nits <= 0 && cs == 0 && blk <= 0)
   {
     CLog::Log(LOGINFO, "AMLUtils::{} - display peak is auto (0), colour space and black level "

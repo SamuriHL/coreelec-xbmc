@@ -13,6 +13,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -295,11 +296,7 @@ void CWireClassProbe::Check(const char* origin, Source gfxSource, uint64_t seria
   // as SETTLE will: from the commit, the delay plus 100 ms, then until the class matches, capped
   // at the delay plus 3 s (§4.4)
   const auto start = std::chrono::steady_clock::now();
-  const auto settings = CServiceBroker::GetSettingsComponent();
-  const int delayMs =
-      settings && settings->GetSettings()
-          ? 100 * settings->GetSettings()->GetInt("videoscreen.delayrefreshchange")
-          : 0;
+  const int delayMs = 100 * OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   const auto first = start + std::chrono::milliseconds(delayMs + 100);
   const auto cap = start + std::chrono::milliseconds(delayMs + 3000);
 

@@ -37,6 +37,7 @@
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "threads/SingleLock.h"
 
 #include "platform/linux/SysfsPath.h"
@@ -460,7 +461,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
   RefreshDisplayCapabilities();
 
-  if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
+  if (OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
   {
      CLog::Log(LOGDEBUG, "CWinSystemAmlogic::InitWindowSystem -- disabling noise reduction");
      CSysfsPath("/sys/module/aml_media/parameters/nr2_en", 0);
@@ -633,7 +634,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_nHeight       = res.iHeight;
   m_fRefreshRate  = res.fRefreshRate;
 
-  int delay = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("videoscreen.delayrefreshchange");
+  int delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   if (delay > 0)
   {
     m_delayDispReset = true;
@@ -860,9 +861,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
         ->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR)
         ->SetVisible(true);
 
-    int sdr2hdr = CServiceBroker::GetSettingsComponent()
-        ->GetSettings()
-        ->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
+    int sdr2hdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
     if (sdr2hdr)
     {
       CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting sdr2hdr mode to {:d}", __FUNCTION__, sdr2hdr);
@@ -876,9 +875,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
         ->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR)
         ->SetVisible(true);
 
-    int hdr2sdr = CServiceBroker::GetSettingsComponent()
-        ->GetSettings()
-        ->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
+    int hdr2sdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
     if (hdr2sdr)
     {
       CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting hdr2sdr mode to {:d}", __FUNCTION__, hdr2sdr);
@@ -911,8 +908,7 @@ CHDRCapabilities CWinSystemAmlogic::GetDisplayHDRCapabilities() const
 
 float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 {
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const int guiSdrPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
+  const int guiSdrPeak = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
 
   return ((0.7f * guiSdrPeak + 30.0f) / 100.0f);
 }
