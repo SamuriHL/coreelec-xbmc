@@ -186,6 +186,35 @@ void aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode);
+
+// What CAMLCodec::OpenDecoder decides for a stream's DV output, as a function of
+// inputs taken before it (phase 5 step 5.E1b; DECIDE uses it from 5.E2)
+struct AmlDvInputs
+{
+  bool deviceSupportsDv = false;
+  bool userDisabled = false;
+  bool streamIsDv = false; // the hint's HDR type after the codec's VS10/HDR10+ rewrite
+  int dvProfile = 0;
+  bool displaySupportsDv = false;
+  bool displaySupportsPq = false;
+  unsigned int vs10Pending = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  bool playerLed = false;
+  bool stockConvert = false;
+  bool discSession = false;
+  bool presentationValidated = false;
+  bool fileEngageOff = false;
+};
+
+struct AmlDvDecision
+{
+  bool enable = false;
+  unsigned int llPolicy = 0;
+  int policy = -1; // the dolby_vision_policy written, -1 for none
+  unsigned int outputMode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  bool fileEngage = false;
+};
+
+AmlDvDecision aml_dv_resolve_output(const AmlDvInputs& in);
 // HDR10-output mastering peak override restated to the sink by kernel patch 0011
 // (dovi.ko itself ignores it); silently no-ops on a stock kernel.
 void aml_dv_apply_target_overrides(unsigned int mode);

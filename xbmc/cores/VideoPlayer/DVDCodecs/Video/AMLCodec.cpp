@@ -2392,6 +2392,25 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // VS10 engine can output SDR/HDR10 to a non-DV display, so allow the DV core
   // to be enabled even when the display itself does not advertise DV support.
   bool vs10_active(aml_dv_get_vs10_pending() != DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  // phase 5 step 5.E1b (log only): the same decision from inputs taken now
+  AmlDvInputs dvIn;
+  dvIn.deviceSupportsDv = device_support_dv;
+  dvIn.userDisabled = user_dv_disable;
+  dvIn.streamIsDv = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
+  dvIn.dvProfile = hints.dovi.dv_profile;
+  dvIn.displaySupportsDv = display_support_dv;
+  // read only where the decision uses it, as the branch below does
+  dvIn.displaySupportsPq = !display_support_dv && aml_display_support_hdr_pq();
+  dvIn.vs10Pending = aml_dv_get_vs10_pending();
+  dvIn.playerLed = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+                       CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED;
+  dvIn.stockConvert = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
+  dvIn.discSession = aml_dv_disc_session();
+  dvIn.presentationValidated = aml_presentation_validated();
+  dvIn.fileEngageOff = XFILE::CFile::Exists("special://profile/dvfile_engage_off");
+  const AmlDvDecision dvShadow = aml_dv_resolve_output(dvIn);
+  AmlDvDecision dvActual;
   bool dv_enable(device_support_dv && !user_dv_disable &&
     hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
     (display_support_dv || hints.dovi.dv_profile == 5 || vs10_active));
@@ -2422,6 +2441,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     const unsigned int ll_want =
         ll_player_led ? DOLBY_VISION_LL_YUV422 : DOLBY_VISION_LL_DISABLE;
     AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC, ll_want);
+    dvActual.llPolicy = ll_want;
     // This decoder open is the ONLY place the LED choice reaches the driver:
     // CloseDecoder never resets dolby_vision_ll_policy and aml_dv_set_vs10_mode()
     // never re-asserts it, so between streams it is whatever the last DV open
@@ -2440,6 +2460,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     if (hints.dovi.dv_profile == 0)
     {
       AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FORCE_OUTPUT_MODE);
+      dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
       unsigned int vs10_mode = aml_dv_resolve_tunnel_mode(aml_dv_get_vs10_pending());
       if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
       {
@@ -2499,6 +2520,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
       {
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
+        dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
         CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
         if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
           aml_dv_set_hdr10_osd_brightness(CServiceBroker::GetSettingsComponent()->GetSettings()->
@@ -2513,6 +2535,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         // left in dolby_vision_policy - a stale FORCE_OUTPUT_MODE would keep
         // forcing the previous mode and make the comparison meaningless.
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FOLLOW_SOURCE);
+        dvActual.policy = AMDV_FOLLOW_SOURCE;
         // What the sink actually ends up receiving, for the GUI/OSD encoding
         // gate: upstream maps to the best format the display reports, so PQ
         // when the panel takes PQ and SDR otherwise. Reporting IPT_TUNNEL here
@@ -2529,7 +2552,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         // clock runs. Engage it at the mode set instead, as a disc session does.
         if (!aml_dv_disc_session() && aml_presentation_validated() &&
             !XFILE::CFile::Exists("special://profile/dvfile_engage_off"))
+        {
           aml_dv_request_file_engage();
+          dvActual.fileEngage = true;
+        }
       }
     }
 
@@ -2586,6 +2612,23 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // Publish the resolved output mode so CRendererAML::Configure encodes the
   // GUI/OSD to match the actual signal the sink receives this stream.
   aml_dv_set_output_mode(dv_output_mode);
+  dvActual.enable = dv_enable;
+  dvActual.outputMode = dv_output_mode;
+  {
+    const bool match = dvShadow.enable == dvActual.enable &&
+                       dvShadow.llPolicy == dvActual.llPolicy &&
+                       dvShadow.policy == dvActual.policy &&
+                       dvShadow.outputMode == dvActual.outputMode &&
+                       dvShadow.fileEngage == dvActual.fileEngage;
+    CLog::Log(LOGINFO,
+              "RESOLVE dv shadow: {} enable {}/{} ll {}/{} policy {}/{} output {}/{} engage {}/{} "
+              "(profile {}, vs10 {}, display dv {} pq {}, player-led {}, stock {})",
+              match ? "MATCH" : "DIFF", dvShadow.enable, dvActual.enable, dvShadow.llPolicy,
+              dvActual.llPolicy, dvShadow.policy, dvActual.policy, dvShadow.outputMode,
+              dvActual.outputMode, dvShadow.fileEngage, dvActual.fileEngage, dvIn.dvProfile,
+              dvIn.vs10Pending, dvIn.displaySupportsDv, dvIn.displaySupportsPq, dvIn.playerLed,
+              dvIn.stockConvert);
+  }
 
   // Key the target overrides on the same resolved mode, not the requested VS10
   // mode: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV conversion leave

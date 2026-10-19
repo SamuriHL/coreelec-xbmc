@@ -1030,6 +1030,55 @@ bool aml_dv_core_leaves_native_wire()
          mode == DOLBY_VISION_OUTPUT_MODE_SDR8;
 }
 
+AmlDvDecision aml_dv_resolve_output(const AmlDvInputs& in)
+{
+  // CAMLCodec::OpenDecoder's branches, in its order
+  constexpr int FOLLOW_SOURCE = 1;
+  constexpr int FORCE_OUTPUT_MODE = 2;
+  AmlDvDecision d;
+  const bool vs10Active = in.vs10Pending != DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  d.enable = in.deviceSupportsDv && !in.userDisabled && in.streamIsDv &&
+             (in.displaySupportsDv || in.dvProfile == 5 || vs10Active);
+  if (!d.enable)
+    return d;
+
+  d.llPolicy = in.playerLed || !in.displaySupportsDv ? 1 : 0;
+  if (in.dvProfile == 0)
+  {
+    d.policy = FORCE_OUTPUT_MODE;
+    const unsigned int vs10 = aml_dv_resolve_tunnel_mode(in.vs10Pending);
+    if (vs10 != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      d.outputMode = vs10;
+    else if (in.playerLed)
+      d.outputMode = DOLBY_VISION_OUTPUT_MODE_IPT;
+    else
+      d.outputMode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+    return d;
+  }
+
+  unsigned int vs10 = in.vs10Pending;
+  if (!in.displaySupportsDv && !in.stockConvert && vs10 != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
+      vs10 != DOLBY_VISION_OUTPUT_MODE_HDR10)
+    vs10 = in.displaySupportsPq ? DOLBY_VISION_OUTPUT_MODE_HDR10 : DOLBY_VISION_OUTPUT_MODE_SDR10;
+  if (vs10 == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10 == DOLBY_VISION_OUTPUT_MODE_HDR10)
+  {
+    d.policy = FORCE_OUTPUT_MODE;
+    d.outputMode = vs10;
+  }
+  else if (in.stockConvert && !in.displaySupportsDv)
+  {
+    d.policy = FOLLOW_SOURCE;
+    d.outputMode =
+        in.displaySupportsPq ? DOLBY_VISION_OUTPUT_MODE_HDR10 : DOLBY_VISION_OUTPUT_MODE_SDR10;
+  }
+  else
+  {
+    d.outputMode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+    d.fileEngage = !in.discSession && in.presentationValidated && !in.fileEngageOff;
+  }
+  return d;
+}
+
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
 {
   // The "Dolby Vision" VS10 output option is stored as IPT, but IPT is the
