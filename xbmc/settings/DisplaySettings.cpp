@@ -13,6 +13,7 @@
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/StereoscopicsManager.h"
+#include "messaging/ApplicationMessenger.h"
 #include "messaging/helpers/DialogHelper.h"
 #include "platform/linux/SysfsPath.h"
 #include "rendering/RenderSystem.h"
@@ -460,7 +461,12 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
       RESOLUTION newRes = GetResolutionForScreen();
 
       SetCurrentResolution(newRes, false);
-      winSystem->GetGfxContext().SetVideoResolution(newRes, true);
+      // the mode change reads this setting on main; off main, waiting for it here, under the
+      // setting's lock, deadlocks (a JSON-RPC change)
+      if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+        winSystem->GetGfxContext().SetVideoResolution(newRes, true);
+      else
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, newRes, 1);
     }
   }
 
