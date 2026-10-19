@@ -554,6 +554,514 @@ bool CResolutionUtils::FindResolutionFromOverride(float fps, int width, bool is3
   return false; //no override found
 }
 
+ResolutionInputs ResolutionInputs::Take()
+{
+  ResolutionInputs in;
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  CDisplaySettings& display = CDisplaySettings::GetInstance();
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  in.videoResolution = gfx.GetVideoResolution();
+  in.desktopResolution = display.GetCurrentResolution();
+  in.stereoMode = gfx.GetStereoMode();
+  in.resolutionInfoSize = display.ResolutionInfoSize();
+  for (size_t r = 0; r < in.resolutionInfoSize; r++)
+    in.infos[static_cast<int>(r)] = gfx.GetResInfo(static_cast<RESOLUTION>(r));
+  in.invalidInfo = gfx.GetResInfo(RES_INVALID);
+
+  for (const auto& mode : settings->GetList(CSettings::SETTING_VIDEOSCREEN_WHITELIST))
+    in.whitelist.push_back(display.GetResFromString(mode.asString()));
+  std::vector<RESOLUTION> allowed;
+  gfx.GetAllowedResolutions(allowed);
+  for (const auto c : allowed)
+    in.allowed.emplace_back(c, display.GetResFromString(display.GetStringFromRes(c)));
+
+  in.doubleRefreshRate = settings->GetBool(SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE);
+  in.wholeNumber = settings->GetBool(SETTING_VIDEOSCREEN_WHITELIST_WHOLENUMBER);
+  in.pulldown = settings->GetBool(SETTING_VIDEOSCREEN_WHITELIST_PULLDOWN);
+  for (const auto& o : CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAdjustRefreshOverrides)
+    in.overrides.push_back({o.fpsmin, o.fpsmax, o.refreshmin, o.refreshmax, o.fallback});
+  return in;
+}
+
+const RESOLUTION_INFO& ResolutionInputs::Info(RESOLUTION res) const
+{
+  const auto it = infos.find(static_cast<int>(res));
+  return it != infos.end() ? it->second : invalidInfo;
+}
+
+RESOLUTION CResolutionUtils::ChooseBestResolution(
+    const ResolutionInputs& in, float fps, int width, int height, bool is3D)
+{
+  RESOLUTION res = in.videoResolution;
+  float weight = 0.0f;
+
+  if (!FindResolutionFromOverride(in, fps, width, is3D, res, weight, false)) //find a refreshrate from overrides
+  {
+    if (!FindResolutionFromOverride(in, fps, width, is3D, res, weight, true)) //if that fails find it from a fallback
+    {
+      FindResolutionFromWhitelist(in, fps, width, height, is3D, res); //find a refreshrate from whitelist
+    }
+  }
+
+  return res;
+}
+
+void CResolutionUtils::FindResolutionFromWhitelist(
+    const ResolutionInputs& in, float fps, int width, int height, bool is3D, RESOLUTION& resolution)
+{
+  constexpr uint32_t STEREO_FLAGS = D3DPRESENTFLAG_MODEMASK & ~D3DPRESENTFLAG_INTERLACED;
+  auto ModeFlagsMatch = [&](uint32_t modeFlags, uint32_t wantedFlags) -> bool
+  {
+    if ((modeFlags & wantedFlags) != wantedFlags)
+      return false;
+
+    return (wantedFlags & STEREO_FLAGS) != 0 || (modeFlags & STEREO_FLAGS) == 0;
+  };
+
+  RESOLUTION_INFO curr = in.Info(resolution);
+  const RenderStereoMode stereo_mode = in.stereoMode;
+  uint32_t dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
+  const RESOLUTION_INFO desktop_info = in.Info(in.desktopResolution);
+  std::vector<RESOLUTION> indexList = in.whitelist;
+
+  bool noWhiteList = indexList.empty();
+
+  CLog::Log(LOGINFO,
+            "[WHITELIST] Searching the whitelist for: width: {}, height: {}, fps: {:0.3f}, 3D: {}:(0x{:x}), stereo mode: {:d}",
+            width, height, fps, is3D ? "true" : "false", dwFlags, stereo_mode);
+
+  switch (stereo_mode) {
+    case RenderStereoMode::SPLIT_VERTICAL:
+      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D SidebySide mode with {:d}x{:d}{} @ {:.3f} Hz",
+        curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
+      dwFlags |= D3DPRESENTFLAG_MODE3DSBS;
+      break;
+    case RenderStereoMode::SPLIT_HORIZONTAL:
+      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D TopBottom mode with {:d}x{:d}{} @ {:.3f} Hz",
+        curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
+      dwFlags |= D3DPRESENTFLAG_MODE3DTB;
+      break;
+    case RenderStereoMode::HARDWAREBASED:
+      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D Frame Packaging mode with {:d}x{:d}{} @ {:.3f} Hz",
+        curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
+      dwFlags |= D3DPRESENTFLAG_MODE3DFP;
+      break;
+    default:
+      break;
+  }
+
+  if (noWhiteList)
+  {
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] Using the default whitelist because the user whitelist is empty");
+    RESOLUTION_INFO info;
+    for (const auto& [c, mapped] : in.allowed)
+    {
+      info = in.Info(c);
+      if (((info.iScreenWidth >= desktop_info.iScreenWidth) ||
+           (info.iScreenHeight >= curr.iScreenHeight && info.iScreenWidth >= curr.iScreenWidth)) &&
+          ModeFlagsMatch(info.dwFlags, dwFlags))
+      {
+        // do not add half refreshrates (25, 29.97 by default) as kodi cannot cope with
+        // them on playback start. Especially interlaced content is not properly detected
+        // and this causes ugly double switching.
+        // This won't allow 25p / 30p playback on native refreshrate by default
+        if ((info.fRefreshRate > 30) || (MathUtils::FloatEquals(info.fRefreshRate, 24.0f, 0.1f)))
+          indexList.push_back(mapped);
+      }
+    }
+  }
+
+  unsigned int penalty = std::numeric_limits<unsigned int>::max();
+  bool found = false;
+
+  if (in.doubleRefreshRate)
+  {
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] Searching for an exact resolution with double the refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are exact and have double the refresh rate
+      if (MatchesMode(width, height, info) &&
+          ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched an exact resolution with double the refresh rate {} ({})",
+                  info.strMode, i);
+        unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+        if (pen <= penalty)
+        {
+          resolution = i;
+          found = true;
+          penalty = pen;
+        }
+      }
+    }
+    if (found)
+      return;
+
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] No match for an exact resolution with double the refresh rate");
+  }
+
+  if (in.wholeNumber)
+  {
+    CLog::Log(
+        LOGDEBUG,
+        "[WHITELIST] Searching for an exact resolution with a whole-number repeat refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are exact and have 5 times the refresh rate
+      if (MatchesMode(width, height, info) &&
+          ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
+           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched an exact resolution with a whole-number repeat refresh rate "
+                  "{} ({})",
+                  info.strMode, i);
+        unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+        if (pen < penalty)
+        {
+          resolution = i;
+          found = true;
+          penalty = pen;
+        }
+      }
+    }
+    if (found)
+      return;
+
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] No match for a resolution with a whole-number repeat refresh rate");
+  }
+
+  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for an exact resolution with an exact refresh rate");
+
+  for (const auto i : indexList)
+  {
+    const RESOLUTION_INFO info = in.Info(i);
+
+    // allow resolutions that are exact and have the correct refresh rate
+    if (MatchesMode(width, height, info) &&
+        ModeFlagsMatch(info.dwFlags, dwFlags) &&
+        MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f))
+    {
+      CLog::Log(
+          LOGDEBUG,
+          "[WHITELIST] Matched an exact resolution with an exact refresh rate {}, 0x{:x} ({})",
+          info.strMode, info.dwFlags, i);
+      unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+      if (pen < penalty)
+      {
+        resolution = i;
+        found = true;
+        penalty = pen;
+      }
+    }
+  }
+
+  if (!found)
+    CLog::Log(LOGDEBUG, "[WHITELIST] No match for an exact resolution with an exact refresh rate");
+  else
+    return;
+
+  if (in.pulldown ||
+      stereo_mode == RenderStereoMode::SPLIT_VERTICAL)
+  {
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] Searching for an exact resolution with a 3:2 pulldown refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are exact and have 2.5 times the refresh rate
+      if (MatchesMode(width, height, info) &&
+          ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
+      {
+        CLog::Log(
+            LOGDEBUG,
+            "[WHITELIST] Matched an exact resolution with a 3:2 pulldown refresh rate {} ({})",
+            info.strMode, i);
+        unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+        if (pen < penalty)
+        {
+          resolution = i;
+          found = true;
+          penalty = pen;
+        }
+      }
+    }
+    if (found)
+      return;
+
+    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a resolution with a 3:2 pulldown refresh rate");
+  }
+
+  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with an exact refresh rate");
+
+  for (const auto i : indexList)
+  {
+    const RESOLUTION_INFO info = in.Info(i);
+
+    // allow resolutions that are closest resolutions but have the correct refresh rate
+    if (ModeFlagsMatch(info.dwFlags, dwFlags) &&
+        MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f))
+    {
+      unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+      if (pen < penalty)
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched a closest resolution with an exact refresh rate {} ({}), penalty {}",
+                  info.strMode, i, pen);
+        resolution = i;
+        found = true;
+        penalty = pen;
+      }
+    }
+  }
+  if (!found)
+    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a closest resolution with an exact refresh rate");
+  else
+    return;
+
+  if (in.doubleRefreshRate)
+  {
+    CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with double refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are closest resolutions but have double refresh rate
+      if (ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+      {
+        unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+        if (pen <= penalty)
+        {
+          CLog::Log(LOGDEBUG,
+                    "[WHITELIST] Matched a closest resolution with double refresh rate {} ({}), penalty {}",
+                    info.strMode, i, pen);
+          resolution = i;
+          found = true;
+          penalty = pen;
+        }
+      }
+    }
+    if (found)
+      return;
+
+    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a closest resolution with double refresh rate");
+  }
+
+  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a desktop resolution with an exact refresh rate");
+
+  for (const auto i : indexList)
+  {
+    const RESOLUTION_INFO info = in.Info(i);
+
+    // allow resolutions that are desktop resolution but have the correct refresh rate
+    if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
+        MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f))
+    {
+      CLog::Log(LOGDEBUG,
+                "[WHITELIST] Matched a desktop resolution with an exact refresh rate {} ({})",
+                info.strMode, i);
+      resolution = i;
+      return;
+    }
+  }
+
+  CLog::Log(LOGDEBUG, "[WHITELIST] No match for a desktop resolution with an exact refresh rate");
+
+  if (in.doubleRefreshRate)
+  {
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] Searching for a desktop resolution with double the refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are desktop resolution but have double the refresh rate
+      if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched a desktop resolution with double the refresh rate {} ({})",
+                  info.strMode, i);
+        resolution = i;
+        return;
+      }
+    }
+
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] No match for a desktop resolution with double the refresh rate");
+  }
+
+  if (in.pulldown ||
+      stereo_mode == RenderStereoMode::SPLIT_VERTICAL)
+  {
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] Searching for a desktop resolution with a 3:2 pulldown refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are desktop resolution but have 2.5 times the refresh rate
+      if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
+      {
+        CLog::Log(
+            LOGDEBUG,
+            "[WHITELIST] Matched a desktop resolution with a 3:2 pulldown refresh rate {} ({})",
+            info.strMode, i);
+        resolution = i;
+        return;
+      }
+    }
+
+    CLog::Log(LOGDEBUG,
+              "[WHITELIST] No match for a desktop resolution with a 3:2 pulldown refresh rate");
+  }
+
+  if (in.wholeNumber)
+  {
+    CLog::Log(
+        LOGDEBUG,
+        "[WHITELIST] Searching for a desktop resolution with a whole-number repeat refresh rate");
+
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are desktop resolution but have whole-number refresh rate
+      if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
+           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched a desktop resolution with a whole-number repeat refresh "
+                  "rate {} ({})",
+                  info.strMode, i);
+        resolution = i;
+        return;
+      }
+    }
+
+    CLog::Log(
+        LOGDEBUG,
+        "[WHITELIST] No match for a desktop resolution with a whole-number repeat refresh rate");
+  }
+
+  if (is3D && curr.fRefreshRate > 30)
+  {
+    CLog::Log(LOGDEBUG, "[WHITELIST] No resolution matched but refresh rate is {:0.3f}", curr.fRefreshRate);
+    for (const auto i : indexList)
+    {
+      const RESOLUTION_INFO info = in.Info(i);
+
+      // allow resolutions that are exact and have the correct refresh rate
+      // allow macroblock alignment / padding errors (e.g. 1080 mod16 == 8)
+      if (((height == info.iScreenHeight && width <= info.iScreenWidth + 8) ||
+           (width == info.iScreenWidth && height <= info.iScreenHeight + 8)) &&
+          ModeFlagsMatch(info.dwFlags, dwFlags) &&
+          MathUtils::FloatEquals(info.fRefreshRate, curr.fRefreshRate, 0.01f))
+      {
+        CLog::Log(LOGDEBUG,
+                  "[WHITELIST] Matched an fallback resolution with an exact refresh rate {} ({})",
+                  info.strMode, i);
+        unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
+        if (pen < penalty)
+        {
+          resolution = i;
+          found = true;
+          penalty = pen;
+        }
+      }
+    }
+  }
+
+  if (found)
+    return;
+
+  CLog::Log(LOGDEBUG, "[WHITELIST] No resolution matched");
+}
+
+bool CResolutionUtils::FindResolutionFromOverride(const ResolutionInputs& in,
+                                                  float fps,
+                                                  int width,
+                                                  bool is3D,
+                                                  RESOLUTION& resolution,
+                                                  float& weight,
+                                                  bool fallback)
+{
+  RESOLUTION_INFO curr = in.Info(resolution);
+
+  //try to find a refreshrate from the override
+  for (const auto& override : in.overrides)
+  {
+
+    if (override.fallback != fallback)
+      continue;
+
+    //if we're checking for overrides, check if the fps matches
+    if (!fallback && (fps < override.fpsmin || fps > override.fpsmax))
+      continue;
+
+    for (size_t j = (int)RES_DESKTOP; j < in.resolutionInfoSize; j++)
+    {
+      RESOLUTION_INFO info = in.Info((RESOLUTION)j);
+
+      if (info.iScreenWidth  == curr.iScreenWidth &&
+          info.iScreenHeight == curr.iScreenHeight &&
+          (info.dwFlags & D3DPRESENTFLAG_MODEMASK) == (curr.dwFlags & D3DPRESENTFLAG_MODEMASK))
+      {
+        if (info.fRefreshRate <= override.refreshmax &&
+            info.fRefreshRate >= override.refreshmin)
+        {
+          resolution = (RESOLUTION)j;
+
+          if (fallback)
+          {
+            CLog::Log(
+                LOGDEBUG,
+                "Found Resolution {} ({}) from fallback (refreshmin:{:.3f} refreshmax:{:.3f})",
+                info.strMode, resolution, override.refreshmin, override.refreshmax);
+          }
+          else
+          {
+            CLog::Log(LOGDEBUG,
+                      "Found Resolution {} ({}) from override of fps {:.3f} (fpsmin:{:.3f} "
+                      "fpsmax:{:.3f} refreshmin:{:.3f} refreshmax:{:.3f})",
+                      info.strMode, resolution, fps, override.fpsmin, override.fpsmax,
+                      override.refreshmin, override.refreshmax);
+          }
+
+          weight = RefreshWeight(info.fRefreshRate, fps);
+
+          return true; //fps and refresh match with this override, use this resolution
+        }
+      }
+    }
+  }
+
+  return false; //no override found
+}
+
 //distance of refresh to the closest multiple of fps (multiple is 1 or higher), as a multiplier of fps
 float CResolutionUtils::RefreshWeight(float refresh, float fps)
 {

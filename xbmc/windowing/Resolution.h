@@ -8,8 +8,12 @@
 
 #pragma once
 
+#include "rendering/RenderSystemTypes.h"
+
+#include <map>
 #include <stdint.h>
 #include <string>
+#include <vector>
 
 typedef int DisplayMode;
 #define DM_WINDOWED     -1
@@ -115,10 +119,50 @@ public:
   float DisplayRatio() const;
 };
 
+//! Everything ChooseBestResolution reads, taken at one moment, so that the choice can be made from
+//! it on any thread
+struct ResolutionInputs
+{
+  struct Override
+  {
+    float fpsmin;
+    float fpsmax;
+    float refreshmin;
+    float refreshmax;
+    bool fallback;
+  };
+
+  RESOLUTION videoResolution = RES_INVALID;
+  RESOLUTION desktopResolution = RES_INVALID;
+  RenderStereoMode stereoMode = RenderStereoMode::OFF;
+  //! GetResInfo() of every resolution, and of an invalid one
+  std::map<int, RESOLUTION_INFO> infos;
+  RESOLUTION_INFO invalidInfo;
+  size_t resolutionInfoSize = 0;
+  //! the user's whitelist, each entry through GetResFromString()
+  std::vector<RESOLUTION> whitelist;
+  //! each allowed resolution, and the one its string maps back to
+  std::vector<std::pair<RESOLUTION, RESOLUTION>> allowed;
+  bool doubleRefreshRate = false;
+  bool wholeNumber = false;
+  bool pulldown = false;
+  std::vector<Override> overrides;
+
+  //! main thread: reads the graphics context, the display settings and the settings
+  static ResolutionInputs Take();
+  const RESOLUTION_INFO& Info(RESOLUTION res) const;
+};
+
 class CResolutionUtils
 {
 public:
   static RESOLUTION ChooseBestResolution(float fps, int width, int height, bool is3D);
+  //! the same choice, from inputs taken earlier; reads nothing else
+  static RESOLUTION ChooseBestResolution(const ResolutionInputs& in,
+                                         float fps,
+                                         int width,
+                                         int height,
+                                         bool is3D);
   static bool HasWhitelist();
   static void PrintWhitelist();
 
@@ -133,4 +177,17 @@ protected:
   static void FindResolutionFromWhitelist(float fps, int width, int height, bool is3D, RESOLUTION &resolution);
   static bool FindResolutionFromOverride(float fps, int width, bool is3D, RESOLUTION &resolution, float& weight, bool fallback);
   static float RefreshWeight(float refresh, float fps);
+  static void FindResolutionFromWhitelist(const ResolutionInputs& in,
+                                          float fps,
+                                          int width,
+                                          int height,
+                                          bool is3D,
+                                          RESOLUTION& resolution);
+  static bool FindResolutionFromOverride(const ResolutionInputs& in,
+                                         float fps,
+                                         int width,
+                                         bool is3D,
+                                         RESOLUTION& resolution,
+                                         float& weight,
+                                         bool fallback);
 };
