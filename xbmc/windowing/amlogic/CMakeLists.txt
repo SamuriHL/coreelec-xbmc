@@ -3,14 +3,16 @@ set(SOURCES WinSystemAmlogic.cpp
             VideoSyncTimeline.cpp
             AMLDisplay.cpp
             Timekeeper.cpp
-            AudioFollower.cpp)
+            AudioFollower.cpp
+            WireClassProbe.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h
             VideoSyncTimeline.h
             AMLDisplay.h
             Timekeeper.h
-            AudioFollower.h)
+            AudioFollower.h
+            WireClassProbe.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp

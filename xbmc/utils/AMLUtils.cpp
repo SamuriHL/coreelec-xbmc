@@ -27,6 +27,7 @@
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/amlogic/WireClassProbe.h"
 #include "windowing/WinSystem.h"
 
 // Dolby Vision L5 active-area detection (background software decode + luma scan)
@@ -1113,6 +1114,10 @@ void aml_dv_set_vs10_mode(unsigned int mode)
                                           CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60358));
     return;
   }
+  struct NotifyProbe
+  {
+    ~NotifyProbe() { WIRECLASS::CWireClassProbe::Get().Notify("vs10", WIRECLASS::Source::UNKNOWN); }
+  } notifyProbe;
 
   mode = aml_dv_resolve_tunnel_mode(mode);
   aml_dv_apply_target_overrides(mode);

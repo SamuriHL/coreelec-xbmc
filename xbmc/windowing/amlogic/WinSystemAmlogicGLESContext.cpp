@@ -30,6 +30,7 @@
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
+#include "windowing/amlogic/WireClassProbe.h"
 
 #include <chrono>
 
@@ -132,11 +133,14 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
       m_graphicsPlane.reset();
   }
 
+  WIRECLASS::CWireClassProbe::Get().Start();
   return true;
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  WIRECLASS::CWireClassProbe::Get().Stop();
+
   // off while the coordinator runs and the GUI plane is still up to carry it
   if (m_graphicsPlane)
   {
@@ -228,6 +232,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
     aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
+    WIRECLASS::CWireClassProbe::Get().Notify("no mode set", WIRECLASS::FromHdrType(hdrType));
     return true;
   }
 
@@ -271,6 +276,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   // the disc-session DV engage waits for this mode set, so the sink locks once
   aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
+  WIRECLASS::CWireClassProbe::Get().Notify("mode set", WIRECLASS::FromHdrType(hdrType));
 
   uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
   if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format))

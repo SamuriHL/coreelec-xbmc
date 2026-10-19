@@ -30,6 +30,7 @@
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/amlogic/WireClassProbe.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
@@ -2590,6 +2591,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // mode: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV conversion leave
   // the pending mode at BYPASS while the branches above still output DV.
   aml_dv_apply_target_overrides(dv_output_mode);
+  WIRECLASS::CWireClassProbe::Get().SetDecoderSource(WIRECLASS::FromHdrType(hints.hdrType));
+  WIRECLASS::CWireClassProbe::Get().Notify("decoder open", WIRECLASS::Source::UNKNOWN);
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);
@@ -2850,6 +2853,7 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 
 void CAMLCodec::CloseDecoder()
 {
+  WIRECLASS::CWireClassProbe::Get().SetDecoderSource(WIRECLASS::Source::UNKNOWN);
   // TEST (felkeep_on): closed before its first frame - the kept picture goes
   // as a plain FEL open would have dropped it
   if (m_felKeepStage.exchange(0) == 1)
