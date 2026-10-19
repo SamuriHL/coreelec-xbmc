@@ -1319,15 +1319,6 @@ void CRenderManager::UpdateResolution()
                                !stereoMode.empty(), width, height)
                          : CResolutionUtils::ChooseBestResolution(
                                fps, width, height, !stereoMode.empty()));
-          // phase 5 step 5.E1b (log only): the same choice from a snapshot of its inputs
-          if (mayChooseMode && !held)
-          {
-            const RESOLUTION shadow = CResolutionUtils::ChooseBestResolution(
-                ResolutionInputs::Take(), fps, width, height, !stereoMode.empty());
-            CLog::Log(LOGINFO, "RESOLVE shadow: resolution {} {} actual {} ({:.3f} fps, {}x{}{})",
-                      shadow, shadow == res ? "MATCH" : "DIFF", res, fps, width, height,
-                      stereoMode.empty() ? "" : ", 3D");
-          }
           // A segment that chose its own resolution - the feature, when the
           // disc started there (a resume, or a title started directly) - is
           // the session's anchor too: otherwise the first menu opened later

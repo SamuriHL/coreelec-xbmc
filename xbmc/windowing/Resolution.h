@@ -141,7 +141,7 @@ struct ResolutionInputs
   size_t resolutionInfoSize = 0;
   //! the user's whitelist, each entry through GetResFromString()
   std::vector<RESOLUTION> whitelist;
-  //! each allowed resolution, and the one its string maps back to
+  //! with an empty whitelist: each allowed resolution, and the one its string maps back to
   std::vector<std::pair<RESOLUTION, RESOLUTION>> allowed;
   bool doubleRefreshRate = false;
   bool wholeNumber = false;
@@ -157,7 +157,7 @@ class CResolutionUtils
 {
 public:
   static RESOLUTION ChooseBestResolution(float fps, int width, int height, bool is3D);
-  //! the same choice, from inputs taken earlier; reads nothing else
+  //! from inputs taken earlier; reads nothing else
   static RESOLUTION ChooseBestResolution(const ResolutionInputs& in,
                                          float fps,
                                          int width,
@@ -174,8 +174,6 @@ public:
   static void GetMaxAllowedScreenResolution(unsigned int& width, unsigned int& height);
 
 protected:
-  static void FindResolutionFromWhitelist(float fps, int width, int height, bool is3D, RESOLUTION &resolution);
-  static bool FindResolutionFromOverride(float fps, int width, bool is3D, RESOLUTION &resolution, float& weight, bool fallback);
   static float RefreshWeight(float refresh, float fps);
   static void FindResolutionFromWhitelist(const ResolutionInputs& in,
                                           float fps,
