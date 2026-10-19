@@ -397,6 +397,8 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
         nominal = NominalNs();
         steps = std::llround(dt / nominal);
       }
+      else if (posted && num && den && m_vblankSkip)
+        m_reanchorPending = true;
       else if (onGrid && !gap && ++m_onGridRun >= 3)
         m_suspect = false;
     }
@@ -410,6 +412,14 @@ void CTimekeeper::OnVblank(uint64_t kernelSeq, int64_t ns, int64_t now)
     }
     if (steps < 1)
       steps = 1;
+    if (m_reanchorPending)
+    {
+      // the first vblank of a mode at the same period: its phase step against the old grid
+      m_reanchorPending = false;
+      m_rateRefNs = 0;
+      m_reanchorStepNs.store(dt - std::llround(steps * nominal), std::memory_order_relaxed);
+      m_reanchors.fetch_add(1, std::memory_order_release);
+    }
     if (steps > 1)
       m_skips.fetch_add(steps - 1, std::memory_order_relaxed);
     // timer ticks may have covered this period already; never step back
@@ -556,6 +566,7 @@ void CTimekeeper::Report()
   int64_t steppedBack = 0;
   int pinsN = 0;
   uint64_t dupLogged = 0;
+  uint64_t reanchorLogged = 0;
   double pinsSum = 0, pinsMin = 1e9, pinsMax = -1e9;
   // the same by the label of the audio content: a counted audio clock cancels
   // out of the pts comparison, so a step the codec leaves in place shows only here
@@ -571,6 +582,8 @@ void CTimekeeper::Report()
     if (m_stop)
       break;
 
+    // before the timeline: a re-anchor counted after this read is not taken for this sample's
+    const uint64_t reanchors = m_reanchors.load(std::memory_order_acquire);
     int64_t tl[TL_COUNT];
     if (!TimelineBoard().Read(tl))
       continue;
@@ -606,6 +619,19 @@ void CTimekeeper::Report()
                   1e9 / oldNs);
       }
       lastEpoch = tl[TL_EPOCH];
+      reanchorLogged = reanchors;
+      rate.clear();
+      clock.clear();
+      audio.clear();
+      audioHt.clear();
+    }
+    else if (reanchors != reanchorLogged)
+    {
+      CLog::Log(LOGINFO,
+                "TIMEKEEPER epoch {}: a mode set at the same period (P5-7), the vblank grid's phase "
+                "stepped {:+.3f} ms; the fits restart ({} so far)",
+                tl[TL_EPOCH], m_reanchorStepNs.load(std::memory_order_relaxed) / 1e6, reanchors);
+      reanchorLogged = reanchors;
       rate.clear();
       clock.clear();
       audio.clear();

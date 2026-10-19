@@ -95,6 +95,10 @@ private:
   // real one is that duplicate and is not a tick (vblankskip_off: counted as one, as before).
   // It still switches the epoch, as it did. Time thread only.
   bool m_vblankSkip = true;
+  // A mode set that keeps the period opens no epoch, but the new mode's vblanks start at their
+  // own phase: the sibling-rate check measures afresh from the first vblank after the set, and
+  // the reporter fits afresh (vblankskip_off: as before, the fits run across the set).
+  bool m_reanchorPending = false;
 
   // counters the reporter reads (written only by the time thread)
   std::atomic<int> m_rtResult{-1};     // 0 if SCHED_FIFO was granted, else errno
@@ -112,6 +116,8 @@ private:
   std::atomic<uint64_t> m_dupSkipped{0};       // repeated vblanks not counted (P5-7)
   std::atomic<uint64_t> m_dupKseq{0};
   std::atomic<int64_t> m_dupNs{0};
+  std::atomic<uint64_t> m_reanchors{0};        // mode sets at the same period (P5-7)
+  std::atomic<int64_t> m_reanchorStepNs{0};    // the grid's phase step at the last one
   static constexpr int WAKE_BINS = 401; // 50 µs bins to 20 ms, then overflow
   std::array<std::atomic<uint32_t>, WAKE_BINS> m_wake{};
   std::atomic<int64_t> m_wakeMaxUs{0};
