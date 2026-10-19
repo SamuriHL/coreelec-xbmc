@@ -7254,6 +7254,16 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       // A VS10 mapping to a non-DV output (SDR or HDR10) is the user's choice of
       // output and wins over the conversion (user ruling 2026-10-11): the stream
       // then opens exactly as with the conversion off.
+      // phase 5 step 5.E1b (log only): the same decision from inputs taken now
+      AmlHdrOpenInputs hdrIn;
+      hdrIn.hdrType = hint.hdrType;
+      hdrIn.vs10Mode = vs10Mode;
+      hdrIn.convertByVsEngine = aml_convert_to_dv_by_vs_engine(hint.hdrType);
+      hdrIn.deviceSupportsDv = aml_support_dolby_vision();
+      hdrIn.displaySupportsDv = aml_display_support_dv();
+      hdrIn.hdr10plusConvert = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
+      const AmlHdrOpenDecision hdrShadow = aml_dv_resolve_stream_open(hdrIn);
       const bool vs10NonDvTarget = vs10Mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
                                    vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
                                    vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR8;
@@ -7270,6 +7280,12 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
           (aml_convert_to_dv_by_vs_engine(hint.hdrType) ||
            vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS))
         hint.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+      CLog::Log(LOGINFO, "RESOLVE hdr open shadow: {} type {}/{} vs10 {}/{} (source {})",
+                hdrShadow.hdrType == hint.hdrType && hdrShadow.vs10Pending == vs10Mode ? "MATCH"
+                                                                                         : "DIFF",
+                CStreamDetails::HdrTypeToString(hdrShadow.hdrType),
+                CStreamDetails::HdrTypeToString(hint.hdrType), hdrShadow.vs10Pending, vs10Mode,
+                CStreamDetails::HdrTypeToString(hdrIn.hdrType));
       res = OpenVideoStream(hint, reset);
       // A new video segment is the only point where the menu-domain
       // low-latency clamp may shrink the queues.

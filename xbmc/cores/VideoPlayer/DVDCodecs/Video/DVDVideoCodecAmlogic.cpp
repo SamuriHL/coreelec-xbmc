@@ -507,6 +507,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     // hint synthesis / core engage to AddData, once GetIsHdrPlus() is known -- if no
     // HDR10+ is actually found the stream just opens as HDR10 (no false DV).
     m_hdr10plusToDvCandidate = false;
+    // phase 5 step 5.E1b (log only)
+    const bool candidateShadow = aml_dv_hdr10plus_candidate(
+        aml_support_dolby_vision(), aml_display_support_dv(), m_hints.dovi.dv_profile,
+        m_hints.hdrType, dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT));
     if (aml_support_dolby_vision() && aml_display_support_dv() &&
         m_hints.dovi.dv_profile == 0 &&
         (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
@@ -525,6 +529,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
                          "(peak brightness source histogram-plus) - confirming HDR10+ from bitstream",
                 __MODULE_NAME__);
     }
+    CLog::Log(LOGINFO, "RESOLVE hdr10+ candidate shadow: {} {}/{}",
+              candidateShadow == m_hdr10plusToDvCandidate ? "MATCH" : "DIFF", candidateShadow,
+              m_hdr10plusToDvCandidate);
 
     if (!m_hdr10plusToDvCandidate)
     {
@@ -1103,8 +1110,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // false DV declaration.
       if (m_hdr10plusToDvCandidate)
       {
+        // phase 5 step 5.E1b (log only)
+        const AmlHdrFirstFrameDecision frameShadow = aml_dv_resolve_first_frame(
+            IsHdr10Plus, aml_vs10_by_hdrtype(m_hints.hdrType, m_hints.bitdepth),
+            aml_convert_to_dv_by_vs_engine(m_hints.hdrType));
+        AmlHdrFirstFrameDecision frameActual;
         if (IsHdr10Plus)
         {
+          frameActual.toProfile81 = true;
           m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
           m_videobuffer.hdrType = m_hints.hdrType;
           m_hints.dovi.dv_version_major = 1;
@@ -1131,6 +1144,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
               vs10Mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
           {
             aml_dv_set_vs10_pending(vs10Mode);
+            frameActual.toVs10 = true;
+            frameActual.vs10Pending = vs10Mode;
             m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
             m_videobuffer.hdrType = m_hints.hdrType;
             CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: no HDR10+ metadata found - opening as HDR10 via VS10 HDR10->DV", __FUNCTION__);
@@ -1139,6 +1154,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: HDR10+ conversion armed but no HDR10+ metadata found - opening as HDR10", __FUNCTION__);
         }
         m_hdr10plusToDvCandidate = false;
+        CLog::Log(LOGINFO, "RESOLVE hdr first-frame shadow: {} 8.1 {}/{} vs10 {}/{} pending {}/{}",
+                  frameShadow.toProfile81 == frameActual.toProfile81 &&
+                          frameShadow.toVs10 == frameActual.toVs10 &&
+                          frameShadow.vs10Pending == frameActual.vs10Pending
+                      ? "MATCH"
+                      : "DIFF",
+                  frameShadow.toProfile81, frameActual.toProfile81, frameShadow.toVs10,
+                  frameActual.toVs10, frameShadow.vs10Pending, frameActual.vs10Pending);
       }
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);

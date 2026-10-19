@@ -1079,6 +1079,52 @@ AmlDvDecision aml_dv_resolve_output(const AmlDvInputs& in)
   return d;
 }
 
+AmlHdrOpenDecision aml_dv_resolve_stream_open(const AmlHdrOpenInputs& in)
+{
+  // CVideoPlayer::OpenStream: an HDR10+ conversion candidate opens native, unless a VS10
+  // mapping to a non-DV output wins
+  const bool vs10NonDvTarget = in.vs10Mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
+                               in.vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR10 ||
+                               in.vs10Mode == DOLBY_VISION_OUTPUT_MODE_SDR8;
+  const bool candidate = (in.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+                          in.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
+                         !vs10NonDvTarget && in.deviceSupportsDv && in.displaySupportsDv &&
+                         in.hdr10plusConvert;
+  AmlHdrOpenDecision d;
+  d.vs10Pending = candidate ? DOLBY_VISION_OUTPUT_MODE_BYPASS : in.vs10Mode;
+  d.hdrType = !candidate && (in.convertByVsEngine || d.vs10Pending != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+                  ? StreamHdrType::HDR_TYPE_DOLBYVISION
+                  : in.hdrType;
+  return d;
+}
+
+bool aml_dv_hdr10plus_candidate(bool deviceSupportsDv,
+                                bool displaySupportsDv,
+                                int dvProfile,
+                                StreamHdrType hdrType,
+                                bool hdr10plusConvert)
+{
+  return deviceSupportsDv && displaySupportsDv && dvProfile == 0 &&
+         (hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+          hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
+         hdr10plusConvert;
+}
+
+AmlHdrFirstFrameDecision aml_dv_resolve_first_frame(bool isHdr10Plus,
+                                                    unsigned int vs10ForType,
+                                                    bool convertByVsEngine)
+{
+  AmlHdrFirstFrameDecision d;
+  if (isHdr10Plus)
+    d.toProfile81 = true;
+  else if (convertByVsEngine || vs10ForType != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+  {
+    d.toVs10 = true;
+    d.vs10Pending = vs10ForType;
+  }
+  return d;
+}
+
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode)
 {
   // The "Dolby Vision" VS10 output option is stored as IPT, but IPT is the

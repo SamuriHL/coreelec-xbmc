@@ -215,6 +215,46 @@ struct AmlDvDecision
 };
 
 AmlDvDecision aml_dv_resolve_output(const AmlDvInputs& in);
+
+// The HDR type a stream is presented to the decoder as, in today's two stages
+// (phase 5 step 5.E1b): at the stream open (CVideoPlayer::OpenStream) and at the
+// first keyframe (CDVDVideoCodecAmlogic), where HDR10+ is known
+struct AmlHdrOpenInputs
+{
+  StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  unsigned int vs10Mode = DOLBY_VISION_OUTPUT_MODE_BYPASS; // for this type, after the disc-session mapping
+  bool convertByVsEngine = false; // the legacy HDR2DV/SDR2DV toggle for this type
+  bool deviceSupportsDv = false;
+  bool displaySupportsDv = false;
+  bool hdr10plusConvert = false;
+};
+
+struct AmlHdrOpenDecision
+{
+  StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  unsigned int vs10Pending = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+};
+
+AmlHdrOpenDecision aml_dv_resolve_stream_open(const AmlHdrOpenInputs& in);
+
+// the codec arms the HDR10+ -> DV 8.1 conversion at its open
+bool aml_dv_hdr10plus_candidate(bool deviceSupportsDv,
+                                bool displaySupportsDv,
+                                int dvProfile,
+                                StreamHdrType hdrType,
+                                bool hdr10plusConvert);
+
+struct AmlHdrFirstFrameDecision
+{
+  bool toProfile81 = false; // presented as DV 8.1 from the stream's HDR10+
+  bool toVs10 = false;      // presented as DV for the VS10 mapping, with vs10Pending
+  unsigned int vs10Pending = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+};
+
+// an armed candidate at its first keyframe; vs10ForType/convertByVsEngine for its HDR type
+AmlHdrFirstFrameDecision aml_dv_resolve_first_frame(bool isHdr10Plus,
+                                                    unsigned int vs10ForType,
+                                                    bool convertByVsEngine);
 // HDR10-output mastering peak override restated to the sink by kernel patch 0011
 // (dovi.ko itself ignores it); silently no-ops on a stock kernel.
 void aml_dv_apply_target_overrides(unsigned int mode);
