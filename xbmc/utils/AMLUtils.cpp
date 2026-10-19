@@ -16,6 +16,7 @@
 
 #include "AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "utils/StringUtils.h"
 #include "ServiceBroker.h"
@@ -1386,6 +1387,7 @@ static void aml_hdmitx_reload_edid()
 
 static size_t aml_get_display_vsvdb(int bytes[], size_t max);
 static bool aml_display_vsvdb_cached();
+static void aml_display_vsvdb_drop_read();
 
 void aml_dv_clear_vsvdb()
 {
@@ -1420,6 +1422,8 @@ void aml_dv_clear_vsvdb()
     return;
   force_vsvdb.Set(0);
   aml_hdmitx_reload_edid();
+  // W's read may be the block just cleared
+  aml_display_vsvdb_drop_read();
 }
 
 // The display's GENUINE VSVDB. dv_cap reflects the last-parsed EDID, so while
@@ -1431,13 +1435,26 @@ void aml_dv_clear_vsvdb()
 // Cache state for the panel's genuine VSVDB. Split out so aml_dv_clear_vsvdb()
 // can tell "we know the panel's block" from "we have never read one", and so a
 // display change can throw the block away - it describes one specific panel.
+static std::mutex s_vsvdb_mutex;
 static int s_vsvdb_cache[16];
 static size_t s_vsvdb_cache_n = 0;
 static bool s_vsvdb_cached = false;
+// W's read after a hotplug or at start, not yet taken as the panel's block: the decoder side
+// seeds the cache from it where it used to read the EDID itself (5.B1-3)
+static int s_vsvdb_read[16];
+static size_t s_vsvdb_read_n = 0;
+static bool s_vsvdb_read_valid = false;
 
 static bool aml_display_vsvdb_cached()
 {
+  std::unique_lock lock(s_vsvdb_mutex);
   return s_vsvdb_cached;
+}
+
+static void aml_display_vsvdb_drop_read()
+{
+  std::unique_lock lock(s_vsvdb_mutex);
+  s_vsvdb_read_valid = false;
 }
 
 void aml_display_vsvdb_invalidate()
@@ -1446,31 +1463,72 @@ void aml_display_vsvdb_invalidate()
   // Without this, swapping TV or AVR mid-session leaves every consumer - the
   // Smart CMv4.0 bypass threshold and the VSVDB injection base - working from
   // the old display's capabilities until Kodi is restarted.
+  std::unique_lock lock(s_vsvdb_mutex);
   if (s_vsvdb_cached)
     CLog::Log(LOGINFO, "AMLUtils::{} - display changed, dropping cached VSVDB", __FUNCTION__);
   s_vsvdb_cached = false;
   s_vsvdb_cache_n = 0;
+  s_vsvdb_read_valid = false;
+  s_vsvdb_read_n = 0;
+}
+
+// the panel's block from the EDID, dropping a live override first
+static size_t aml_read_genuine_vsvdb(int bytes[16])
+{
+  CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
+  if (force_vsvdb.Exists() && force_vsvdb.Get<unsigned int>().value() != 0)
+  {
+    force_vsvdb.Set(0);
+    aml_hdmitx_reload_edid();
+  }
+  return aml_read_display_vsvdb(bytes, 16);
+}
+
+void aml_display_vsvdb_refill()
+{
+  // outputworker_off: the decoder side reads the EDID itself, as before
+  if (!OUTPUT::COutputWorker::Get().Active())
+    return;
+  int b[16];
+  size_t n;
+  try
+  {
+    n = aml_read_genuine_vsvdb(b);
+  }
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGERROR, "AMLUtils::{} - {}", __FUNCTION__, e.what());
+    return;
+  }
+  std::unique_lock lock(s_vsvdb_mutex);
+  std::copy(b, b + n, s_vsvdb_read);
+  s_vsvdb_read_n = n;
+  s_vsvdb_read_valid = true;
+  CLog::Log(LOGINFO, "AMLUtils::{} - {} bytes", __FUNCTION__, n);
 }
 
 static size_t aml_get_display_vsvdb(int bytes[], size_t max)
 {
-  int (&s_cache)[16] = s_vsvdb_cache;
-  size_t& s_cache_n = s_vsvdb_cache_n;
-  bool& s_cached = s_vsvdb_cached;
-  if (!s_cached)
+  bool cached;
   {
-    CSysfsPath force_vsvdb{"/sys/module/aml_media/parameters/force_vsvdb"};
-    if (force_vsvdb.Exists() && force_vsvdb.Get<unsigned int>().value() != 0)
-    {
-      force_vsvdb.Set(0);
-      aml_hdmitx_reload_edid();
-    }
-    s_cache_n = aml_read_display_vsvdb(s_cache, 16);
-    s_cached = (s_cache_n > 0);
+    std::unique_lock lock(s_vsvdb_mutex);
+    cached = s_vsvdb_cached;
   }
-  size_t n = std::min(s_cache_n, max);
-  for (size_t i = 0; i < n; i++)
-    bytes[i] = s_cache[i];
+  if (!cached)
+  {
+    int b[16];
+    const size_t n = aml_read_genuine_vsvdb(b);
+    std::unique_lock lock(s_vsvdb_mutex);
+    std::copy(b, b + n, s_vsvdb_cache);
+    s_vsvdb_cache_n = n;
+    s_vsvdb_cached = (n > 0);
+    std::copy(b, b + n, s_vsvdb_read);
+    s_vsvdb_read_n = n;
+    s_vsvdb_read_valid = true;
+  }
+  std::unique_lock lock(s_vsvdb_mutex);
+  size_t n = std::min(s_vsvdb_cache_n, max);
+  std::copy(s_vsvdb_cache, s_vsvdb_cache + n, bytes);
   return n;
 }
 
@@ -1629,7 +1687,34 @@ int aml_display_vsvdb_max_nits()
   // layer used to duplicate both AND read dv_cap directly, which reports the
   // INJECTED block while a max-lum override is live - review finding F15)
   int b[16];
-  const size_t n = aml_get_display_vsvdb(b, 16);
+  size_t n = 0;
+  if (!OUTPUT::COutputWorker::Get().Active())
+    n = aml_get_display_vsvdb(b, 16);
+  else
+  {
+    // no EDID writes off W: take W's read as the panel's block where the read here did, or,
+    // with no read of W's since a clear, dv_cap as it is
+    int own[16];
+    size_t ownN = 0;
+    bool needOwn;
+    {
+      std::unique_lock lock(s_vsvdb_mutex);
+      needOwn = !s_vsvdb_cached && !s_vsvdb_read_valid;
+    }
+    if (needOwn)
+      ownN = aml_read_display_vsvdb(own, 16);
+    std::unique_lock lock(s_vsvdb_mutex);
+    if (!s_vsvdb_cached)
+    {
+      const int* src = s_vsvdb_read_valid ? s_vsvdb_read : own;
+      const size_t srcN = s_vsvdb_read_valid ? s_vsvdb_read_n : ownN;
+      std::copy(src, src + srcN, s_vsvdb_cache);
+      s_vsvdb_cache_n = srcN;
+      s_vsvdb_cached = (srcN > 0);
+    }
+    n = s_vsvdb_cache_n;
+    std::copy(s_vsvdb_cache, s_vsvdb_cache + n, b);
+  }
   if (n < 8 || (((b[5] >> 5) & 0x07) != 2))
     return 0;
   const int idx = (b[7] >> 3) & 0x1F;

@@ -268,6 +268,8 @@ void aml_dv_apply_vsvdb();
 void aml_dv_clear_vsvdb();
 // Drop the cached genuine VSVDB; call when the attached display may have changed.
 void aml_display_vsvdb_invalidate();
+//! W: reads the panel's VSVDB for the decoder side to take (5.B1-3)
+void aml_display_vsvdb_refill();
 // display-mode hold for menu-domain segments of a disc session (Sony-class
 // sinks re-train on every re-clock; see AMLUtils.cpp)
 void aml_set_disc_mode_hold(bool hold);

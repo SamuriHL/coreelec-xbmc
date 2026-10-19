@@ -139,6 +139,8 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
   WIRECLASS::CWireClassProbe::Get().Start();
   OUTPUT::COutputWorker::Get().Start();
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
+                                    [] { aml_display_vsvdb_refill(); });
   return true;
 }
 

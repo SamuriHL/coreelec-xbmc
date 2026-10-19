@@ -37,6 +37,7 @@
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "threads/SingleLock.h"
 
@@ -231,7 +232,10 @@ void CWinSystemAmlogic::HotplugEvent()
 
   // A different panel may now be attached, so the cached VSVDB - which
   // describes one specific display - can no longer be trusted.
-  aml_display_vsvdb_invalidate();
+  OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "vsvdb refill", [] {
+    aml_display_vsvdb_invalidate();
+    aml_display_vsvdb_refill();
+  });
 
   try
   {
@@ -587,7 +591,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
 
   if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK)
   {
-    aml_dv_apply_graphics_from_sink();
+    OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "gui sink peak",
+                                      [] { aml_dv_apply_graphics_from_sink(); });
     return;
   }
 
@@ -612,15 +617,17 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
   // otherwise the new value is picked up at the next decoder open. aml_dv_apply_vsvdb
   // re-injects the updated block and re-latches it via an EDID re-parse.
-  CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
-  if (dv_enable.Exists() &&
-      StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
-  {
-    // Keyed on the mode the sink receives: the pending VS10 mode stays BYPASS on
-    // the converted-to-DV paths and is not updated by a live VS10 switch.
-    aml_dv_apply_target_overrides(aml_dv_get_output_mode());
-    aml_dv_apply_vsvdb();
-  }
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting", [] {
+    CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
+    if (dv_enable.Exists() &&
+        StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
+    {
+      // Keyed on the mode the sink receives: the pending VS10 mode stays BYPASS on
+      // the converted-to-DV paths and is not updated by a live VS10 switch.
+      aml_dv_apply_target_overrides(aml_dv_get_output_mode());
+      aml_dv_apply_vsvdb();
+    }
+  });
 }
 
 bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
@@ -861,26 +868,29 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
         ->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR)
         ->SetVisible(true);
 
-    int sdr2hdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
-    if (sdr2hdr)
-    {
-      CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting sdr2hdr mode to {:d}", __FUNCTION__, sdr2hdr);
-      CSysfsPath("/sys/module/aml_media/parameters/sdr_mode", sdr2hdr);
-      CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", 0);
-      CSysfsPath("/sys/module/aml_media/parameters/hdr_policy", 0);
-    }
-
     CServiceBroker::GetSettingsComponent()
         ->GetSettings()
         ->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR)
         ->SetVisible(true);
 
-    int hdr2sdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
-    if (hdr2sdr)
-    {
-      CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting hdr2sdr mode to {:d}", __FUNCTION__, hdr2sdr);
-      CSysfsPath("/sys/module/aml_media/parameters/hdr_mode", hdr2sdr);
-    }
+    // inline at boot (W not started yet)
+    OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "hdr conversion", [] {
+      int sdr2hdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
+      if (sdr2hdr)
+      {
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::RefreshDisplayCapabilities -- setting sdr2hdr mode to {:d}", sdr2hdr);
+        CSysfsPath("/sys/module/aml_media/parameters/sdr_mode", sdr2hdr);
+        CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", 0);
+        CSysfsPath("/sys/module/aml_media/parameters/hdr_policy", 0);
+      }
+
+      int hdr2sdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
+      if (hdr2sdr)
+      {
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::RefreshDisplayCapabilities -- setting hdr2sdr mode to {:d}", hdr2sdr);
+        CSysfsPath("/sys/module/aml_media/parameters/hdr_mode", hdr2sdr);
+      }
+    });
   }
   else
   {

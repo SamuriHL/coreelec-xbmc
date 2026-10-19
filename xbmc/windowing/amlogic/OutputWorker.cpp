@@ -52,16 +52,20 @@ void ObserveSysfsWrite(const std::string& path)
 
 void NoteWrite(const std::string& target)
 {
-  // each thread remembers what it has reported, so a repeat costs no lock
+  // each thread reports a target once, and once more after W starts, so a boot write cannot
+  // hide a later stray of the same target
+  const bool active = COutputWorker::Get().Active();
   thread_local std::set<std::string> reportedHere;
-  if (reportedHere.count(target))
+  const std::string key = active ? target : target + " (W not running)";
+  if (reportedHere.count(key))
     return;
-  reportedHere.insert(target);
+  reportedHere.insert(key);
 
   char name[16] = {};
   pthread_getname_np(pthread_self(), name, sizeof(name));
   const bool onW = COutputWorker::Get().OnWorker();
-  CLog::Log(LOGINFO, "OUTPUT write: {} by {}{}", target, onW ? "W" : name, onW ? "" : " (not W)");
+  CLog::Log(LOGINFO, "OUTPUT write: {} by {}{}", target, onW ? "W" : name,
+            onW ? "" : (active ? " (not W)" : " (not W, W not running)"));
 }
 
 void StartAccounting()
