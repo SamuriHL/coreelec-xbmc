@@ -10,6 +10,7 @@
 #include <amcodec/codec.h>
 
 #include "AMLDisplay.h"
+#include "OutputWorker.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "platform/linux/SysfsPath.h"
@@ -867,6 +868,9 @@ void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
   if (!id)
     return;
 
+  // the planes and the flip's fence are presentation, not link state
+  if (obj_type != DRM_MODE_OBJECT_PLANE && name != "OUT_FENCE_PTR")
+    OUTPUT::NoteWrite("drm:" + name);
   props = drmModeObjectGetProperties(m_fd, id, obj_type);
   if (!props)
   {

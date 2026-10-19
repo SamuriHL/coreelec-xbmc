@@ -30,6 +30,7 @@
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/WireClassProbe.h"
 
 #include <chrono>
@@ -55,6 +56,7 @@ std::unique_ptr<CWinSystemBase> CWinSystemAmlogicGLESContext::CreateWinSystem()
 
 bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 {
+  OUTPUT::StartAccounting();
   if (!CWinSystemAmlogic::InitWindowSystem())
   {
     return false;
@@ -134,12 +136,15 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   }
 
   WIRECLASS::CWireClassProbe::Get().Start();
+  OUTPUT::COutputWorker::Get().Start();
   return true;
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
   WIRECLASS::CWireClassProbe::Get().Stop();
+  // the shutdown writes below run inline on main
+  OUTPUT::COutputWorker::Get().Stop();
 
   // off while the coordinator runs and the GUI plane is still up to carry it
   if (m_graphicsPlane)
@@ -166,7 +171,9 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 
   m_pGLContext->DestroyContext();
   m_pGLContext->Destroy();
-  return CWinSystemAmlogic::DestroyWindowSystem();
+  const bool destroyed = CWinSystemAmlogic::DestroyWindowSystem();
+  OUTPUT::StopAccounting();
+  return destroyed;
 }
 
 bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,

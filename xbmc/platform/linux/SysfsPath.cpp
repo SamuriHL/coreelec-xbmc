@@ -8,7 +8,24 @@
 
 #include "SysfsPath.h"
 
+#include <atomic>
 #include <exception>
+
+namespace
+{
+std::atomic<CSysfsPath::WriteObserver> g_writeObserver{nullptr};
+}
+
+void CSysfsPath::SetWriteObserver(WriteObserver observer)
+{
+  g_writeObserver.store(observer, std::memory_order_release);
+}
+
+void CSysfsPath::NotifyWrite(const std::string& path)
+{
+  if (const WriteObserver observer = g_writeObserver.load(std::memory_order_acquire))
+    observer(path);
+}
 
 bool CSysfsPath::Exists()
 {

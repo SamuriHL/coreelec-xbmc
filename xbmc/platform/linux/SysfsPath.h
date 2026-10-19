@@ -22,6 +22,10 @@ class CSysfsPath
 public:
   CSysfsPath() = default;
   CSysfsPath(const std::string& path) : m_path(path) {}
+
+  //! called with the path before every write; one observer, set once
+  using WriteObserver = void (*)(const std::string& path);
+  static void SetWriteObserver(WriteObserver observer);
   template<typename T>
   CSysfsPath(const std::string& path, T value) : m_path(path) { if (Exists()) { Set(value); } }
   ~CSysfsPath() = default;
@@ -57,6 +61,7 @@ public:
   template<typename T>
   void Set(T value)
   {
+    NotifyWrite(m_path);
     std::ofstream file(m_path);
 
     file << value;
@@ -69,6 +74,8 @@ public:
   }
 
 private:
+  static void NotifyWrite(const std::string& path);
+
   std::string m_path;
 };
 
