@@ -32,6 +32,7 @@
 #include "HwDecRender/PresentationCoordinator.h"
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
@@ -1285,6 +1286,11 @@ void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
   float refresh = fps;
   if ((target != RES_INVALID ? target : gfx.GetVideoResolution()) == RES_WINDOW)
     refresh = 0; // No idea about refresh rate when windowed, just get the default latency
+#if defined(HAS_LIBAMCODEC)
+  if (target == RES_INVALID && aml_displaystate_on())
+    DISPLAYSTATE::ShadowMainWindowed("windowed@latency-tweak", res,
+                                     gfx.GetVideoResolution() == RES_WINDOW);
+#endif
   m_latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, res.iScreenHeight));
@@ -1322,6 +1328,7 @@ void CRenderManager::PublishDisplayTiming()
     m_timingLatencyMs = latencyMs;
     WriteTimingSnapshot(fps, latencyMs, inputsGen);
     m_timingEpoch = epoch;
+    DISPLAYSTATE::ShadowMainMode("fps@publish", "height@publish", gfx.GetResInfo(), fps);
     return;
   }
 #endif
@@ -1480,9 +1487,21 @@ void CRenderManager::UpdateResolution()
           // display reset lands the audio inside it, and lands the new tweak
           if (m_tweakToAudio)
             UpdateLatencyTweak(res);
+#if defined(HAS_LIBAMCODEC)
+          const uint64_t commits = DISPLAYSTATE::CommitCount();
+#endif
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           TestMainStall("after-set");
           UpdateLatencyTweak();
+#if defined(HAS_LIBAMCODEC)
+          if (aml_displaystate_on())
+          {
+            const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+            DISPLAYSTATE::ShadowMainMode("fps@after-set", "height@after-set", gfx.GetResInfo(),
+                                         gfx.GetFPS(), DISPLAYSTATE::CommitCount() != commits);
+            DISPLAYSTATE::LogCounters();
+          }
+#endif
           if (m_pRenderer)
             m_pRenderer->Update();
         }

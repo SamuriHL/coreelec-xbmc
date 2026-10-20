@@ -27,6 +27,7 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/ThreadRole.h"
 
 #include "platform/linux/SysfsPath.h"
@@ -1500,6 +1501,13 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
   double config_framerate = m_bFpsInvalid ?
     static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) :
     m_fFrameRate;
+  if (m_bFpsInvalid && aml_displaystate_on())
+  {
+    const auto shadow = DISPLAYSTATE::BeginModeShadow();
+    DISPLAYSTATE::CountMode(shadow, "fps@vpv-configure", config_framerate,
+                            shadow.state ? shadow.state->fps : 0.0f,
+                            DISPLAYSTATE::FracHeld(shadow, static_cast<float>(config_framerate)));
+  }
   if (m_processInfo.GetVideoInterlaced())
   {
     if (MathUtils::FloatEquals(config_framerate, 25.0, 0.02))

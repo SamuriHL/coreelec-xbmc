@@ -27,6 +27,7 @@
 #include "utils/log.h"
 #if defined(HAS_LIBAMCODEC)
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
@@ -472,6 +473,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   int origScreenHeight = m_iScreenHeight;
   float origFPSOverride = m_fFPSOverride;
 
+#if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::GcSetBegins();
+#endif
   UpdateInternalStateWithResolution(res);
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
   const RenderStereoMode stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
@@ -493,6 +497,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     switched = CServiceBroker::GetWinSystem()->SetFullScreen(false, info_org, false);
   else
     switched = CServiceBroker::GetWinSystem()->ResizeWindow(info_org.iWidth, info_org.iHeight, -1, -1);
+#if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::GcSetEnds(switched);
+#endif
 
   if (switched)
   {

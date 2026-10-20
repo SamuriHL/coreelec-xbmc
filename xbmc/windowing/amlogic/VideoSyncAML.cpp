@@ -10,10 +10,12 @@
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/VideoReferenceClock.h"
 #include "threads/Thread.h"
+#include "utils/AMLUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <algorithm>
@@ -288,6 +290,13 @@ float CVideoSyncAML::GetFps()
 {
   m_fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
   m_reportedFps = m_fps;
+  if (aml_displaystate_on())
+  {
+    const auto shadow = DISPLAYSTATE::BeginModeShadow();
+    DISPLAYSTATE::CountMode(shadow, "fps@vsa-getfps", m_fps,
+                            shadow.state ? shadow.state->fps : 0.0f,
+                            DISPLAYSTATE::FracHeld(shadow, m_fps));
+  }
 
   // Hand the clock the measured panel rate when it materially disagrees with
   // the nominal mode rate (fractional rate not actually applied by the

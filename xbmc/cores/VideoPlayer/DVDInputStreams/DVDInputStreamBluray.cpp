@@ -40,6 +40,7 @@
 #include "utils/log.h"
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/SettingsMirror.h"
 
 #include <algorithm>
@@ -3836,6 +3837,7 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
         break;
       }
     }
+    DISPLAYSTATE::ShadowHas2160(uhdDisplayCap & 0x01);
     // display capability, straight from the EDID caps
     if (aml_display_support_dv())
       uhdDisplayCap |= 0x04;

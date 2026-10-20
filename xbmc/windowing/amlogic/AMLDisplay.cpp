@@ -5,6 +5,7 @@
  *  See LICENSES/README.md for more information.
  */
 #include <drm_fourcc.h>
+#include <cmath>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <amcodec/codec.h>
@@ -610,6 +611,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
+  m_modeHeld = false;
   const bool _hotplug_mode_switch = hotplug_mode_switch && m_connector && m_connector->count_modes > 1;
   const bool _force_mode_switch = force_mode_switch || _hotplug_mode_switch;
 
@@ -1118,6 +1120,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
     drmDevicemode = &syntheticMode;
   }
 
+  m_modeHeld = !mode_switch_required;
   if (!mode_switch_required)
   {
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - mode {} is already set", __FUNCTION__, mode);
@@ -1619,6 +1622,21 @@ bool CAMLDisplay::aml_get_native_resolution(RESOLUTION_INFO *res)
     res->fRefreshRate = FractionalRate(res->fRefreshRate);
 
   return result;
+}
+
+float CAMLDisplay::aml_committed_refresh(const RESOLUTION_INFO& res, bool& held) const
+{
+  held = m_amlDRMUtils->aml_get_drmDevice_mode_held();
+  if (!held)
+    return res.fRefreshRate;
+  // the mode's integer rate, divided under FRAC_RATE_POLICY for the families with a 1000/1001
+  // variant (as aml_probe_resolutions adds them)
+  const float rate = std::round(res.fRefreshRate);
+  const bool family = rate == 24.0f || rate == 30.0f || rate == 60.0f;
+  return family && m_amlDRMUtils->aml_get_drmProperty("FRAC_RATE_POLICY",
+                                                      DRM_MODE_OBJECT_CONNECTOR) == 1
+             ? FractionalRate(rate)
+             : rate;
 }
 
 bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)

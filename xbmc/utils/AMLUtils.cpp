@@ -16,6 +16,7 @@
 
 #include "AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -446,6 +447,7 @@ bool aml_display_support_hdr_pq()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("SMPTE ST 2084: 1") != std::string::npos);
+  DISPLAYSTATE::ShadowHdrPq(support);
   return support;
 }
 
@@ -455,6 +457,7 @@ bool aml_display_support_hdr_hlg()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("Hybrid Log-Gamma: 1") != std::string::npos);
+  DISPLAYSTATE::ShadowHdrHlg(support);
   return support;
 }
 
@@ -464,6 +467,7 @@ bool aml_display_support_hdr10plus()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("HDR10Plus Supported: 1") != std::string::npos);
+  DISPLAYSTATE::ShadowHdr10Plus(support);
   return support;
 }
 

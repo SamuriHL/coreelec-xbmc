@@ -130,6 +130,8 @@ private:
   std::chrono::milliseconds m_lostRetryDelay{1000};
   void HotplugEvent();
   void RefreshDisplayCapabilities();
+  //! 5.V1-2: W publishes the caps to DisplayState; main waits
+  void PublishDisplayCaps();
   static void FDEventCallback(int id, int fd, short revents, void *data);
 
   int m_fdMonitorId;

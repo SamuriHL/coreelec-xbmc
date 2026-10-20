@@ -37,6 +37,7 @@
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -215,6 +216,7 @@ bool CWinSystemAmlogic::MessagePump()
   if (m_hotplugPending.exchange(false))
     HotplugEvent();
 
+  DISPLAYSTATE::Tick();
   return false;
 }
 
@@ -238,6 +240,7 @@ void CWinSystemAmlogic::HotplugEvent()
     aml_display_vsvdb_refill();
   });
 
+  DISPLAYSTATE::CapsWriteBegins();
   try
   {
     m_amlDisplay->aml_init_drmDevice();
@@ -249,6 +252,7 @@ void CWinSystemAmlogic::HotplugEvent()
     // not known disconnected: an open span retries the rebuild, and the time
     // stops counting towards the pause
     m_disconnectedSinceMs = 0;
+    PublishDisplayCaps();
     return;
   }
 
@@ -279,6 +283,7 @@ void CWinSystemAmlogic::HotplugEvent()
   std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
   RESOLUTION res = static_cast<RESOLUTION>(RES_DESKTOP);
 
+  DISPLAYSTATE::CapsWriteBegins();
   CDisplaySettings::GetInstance().ClearCustomResolutions();
   RefreshResolutions();
   aml_timing_inputs_bump();
@@ -583,6 +588,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
 bool CWinSystemAmlogic::DestroyWindowSystem()
 {
+  DISPLAYSTATE::Tick();
+  DISPLAYSTATE::LogCounters();
   auto settingsComponent = CServiceBroker::GetSettingsComponent();
   if (settingsComponent)
     settingsComponent->GetSettings()->GetSettingsManager()->UnregisterCallback(this);
@@ -679,9 +686,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     OUTPUT::COutputWorker::Get().Run(
         m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
         [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
-         force = m_force_mode_switch, hotplug = m_hotplug_mode_switch]
-        { *committed = display->set_native_resolution(res, name, stereo, force, hotplug); });
+         force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, windowed = !fullScreen]
+        {
+          *committed = display->set_native_resolution(res, name, stereo, force, hotplug);
+          if (*committed)
+            DISPLAYSTATE::PublishMode(*display, res, windowed);
+        });
     ret = *committed;
+    if (ret)
+      DISPLAYSTATE::NoteCommit();
   }
   if (ret)
     m_bWindowCreated = true;
@@ -692,6 +705,11 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     m_outputWorkerStarted = true;
     aml_displaystate_init();
     OUTPUT::COutputWorker::Get().Start();
+    if (aml_displaystate_on())
+      OUTPUT::COutputWorker::Get().Run(
+          OUTPUT::Lane::RESTORE, "display state seed",
+          [display = m_amlDisplay.get(), res, ret, windowed = !fullScreen]
+          { DISPLAYSTATE::PublishSeed(*display, ret ? &res : nullptr, windowed); });
     OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
                                       [] { aml_display_vsvdb_refill(); });
   }
@@ -747,6 +765,8 @@ void CWinSystemAmlogic::RefreshResolutions()
   RESOLUTION_INFO resDesktop, curDisplay;
   std::vector<RESOLUTION_INFO> resolutions;
 
+  DISPLAYSTATE::CapsWriteBegins();
+
   if (!m_amlDisplay->aml_probe_resolutions(resolutions) || resolutions.empty())
     CLog::Log(LOGWARNING, "{}: ProbeResolutions failed.",__FUNCTION__);
 
@@ -780,6 +800,7 @@ void CWinSystemAmlogic::RefreshResolutions()
       CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
     }
   }
+  PublishDisplayCaps();
 }
 
 void CWinSystemAmlogic::UpdateResolutions()
@@ -792,6 +813,7 @@ void CWinSystemAmlogic::UpdateResolutions()
 
 void CWinSystemAmlogic::RefreshDisplayCapabilities()
 {
+  DISPLAYSTATE::CapsWriteBegins();
   m_amlDisplay->aml_refresh_display_caps();
 
   const bool device_dv = aml_support_dolby_vision();
@@ -943,6 +965,16 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
     if (setting)
       setting->SetVisible(false);
   }
+  PublishDisplayCaps();
+}
+
+void CWinSystemAmlogic::PublishDisplayCaps()
+{
+  if (!aml_displaystate_on())
+    return;
+  CAMLDisplay* display = m_amlDisplay.get();
+  OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "display state caps",
+                                   [display] { DISPLAYSTATE::PublishCaps(*display); });
 }
 
 bool CWinSystemAmlogic::IsHDRDisplay()
@@ -994,6 +1026,7 @@ float CWinSystemAmlogic::GetFrameLatencyAdjustment()
   // vblank, not to whenever the render loop reached it.
   const int fd = GetDRMDeviceFd();
   const uint32_t crtc = GetDRMCrtcId();
+  DISPLAYSTATE::ShadowDrm(fd, crtc);
   if (fd < 0 || crtc == 0)
     return 0.0f;
 

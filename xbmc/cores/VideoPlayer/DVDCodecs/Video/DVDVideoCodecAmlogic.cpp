@@ -18,6 +18,7 @@
 #include "AMLCodec.h"
 #include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "utils/HDRCapabilities.h"
 #include "utils/log.h"
@@ -1272,18 +1273,36 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
                          m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
   float refresh = gfx.GetFPS();
-  if (gfx.GetVideoResolution() == RES_WINDOW)
+  const bool windowed = gfx.GetVideoResolution() == RES_WINDOW;
+  if (windowed)
     refresh = 0;
 
-  const double latencyTweak = static_cast<double>(
-      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
-          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
+  const int height = gfx.GetResInfo().iScreenHeight;
+  const auto advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  const double latencyTweak =
+      static_cast<double>(advancedSettings->GetLatencyTweak(refresh, isHDRUsed, height));
   const double videoDelay =
       static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
 
   const float fps = gfx.GetFPS();
   const double display =
       fps > 0.0f ? AML_VD1_PRESENT_VBLANKS * 1000.0 / static_cast<double>(fps) : 0.0;
+  if (aml_displaystate_on())
+  {
+    const auto shadow = DISPLAYSTATE::BeginModeShadow();
+    const DISPLAYSTATE::DisplayState* state = shadow.state.get();
+    double stateLatency = 0.0;
+    if (state)
+      stateLatency = static_cast<double>(advancedSettings->GetLatencyTweak(
+                         state->windowed ? 0.0f : state->fps, isHDRUsed, state->screenHeight)) +
+                     AML_VD1_PRESENT_VBLANKS * 1000.0 / static_cast<double>(state->fps);
+    const bool fracHeld = DISPLAYSTATE::FracHeld(shadow, fps);
+    DISPLAYSTATE::CountMode(shadow, "fps@dvca-latency", fps, state ? state->fps : 0.0f, fracHeld);
+    DISPLAYSTATE::CountMode(shadow, "height@dvca-latency", height, state ? state->screenHeight : 0);
+    DISPLAYSTATE::CountMode(shadow, "windowed@dvca-latency", windowed, state && state->windowed);
+    DISPLAYSTATE::CountMode(shadow, "latency@dvca-latency", latencyTweak + display, stateLatency,
+                            fracHeld);
+  }
   return DVD_MSEC_TO_TIME(latencyTweak + display - videoDelay -
                           static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
 }

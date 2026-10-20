@@ -18,6 +18,7 @@
 #include "threads/CriticalSection.h"
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
+#include "windowing/amlogic/DisplayState.h"
 
 struct drm_fb
 {
@@ -109,6 +110,8 @@ public:
   bool aml_set_drmDevice_active(std::string mode, int fractional_rate,
     const RenderStereoMode stereo_mode, bool active);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
+  //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
+  bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }
   bool aml_output_wire_stale();
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
@@ -153,6 +156,7 @@ private:
   // player-led/LLDV (YUV422 12-bit), until it is handed back to the kernel on
   // the way out - see leaving_dv_wire().
   bool m_wireDvTunnel{false};
+  bool m_modeHeld{false};
   int m_width;
   int m_height;
   int m_ScreenWidth;
@@ -184,6 +188,9 @@ public:
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
+  //! 5.V1-2: the refresh the display runs after a successful set of res; held: the set kept the
+  //! live mode, whose frac policy may differ from res's
+  float aml_committed_refresh(const RESOLUTION_INFO& res, bool& held) const;
   bool set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
     const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
   void handle_display_stereo_mode(const RenderStereoMode stereo_mode);
@@ -230,10 +237,24 @@ public:
   bool GetHotPlug() { bool ret = m_bHotPlug; m_bHotPlug = false; return ret; }
   void SetHotPlug() { m_bHotPlug = true; }
 
-  CHDRCapabilities GetHDRCaps() const { return m_hdr_caps; }
+  CHDRCapabilities GetHDRCaps() const
+  {
+    const CHDRCapabilities caps = m_hdr_caps;
+    DISPLAYSTATE::ShadowHdrCaps(caps);
+    return caps;
+  }
   bool aml_display_support_dv() const
-    { return m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE; }
-  bool aml_display_support_3d() const { return m_support_3d; }
+  {
+    const bool dv = m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+    DISPLAYSTATE::ShadowDv(dv);
+    return dv;
+  }
+  bool aml_display_support_3d() const
+  {
+    const bool support = m_support_3d;
+    DISPLAYSTATE::Shadow3d(support);
+    return support;
+  }
 private:
   std::unique_ptr<CAMLDRMUtils> m_amlDRMUtils;
   bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
