@@ -2917,16 +2917,8 @@ void CAMLCodec::CloseDecoder()
     aml_drop_kept_frame("FEL closed before its first frame (test)");
   auto* AmlDisplay =
       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-  int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
-  bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC));
-  CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
 
   SetPollDevice(-1);
-
-  // A file's DV engage is released below, once the decoder is closed and the
-  // video is off; until then it is held like a disc session's.
-  aml_dv_cancel_file_engage_request();
-  const bool fileEngaged = aml_dv_file_engaged();
 
   // never leave vcodec ff/rw or paused.
   if (m_speed != DVD_PLAYSPEED_NORMAL)
@@ -2935,38 +2927,59 @@ void CAMLCodec::CloseDecoder()
     m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
   }
 
-  // disable Dolby Vision VS-Engine for non DV media
-  //
-  // Skipped while the disc session holds DV engaged. This write is what costs a
-  // sink re-lock per segment: dolby_vision_mode = BYPASS arms the bypass branch
-  // of amdolby_vision_process_v2_stb(), which a few vsyncs later runs
-  // send_hdmi_pkt(..., FORMAT_SDR) and enable_amdv(0) - and enable_amdv(0) is
-  // where kernel patch 0005 clears the session VSIF hold and emits the very
-  // DOVI->SDR transition patch 0002 exists to swallow. Nothing re-arms the hold
-  // afterwards, so one BYPASS write drops DV signalling for the REST of the
-  // session: measured 16 "switching signal to SDR" in a single disc session,
-  // each a multi-second sink re-lock. On a 5-second menu that is the whole
-  // segment.
-  //
-  // THE ORDERING INVARIANT, learned the hard way: dolby_vision_mode may only be
-  // changed while dolby_vision_enable is true. set_amdv_mode() bails out on
-  // !dolby_vision_enable, so a mode write against a disabled core is silently
-  // dropped. An earlier version of this fix guarded only this write and left the
-  // dv_enable=0 below unconditional - so the session ended with the core
-  // disabled and the mode still latched at IPT_TUNNEL, the HDMI link still
-  // carrying the DV wire format while the GUI painted SDR into it. Both writes
-  // are therefore guarded together, and aml_dv_release_disc_engage() performs
-  // the whole teardown in order at session end.
-  if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged() &&
-      !fileEngaged)
-    AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
-  aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
-  aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
-  // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
-  // (survives the stream) and a nonzero value overrides the kernel's per-format
-  // graphics table for every mode, so a leak here dims/brightens the OSD of all
-  // later streams, native DV included. The donor reset it in aml_dv_off().
-  aml_dv_set_hdr10_osd_brightness(0);
+  // TeardownPre and TeardownPost (5.B1-9): the DV writes either side of codec_close run as W
+  // jobs while this thread waits; the reads go with the writes they guard, so no other W job
+  // runs between them. The decoder's own close stays here.
+  int dolby_vision_policy = 0;
+  bool dv_enabled = false;
+  bool fileEngaged = false;
+  OUTPUT::COutputWorker::Get().Run(
+      OUTPUT::Lane::DECODER, "teardown pre",
+      [&]
+      {
+        dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
+        dv_enabled = AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC);
+        CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
+
+        // A file's DV engage is released below, once the decoder is closed and the
+        // video is off; until then it is held like a disc session's.
+        aml_dv_cancel_file_engage_request();
+        fileEngaged = aml_dv_file_engaged();
+
+        // disable Dolby Vision VS-Engine for non DV media
+        //
+        // Skipped while the disc session holds DV engaged. This write is what costs a
+        // sink re-lock per segment: dolby_vision_mode = BYPASS arms the bypass branch
+        // of amdolby_vision_process_v2_stb(), which a few vsyncs later runs
+        // send_hdmi_pkt(..., FORMAT_SDR) and enable_amdv(0) - and enable_amdv(0) is
+        // where kernel patch 0005 clears the session VSIF hold and emits the very
+        // DOVI->SDR transition patch 0002 exists to swallow. Nothing re-arms the hold
+        // afterwards, so one BYPASS write drops DV signalling for the REST of the
+        // session: measured 16 "switching signal to SDR" in a single disc session,
+        // each a multi-second sink re-lock. On a 5-second menu that is the whole
+        // segment.
+        //
+        // THE ORDERING INVARIANT, learned the hard way: dolby_vision_mode may only be
+        // changed while dolby_vision_enable is true. set_amdv_mode() bails out on
+        // !dolby_vision_enable, so a mode write against a disabled core is silently
+        // dropped. An earlier version of this fix guarded only this write and left the
+        // dv_enable=0 below unconditional - so the session ended with the core
+        // disabled and the mode still latched at IPT_TUNNEL, the HDMI link still
+        // carrying the DV wire format while the GUI painted SDR into it. Both writes
+        // are therefore guarded together, and aml_dv_release_disc_engage() performs
+        // the whole teardown in order at session end.
+        if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged() &&
+            !fileEngaged)
+          AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
+        aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+        aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+        // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
+        // (survives the stream) and a nonzero value overrides the kernel's per-format
+        // graphics table for every mode, so a leak here dims/brightens the OSD of all
+        // later streams, native DV included. The donor reset it in aml_dv_off().
+        aml_dv_set_hdr10_osd_brightness(0);
+      },
+      0, std::chrono::milliseconds(1000));
 
   // design 4.3: a disc join keeps the last picture on screen until the next
   // decoder's first frame; the kernel keeps it through the unregister only
@@ -2995,71 +3008,80 @@ void CAMLCodec::CloseDecoder()
 
   // return tsync to default so external apps work
   CSysfsPath("/sys/class/tsync/enable", 1);
-  // disable Dolby Vision driver
-  if (dv_enabled)
-  {
-    // The transition needs a few display frames before the core powers down.
-    //
-    // Skipped while a disc session is live: the session latch deliberately
-    // holds the DV core engaged across menu<->title segment swaps (that is
-    // what stops the sink re-locking on every segment), so the status never
-    // reaches 0 there and waiting would only burn the full bound on each swap.
-    //
-    // Gated on the same predicate as the BYPASS write above too: status only
-    // falls to 0 because that write drove the transition, and on the
-    // stock_convert && !display_support_dv path OpenDecoder leaves the policy at
-    // FOLLOW_SOURCE, so nothing drives it and this would burn the full bound at
-    // every close. The ceiling stays upstream's m_decoder_timeout: the kernel
-    // needs MAX_TRANSITION_DELAY (5) vsyncs and the test fires on the sixth -
-    // 250.3ms at 23.976 - so a 200ms bound could expire before the teardown ran.
-    std::chrono::time_point<std::chrono::steady_clock> now(std::chrono::steady_clock::now());
-    if (!aml_dv_disc_session() && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !fileEngaged)
-    {
-      while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
-             (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
-        usleep(10000); // wait 10ms
-    }
+  OUTPUT::COutputWorker::Get().Run(
+      OUTPUT::Lane::DECODER, "teardown post",
+      [&]
+      {
+        // disable Dolby Vision driver
+        if (dv_enabled)
+        {
+          // The transition needs a few display frames before the core powers down.
+          //
+          // Skipped while a disc session is live: the session latch deliberately
+          // holds the DV core engaged across menu<->title segment swaps (that is
+          // what stops the sink re-locking on every segment), so the status never
+          // reaches 0 there and waiting would only burn the full bound on each swap.
+          //
+          // Gated on the same predicate as the BYPASS write above too: status only
+          // falls to 0 because that write drove the transition, and on the
+          // stock_convert && !display_support_dv path OpenDecoder leaves the policy at
+          // FOLLOW_SOURCE, so nothing drives it and this would burn the full bound at
+          // every close. The ceiling stays upstream's m_decoder_timeout: the kernel
+          // needs MAX_TRANSITION_DELAY (5) vsyncs and the test fires on the sixth -
+          // 250.3ms at 23.976 - so a 200ms bound could expire before the teardown ran.
+          std::chrono::time_point<std::chrono::steady_clock> now(std::chrono::steady_clock::now());
+          if (!aml_dv_disc_session() && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !fileEngaged)
+          {
+            while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
+                   (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+              usleep(10000); // wait 10ms
+          }
 
-    // a kept picture keeps VD1 on (the keeper's toggle mode), so the core
-    // stays up and this would burn the whole bound at every join
-    while (!keepFrame &&
-           AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
-           (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
-      usleep(10000); // wait 10ms
+          // a kept picture keeps VD1 on (the keeper's toggle mode), so the core
+          // stays up and this would burn the whole bound at every join
+          while (!keepFrame &&
+                 AmlDisplay->aml_get_drmProperty("dv_video_on", DRM_MODE_OBJECT_CRTC) == 1 &&
+                 (std::chrono::steady_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+            usleep(10000); // wait 10ms
 
-    if (aml_dv_file_engaged())
-      aml_dv_release_file_engage();
+          if (aml_dv_file_engaged())
+            aml_dv_release_file_engage();
 
-    // Same session guard as the dv_mode write above, plus one of its own:
-    // native-DV OpenDecoder never writes dv_policy back, so a per-segment
-    // FOLLOW_SOURCE here is never restored and the session would spend the rest
-    // of its life under the wrong policy.
-    if (dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged())
-      AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FOLLOW_SOURCE);
-    else if (dolby_vision_policy != AMDV_FORCE_OUTPUT_MODE)
-      AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 1);
+          // Same session guard as the dv_mode write above, plus one of its own:
+          // native-DV OpenDecoder never writes dv_policy back, so a per-segment
+          // FOLLOW_SOURCE here is never restored and the session would spend the rest
+          // of its life under the wrong policy.
+          if (dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged())
+            AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FOLLOW_SOURCE);
+          else if (dolby_vision_policy != AMDV_FORCE_OUTPUT_MODE)
+            AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 1);
 
-    // stop injecting a custom VSVDB so the desktop/other apps see the real
-    // EDID - but NOT while a disc session is live: the clear writes
-    // force_vsvdb=0 + a full EDID reload, and the next OpenDecoder re-injects
-    // with a second reload - two multi-second sink re-latches per menu<->title
-    // transition with the max-lum override enabled (review finding A7). The
-    // disc-session release path (aml_dv_set_disc_session(false) at disc
-    // close) runs the clear then.
-    if (!aml_dv_disc_session())
-      aml_dv_clear_vsvdb();
-    else
-      CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder - disc session live: VSVDB injection held");
+          // stop injecting a custom VSVDB so the desktop/other apps see the real
+          // EDID - but NOT while a disc session is live: the clear writes
+          // force_vsvdb=0 + a full EDID reload, and the next OpenDecoder re-injects
+          // with a second reload - two multi-second sink re-latches per menu<->title
+          // transition with the max-lum override enabled (review finding A7). The
+          // disc-session release path (aml_dv_set_disc_session(false) at disc
+          // close) runs the clear then.
+          if (!aml_dv_disc_session())
+            aml_dv_clear_vsvdb();
+          else
+            CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder - disc session live: VSVDB injection held");
 
-    // Paired with the dv_mode guard above: disabling the core here while the
-    // session still holds the mode at IPT_TUNNEL would strand it there, because
-    // every later mode write is dropped against a disabled core. The session
-    // release path drops the mode first and then disables, in that order.
-    if (!aml_dv_disc_engaged())
-      AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
-  }
-  else if (aml_dv_file_engaged())
-    aml_dv_release_file_engage();
+          // Paired with the dv_mode guard above: disabling the core here while the
+          // session still holds the mode at IPT_TUNNEL would strand it there, because
+          // every later mode write is dropped against a disabled core. The session
+          // release path drops the mode first and then disables, in that order.
+          if (!aml_dv_disc_engaged())
+            AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
+        }
+        else if (aml_dv_file_engaged())
+          aml_dv_release_file_engage();
+      },
+      0,
+      std::chrono::seconds(
+          CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout) +
+          std::chrono::seconds(2));
 
   // the core stays as it is under a kept picture: the next OpenDecoder sets
   // the layers again (a FEL open resets them in full first), and an unmap
