@@ -16,7 +16,8 @@
 #include <mutex>
 #include <string>
 
-// Phase 5 step 5.B1-2: the settings that link and DV writes read, mirrored outside CSettings.
+// Phase 5 step 5.B1-2: the settings that link and DV writes and the video-side threads read,
+// mirrored outside CSettings.
 // A setting callback runs under that setting's lock, and from 5.B1-3 a callback may wait for a
 // W job; W reading the setting through CSettings would then wait for the callback. The mirror
 // takes each change in OnSettingChanging, which Kodi calls again with the old value when a

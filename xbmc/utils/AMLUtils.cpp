@@ -1832,8 +1832,8 @@ static constexpr int kDetectCacheFloorPct = 50;    // still below after waiting 
 
 static bool aml_dv_detect_active_area_enabled()
 {
-  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-             CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE) == 2; // Auto-detect
+  return OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE) ==
+         2; // Auto-detect
 }
 
 int aml_dv_detect_active_area_state()

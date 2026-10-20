@@ -18,6 +18,7 @@
 #include "AMLCodec.h"
 #include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "utils/HDRCapabilities.h"
 #include "utils/log.h"
 #include "settings/AdvancedSettings.h"
@@ -138,7 +139,7 @@ bool CDVDVideoCodecAmlogic::Register()
 
 bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
-  if (!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEAMCODEC))
+  if (!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_USEAMCODEC))
     return false;
   if ((hints.stills && hints.fpsrate == 0) || hints.width == 0)
     return false;
@@ -169,7 +170,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       break;
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO:
-      if (m_hints.width <= CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG2))
+      if (m_hints.width <= OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG2))
         goto FAIL;
 
       switch(m_hints.profile)
@@ -194,9 +195,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       m_pFormatName = "am-mpeg2";
       break;
     case AV_CODEC_ID_H264:
-      if (m_hints.width <= CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECH264))
+      if (m_hints.width <= OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECH264))
       {
-        CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::h264 size check failed {:d}",CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECH264));
+        CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::h264 size check failed {:d}",OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECH264));
         goto FAIL;
       }
       switch(hints.profile)
@@ -267,7 +268,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     case AV_CODEC_ID_MPEG4:
     case AV_CODEC_ID_MSMPEG4V2:
     case AV_CODEC_ID_MSMPEG4V3:
-      if (m_hints.width <= CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG4))
+      if (m_hints.width <= OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG4))
         goto FAIL;
       m_pFormatName = "am-mpeg4";
       break;
@@ -364,7 +365,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       {
         if (aml_support_dolby_vision())
         {
-          bool user_dv_disable = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          bool user_dv_disable = OUTPUT::CSettingsMirror::Get().GetBool(
               CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE);
 
           // Dolby Vision L5 active-area (letterbox) mode: Source / Zero / Auto-
@@ -376,14 +377,14 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           //  - 16:9 coded frame + Auto: background luma-scan for baked-in bars.
           if (!user_dv_disable)
           {
-            const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
-            const int l5mode = dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
+            const auto& dvsettings = OUTPUT::CSettingsMirror::Get();
+            const int l5mode = dvsettings.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
             m_bitstream->SetDoviL5Mode(l5mode);
             // keep upstream's side-data flag meaningful under our 3-mode setting
             if (l5mode == DOVI_L5_ZERO)
               m_streamMeta.flags.push_back("l5-zeroed");
             m_bitstream->SetDoviL5OsdUnmask(
-                dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
+                dvsettings.GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
             const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
                                  m_hints.dovi.dv_profile == 8);
             // Run the RPU processing (L5 / CMv4.0 append) on already-annex-b
@@ -497,7 +498,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   if (m_bitstream)
   {
     const CHDRCapabilities caps = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
-    const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    const auto& dvsettings = OUTPUT::CSettingsMirror::Get();
 
     // HDR10+ -> Dolby Vision profile 8.1 conversion. When enabled on a DV display,
     // CBitstreamConverter synthesizes a DV 8.1 RPU from the stream's HDR10+ dynamic
@@ -510,12 +511,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     // phase 5 step 5.E1b (log only)
     const bool candidateShadow = aml_dv_hdr10plus_candidate(
         aml_support_dolby_vision(), aml_display_support_dv(), m_hints.dovi.dv_profile,
-        m_hints.hdrType, dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT));
+        m_hints.hdrType, dvsettings.GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT));
     if (aml_support_dolby_vision() && aml_display_support_dv() &&
         m_hints.dovi.dv_profile == 0 &&
         (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
          m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
-        dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT))
+        dvsettings.GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT))
     {
       m_hdr10plusToDvCandidate = true;
       m_bitstream->SetConvertHdr10Plus(true);
@@ -654,8 +655,8 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
   // swallowed by a generation we never actually consumed.
   m_cmv40SettingsGen = aml_dv_cmv40_settings_generation();
 
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  int cmv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  const auto& settings = OUTPUT::CSettingsMirror::Get();
+  int cmv40 = settings.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
   // Smart is per-frame by design, and a mid-stream CM2.9<->4.0 change rewrites the
   // RPU's block set (L3/L9/L254/L11). On player-led DV output the sink re-acquires
   // Dolby Vision on that change - a visible black frame plus the TV's DV banner,
@@ -692,7 +693,7 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
   }
   if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_AUTO)
     m_bitstream->SetCMv40AutoTrigger(static_cast<DOVICMv40AutoTrigger>(
-        settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER)));
+        settings.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER)));
   // Auto's SOURCE trigger compares the display peak to the title's mastering
   // peak, so it needs the same resolved nits Smart does.
   if (static_cast<DOVICMv40Mode>(cmv40) == CMV40_SMART ||
@@ -714,13 +715,13 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
     // setting at 0 means "no explicit peak": the Smart threshold still auto-
     // detects here, while the DM keeps its own built-in target unless the user
     // deliberately enters a value.
-    int nits = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
+    int nits = settings.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISPLAY_MAXNITS);
     if (nits <= 0)
       nits = GetDisplayVsvdbMaxNits();
     // set the bypass inputs BEFORE the mode (SetAppendCMv40 resets the sentinels)
     m_bitstream->SetSmartBypassDisplayNits(nits);
     m_bitstream->SetSmartBypassThresholdPct(
-        settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
+        settings.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
   }
   m_bitstream->SetAppendCMv40(static_cast<DOVICMv40Mode>(cmv40));
 }

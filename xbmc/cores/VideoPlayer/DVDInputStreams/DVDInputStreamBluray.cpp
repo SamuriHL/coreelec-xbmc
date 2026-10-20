@@ -40,6 +40,7 @@
 #include "utils/log.h"
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include <algorithm>
 #include <array>
@@ -460,7 +461,7 @@ bool EffectiveDisplaySupports3D()
     return true;
   const auto settings = CServiceBroker::GetSettingsComponent();
   if (settings && settings->GetSettings() &&
-      settings->GetSettings()->GetBool(CSettings::SETTING_BLURAY_SIMULATE3DDISPLAY))
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_BLURAY_SIMULATE3DDISPLAY))
   {
     CLog::Log(LOGINFO, "CDVDInputStreamBluray: \"Simulate 3D display\" is on - reporting 3D "
                        "display capability the connected display does not report");
@@ -808,7 +809,7 @@ bool CDVDInputStreamBluray::Open()
     // so the HDMI DV signalling never bounces at segment boundaries (each
     // bounce is a ~2s TV resync that segment audio plays straight through).
     if (aml_support_dolby_vision() && aml_display_support_dv() &&
-        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        !OUTPUT::CSettingsMirror::Get().GetBool(
             CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
         DiscHasDolbyVision())
     {
@@ -884,7 +885,7 @@ bool CDVDInputStreamBluray::Open()
     // VSIF hold never engages - per-segment DV drops the latch was built to
     // prevent (review §B). Same conditions as the navmode path.
     if (aml_support_dolby_vision() && aml_display_support_dv() &&
-        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        !OUTPUT::CSettingsMirror::Get().GetBool(
             CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
         DiscHasDolbyVision())
     {
@@ -3709,7 +3710,7 @@ void CDVDInputStreamBluray::SeekMVCDemux(int64_t time)
 
 void CDVDInputStreamBluray::SetupPlayerSettings()
 {
-  int region = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
+  int region = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
   if ( region != BLURAY_REGION_A
     && region != BLURAY_REGION_B
     && region != BLURAY_REGION_C)

@@ -22,6 +22,7 @@
 #include "utils/MathUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include <mutex>
 
@@ -114,7 +115,7 @@ CVideoPlayerAudio::~CVideoPlayerAudio()
 bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 {
   CLog::Log(LOGINFO, "Finding audio codec for: {}", hints.codec);
-  bool allowpassthrough = !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
+  bool allowpassthrough = !OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
 
   CAEStreamInfo::DataType streamType =
       m_audioSink.GetPassthroughStreamType(hints.codec, hints.samplerate, hints.profile);
@@ -189,7 +190,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 
   m_prevsynctype = -1;
   m_synctype = SYNC_DISCON;
-  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK))
+  if (OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK))
     m_synctype = SYNC_RESAMPLE;
 
   if (m_synctype == SYNC_DISCON)
@@ -1361,7 +1362,7 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 
   m_displayReset = false;
 
-  bool allowpassthrough = !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
+  bool allowpassthrough = !OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
   if (m_synctype == SYNC_RESAMPLE)
     allowpassthrough = false;
 

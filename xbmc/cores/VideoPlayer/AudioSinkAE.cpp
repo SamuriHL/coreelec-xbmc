@@ -18,6 +18,9 @@
 #include "settings/SettingsComponent.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/SettingsMirror.h"
+#endif
 
 #include <algorithm>
 #include <mutex>
@@ -67,9 +70,14 @@ bool CAudioSinkAE::Create(const DVDAudioFrame &audioframe, AVCodecID codec, bool
   IAE* ae = CServiceBroker::GetActiveAE();
   if (ae && ae->IsSuspended() && !m_suspendWaitExpired && !m_abortCreate)
   {
+#if defined(HAS_LIBAMCODEC)
+    const auto delay = std::chrono::milliseconds(
+        100 * std::max(0, OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange")));
+#else
     const auto delay = std::chrono::milliseconds(
         100 * std::max(0, CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
                               "videoscreen.delayrefreshchange")));
+#endif
     const auto limit = std::max<std::chrono::milliseconds>(10s, 2 * delay + 3s);
     const auto start = std::chrono::steady_clock::now();
     while (ae->IsSuspended() && !m_abortCreate &&

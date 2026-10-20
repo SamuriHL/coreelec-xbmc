@@ -12,6 +12,9 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/SettingsMirror.h"
+#endif
 
 #include <algorithm>
 #include <time.h>
@@ -47,8 +50,12 @@ constexpr auto DISCONNECT_ALLOWANCE = 15s;
 
 void CDiscTimeOwner::Begin(bool enabled)
 {
+#if defined(HAS_LIBAMCODEC)
+  const int delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
+#else
   const int delay = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
       "videoscreen.delayrefreshchange");
+#endif
   std::unique_lock lock(m_lock);
   m_lostCap = std::chrono::milliseconds(std::max(delay, 0) * 100) + 3s + 1s + MODE_SET_ALLOWANCE +
               DISCONNECT_ALLOWANCE;

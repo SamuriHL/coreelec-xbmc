@@ -31,6 +31,7 @@
 #if defined(HAS_LIBAMCODEC)
 #include "HwDecRender/PresentationCoordinator.h"
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #else
 // non-AML builds: the AML display hooks used below compile to no-ops so this
 // cross-platform file stays buildable/upstreamable (review finding F11)
@@ -2215,9 +2216,14 @@ void CRenderManager::CheckEnableClockSync()
     // No phase is coming once the reference clock runs and the rates do not
     // match, or after a window's worth of frames without sync (reference
     // clock off); a relocking display may still enable it.
+#if defined(HAS_LIBAMCODEC)
+    const bool refClockOff =
+        !OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK);
+#else
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     const bool refClockOff =
         settings && !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK);
+#endif
     m_dvdClock.ClearVsyncAdjust(refClockOff ||
                                 (!m_displayLost && (refClockRunning ||
                                                     m_clockSync.m_disabledFrames > 31)));
