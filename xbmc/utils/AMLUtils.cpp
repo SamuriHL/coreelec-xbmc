@@ -677,7 +677,7 @@ static std::atomic<bool> s_dv_disc_engage_pending{false};
 // The engage applied for a file (no disc session). atomic: applied on the GUI
 // thread, read and released on the video thread.
 static std::atomic<bool> s_dv_file_engaged{false};
-void aml_dv_set_disc_session(bool active)
+static void aml_dv_set_disc_session_now(bool active)
 {
   std::unique_lock lock(s_dv_disc_mutex);
   const bool wasActive = s_dv_disc_session;
@@ -712,6 +712,13 @@ void aml_dv_set_disc_session(bool active)
   // apps see the panel's real EDID again.
   if (wasActive && !active)
     aml_dv_clear_vsvdb();
+}
+
+void aml_dv_set_disc_session(bool active)
+{
+  OUTPUT::COutputWorker::Get().Run(
+      OUTPUT::Lane::DECODER, active ? "disc session open" : "disc session end",
+      [active] { aml_dv_set_disc_session_now(active); }, 0, std::chrono::milliseconds(1000));
 }
 bool aml_dv_disc_session() { return s_dv_disc_session; }
 
@@ -916,7 +923,7 @@ void aml_dv_recover_stale_disc_session()
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
 }
 
-void aml_dv_release_disc_engage()
+static void aml_dv_release_disc_engage_now()
 {
   std::unique_lock lock(s_dv_disc_mutex);
   s_dv_disc_engage_pending = false;
@@ -938,6 +945,13 @@ void aml_dv_release_disc_engage()
   aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   CLog::Log(LOGINFO, "aml_dv_release_disc_engage: DV output released to native "
             "signalling (non-DV title / session end; re-engages on next DV segment)");
+}
+
+void aml_dv_release_disc_engage()
+{
+  OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::DECODER, "disc release",
+                                   [] { aml_dv_release_disc_engage_now(); }, 0,
+                                   std::chrono::milliseconds(1000));
 }
 
 bool aml_dv_disc_engaged() { return s_dv_disc_engaged.load(); }
@@ -1218,7 +1232,7 @@ void aml_dv_apply_target_overrides(unsigned int mode)
               __FUNCTION__, max_nits);
 }
 
-void aml_dv_set_vs10_mode(unsigned int mode)
+static void aml_dv_set_vs10_mode_now(unsigned int mode)
 {
   // A BYPASS here drives the same kernel path CloseDecoder's per-segment write
   // does: six vsyncs later enable_amdv(0) runs, patch 0005 clears the session
@@ -1246,7 +1260,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
       !CServiceBroker::GetDataCacheCore().IsVideoHwDecoder())
   {
     CLog::Log(LOGINFO, "AMLUtils::{} - refusing VS10 mode {} for software-decoded video (no hardware video layer)",
-              __FUNCTION__, mode);
+              "aml_dv_set_vs10_mode", mode);
     CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
                                           CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60357),
                                           CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60358));
@@ -1270,7 +1284,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
         dolby_vision_policy.Get<int>().value() == static_cast<int>(AMDV_FORCE_OUTPUT_MODE))
       dolby_vision_policy.Set(AMDV_FOLLOW_SOURCE);
     CSysfsPath("/sys/class/amdolby_vision/dv_mode", (DOLBY_VISION_OUTPUT_MODE_BYPASS + 1) % 6);
-    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", __FUNCTION__);
+    CLog::Log(LOGINFO, "AMLUtils::{} - VS10 bypass (follow source)", "aml_dv_set_vs10_mode");
     aml_dv_publish_follow_source_mode(dv_enabled);
     // Follow-source resolved to BYPASS: this source is not DV, so the core has no
     // job left - and leaving it merely idle is NOT neutral for the HDMI wire.
@@ -1302,7 +1316,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
     {
       CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to BYPASS on a non-DV "
                          "source - taking the DV core down so the wire can go native",
-                __FUNCTION__);
+                "aml_dv_set_vs10_mode");
       dv_teardown_to_bypass();
     }
     return;
@@ -1342,7 +1356,7 @@ void aml_dv_set_vs10_mode(unsigned int mode)
       const int got = ll_policy.Get<int>().value_or(-1);
       CLog::Log(got == static_cast<int>(want) ? LOGDEBUG : LOGWARNING,
                 "AMLUtils::{} - DV {} led: dolby_vision_ll_policy set to {}, reads back {}",
-                __FUNCTION__, playerLed ? "player" : "TV", want, got);
+                "aml_dv_set_vs10_mode", playerLed ? "player" : "TV", want, got);
     }
   }
   dolby_vision_policy.Set(AMDV_FORCE_OUTPUT_MODE);
@@ -1351,7 +1365,13 @@ void aml_dv_set_vs10_mode(unsigned int mode)
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
   aml_dv_set_output_mode(mode);
   CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
-            __FUNCTION__, mode, (mode + 1) % 6);
+            "aml_dv_set_vs10_mode", mode, (mode + 1) % 6);
+}
+
+void aml_dv_set_vs10_mode(unsigned int mode)
+{
+  OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::MIDPLAY, "vs10",
+                                   [mode] { aml_dv_set_vs10_mode_now(mode); });
 }
 
 void aml_dv_apply_graphics_from_sink()
