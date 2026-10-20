@@ -15,6 +15,11 @@
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
+#endif
 
 #include <stdexcept>
 #include <utility>
@@ -301,6 +306,7 @@ CApplicationComponents& CServiceBroker::GetAppComponents()
 
 CGUIComponent* CServiceBroker::GetGUI()
 {
+  MAINCOUPLING_ACCESSOR("CServiceBroker GetGUI");
   return g_serviceBroker.m_pGUI;
 }
 

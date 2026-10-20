@@ -15,6 +15,11 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
+#endif
 
 #include <memory>
 #include <mutex>
@@ -150,16 +155,19 @@ int CApplicationMessenger::SendMsg(ThreadMessage&& message, bool wait)
 
 int CApplicationMessenger::SendMsg(uint32_t messageId)
 {
+  MAINCOUPLING_ACCESSOR("SendMsg");
    return SendMsg(ThreadMessage{ messageId }, true);
 }
 
 int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, void* payload)
 {
+  MAINCOUPLING_ACCESSOR("SendMsg");
   return SendMsg(ThreadMessage{ messageId, param1, param2, payload }, true);
 }
 
 int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, void* payload, std::string strParam)
 {
+  MAINCOUPLING_ACCESSOR("SendMsg");
   return SendMsg(ThreadMessage{messageId, param1, param2, payload, std::move(strParam),
                                std::vector<std::string>{}},
                  true);
@@ -167,6 +175,7 @@ int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, v
 
 int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, void* payload, std::string strParam, std::vector<std::string> params)
 {
+  MAINCOUPLING_ACCESSOR("SendMsg");
   return SendMsg(
       ThreadMessage{messageId, param1, param2, payload, std::move(strParam), std::move(params)},
       true);
@@ -278,6 +287,8 @@ void CApplicationMessenger::SendGUIMessage(const CGUIMessage &message, int windo
   ThreadMessage tMsg(TMSG_GUI_MESSAGE);
   tMsg.param1 = windowID == WINDOW_INVALID ? 0 : windowID;
   tMsg.lpVoid = new CGUIMessage(message);
+  if (waitResult)
+    MAINCOUPLING_ACCESSOR("SendGUIMessage");
   SendMsg(std::move(tMsg), waitResult);
 }
 

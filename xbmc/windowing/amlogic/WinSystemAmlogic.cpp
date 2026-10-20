@@ -39,6 +39,7 @@
 #include "utils/log.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "threads/SingleLock.h"
 
 #include "platform/linux/SysfsPath.h"
@@ -943,6 +944,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
 
 bool CWinSystemAmlogic::IsHDRDisplay()
 {
+  MAINCOUPLING_ACCESSOR("WinSystem IsHDRDisplay");
   CHDRCapabilities caps = m_amlDisplay->GetHDRCaps();
   return (caps.SupportsHDR10() | caps.SupportsHDR10Plus() | caps.SupportsHLG() |
          (caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE));
@@ -950,6 +952,7 @@ bool CWinSystemAmlogic::IsHDRDisplay()
 
 CHDRCapabilities CWinSystemAmlogic::GetDisplayHDRCapabilities() const
 {
+  MAINCOUPLING_ACCESSOR("WinSystem GetDisplayHDRCapabilities");
   return m_amlDisplay->GetHDRCaps();
 }
 
@@ -962,6 +965,7 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 
 HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
 {
+  MAINCOUPLING_ACCESSOR("WinSystem GetOSHDRStatus");
   return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
 }
 
@@ -981,6 +985,7 @@ void CWinSystemAmlogic::Unregister(IDispResource *resource)
 
 float CWinSystemAmlogic::GetFrameLatencyAdjustment()
 {
+  MAINCOUPLING_ACCESSOR("WinSystem GetFrameLatencyAdjustment");
   // Milliseconds since the last hardware vblank. The render manager subtracts
   // it from the display latency so a frame-phase sample is referenced to the
   // vblank, not to whenever the render loop reached it.

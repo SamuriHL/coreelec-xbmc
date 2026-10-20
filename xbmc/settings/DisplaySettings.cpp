@@ -31,6 +31,11 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -574,6 +579,7 @@ RESOLUTION CDisplaySettings::GetDisplayResolution() const
 
 const RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(size_t index) const
 {
+  MAINCOUPLING_ACCESSOR("CDisplaySettings GetResolutionInfo");
   std::unique_lock lock(m_critical);
   if (index >= m_resolutions.size())
     return EmptyResolution;
@@ -583,6 +589,7 @@ const RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(size_t index) const
 
 const RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(RESOLUTION resolution) const
 {
+  MAINCOUPLING_ACCESSOR("CDisplaySettings GetResolutionInfo");
   if (resolution <= RES_INVALID)
     return EmptyResolution;
 
@@ -591,6 +598,7 @@ const RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(RESOLUTION resolution
 
 RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(size_t index)
 {
+  MAINCOUPLING_ACCESSOR("CDisplaySettings GetResolutionInfo");
   std::unique_lock lock(m_critical);
   if (index >= m_resolutions.size())
   {
@@ -603,6 +611,7 @@ RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(size_t index)
 
 RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(RESOLUTION resolution)
 {
+  MAINCOUPLING_ACCESSOR("CDisplaySettings GetResolutionInfo");
   if (resolution <= RES_INVALID)
   {
     EmptyModifiableResolution = RESOLUTION_INFO();

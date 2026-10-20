@@ -28,6 +28,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
@@ -184,6 +185,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 {
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
+  MAINCOUPLING("GC GetStereoMode");
   const RenderStereoMode stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
 
   // check for frac_rate_policy change
@@ -192,6 +194,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   bool nativeGUI = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
 
+  MAINCOUPLING("GC GetHDRType");
   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
   bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);

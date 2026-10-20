@@ -22,6 +22,11 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING(what) static_cast<void>(0)
+#endif
 
 #include <algorithm>
 #include <cstdlib> // std::abs(int) prototype
@@ -318,6 +323,7 @@ void CBaseRenderer::ManageRenderArea()
   m_sourceRect.y2 = (float)m_sourceHeight;
 
   unsigned int stereo_mode  = CONF_FLAGS_STEREO_MODE_MASK(m_iFlags);
+  MAINCOUPLING("GC GetStereoView");
   auto stereo_view = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
   float inputFrameRatio  = GetAspectRatio();
   float ratio  = m_sourceRect.x2 / m_sourceRect.y2;

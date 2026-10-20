@@ -17,6 +17,11 @@
 #include "utils/DisplayInfo.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING(what) static_cast<void>(0)
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -455,6 +460,7 @@ void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette)
 
 int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
 {
+  MAINCOUPLING("GC GetStereoMode");
   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
 
   if (stereo_mode == RenderStereoMode::MONO ||
@@ -474,6 +480,7 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
   }
 
   // correct depth according to the current left/right eye view
+  MAINCOUPLING("GC GetStereoView");
   return depth * (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView() == RenderStereoView::LEFT
                ? 1
                : -1);

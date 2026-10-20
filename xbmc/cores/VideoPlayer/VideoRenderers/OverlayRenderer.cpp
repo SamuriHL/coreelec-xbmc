@@ -27,6 +27,12 @@
 #include "utils/TimeUtils.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING(what) static_cast<void>(0)
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
+#endif
 
 #include <algorithm>
 #include <mutex>
@@ -68,6 +74,7 @@ CRenderer::~CRenderer()
 
 void CRenderer::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index)
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
 
   SElement   e;
@@ -95,6 +102,7 @@ void CRenderer::UnInit()
 
 void CRenderer::Flush()
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
 
   for(std::vector<SElement>& buffer : m_buffers)
@@ -114,6 +122,7 @@ void CRenderer::Reset()
 
 void CRenderer::Release(int idx)
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   Release(m_buffers[idx]);
 }
@@ -176,12 +185,14 @@ void CRenderer::ReleaseUnused()
 
 void CRenderer::Render(int idx, float depth)
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   ReleaseCacheOnRegimeChange();
 
   // during HDR composite the m_isHDROverlay overlays render via
   // RenderHDROverlays instead
   const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite();
+  MAINCOUPLING("GC GetStereoView");
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
@@ -225,14 +236,17 @@ void CRenderer::RenderHDROverlays(int idx)
   if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
     return;
 
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   ReleaseCacheOnRegimeChange();
 
+  MAINCOUPLING("GC GetStereoView");
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
   // the back buffer depth is not cleared while the GUI composites
   CGraphicContext& gfxContext = CServiceBroker::GetWinSystem()->GetGfxContext();
+  MAINCOUPLING("GC GetRenderOrder");
   const RENDER_ORDER renderOrder = gfxContext.GetRenderOrder();
   gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
 
@@ -278,6 +292,7 @@ bool CRenderer::HasHDROverlays(int idx) const
   if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
     return false;
 
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   const std::vector<SElement>* const buffer =
       (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
@@ -297,6 +312,7 @@ bool CRenderer::HasHDROverlays(int idx) const
 
 bool CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOverlay>>& images) const
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   const std::vector<SElement>* const buffer =
       (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
@@ -409,6 +425,7 @@ void CRenderer::Render(COverlay* o)
 
 bool CRenderer::HasVisibleOverlay(int idx) const
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
 
   // A presentation-time menu composition is on screen whenever it holds
@@ -468,6 +485,7 @@ void CRenderer::SetStereoMode(const std::string &stereomode)
 
 void CRenderer::SetSubtitleVerticalPosition(const int value, bool save)
 {
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   m_subtitlePosition = value;
 
@@ -615,6 +633,7 @@ void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
       presentLatest.reset();
   }
 
+  MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
   const bool hasBuffer = idx >= 0 && idx < NUM_BUFFERS;
 
@@ -894,6 +913,7 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
     }
     case ObservableMessagePositionChanged:
     {
+      MAINCOUPLING_ACCESSOR("overlay m_section");
       std::unique_lock lock(m_section);
       m_subtitlePosResInfo = POSRESINFO_UNSET;
       break;

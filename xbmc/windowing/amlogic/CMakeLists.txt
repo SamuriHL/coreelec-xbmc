@@ -6,7 +6,8 @@ set(SOURCES WinSystemAmlogic.cpp
             AudioFollower.cpp
             WireClassProbe.cpp
             OutputWorker.cpp
-            SettingsMirror.cpp)
+            SettingsMirror.cpp
+            ThreadRole.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h

@@ -33,7 +33,10 @@
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 #else
+#define MAINCOUPLING(what) static_cast<void>(0)
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
 // non-AML builds: the AML display hooks used below compile to no-ops so this
 // cross-platform file stays buildable/upstreamable (review finding F11)
 static inline void aml_dv_set_subtitles_visible(bool) {}
@@ -209,6 +212,7 @@ CRenderManager::~CRenderManager()
 
 void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     m_pRenderer->GetVideoRect(source, dest, view);
@@ -216,6 +220,7 @@ void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
 
 float CRenderManager::GetAspectRatio() const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     return m_pRenderer->GetAspectRatio();
@@ -225,6 +230,7 @@ float CRenderManager::GetAspectRatio() const
 
 unsigned int CRenderManager::GetOrientation() const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     return m_pRenderer->GetOrientation();
@@ -234,6 +240,7 @@ unsigned int CRenderManager::GetOrientation() const
 
 void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
   {
@@ -252,6 +259,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
   // check if something has changed
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
 
     if (!m_bRenderGUI)
@@ -271,6 +279,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         {
           // PrepareNextRender publishes under m_presentlock
+          MAINCOUPLING_ACCESSOR("RM m_presentlock");
           std::unique_lock presentLock(m_presentlock);
           m_clockSync.Reset();
           m_dvdClock.ResetVsyncAdjust();
@@ -290,6 +299,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
   // make sure any queued frame was fully presented
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
     XbmcThreads::EndTime<> endtime(5000ms);
     m_forceNext = true;
@@ -307,6 +317,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   }
 
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     m_picture.SetParams(picture);
     m_fps = fps;
@@ -320,6 +331,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_pConfigPicture = std::make_unique<VideoPicture>();
     m_pConfigPicture->CopyRef(picture);
 
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     m_presentstep = PRESENT_READY;
     m_presentevent.notifyAll();
@@ -328,10 +340,12 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   if (!m_stateEvent.Wait(std::chrono::seconds(m_render_timeout)))
   {
     CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     return false;
   }
 
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED)
   {
@@ -350,6 +364,7 @@ bool CRenderManager::HasVisibleOverlay() const
   // takes its own lock; never nest the two).
   int source;
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
@@ -360,7 +375,9 @@ bool CRenderManager::HasVisibleOverlay() const
 bool CRenderManager::Configure()
 {
   // lock all interfaces
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
 
@@ -461,6 +478,7 @@ bool CRenderManager::Configure()
 
 bool CRenderManager::IsConfigured() const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_renderState == STATE_CONFIGURED)
     return true;
@@ -478,6 +496,7 @@ void CRenderManager::ShowVideo(bool enable)
 void CRenderManager::FrameWait(std::chrono::milliseconds duration)
 {
   XbmcThreads::EndTime<> timeout{duration};
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   while(m_presentstep == PRESENT_IDLE && !timeout.IsTimePast())
     m_presentevent.wait(lock, timeout.GetTimeLeft());
@@ -488,6 +507,7 @@ bool CRenderManager::IsPresenting()
   if (!IsConfigured())
     return false;
 
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   if (!m_presentTimer.IsTimePast())
     return true;
@@ -501,6 +521,7 @@ void CRenderManager::FrameMove()
   bool firstFrame = false;
 
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     if (m_renderState == STATE_UNCONFIGURED)
     {
@@ -526,6 +547,7 @@ void CRenderManager::FrameMove()
   m_graphicsWithheld = withheld;
 
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
 
     if (m_renderState == STATE_UNCONFIGURED)
@@ -546,6 +568,7 @@ void CRenderManager::FrameMove()
   int source;
   if (m_presenterMode)
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     m_bRenderGUI = true;
     source = m_presentsource;
@@ -553,6 +576,7 @@ void CRenderManager::FrameMove()
   }
   else
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
 
     if (m_queued.empty())
@@ -612,6 +636,7 @@ void CRenderManager::FrameMove()
   unsigned int segmentGen = 0;
   if (source >= 0 && source < NUM_BUFFERS)
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
     segmentGen = m_Queue[source].segmentGen;
   }
@@ -638,6 +663,7 @@ void CRenderManager::PreInit()
 {
   BeginFile();
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
       return;
@@ -655,6 +681,7 @@ void CRenderManager::PreInit()
 
   StartCoordinator();
 
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
 
   if (!m_pRenderer)
@@ -697,6 +724,7 @@ void CRenderManager::UnInit()
   // before the renderer goes: the coordinator releases frames through it
   StopCoordinator();
 
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   m_presenterMode = false;
 
@@ -737,7 +765,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
 #endif
 
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     std::unique_lock lock3(m_datalock);
 
@@ -904,6 +934,7 @@ void CRenderManager::ServiceVideoCaptures()
 
 void CRenderManager::SetViewMode(int iViewMode)
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     m_pRenderer->SetViewMode(iViewMode);
@@ -974,6 +1005,7 @@ bool CRenderManager::GraphicsWithheld()
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
   // has no mode to wait for (a fullscreen toggle also raises the trigger)
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   return m_renderState == STATE_CONFIGURED &&
          std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
@@ -1002,12 +1034,14 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   int source;
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
     // with the coordinator: the source FrameMove pinned
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
 
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     if (source == -1 || (m_renderState != STATE_CONFIGURED))
     {
@@ -1134,6 +1168,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   const SPresent& m = m_Queue[source];
 
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
 
     if (m_presentstep == PRESENT_FRAME)
@@ -1159,6 +1194,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 bool CRenderManager::IsGuiLayer()
 {
   {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
 
     if (!m_pRenderer)
@@ -1311,6 +1347,7 @@ void CRenderManager::UpdateResolution()
         std::string stereoMode;
         StreamHdrType hdrType;
         {
+          MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
           fps = m_fps;
           width = m_picture.iWidth;
@@ -1398,6 +1435,7 @@ void CRenderManager::UpdateResolution()
 
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (width)
   {
@@ -1436,6 +1474,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
                                      bool wait,
                                      int forceGen)
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
 
   if (m_free.empty())
@@ -1546,6 +1585,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
 {
   int idx;
   {
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
     if (m_free.empty())
       return;
@@ -1557,6 +1597,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
 
 bool CRenderManager::Supports(ERENDERFEATURE feature) const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     return m_pRenderer->Supports(feature);
@@ -1566,6 +1607,7 @@ bool CRenderManager::Supports(ERENDERFEATURE feature) const
 
 bool CRenderManager::Supports(ESCALINGMETHOD method) const
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
     return m_pRenderer->Supports(method);
@@ -1575,6 +1617,7 @@ bool CRenderManager::Supports(ESCALINGMETHOD method) const
 
 void CRenderManager::SetWorkerWakeFd(int fd)
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   m_workerWakeFd = fd;
 }
@@ -1596,6 +1639,7 @@ bool CRenderManager::ForcedPictureTaken(int gen) const
 
 void CRenderManager::CancelForce(int gen)
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   if (m_forceGen == gen)
   {
@@ -1607,10 +1651,12 @@ void CRenderManager::CancelForce(int gen)
 int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn)
 {
   retryIn = 0ms;
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
 
   // as WaitForBuffer: with the GUI not rendering, pictures are discarded at
   // the clock (its wait becomes the caller's retry)
+  MAINCOUPLING("GetRenderGUI");
   if (!m_bRenderGUI || !g_application.GetRenderGUI())
   {
     m_bRenderGUI = false;
@@ -1651,10 +1697,12 @@ int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn)
 int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
                                   std::chrono::milliseconds timeout)
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
 
   // check if gui is active and discard buffer if not
   // this keeps videoplayer going
+  MAINCOUPLING("GetRenderGUI");
   if (!m_bRenderGUI || !g_application.GetRenderGUI())
   {
     m_bRenderGUI = false;
@@ -2173,6 +2221,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
 
 void CRenderManager::DiscardBuffer()
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock2(m_presentlock);
 
   while(!m_queued.empty())
@@ -2188,6 +2237,7 @@ void CRenderManager::DiscardBuffer()
 
 bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &discard)
 {
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   lateframes = m_lateframes / 10;
   pts = m_presentpts;
@@ -2198,10 +2248,12 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
 
 bool CRenderManager::GetResumePts(double& pts, double& maxStep)
 {
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED || m_fps <= 0.0f)
     return false;
   const double frametime = DVD_TIME_BASE / static_cast<double>(m_fps);
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock presentLock(m_presentlock);
   if (!m_queued.empty())
     pts = m_Queue[m_queued.front()].pts;
@@ -2432,6 +2484,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     }
   } refusedLog;
 
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   diagLock = diagClock::now();
   if (m_renderState != STATE_CONFIGURED || !m_presenterMode || !m_pRenderer)
@@ -2465,6 +2518,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   CheckEnableClockSync();
 
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock presentLock(m_presentlock);
   diagPresent = diagClock::now();
   lock.unlock();

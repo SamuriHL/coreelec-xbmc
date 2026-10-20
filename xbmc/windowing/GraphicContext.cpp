@@ -27,6 +27,9 @@
 #include "utils/log.h"
 #if defined(HAS_LIBAMCODEC)
 #include "utils/AMLUtils.h"
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
 #endif
 
 #include <cassert>
@@ -307,6 +310,7 @@ void CGraphicContext::ResetScissors()
 
 const CRect CGraphicContext::GetViewWindow() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetViewWindow");
   if (m_bCalibrating || m_bFullScreenVideo)
   {
     CRect rect;
@@ -330,6 +334,7 @@ void CGraphicContext::SetViewWindow(float left, float top, float right, float bo
 
 void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 {
+  MAINCOUPLING_ACCESSOR("gfx lock");
   std::unique_lock lock(*this);
 
   m_bFullScreenVideo = bOnOff;
@@ -371,11 +376,13 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 
 bool CGraphicContext::IsFullScreenVideo() const
 {
+  MAINCOUPLING_ACCESSOR("GC IsFullScreenVideo");
   return m_bFullScreenVideo;
 }
 
 bool CGraphicContext::IsCalibrating() const
 {
+  MAINCOUPLING_ACCESSOR("GC IsCalibrating");
   return m_bCalibrating;
 }
 
@@ -386,6 +393,7 @@ void CGraphicContext::SetCalibrating(bool bOnOff)
 
 bool CGraphicContext::IsValidResolution(RESOLUTION res)
 {
+  MAINCOUPLING_ACCESSOR("GC IsValidResolution");
   if (res >= RES_WINDOW && (size_t) res < CDisplaySettings::GetInstance().ResolutionInfoSize())
   {
     return true;
@@ -440,6 +448,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     m_bFullScreenRoot = false;
   }
 
+  MAINCOUPLING_ACCESSOR("gfx lock");
   std::unique_lock lock(*this);
 
   // FIXME Wayland windowing needs some way to "deny" resolution updates since what Kodi
@@ -530,6 +539,7 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
     m_bFullScreenRoot = false;
   }
 
+  MAINCOUPLING_ACCESSOR("gfx lock");
   std::unique_lock lock(*this);
 
   UpdateInternalStateWithResolution(res);
@@ -570,6 +580,7 @@ void CGraphicContext::ApplyWindowResize(int newWidth, int newHeight)
 
 RESOLUTION CGraphicContext::GetVideoResolution() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetVideoResolution");
   return m_Resolution;
 }
 
@@ -624,6 +635,7 @@ void CGraphicContext::ApplyStateBlock()
 
 const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
 {
+  MAINCOUPLING_ACCESSOR("GC GetResInfo");
   RESOLUTION_INFO info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
 
   if (m_stereoMode == RenderStereoMode::SPLIT_HORIZONTAL)
@@ -694,6 +706,7 @@ void CGraphicContext::SetResInfo(RESOLUTION res, const RESOLUTION_INFO& info)
 
 const RESOLUTION_INFO CGraphicContext::GetResInfo() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetResInfo");
   return GetResInfo(m_Resolution);
 }
 
@@ -766,6 +779,7 @@ void CGraphicContext::SetScalingResolution(const RESOLUTION_INFO &res, bool need
 
 void CGraphicContext::SetRenderingResolution(const RESOLUTION_INFO &res, bool needsScaling)
 {
+  MAINCOUPLING_ACCESSOR("gfx lock");
   std::unique_lock lock(*this);
 
   SetScalingResolution(res, needsScaling);
@@ -816,6 +830,7 @@ void CGraphicContext::ScaleFinalCoords(float &x, float &y, float &z) const
 
 float CGraphicContext::GetScalingPixelRatio() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetScalingPixelRatio");
   // assume the resolutions are different - we want to return the aspect ratio of the video resolution
   // but only once it's been corrected for the skin -> screen coordinates scaling
   return GetResInfo().fPixelRatio * (m_finalTransform.scaleY / m_finalTransform.scaleX);
@@ -964,16 +979,19 @@ Color CGraphicContext::MergeColor(Color color) const
 
 int CGraphicContext::GetWidth() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetWidth");
   return m_iScreenWidth;
 }
 
 int CGraphicContext::GetHeight() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetHeight");
   return m_iScreenHeight;
 }
 
 float CGraphicContext::GetFPS() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetFPS");
   if (m_Resolution != RES_INVALID)
   {
     RESOLUTION_INFO info = GetResInfo();
@@ -985,6 +1003,7 @@ float CGraphicContext::GetFPS() const
 
 float CGraphicContext::GetDisplayLatency() const
 {
+  MAINCOUPLING_ACCESSOR("GC GetDisplayLatency");
   float latency = CServiceBroker::GetWinSystem()->GetDisplayLatency();
   if (latency < 0.0f)
   {
@@ -997,6 +1016,7 @@ float CGraphicContext::GetDisplayLatency() const
 
 bool CGraphicContext::IsFullScreenRoot () const
 {
+  MAINCOUPLING_ACCESSOR("GC IsFullScreenRoot");
   return m_bFullScreenRoot;
 }
 
@@ -1040,6 +1060,7 @@ void CGraphicContext::Flip(bool rendered, bool videoLayer)
 
 void CGraphicContext::GetAllowedResolutions(std::vector<RESOLUTION> &res)
 {
+  MAINCOUPLING_ACCESSOR("GC GetAllowedResolutions");
   res.clear();
 
   res.push_back(RES_WINDOW);

@@ -14,6 +14,11 @@
 #include "settings/lib/SettingsManager.h"
 #include "utils/Variant.h"
 #include "utils/XBMCTinyXML.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
+#endif
 
 #include <mutex>
 
@@ -196,6 +201,7 @@ std::shared_ptr<CSettingSection> CSettingsBase::GetSection(const std::string& se
 
 bool CSettingsBase::GetBool(const std::string& id) const
 {
+  MAINCOUPLING_ACCESSOR("CSettings GetBool");
   return m_settingsManager->GetBool(id);
 }
 
@@ -211,6 +217,7 @@ bool CSettingsBase::ToggleBool(const std::string& id)
 
 int CSettingsBase::GetInt(const std::string& id) const
 {
+  MAINCOUPLING_ACCESSOR("CSettings GetInt");
   return m_settingsManager->GetInt(id);
 }
 
@@ -221,6 +228,7 @@ bool CSettingsBase::SetInt(const std::string& id, int value)
 
 double CSettingsBase::GetNumber(const std::string& id) const
 {
+  MAINCOUPLING_ACCESSOR("CSettings GetNumber");
   return m_settingsManager->GetNumber(id);
 }
 
@@ -231,6 +239,7 @@ bool CSettingsBase::SetNumber(const std::string& id, double value)
 
 std::string CSettingsBase::GetString(const std::string& id) const
 {
+  MAINCOUPLING_ACCESSOR("CSettings GetString");
   return m_settingsManager->GetString(id);
 }
 
@@ -241,6 +250,7 @@ bool CSettingsBase::SetString(const std::string& id, const std::string& value)
 
 std::vector<CVariant> CSettingsBase::GetList(const std::string& id) const
 {
+  MAINCOUPLING_ACCESSOR("CSettings GetList");
   std::shared_ptr<CSetting> setting = m_settingsManager->GetSetting(id);
   if (!setting || setting->GetType() != SettingType::List)
     return std::vector<CVariant>();

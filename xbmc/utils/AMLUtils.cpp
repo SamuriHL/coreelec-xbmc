@@ -18,6 +18,7 @@
 #include "utils/log.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "utils/StringUtils.h"
 #include "ServiceBroker.h"
 #include "utils/RegExp.h"
@@ -314,6 +315,7 @@ bool aml_support_dolby_vision()
 
 bool aml_dolby_vision_enabled()
 {
+  MAINCOUPLING_ACCESSOR("aml_dolby_vision_enabled");
   bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
 
   bool dv_enabled = (!!aml_support_dolby_vision() &&
@@ -325,6 +327,7 @@ bool aml_dolby_vision_enabled()
 
 bool aml_dv_core_active()
 {
+  MAINCOUPLING_ACCESSOR("aml_dv_core_active");
   // True when the Dolby Vision core will actually process this stream, INCLUDING
   // the VS10 path on a non-DV display (box supports DV, the user hasn't disabled
   // DV, and either the display advertises DV or a non-bypass VS10 mode is
@@ -366,6 +369,7 @@ bool aml_dv_tvled_output_active()
 
 bool aml_dv_source_engages_core()
 {
+  MAINCOUPLING_ACCESSOR("aml_dv_source_engages_core");
   // Whether a Dolby Vision *source* will be processed by the DV core: natively on
   // a DV-capable display, or VS10-converted (HDR10/SDR) on a non-DV display.
   // Unlike aml_dolby_vision_enabled() this does NOT require a DV display, so a
@@ -383,6 +387,7 @@ bool aml_dv_source_engages_core()
 
 bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 {
+  MAINCOUPLING_ACCESSOR("aml_convert_to_dv_by_vs_engine");
   bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   bool user_convert_to_dv;
 
@@ -410,6 +415,7 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 
 bool aml_display_support_dv()
 {
+  MAINCOUPLING_ACCESSOR("aml_display_support_dv");
   // Upstream (7d666eb448) moved the display's Dolby Vision verdict off this free
   // function and onto CAMLDisplay, and (7f2c51e677) dropped the static latch so it
   // is re-read live on every call. Both are adopted; this forwarder exists so the
@@ -424,6 +430,7 @@ bool aml_display_support_dv()
 
 bool aml_display_support_3d()
 {
+  MAINCOUPLING_ACCESSOR("aml_display_support_3d");
   // Same relocation as aml_display_support_dv() above (upstream 7d666eb448) - the
   // fork still calls this from CDVDInputStreamBluray when deciding whether a disc's
   // 3D playlists are usable on the connected display.

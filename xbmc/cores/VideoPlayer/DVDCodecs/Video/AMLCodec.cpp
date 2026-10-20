@@ -27,6 +27,7 @@
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
@@ -2402,6 +2403,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
 
   // enable Dolby Vision driver when 'dovi.ko' is available
   bool device_support_dv(aml_support_dolby_vision());
+  MAINCOUPLING("CAMLDisplay aml_display_support_dv");
   bool display_support_dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
   bool user_dv_disable(OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   // VS10 engine can output SDR/HDR10 to a non-DV display, so allow the DV core
@@ -4321,12 +4323,14 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   }
 
   // GUI stereo mode/view.
+  MAINCOUPLING("GC GetStereoMode");
   const RenderStereoMode guiStereoMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
   if (m_guiStereoMode != guiStereoMode)
   {
     m_guiStereoMode = guiStereoMode;
     update = true;
   }
+  MAINCOUPLING("GC GetStereoView");
   RenderStereoView guiStereoView = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
   if (m_guiStereoView != guiStereoView)
   {
@@ -4413,6 +4417,7 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
     dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
   }
 
+  MAINCOUPLING("CAMLDisplay aml_display_support_3d");
   if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
   {
     int mvc_view_mode = 3;
@@ -4473,6 +4478,7 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   char video_axis[256] = {};
   sprintf(video_axis, "%d %d %d %d", (int)dst_rect.x1, (int)dst_rect.y1, (int)dst_rect.x2, (int)dst_rect.y2);
 
+  MAINCOUPLING("CDisplaySettings IsNonLinearStretched");
   int screen_mode = CDisplaySettings::GetInstance().IsNonLinearStretched() ? 4 : 1;
 
   CSysfsPath("/sys/class/video/axis", video_axis);

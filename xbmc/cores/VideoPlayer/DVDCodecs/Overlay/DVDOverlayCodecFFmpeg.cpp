@@ -21,6 +21,11 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#else
+#define MAINCOUPLING(what) static_cast<void>(0)
+#endif
 
 #include <cstddef>
 #include <utility>
@@ -333,6 +338,7 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
     // copy instead.
     const BitmapStereoLayout layout =
         GetBitmapStereoLayout(CServiceBroker::GetDataCacheCore().GetVideoStereoMode());
+    MAINCOUPLING("GC GetStereoMode");
     const RenderStereoMode renderMode =
         CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
     if (IsStereoscopicOutputMode(renderMode) && layout != BitmapStereoLayout::MONO &&
