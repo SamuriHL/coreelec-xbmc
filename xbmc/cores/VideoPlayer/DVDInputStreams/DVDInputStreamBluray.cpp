@@ -871,7 +871,10 @@ bool CDVDInputStreamBluray::Open()
 // close file and reset everything
 void CDVDInputStreamBluray::Close()
 {
-  aml_dv_set_disc_session(false);
+  // Only the stream that opened the session ends it: a background info read of
+  // a disc (no player) must not end the session of the disc that is playing.
+  if (m_dvDiscSession)
+    aml_dv_set_disc_session(false);
   // Before bd_close(): it can still issue read_blocks(), which must find the
   // cache gone and go straight to the file rather than race the worker.
   if (m_isoCacheFallbacks > 0)
