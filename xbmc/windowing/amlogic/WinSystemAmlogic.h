@@ -107,6 +107,7 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
   bool m_force_mode_switch;
   bool m_hotplug_mode_switch{false};
+  bool m_outputWorkerStarted{false};
   bool m_presentationReady{false};
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;

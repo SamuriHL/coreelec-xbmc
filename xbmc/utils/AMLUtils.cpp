@@ -793,10 +793,8 @@ void aml_dv_pre_engage_disc_session()
               "to the first DV mode set");
 }
 
-void aml_dv_engage_pending_disc_session(bool dvPicture)
+static void aml_dv_engage_pending_disc_session_now()
 {
-  if (!s_dv_disc_engage_pending || !dvPicture)
-    return;
   std::unique_lock lock(s_dv_disc_mutex);
   // re-check under the lock: a release or session end may have cleared it
   if (!s_dv_disc_engage_pending)
@@ -813,6 +811,14 @@ void aml_dv_engage_pending_disc_session(bool dvPicture)
   }
   if (!s_dv_disc_engaged && !s_dv_file_engaged)
     aml_dv_engage_disc_session_now();
+}
+
+void aml_dv_engage_pending_disc_session(bool dvPicture)
+{
+  if (!s_dv_disc_engage_pending || !dvPicture)
+    return;
+  OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::SETTINGS, "disc engage",
+                                   [] { aml_dv_engage_pending_disc_session_now(); });
 }
 
 bool aml_dv_disc_engage_pending() { return s_dv_disc_engage_pending.load(); }

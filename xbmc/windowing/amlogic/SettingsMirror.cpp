@@ -15,6 +15,7 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
 
 namespace OUTPUT
 {
@@ -168,7 +169,8 @@ int CSettingsMirror::GetInt(const std::string& id) const
     const auto setting = settings ? settings->GetSetting(id) : nullptr;
     return setting ? ValueOf(*setting) : 0;
   }
-  if (check && settings)
+  // never on W: a setting's writer may hold its lock while main waits on W
+  if (check && settings && !COutputWorker::Get().OnWorker())
   {
     const auto setting = settings->GetSetting(id);
     const int actual = setting ? ValueOf(*setting) : 0;

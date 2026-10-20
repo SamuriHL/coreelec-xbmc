@@ -97,6 +97,9 @@ private:
   bool m_stop = false;
   bool m_stopping = false;
   uint64_t m_nextId = 1;
+  // test: special://profile/outputworker_stall holds "<job name> <ms>"; W sleeps before that job
+  std::string m_stallJob;
+  int m_stallMs = 0;
 };
 
 //! records a write of link or DV state; target is a sysfs path or "drm:<property>"

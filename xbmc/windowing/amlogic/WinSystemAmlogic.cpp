@@ -669,10 +669,28 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     }
   }
 
-  if ((ret = m_amlDisplay->set_native_resolution(res, m_framebuffer_name, m_stereo_mode,
-                                           m_force_mode_switch, m_hotplug_mode_switch)))
+  // the commit job (5.B1-7): W sets the mode; main keeps the settings reads, the display
+  // resources and the GL work
   {
+    auto committed = std::make_shared<bool>(false);
+    CAMLDisplay* display = m_amlDisplay.get();
+    OUTPUT::COutputWorker::Get().Run(
+        m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
+        [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
+         force = m_force_mode_switch, hotplug = m_hotplug_mode_switch]
+        { *committed = display->set_native_resolution(res, name, stereo, force, hotplug); });
+    ret = *committed;
+  }
+  if (ret)
     m_bWindowCreated = true;
+
+  // W starts after the boot mode set, which stays inline (ruling 4)
+  if (!m_outputWorkerStarted)
+  {
+    m_outputWorkerStarted = true;
+    OUTPUT::COutputWorker::Get().Start();
+    OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
+                                      [] { aml_display_vsvdb_refill(); });
   }
 
   // the delay is for the display to lock onto the new mode, so count it from

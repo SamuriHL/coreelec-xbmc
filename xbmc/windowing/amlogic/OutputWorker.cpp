@@ -13,9 +13,11 @@
 #include "utils/log.h"
 
 #include <pthread.h>
+#include <cstdlib>
 #include <set>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace OUTPUT
 {
@@ -98,6 +100,24 @@ void COutputWorker::Start()
     return;
   }
   m_stop = false;
+  {
+    XFILE::CFile file;
+    std::vector<uint8_t> buf;
+    if (XFILE::CFile::Exists("special://profile/outputworker_stall") &&
+        file.LoadFile("special://profile/outputworker_stall", buf) > 0)
+    {
+      std::string line(buf.begin(), buf.end());
+      line = line.substr(0, line.find('\n'));
+      const auto space = line.rfind(' ');
+      if (space != std::string::npos)
+      {
+        m_stallJob = line.substr(0, space);
+        m_stallMs = std::atoi(line.c_str() + space + 1);
+        CLog::Log(LOGWARNING, "OUTPUT: test stall of {} ms before every \"{}\" job", m_stallMs,
+                  m_stallJob);
+      }
+    }
+  }
   m_thread = std::thread(&COutputWorker::Process, this);
   m_workerId = m_thread.get_id();
   m_running = true;
@@ -207,6 +227,8 @@ void COutputWorker::Process()
     Job job = std::move(lane->front());
     lane->pop_front();
     lock.unlock();
+    if (m_stallMs > 0 && m_stallJob == job.name)
+      std::this_thread::sleep_for(std::chrono::milliseconds(m_stallMs));
     std::exception_ptr error;
     try
     {

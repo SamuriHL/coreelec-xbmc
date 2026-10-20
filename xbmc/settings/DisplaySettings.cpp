@@ -15,7 +15,6 @@
 #include "guilib/StereoscopicsManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "messaging/helpers/DialogHelper.h"
-#include "platform/linux/SysfsPath.h"
 #include "rendering/RenderSystem.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
@@ -165,7 +164,6 @@ static bool write_resolution_ini(RESOLUTION_INFO res)
     if (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_LIMIT_CD) > 0)
       fmt_attr += limit_cd[settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_LIMIT_CD) - 1].c_str();
     ofs << fmt_attr.c_str() << "\n";
-    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/attr", fmt_attr);
     ofs.close();
     CLog::Log(LOGDEBUG, "CDisplaySettings: Amlogic resolution got saved to {}/{}", aml_res_path.c_str(), aml_res_file.c_str());
   }
