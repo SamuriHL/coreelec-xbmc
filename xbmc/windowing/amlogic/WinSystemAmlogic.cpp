@@ -527,6 +527,11 @@ bool CWinSystemAmlogic::InitWindowSystem()
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,
                                    CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK});
   }
+  // D10: applied without a restart (outputworker_off: at init and hotplug only, as before)
+  if (!OUTPUT::COutputWorker::SwitchedOff())
+    CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager()->RegisterCallback(
+        this, {CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR,
+               CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR});
   aml_dv_apply_graphics_from_sink();
 
   m_nativeDisplay = EGL_DEFAULT_DISPLAY;
@@ -588,6 +593,14 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     return;
 
   const std::string& settingId = setting->GetId();
+
+  if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR ||
+      settingId == CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR)
+  {
+    OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "hdr conversion",
+                                      [] { aml_hdr_conversion_refresh("setting"); });
+    return;
+  }
 
   if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_GUI_SINK_PEAK)
   {
@@ -873,12 +886,18 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
         ->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR)
         ->SetVisible(true);
 
-    // inline at boot (W not started yet)
-    OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "hdr conversion", [] {
+    if (!OUTPUT::COutputWorker::SwitchedOff())
+    {
+      // inline at boot (W not started yet)
+      OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "hdr conversion",
+                                       [] { aml_hdr_conversion_refresh("display caps"); });
+    }
+    else
+    {
       int sdr2hdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
       if (sdr2hdr)
       {
-        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::RefreshDisplayCapabilities -- setting sdr2hdr mode to {:d}", sdr2hdr);
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting sdr2hdr mode to {:d}", __FUNCTION__, sdr2hdr);
         CSysfsPath("/sys/module/aml_media/parameters/sdr_mode", sdr2hdr);
         CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", 0);
         CSysfsPath("/sys/module/aml_media/parameters/hdr_policy", 0);
@@ -887,10 +906,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
       int hdr2sdr = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
       if (hdr2sdr)
       {
-        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::RefreshDisplayCapabilities -- setting hdr2sdr mode to {:d}", hdr2sdr);
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogic::{} -- setting hdr2sdr mode to {:d}", __FUNCTION__, hdr2sdr);
         CSysfsPath("/sys/module/aml_media/parameters/hdr_mode", hdr2sdr);
       }
-    });
+    }
   }
   else
   {

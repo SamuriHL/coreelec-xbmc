@@ -1011,6 +1011,7 @@ bool CVideoPlayer::IsPlaying() const
 
 void CVideoPlayer::OnStartup()
 {
+  aml_hdr_conversion_player_open(true);
   m_syncStartPtsWait.reset();
   m_syncStartDeferred = false;
   m_CurrentVideo.Clear();
@@ -5643,6 +5644,8 @@ void CVideoPlayer::OnExit()
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
+  // after the decoders and the disc session have let go of the DV state
+  aml_hdr_conversion_player_open(false);
 
   // clean up all selection streams
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NONE);

@@ -1003,6 +1003,58 @@ static bool aml_dv_core_enabled()
          StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value_or("N"), "Y");
 }
 
+// D10 (5.B1-4): SDR2HDR/HDR2SDR apply at once with no player open, otherwise when playback ends;
+// a setting that is off writes the kernel's defaults
+static std::mutex s_hdrConvMutex;
+static bool s_hdrConvPlayerOpen = false;
+static bool s_hdrConvPending = false;
+
+void aml_hdr_conversion_refresh(const char* origin)
+{
+  std::unique_lock lock(s_hdrConvMutex);
+  if (s_hdrConvPlayerOpen)
+  {
+    s_hdrConvPending = true;
+    CLog::Log(LOGINFO, "OUTPUT: hdr conversion {}: pending until playback ends", origin);
+    return;
+  }
+  s_hdrConvPending = false;
+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+  if (!winSystem || !winSystem->IsHDRDisplay())
+    return;
+  const bool sdr2hdr =
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
+  const bool hdr2sdr =
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
+  // a DV session owns dolby_vision_policy
+  const bool dvHeld = aml_dv_disc_session() || aml_dv_disc_engaged() || aml_dv_file_engaged() ||
+                      aml_dv_core_enabled();
+  CSysfsPath("/sys/module/aml_media/parameters/sdr_mode", sdr2hdr ? 1 : 0);
+  if (!dvHeld)
+    CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", sdr2hdr ? 0 : 1);
+  CSysfsPath("/sys/module/aml_media/parameters/hdr_policy", sdr2hdr ? 0 : 1);
+  CSysfsPath("/sys/module/aml_media/parameters/hdr_mode", hdr2sdr ? 1 : 0);
+  CLog::Log(LOGINFO, "OUTPUT: hdr conversion {}: sdr2hdr {} hdr2sdr {}{}", origin, sdr2hdr, hdr2sdr,
+            dvHeld ? ", dolby_vision_policy left to the DV session" : "");
+  WIRECLASS::CWireClassProbe::Get().Notify("hdr conversion", WIRECLASS::Source::UNKNOWN);
+}
+
+void aml_hdr_conversion_player_open(bool open)
+{
+  if (!OUTPUT::COutputWorker::Get().Active())
+    return;
+  bool pending;
+  {
+    std::unique_lock lock(s_hdrConvMutex);
+    s_hdrConvPlayerOpen = open;
+    pending = !open && s_hdrConvPending;
+  }
+  if (pending)
+    OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::DECODER, "hdr conversion at exit",
+                                     [] { aml_hdr_conversion_refresh("playback end"); }, 0,
+                                     std::chrono::milliseconds(1000));
+}
+
 bool aml_dv_core_outputs_dv()
 {
   if (!aml_dv_core_enabled())

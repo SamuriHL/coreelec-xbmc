@@ -52,6 +52,8 @@ public:
 
   //! true when jobs run on W (started, and not outputworker_off)
   bool Active() const;
+  //! outputworker_off, read once (valid before Start)
+  static bool SwitchedOff();
   bool OnWorker() const;
 
   //! Runs fn on W and waits for it. Inline when W is not active or when called on W. Logs an

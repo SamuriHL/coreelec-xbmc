@@ -89,7 +89,7 @@ void COutputWorker::Start()
   std::unique_lock lock(m_mutex);
   if (m_running || m_stopping)
     return;
-  if (XFILE::CFile::Exists("special://profile/outputworker_off"))
+  if (SwitchedOff())
   {
     CLog::Log(LOGINFO, "OUTPUT: worker off (outputworker_off), jobs run on their callers");
     return;
@@ -118,6 +118,12 @@ void COutputWorker::Stop()
   m_running = false;
   m_stopping = false;
   m_workerId = {};
+}
+
+bool COutputWorker::SwitchedOff()
+{
+  static const bool off = XFILE::CFile::Exists("special://profile/outputworker_off");
+  return off;
 }
 
 bool COutputWorker::Active() const

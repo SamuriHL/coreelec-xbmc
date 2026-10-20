@@ -270,6 +270,10 @@ void aml_dv_clear_vsvdb();
 void aml_display_vsvdb_invalidate();
 //! W: reads the panel's VSVDB for the decoder side to take (5.B1-3)
 void aml_display_vsvdb_refill();
+//! D10 (5.B1-4): writes SDR2HDR/HDR2SDR's kernel parameters, or defers them while a player is open
+void aml_hdr_conversion_refresh(const char* origin);
+//! VideoPlayer's start and exit; at exit a deferred change is applied
+void aml_hdr_conversion_player_open(bool open);
 // display-mode hold for menu-domain segments of a disc session (Sony-class
 // sinks re-train on every re-clock; see AMLUtils.cpp)
 void aml_set_disc_mode_hold(bool hold);
