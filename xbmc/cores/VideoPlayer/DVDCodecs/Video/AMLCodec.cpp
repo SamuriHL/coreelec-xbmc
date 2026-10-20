@@ -2437,212 +2437,219 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // The video-plane output mode this stream resolves to (recorded below and read
   // by CRendererAML::Configure to gate the GUI/OSD PQ encoding). BYPASS = the DV
   // core is not forcing an output, i.e. native SDR/HDR10/HLG passthrough.
-  unsigned int dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
-  if (dv_enable)
-  {
-    // enable Dolby Vision
-    AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 1);
-
-    // optional VSVDB max-luminance override (force_vsvdb/vsvdb_data), or clear it
-    aml_dv_apply_vsvdb();
-
-    // use player led mode when enabled
-    const bool ll_player_led =
-        (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
-         !display_support_dv);
-    const unsigned int ll_want =
-        ll_player_led ? DOLBY_VISION_LL_YUV422 : DOLBY_VISION_LL_DISABLE;
-    AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC, ll_want);
-    dvActual.llPolicy = ll_want;
-    // This decoder open is the ONLY place the LED choice reaches the driver:
-    // CloseDecoder never resets dolby_vision_ll_policy and aml_dv_set_vs10_mode()
-    // never re-asserts it, so between streams it is whatever the last DV open
-    // left. That makes a silently-dropped write indistinguishable from a stale
-    // one in the field, so read the module param back rather than trusting the
-    // DRM property round-trip, and say so when they disagree.
-    {
-      CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
-      const int ll_got = ll_policy.Exists() ? ll_policy.Get<int>().value_or(-1) : -1;
-      CLog::Log(ll_got == static_cast<int>(ll_want) ? LOGDEBUG : LOGWARNING,
-                "CAMLCodec::OpenDecoder - DV {} led: dolby_vision_ll_policy requested {}, "
-                "reads back {}", ll_player_led ? "player" : "TV", ll_want, ll_got);
-    }
-
-    // setup Dolby Vision VS-Engine for non DV media
-    if (hints.dovi.dv_profile == 0)
-    {
-      AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FORCE_OUTPUT_MODE);
-      dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
-      unsigned int vs10_mode = aml_dv_resolve_tunnel_mode(aml_dv_get_vs10_pending());
-      if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+  // DvApply (5.B1-8): the DV writes as one W job; V waits, so the job may use its locals
+  OUTPUT::COutputWorker::Get().Run(
+      OUTPUT::Lane::DECODER, "dv apply",
+      [&]
       {
-        // VS10 engine: force the user-selected output mode for this source type
-        // (SDR/HDR10/DV) rather than always converting to DV.
-        AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, vs10_mode);
-        if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-          aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
-        dv_output_mode = vs10_mode;
-      }
-      else if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
-      {
-        AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_IPT);
-        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT;
-      }
-      else
-      {
-        AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC,
-                                        AMDV_OUTPUT_MODE_IPT_TUNNEL);
-        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
-      }
-    }
-    else
-    {
-      AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 0);
-      am_private->gcodec.dv_enable = 1;
-      // VS10 for native DV sources: optionally convert DV to SDR/HDR10 output
-      // (vs10.dv = SDR/HDR10). Default (IPT/native) leaves the DV tunnel intact.
-      unsigned int vs10_mode = aml_dv_get_vs10_pending();
-      // A non-DV display can't show the native DV tunnel, so a DV source left at
-      // the default "native" output is a black/broken picture -- notably profile
-      // 5, which has no HDR10 base layer to fall back to (profile 7/8 get their
-      // RPU stripped upstream and degrade to HDR10). Coerce native/bypass to a
-      // display-compatible VS10 conversion: HDR10 if the panel takes PQ, else SDR.
-      //
-      // Unless the user has handed that job to CoreELEC's own path. Upstream
-      // 5591768488 sets dolby_vision_ll_policy = LL_YUV422 whenever the sink
-      // cannot take DV (written above), intending the core to map to the best
-      // format the display reports. Forcing an output mode here overrides that,
-      // so the two cannot be judged against each other while both run. With the
-      // setting on we leave the mode alone and let the LL policy drive; the core
-      // stays engaged either way, which is what makes the comparison possible on
-      // profile 7/8 as well as profile 5.
-      const bool stock_convert = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
-      if (!aml_display_support_dv() && stock_convert)
-      {
-        CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - non-DV display: leaving the "
-                  "conversion to CoreELEC (ll_policy), VS10 output mode not forced");
-      }
-      else if (!aml_display_support_dv() &&
-          vs10_mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
-          vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
-        vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
-                                                 : DOLBY_VISION_OUTPUT_MODE_SDR10;
-      if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-      {
-        CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
-        dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
-        CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
-        if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
-          aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
-        dv_output_mode = vs10_mode;
-      }
-      else if (stock_convert && !aml_display_support_dv())
-      {
-        // CoreELEC's path drives the conversion from the LL policy written
-        // above, so put the core back to following the source rather than
-        // leaving whatever a previous stream (or the disc-session pre-engage)
-        // left in dolby_vision_policy - a stale FORCE_OUTPUT_MODE would keep
-        // forcing the previous mode and make the comparison meaningless.
-        CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FOLLOW_SOURCE);
-        dvActual.policy = AMDV_FOLLOW_SOURCE;
-        // What the sink actually ends up receiving, for the GUI/OSD encoding
-        // gate: upstream maps to the best format the display reports, so PQ
-        // when the panel takes PQ and SDR otherwise. Reporting IPT_TUNNEL here
-        // would PQ-encode the OSD over an SDR output.
-        dv_output_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
-                                                      : DOLBY_VISION_OUTPUT_MODE_SDR10;
-      }
-      else
-      {
-        // Native DV output (tunnel left intact): the sink receives a PQ signal.
-        dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
-        // Left to the first frame, the kernel raises DV after the start: it holds
-        // the picture two vsyncs for the VSIF and the sink re-locks while the
-        // clock runs. Engage it at the mode set instead, as a disc session does.
-        if (!aml_dv_disc_session() && aml_presentation_validated() &&
-            !XFILE::CFile::Exists("special://profile/dvfile_engage_off"))
+        unsigned int dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+        if (dv_enable)
         {
-          aml_dv_request_file_engage();
-          dvActual.fileEngage = true;
+          // enable Dolby Vision
+          AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 1);
+
+          // optional VSVDB max-luminance override (force_vsvdb/vsvdb_data), or clear it
+          aml_dv_apply_vsvdb();
+
+          // use player led mode when enabled
+          const bool ll_player_led =
+              (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED ||
+               !display_support_dv);
+          const unsigned int ll_want =
+              ll_player_led ? DOLBY_VISION_LL_YUV422 : DOLBY_VISION_LL_DISABLE;
+          AmlDisplay->aml_set_drmProperty("dv_ll_policy", DRM_MODE_OBJECT_CRTC, ll_want);
+          dvActual.llPolicy = ll_want;
+          // This decoder open is the ONLY place the LED choice reaches the driver:
+          // CloseDecoder never resets dolby_vision_ll_policy and aml_dv_set_vs10_mode()
+          // never re-asserts it, so between streams it is whatever the last DV open
+          // left. That makes a silently-dropped write indistinguishable from a stale
+          // one in the field, so read the module param back rather than trusting the
+          // DRM property round-trip, and say so when they disagree.
+          {
+            CSysfsPath ll_policy{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
+            const int ll_got = ll_policy.Exists() ? ll_policy.Get<int>().value_or(-1) : -1;
+            CLog::Log(ll_got == static_cast<int>(ll_want) ? LOGDEBUG : LOGWARNING,
+                      "CAMLCodec::OpenDecoder - DV {} led: dolby_vision_ll_policy requested {}, "
+                      "reads back {}", ll_player_led ? "player" : "TV", ll_want, ll_got);
+          }
+
+          // setup Dolby Vision VS-Engine for non DV media
+          if (hints.dovi.dv_profile == 0)
+          {
+            AmlDisplay->aml_set_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC, AMDV_FORCE_OUTPUT_MODE);
+            dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
+            unsigned int vs10_mode = aml_dv_resolve_tunnel_mode(aml_dv_get_vs10_pending());
+            if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+            {
+              // VS10 engine: force the user-selected output mode for this source type
+              // (SDR/HDR10/DV) rather than always converting to DV.
+              AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, vs10_mode);
+              if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+                aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+              dv_output_mode = vs10_mode;
+            }
+            else if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
+            {
+              AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_IPT);
+              dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT;
+            }
+            else
+            {
+              AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC,
+                                              AMDV_OUTPUT_MODE_IPT_TUNNEL);
+              dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+            }
+          }
+          else
+          {
+            AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 0);
+            am_private->gcodec.dv_enable = 1;
+            // VS10 for native DV sources: optionally convert DV to SDR/HDR10 output
+            // (vs10.dv = SDR/HDR10). Default (IPT/native) leaves the DV tunnel intact.
+            unsigned int vs10_mode = aml_dv_get_vs10_pending();
+            // A non-DV display can't show the native DV tunnel, so a DV source left at
+            // the default "native" output is a black/broken picture -- notably profile
+            // 5, which has no HDR10 base layer to fall back to (profile 7/8 get their
+            // RPU stripped upstream and degrade to HDR10). Coerce native/bypass to a
+            // display-compatible VS10 conversion: HDR10 if the panel takes PQ, else SDR.
+            //
+            // Unless the user has handed that job to CoreELEC's own path. Upstream
+            // 5591768488 sets dolby_vision_ll_policy = LL_YUV422 whenever the sink
+            // cannot take DV (written above), intending the core to map to the best
+            // format the display reports. Forcing an output mode here overrides that,
+            // so the two cannot be judged against each other while both run. With the
+            // setting on we leave the mode alone and let the LL policy drive; the core
+            // stays engaged either way, which is what makes the comparison possible on
+            // profile 7/8 as well as profile 5.
+            const bool stock_convert = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NONDV_STOCKCONVERT);
+            if (!aml_display_support_dv() && stock_convert)
+            {
+              CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - non-DV display: leaving the "
+                        "conversion to CoreELEC (ll_policy), VS10 output mode not forced");
+            }
+            else if (!aml_display_support_dv() &&
+                vs10_mode != DOLBY_VISION_OUTPUT_MODE_SDR10 &&
+                vs10_mode != DOLBY_VISION_OUTPUT_MODE_HDR10)
+              vs10_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
+                                                       : DOLBY_VISION_OUTPUT_MODE_SDR10;
+            if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+            {
+              CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FORCE_OUTPUT_MODE);
+              dvActual.policy = AMDV_FORCE_OUTPUT_MODE;
+              CSysfsPath("/sys/class/amdolby_vision/dv_mode", (vs10_mode + 1) % 6);
+              if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+                aml_dv_set_hdr10_osd_brightness(OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS));
+              dv_output_mode = vs10_mode;
+            }
+            else if (stock_convert && !aml_display_support_dv())
+            {
+              // CoreELEC's path drives the conversion from the LL policy written
+              // above, so put the core back to following the source rather than
+              // leaving whatever a previous stream (or the disc-session pre-engage)
+              // left in dolby_vision_policy - a stale FORCE_OUTPUT_MODE would keep
+              // forcing the previous mode and make the comparison meaningless.
+              CSysfsPath("/sys/module/aml_media/parameters/dolby_vision_policy", AMDV_FOLLOW_SOURCE);
+              dvActual.policy = AMDV_FOLLOW_SOURCE;
+              // What the sink actually ends up receiving, for the GUI/OSD encoding
+              // gate: upstream maps to the best format the display reports, so PQ
+              // when the panel takes PQ and SDR otherwise. Reporting IPT_TUNNEL here
+              // would PQ-encode the OSD over an SDR output.
+              dv_output_mode = aml_display_support_hdr_pq() ? DOLBY_VISION_OUTPUT_MODE_HDR10
+                                                            : DOLBY_VISION_OUTPUT_MODE_SDR10;
+            }
+            else
+            {
+              // Native DV output (tunnel left intact): the sink receives a PQ signal.
+              dv_output_mode = DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+              // Left to the first frame, the kernel raises DV after the start: it holds
+              // the picture two vsyncs for the VSIF and the sink re-locks while the
+              // clock runs. Engage it at the mode set instead, as a disc session does.
+              if (!aml_dv_disc_session() && aml_presentation_validated() &&
+                  !XFILE::CFile::Exists("special://profile/dvfile_engage_off"))
+              {
+                aml_dv_request_file_engage();
+                dvActual.fileEngage = true;
+              }
+            }
+          }
+
+          // a close that kept its picture (design 4.3) skipped the layer reset; the
+          // dual-layer branch below writes both switches itself
+          if (aml_frame_kept() && hints.dovi.dv_profile != 4 && hints.dovi.dv_profile != 7)
+          {
+            SetDvDebug(AmlDisplay, "enable_fel 0");
+            SetDvDebug(AmlDisplay, "enable_mel 0");
+          }
+
+          if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
+          {
+            // Stream path for FEL, and for dual-stream (disc) MEL titles: the
+            // frame-based vh265 input path mishandles the EOS NAL that closes every
+            // m2ts segment (over-decode error storm, ~1s of dropped frames per
+            // playitem boundary = judder, and a possible decoder wedge on a
+            // FEL->MEL reopen), while the stream-based path discards it and keeps
+            // decoding. Single-stream MEL (MKV remuxes carry no in-stream EOS) and
+            // menu clips (stills; validated seamless/keep-alive path) stay on the
+            // frame path.
+            // both layer switches are written at every open: a close that kept its
+            // picture (design 4.3) skips the reset to 0
+            SetDvDebug(AmlDisplay,
+                       doviIsFEL || (isDualStream && !hints.stills) ? "enable_fel 1" : "enable_fel 0");
+            SetDvDebug(AmlDisplay,
+                       doviIsFEL || (isDualStream && !hints.stills) ? "enable_mel 1" : "enable_mel 0");
+            if (doviIsFEL || (isDualStream && !hints.stills))
+            {
+              am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
+              // Dual-stream DV is fed one short m2ts segment at a time (disc
+              // playitems, or a file-played BL+EL rip), so the stream buffer can
+              // reach EOS long before the 90%-full readiness gate in AddData is
+              // satisfiable — frames then decode but are never dequeued and playback
+              // wedges in a starve/reopen loop. Skip the fill gate for ALL
+              // dual-stream DV; single-track FEL/MEL remuxes keep it.
+              m_skipBufferFillGate = isDualStream;
+            }
+          }
         }
-      }
-    }
+        // Mirror of the guarded write in CloseDecoder, and reachable in-session: an
+        // HDR10/HDR10+ menu-domain segment is pre-engaged for DV, then the HDR10+
+        // conversion candidate check forces vs10Mode back to BYPASS and declines the
+        // DOLBYVISION hint - so this else fires while the session still holds DV
+        // engaged. Disabling here gates amdolby_vision_proc() off entirely, so the
+        // hold can never be cleared and the mode stays at IPT_TUNNEL: the segment
+        // plays a DV wire over an HDR10 decode, and an abnormal exit there needs a
+        // reboot to recover.
+        else if (!aml_dv_disc_engaged())
+          AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
 
-    // a close that kept its picture (design 4.3) skipped the layer reset; the
-    // dual-layer branch below writes both switches itself
-    if (aml_frame_kept() && hints.dovi.dv_profile != 4 && hints.dovi.dv_profile != 7)
-    {
-      SetDvDebug(AmlDisplay, "enable_fel 0");
-      SetDvDebug(AmlDisplay, "enable_mel 0");
-    }
+        // Publish the resolved output mode so CRendererAML::Configure encodes the
+        // GUI/OSD to match the actual signal the sink receives this stream.
+        aml_dv_set_output_mode(dv_output_mode);
+        dvActual.enable = dv_enable;
+        dvActual.outputMode = dv_output_mode;
+        {
+          const bool match = dvShadow.enable == dvActual.enable &&
+                             dvShadow.llPolicy == dvActual.llPolicy &&
+                             dvShadow.policy == dvActual.policy &&
+                             dvShadow.outputMode == dvActual.outputMode &&
+                             dvShadow.fileEngage == dvActual.fileEngage;
+          CLog::Log(LOGINFO,
+                    "RESOLVE dv shadow: {} enable {}/{} ll {}/{} policy {}/{} output {}/{} engage {}/{} "
+                    "(profile {}, vs10 {}, display dv {} pq {}, player-led {}, stock {})",
+                    match ? "MATCH" : "DIFF", dvShadow.enable, dvActual.enable, dvShadow.llPolicy,
+                    dvActual.llPolicy, dvShadow.policy, dvActual.policy, dvShadow.outputMode,
+                    dvActual.outputMode, dvShadow.fileEngage, dvActual.fileEngage, dvIn.dvProfile,
+                    dvIn.vs10Pending, dvIn.displaySupportsDv, dvIn.displaySupportsPq, dvIn.playerLed,
+                    dvIn.stockConvert);
+        }
 
-    if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
-    {
-      // Stream path for FEL, and for dual-stream (disc) MEL titles: the
-      // frame-based vh265 input path mishandles the EOS NAL that closes every
-      // m2ts segment (over-decode error storm, ~1s of dropped frames per
-      // playitem boundary = judder, and a possible decoder wedge on a
-      // FEL->MEL reopen), while the stream-based path discards it and keeps
-      // decoding. Single-stream MEL (MKV remuxes carry no in-stream EOS) and
-      // menu clips (stills; validated seamless/keep-alive path) stay on the
-      // frame path.
-      // both layer switches are written at every open: a close that kept its
-      // picture (design 4.3) skips the reset to 0
-      SetDvDebug(AmlDisplay,
-                 doviIsFEL || (isDualStream && !hints.stills) ? "enable_fel 1" : "enable_fel 0");
-      SetDvDebug(AmlDisplay,
-                 doviIsFEL || (isDualStream && !hints.stills) ? "enable_mel 1" : "enable_mel 0");
-      if (doviIsFEL || (isDualStream && !hints.stills))
-      {
-        am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
-        // Dual-stream DV is fed one short m2ts segment at a time (disc
-        // playitems, or a file-played BL+EL rip), so the stream buffer can
-        // reach EOS long before the 90%-full readiness gate in AddData is
-        // satisfiable — frames then decode but are never dequeued and playback
-        // wedges in a starve/reopen loop. Skip the fill gate for ALL
-        // dual-stream DV; single-track FEL/MEL remuxes keep it.
-        m_skipBufferFillGate = isDualStream;
-      }
-    }
-  }
-  // Mirror of the guarded write in CloseDecoder, and reachable in-session: an
-  // HDR10/HDR10+ menu-domain segment is pre-engaged for DV, then the HDR10+
-  // conversion candidate check forces vs10Mode back to BYPASS and declines the
-  // DOLBYVISION hint - so this else fires while the session still holds DV
-  // engaged. Disabling here gates amdolby_vision_proc() off entirely, so the
-  // hold can never be cleared and the mode stays at IPT_TUNNEL: the segment
-  // plays a DV wire over an HDR10 decode, and an abnormal exit there needs a
-  // reboot to recover.
-  else if (!aml_dv_disc_engaged())
-    AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
-
-  // Publish the resolved output mode so CRendererAML::Configure encodes the
-  // GUI/OSD to match the actual signal the sink receives this stream.
-  aml_dv_set_output_mode(dv_output_mode);
-  dvActual.enable = dv_enable;
-  dvActual.outputMode = dv_output_mode;
-  {
-    const bool match = dvShadow.enable == dvActual.enable &&
-                       dvShadow.llPolicy == dvActual.llPolicy &&
-                       dvShadow.policy == dvActual.policy &&
-                       dvShadow.outputMode == dvActual.outputMode &&
-                       dvShadow.fileEngage == dvActual.fileEngage;
-    CLog::Log(LOGINFO,
-              "RESOLVE dv shadow: {} enable {}/{} ll {}/{} policy {}/{} output {}/{} engage {}/{} "
-              "(profile {}, vs10 {}, display dv {} pq {}, player-led {}, stock {})",
-              match ? "MATCH" : "DIFF", dvShadow.enable, dvActual.enable, dvShadow.llPolicy,
-              dvActual.llPolicy, dvShadow.policy, dvActual.policy, dvShadow.outputMode,
-              dvActual.outputMode, dvShadow.fileEngage, dvActual.fileEngage, dvIn.dvProfile,
-              dvIn.vs10Pending, dvIn.displaySupportsDv, dvIn.displaySupportsPq, dvIn.playerLed,
-              dvIn.stockConvert);
-  }
-
-  // Key the target overrides on the same resolved mode, not the requested VS10
-  // mode: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV conversion leave
-  // the pending mode at BYPASS while the branches above still output DV.
-  aml_dv_apply_target_overrides(dv_output_mode);
-  WIRECLASS::CWireClassProbe::Get().SetDecoderSource(WIRECLASS::FromHdrType(hints.hdrType));
-  WIRECLASS::CWireClassProbe::Get().Notify("decoder open", WIRECLASS::Source::UNKNOWN);
+        // Key the target overrides on the same resolved mode, not the requested VS10
+        // mode: the legacy HDR2DV/SDR2DV toggle and the HDR10+ -> DV conversion leave
+        // the pending mode at BYPASS while the branches above still output DV.
+        aml_dv_apply_target_overrides(dv_output_mode);
+        WIRECLASS::CWireClassProbe::Get().SetDecoderSource(WIRECLASS::FromHdrType(hints.hdrType));
+        WIRECLASS::CWireClassProbe::Get().Notify("decoder open", WIRECLASS::Source::UNKNOWN);
+      },
+      0, std::chrono::milliseconds(1000));
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);

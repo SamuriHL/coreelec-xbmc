@@ -57,8 +57,8 @@ public:
   bool OnWorker() const;
 
   //! Runs fn on W and waits for it. Inline when W is not active or when called on W. Logs an
-  //! ERROR once the wait passes errorAfter. fn must capture by value: a caller never abandons
-  //! a job it waits for. An exception fn throws reaches the caller, as it would inline.
+  //! ERROR once the wait passes errorAfter. The caller never abandons a job it waits for, so fn
+  //! may use the caller's locals. An exception fn throws reaches the caller, as it would inline.
   void Run(Lane lane,
            const char* name,
            std::function<void()> fn,
