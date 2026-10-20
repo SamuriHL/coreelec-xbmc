@@ -37,6 +37,17 @@
 
 using KODI::UTILS::COLOR::Color;
 
+namespace
+{
+// after a write of an input of the render manager's display timing (5.V1-4)
+void TimingInputsWritten()
+{
+#if defined(HAS_LIBAMCODEC)
+  aml_timing_inputs_bump();
+#endif
+}
+} // namespace
+
 CGraphicContext::CGraphicContext() = default;
 CGraphicContext::~CGraphicContext() = default;
 
@@ -516,6 +527,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
       // Again, must be fixed as part of a greater refactor.
       m_Resolution = RES_DESKTOP;
     }
+    TimingInputsWritten();
   }
 }
 
@@ -563,6 +575,7 @@ void CGraphicContext::UpdateInternalStateWithResolution(RESOLUTION res)
   m_iScreenHeight = info_mod.iHeight;
   m_Resolution = res;
   m_fFPSOverride = 0;
+  TimingInputsWritten();
 }
 
 void CGraphicContext::ApplyModeChange(RESOLUTION res)
@@ -1092,4 +1105,5 @@ uint32_t CGraphicContext::GetDepth(uint32_t addLayers)
 void CGraphicContext::SetFPS(float fps)
 {
   m_fFPSOverride = fps;
+  TimingInputsWritten();
 }

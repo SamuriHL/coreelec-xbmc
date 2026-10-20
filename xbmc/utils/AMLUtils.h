@@ -372,6 +372,13 @@ struct AmlEpochHold
 // (nothing of its own in flight); epoch = the current display epoch, hold = its hold
 bool aml_presenter_check_hold(unsigned int& epoch, bool park = true, AmlEpochHold* hold = nullptr);
 unsigned int aml_presenter_epoch();
+// 5.V1-4 (MC-23): writers of the render manager's display timing inputs bump this after the
+// write; the coordinator skips the wait for main after a hold only while it is unchanged since
+// main's last publish. displaystate_off (or outputworker_off): no bump, today's wait.
+void aml_displaystate_init(); // at W's start
+bool aml_displaystate_on();
+void aml_timing_inputs_bump();
+uint64_t aml_timing_inputs_gen();
 
 // A frame queued to amvideo after vblank S is on VD1 from S+2: the vsync ISR
 // takes it at S+1 and applies it through vsync RDMA at the next vsync (traced

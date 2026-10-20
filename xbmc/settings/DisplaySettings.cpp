@@ -459,6 +459,9 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING)
     {
       Clear();
+#if defined(HAS_LIBAMCODEC)
+      aml_timing_inputs_bump();
+#endif
       auto winSystem = CServiceBroker::GetWinSystem();
       winSystem->UpdateResolutions();
       RESOLUTION newRes = GetResolutionForScreen();

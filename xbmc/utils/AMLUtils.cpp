@@ -2701,6 +2701,41 @@ unsigned int aml_presenter_epoch()
   return s_displayEpoch.load();
 }
 
+namespace
+{
+std::atomic<bool> s_displayStateOn{false};
+std::atomic<uint64_t> s_timingInputsGen{0};
+} // namespace
+
+void aml_displaystate_init()
+{
+  static std::once_flag once;
+  std::call_once(once,
+                 []
+                 {
+                   const bool off = OUTPUT::COutputWorker::SwitchedOff() ||
+                                    XFILE::CFile::Exists("special://profile/displaystate_off");
+                   s_displayStateOn = !off;
+                   CLog::Log(LOGINFO, "OUTPUT: display state {}", off ? "off" : "on");
+                 });
+}
+
+bool aml_displaystate_on()
+{
+  return s_displayStateOn.load(std::memory_order_relaxed);
+}
+
+void aml_timing_inputs_bump()
+{
+  if (aml_displaystate_on())
+    s_timingInputsGen.fetch_add(1, std::memory_order_release);
+}
+
+uint64_t aml_timing_inputs_gen()
+{
+  return s_timingInputsGen.load(std::memory_order_acquire);
+}
+
 void aml_presenter_set_running(bool running)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);

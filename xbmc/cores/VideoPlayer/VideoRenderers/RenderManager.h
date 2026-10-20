@@ -21,9 +21,11 @@
 #include "windowing/Resolution.h"
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <memory>
+#include <mutex>
 
 #include "PlatformDefs.h"
 
@@ -212,7 +214,7 @@ public:
   int GetDelay() { return m_videoDelay; }
   //! the display latency tweak moves the sound (the player lands it with the
   //! audio offset), not the picture
-  void SetLatencyTweakToAudio(bool toAudio) { m_tweakToAudio = toAudio; }
+  void SetLatencyTweakToAudio(bool toAudio);
   //! the display latency tweak in ms
   double GetLatencyTweak() const { return m_latencyTweakMs; }
 
@@ -229,9 +231,24 @@ protected:
   void PresentFields(bool clear, DWORD flags, DWORD alpha);
   void PresentBlend(bool clear, DWORD flags, DWORD alpha);
 
+  //! a coordinator tick's display timing, when it presents ahead of main's publish (5.V1-4)
+  struct STickTiming
+  {
+    float fps;
+    double latencyMs;
+  };
+  float TimingFps(const STickTiming* timing) const
+  {
+    return timing ? timing->fps : m_timingFps.load();
+  }
+  double TimingLatencyMs(const STickTiming* timing) const
+  {
+    return timing ? timing->latencyMs : m_timingLatencyMs.load();
+  }
+
   //! vblankNs: the hardware vblank the coordinator woke on (0 = none), or
   //! -1 on the render thread, which asks the win system
-  void PrepareNextRender(int64_t vblankNs);
+  void PrepareNextRender(int64_t vblankNs, const STickTiming* timing = nullptr);
   bool IsPresenting();
   bool IsGuiLayer();
 
@@ -244,13 +261,13 @@ protected:
 
   //! the tweak for the current mode, or for the mode about to be set
   void UpdateLatencyTweak(RESOLUTION target = RES_INVALID);
-  void CheckEnableClockSync();
+  void CheckEnableClockSync(const STickTiming* timing = nullptr);
   //! render thread: the display timing PrepareNextRender uses, for either thread
   void PublishDisplayTiming();
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);
-  void ShadowReference(SPresentResult& result, bool forced);
+  void ShadowReference(SPresentResult& result, bool forced, const STickTiming* timing);
   void StartCoordinator();
   void StopCoordinator();
 
@@ -416,6 +433,32 @@ protected:
   std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
   std::atomic<int> m_presentVblanks{-1};
   std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in
+  //! displaystate on: main's last publish and the timing inputs' counter it read first, as one
+  //! record (seqlock; writers serialised by writeLock, which the coordinator never takes)
+  struct STimingSnapshot
+  {
+    std::mutex writeLock;
+    uint32_t writerSeq = 0;
+    std::atomic<uint32_t> seq{0};
+    std::atomic<float> fps{60.0f};
+    std::atomic<double> latencyMs{0.0};
+    std::atomic<uint64_t> inputsGen{UINT64_MAX}; //!< none published yet
+  } m_timingSnapshot;
+  void WriteTimingSnapshot(float fps, double latencyMs, uint64_t inputsGen);
+  //! false on a read that overlapped a write
+  bool ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen) const;
+  //! ticks presented with the snapshot for one display epoch (coordinator thread)
+  struct SAheadTicks
+  {
+    unsigned int epoch = 0;
+    int ticks = 0;
+    int64_t sinceNs = 0; //!< steady_clock
+    const char* holdSite = nullptr;
+    int holdTid = 0;
+    STickTiming timing{};
+    uint64_t inputsGen = 0;
+  } m_ahead;
+  static void LogAheadTicks(const SAheadTicks& ahead, int64_t endNs, const char* end);
   //! ticks refused for one display epoch, logged once when that epoch ends (coordinator thread)
   struct SRefusedTicks
   {

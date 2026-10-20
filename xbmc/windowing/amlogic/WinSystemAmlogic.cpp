@@ -281,6 +281,7 @@ void CWinSystemAmlogic::HotplugEvent()
 
   CDisplaySettings::GetInstance().ClearCustomResolutions();
   RefreshResolutions();
+  aml_timing_inputs_bump();
   CDisplaySettings::GetInstance().ApplyCalibrations();
 
   if (!preferred_mode.empty())
@@ -689,6 +690,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   if (!m_outputWorkerStarted)
   {
     m_outputWorkerStarted = true;
+    aml_displaystate_init();
     OUTPUT::COutputWorker::Get().Start();
     OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
                                       [] { aml_display_vsvdb_refill(); });
@@ -785,6 +787,7 @@ void CWinSystemAmlogic::UpdateResolutions()
   CWinSystemBase::UpdateResolutions();
 
   RefreshResolutions();
+  aml_timing_inputs_bump();
 }
 
 void CWinSystemAmlogic::RefreshDisplayCapabilities()

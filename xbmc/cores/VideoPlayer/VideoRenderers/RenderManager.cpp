@@ -109,8 +109,18 @@ void TestMainStall(const char* where)
   if (stall.second > 0 && stall.first == where)
     std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
 }
+
+// after a write of an input of PublishDisplayTiming (5.V1-4)
+void TimingInputsWritten()
+{
+  aml_timing_inputs_bump();
+}
 #else
 void TestMainStall(const char*)
+{
+}
+
+void TimingInputsWritten()
 {
 }
 #endif
@@ -847,6 +857,7 @@ void CRenderManager::CreateRenderer()
     if (!m_pRenderer)
       m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer("default", buffer);
     m_presentVblanks = m_pRenderer ? m_pRenderer->PresentVblanks() : -1;
+    TimingInputsWritten();
   }
 }
 
@@ -859,6 +870,7 @@ void CRenderManager::DeleteRenderer()
     delete m_pRenderer;
     m_pRenderer = NULL;
     m_presentVblanks = -1;
+    TimingInputsWritten();
   }
 }
 
@@ -1278,14 +1290,41 @@ void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
           refresh, isHDRUsed, res.iScreenHeight));
 
   m_latencyTweakMs = m_latencyTweak;
+  TimingInputsWritten();
 
   CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}, HDR used: {}",
     m_latencyTweak, refresh, res.iScreenHeight, isHDRUsed);
   PublishDisplayTiming();
 }
 
+void CRenderManager::SetLatencyTweakToAudio(bool toAudio)
+{
+  m_tweakToAudio = toAudio;
+  TimingInputsWritten();
+}
+
 void CRenderManager::PublishDisplayTiming()
 {
+#if defined(HAS_LIBAMCODEC)
+  if (aml_displaystate_on())
+  {
+    // the counter before any input: a write after it bumps it again
+    const uint64_t inputsGen = aml_timing_inputs_gen();
+    const unsigned int epoch = aml_presenter_epoch();
+    const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+    const float fps = gfx.GetFPS();
+    const int vblanks = m_presentVblanks;
+    const double display = vblanks >= 0 && fps > 0.0f
+                               ? vblanks * 1000.0 / static_cast<double>(fps)
+                               : static_cast<double>(gfx.GetDisplayLatency());
+    const double latencyMs = (m_tweakToAudio ? 0.0 : m_latencyTweak) + display;
+    m_timingFps = fps;
+    m_timingLatencyMs = latencyMs;
+    WriteTimingSnapshot(fps, latencyMs, inputsGen);
+    m_timingEpoch = epoch;
+    return;
+  }
+#endif
   // the epoch first: values read after a display transaction started carry
   // the old epoch, which the coordinator refuses
   const unsigned int epoch = aml_presenter_epoch();
@@ -1299,6 +1338,29 @@ void CRenderManager::PublishDisplayTiming()
                              : static_cast<double>(gfx.GetDisplayLatency());
   m_timingLatencyMs = (m_tweakToAudio ? 0.0 : m_latencyTweak) + display;
   m_timingEpoch = epoch;
+}
+
+void CRenderManager::WriteTimingSnapshot(float fps, double latencyMs, uint64_t inputsGen)
+{
+  std::unique_lock lock(m_timingSnapshot.writeLock);
+  auto& s = m_timingSnapshot;
+  s.seq.store(++s.writerSeq, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  s.fps.store(fps, std::memory_order_relaxed);
+  s.latencyMs.store(latencyMs, std::memory_order_relaxed);
+  s.inputsGen.store(inputsGen, std::memory_order_relaxed);
+  s.seq.store(++s.writerSeq, std::memory_order_release);
+}
+
+bool CRenderManager::ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen) const
+{
+  const auto& s = m_timingSnapshot;
+  const uint32_t seq0 = s.seq.load(std::memory_order_acquire);
+  timing.fps = s.fps.load(std::memory_order_relaxed);
+  timing.latencyMs = s.latencyMs.load(std::memory_order_relaxed);
+  inputsGen = s.inputsGen.load(std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return !(seq0 & 1) && seq0 == s.seq.load(std::memory_order_relaxed);
 }
 
 bool CRenderManager::IsResolutionUpdatePending() const
@@ -1782,7 +1844,7 @@ void CRenderManager::CSampleOffsetStats::AddPhase(double err)
   m_bucket[m_last].phaseSum += err;
 }
 
-void CRenderManager::PrepareNextRender(int64_t vblankNs)
+void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timing)
 {
   if (m_queued.empty())
   {
@@ -1827,7 +1889,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       m_sampleOffset.Add(static_cast<double>(sinceNs) / 1000.0, aml_last_present_rendered());
     }
   }
-  const double frametime = 1.0 / static_cast<double>(m_timingFps.load()) * DVD_TIME_BASE;
+  const double frametime = 1.0 / static_cast<double>(TimingFps(timing)) * DVD_TIME_BASE;
   // A frame shorter than a vblank (48p at 24 Hz, 50p at 25 Hz): selection
   // centres on half a frame and the phase repeats with the frame. On half a
   // vblank the next frame sat on the threshold and the frame shown flipped
@@ -1840,7 +1902,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
     phaseFold = std::min(frametime, pictureDuration);
 
   m_displayLatency =
-      DVD_MSEC_TO_TIME(m_timingLatencyMs.load() - m_videoDelay - frameLatencyAdjustment);
+      DVD_MSEC_TO_TIME(TimingLatencyMs(timing) - m_videoDelay - frameLatencyAdjustment);
 
   const bool isPaused = m_dvdClock.IsPaused();
   // A hardware-plane renderer cannot take back a released frame, so a pause keeps
@@ -2093,7 +2155,7 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs)
       const int64_t nowNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
       const int64_t onScreenNs =
           (vblankNs > 0 ? vblankNs : nowNs) +
-          std::llround((m_timingLatencyMs.load() - m_videoDelay) * 1000000.0);
+          std::llround((TimingLatencyMs(timing) - m_videoDelay) * 1000000.0);
       clockOnScreen += static_cast<double>(std::max<int64_t>(0, onScreenNs - startNs)) / 1000.0;
     }
     renderPts = clockOnScreen + (syncOffMargin > 0.0 ? syncOffMargin : phaseFold / 2);
@@ -2267,7 +2329,7 @@ bool CRenderManager::GetResumePts(double& pts, double& maxStep)
   return pts != DVD_NOPTS_VALUE;
 }
 
-void CRenderManager::CheckEnableClockSync()
+void CRenderManager::CheckEnableClockSync(const STickTiming* timing)
 {
   // refresh rate can be a multiple of video fps
   double diff = 1.0;
@@ -2284,7 +2346,7 @@ void CRenderManager::CheckEnableClockSync()
       fps *= clockspeed;
     }
 
-    diff = static_cast<double>(m_timingFps.load()) / fps;
+    diff = static_cast<double>(TimingFps(timing)) / fps;
     if (diff < 1.0)
       diff = 1.0 / diff;
 
@@ -2362,7 +2424,7 @@ void CRenderManager::StopCoordinator()
 #endif
 }
 
-void CRenderManager::ShadowReference(SPresentResult& result, bool forced)
+void CRenderManager::ShadowReference(SPresentResult& result, bool forced, const STickTiming* timing)
 {
   // Phase 4 shadow (docs/presentation_planes_design.md, samurihl tree): what
   // audio would sync to if it followed the screen - the frame released last,
@@ -2399,12 +2461,12 @@ void CRenderManager::ShadowReference(SPresentResult& result, bool forced)
   const double clock = m_dvdClock.GetClock();
   const double presented =
       m_shadowPts + static_cast<double>(nowNs - m_shadowReleaseNs) / 1000000000.0 * DVD_TIME_BASE -
-      DVD_MSEC_TO_TIME(m_timingLatencyMs.load() - m_videoDelay);
+      DVD_MSEC_TO_TIME(TimingLatencyMs(timing) - m_videoDelay);
   result.shadow = true;
   result.shadowDiff = clock + adjust - presented;
   result.shadowAdjust = adjust;
   result.shadowSynced = m_clockSync.m_enabled;
-  result.frametime = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
+  result.frametime = DVD_TIME_BASE / static_cast<double>(TimingFps(timing));
 }
 
 CRenderManager::SRefusedTicks CRenderManager::NoteRefusedTick(const SPresentTick& tick,
@@ -2443,6 +2505,16 @@ void CRenderManager::LogRefusedTicks(const SRefusedTicks& refused, int64_t endNs
               refused.ticks, ms(endNs - refused.sinceNs), refused.epoch, end);
 }
 
+void CRenderManager::LogAheadTicks(const SAheadTicks& ahead, int64_t endNs, const char* end)
+{
+  CLog::Log(LOGINFO,
+            "TIMING ahead-of-main {} ticks / {:.1f} ms for epoch {} (hold {} tid {}) at {:.6f} Hz "
+            "{:.6f} ms, inputs {}: {}",
+            ahead.ticks, static_cast<double>(endNs - ahead.sinceNs) / 1e6, ahead.epoch,
+            ahead.holdSite ? ahead.holdSite : "none", ahead.holdTid, ahead.timing.fps,
+            ahead.timing.latencyMs, ahead.inputsGen, end);
+}
+
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
 {
   // TEMP TICKDIAG (timebase audit Q6): where a slow coordinator tick spends its time
@@ -2477,8 +2549,16 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     SRefusedTicks ended;
     int64_t endNs = 0;
     bool published = false;
+    SAheadTicks aheadEnded;
+    const char* aheadEnd = nullptr;
+    STickTiming aheadPublished{}; //!< set on a DIFF
     ~RefusedLog()
     {
+      if (aheadEnded.ticks)
+        LogAheadTicks(aheadEnded, endNs, aheadEnd);
+      if (aheadPublished.fps)
+        CLog::Log(LOGERROR, "TIMING ahead-of-main DIFF: published {:.6f} Hz {:.6f} ms",
+                  aheadPublished.fps, aheadPublished.latencyMs);
       if (ended.ticks)
         LogRefusedTicks(ended, endNs, published);
     }
@@ -2500,23 +2580,75 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
         std::llround((m_dvdClock.GetClockSpeed() - 1.0) * 1e6)};
     PRESENTATION::CoordinatorBoard().Write(sample);
   }
+  STickTiming aheadTiming;
+  const STickTiming* timing = nullptr;
   // the display timing of this display epoch has not been published yet
   if (m_timingEpoch != tick.epoch)
   {
     refusedLog.endNs = SteadyNs();
-    refusedLog.ended = NoteRefusedTick(tick, refusedLog.endNs);
-    return;
+#if defined(HAS_LIBAMCODEC)
+    // no input of main's last publish written since (a hold outside a mode set): its timing is
+    // this epoch's. A write since waits for main.
+    uint64_t inputsGen = 0;
+    if (aml_displaystate_on() && ReadTimingSnapshot(aheadTiming, inputsGen) &&
+        inputsGen == aml_timing_inputs_gen())
+    {
+      if (m_ahead.ticks && (m_ahead.epoch != tick.epoch || m_ahead.inputsGen != inputsGen))
+      {
+        refusedLog.aheadEnded = m_ahead;
+        refusedLog.aheadEnd = "superseded";
+        m_ahead.ticks = 0;
+      }
+      if (!m_ahead.ticks)
+        m_ahead = {tick.epoch, 0, refusedLog.endNs, tick.holdSite, tick.holdTid, aheadTiming,
+                   inputsGen};
+      m_ahead.ticks++;
+      timing = &aheadTiming;
+    }
+    else if (m_ahead.ticks)
+    {
+      refusedLog.aheadEnded = m_ahead;
+      refusedLog.aheadEnd = m_ahead.epoch == tick.epoch ? "refused after a write" : "superseded";
+      m_ahead.ticks = 0;
+    }
+#endif
+    if (!timing)
+    {
+      refusedLog.ended = NoteRefusedTick(tick, refusedLog.endNs);
+      return;
+    }
   }
+#if defined(HAS_LIBAMCODEC)
+  else if (m_ahead.ticks)
+  {
+    // main's publish for this epoch: with no write in between, the values the ticks used
+    STickTiming published;
+    uint64_t inputsGen = 0;
+    refusedLog.endNs = SteadyNs();
+    refusedLog.aheadEnded = m_ahead;
+    if (!ReadTimingSnapshot(published, inputsGen) || inputsGen != m_ahead.inputsGen)
+      refusedLog.aheadEnd = "published after a write";
+    else if (published.fps == m_ahead.timing.fps &&
+             published.latencyMs == m_ahead.timing.latencyMs)
+      refusedLog.aheadEnd = "published, same";
+    else
+    {
+      refusedLog.aheadEnd = "published, DIFF";
+      refusedLog.aheadPublished = published;
+    }
+    m_ahead.ticks = 0;
+  }
+#endif
   if (m_refused.ticks)
   {
     refusedLog.ended = m_refused;
     refusedLog.endNs = SteadyNs();
     // a later epoch may already be published when its first tick comes
-    refusedLog.published = m_refused.epoch == tick.epoch;
+    refusedLog.published = !timing && m_refused.epoch == tick.epoch;
     m_refused.ticks = 0;
   }
 
-  CheckEnableClockSync();
+  CheckEnableClockSync(timing);
 
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock presentLock(m_presentlock);
@@ -2542,7 +2674,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   const int skipped = m_QueueSkip;
   const bool forced = m_forceNext;
   if (m_presentstep == PRESENT_READY)
-    PrepareNextRender(tick.vblankNs);
+    PrepareNextRender(tick.vblankNs, timing);
   diagPrepare = diagClock::now();
   result.skipped = std::max(0, m_QueueSkip - skipped);
 
@@ -2583,7 +2715,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     m_pRenderer->PresentFrame(m_presentsource);
   diagFrame = diagClock::now();
 
-  ShadowReference(result, forced && result.newFrame);
+  ShadowReference(result, forced && result.newFrame, timing);
 
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   m_presentevent.notifyAll();
