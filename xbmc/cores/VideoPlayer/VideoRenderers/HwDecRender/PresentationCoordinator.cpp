@@ -14,6 +14,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <algorithm>
@@ -283,7 +284,7 @@ void CPresentationCoordinator::TakeReturned(int plane, std::vector<gbm_bo*>& ret
 void CPresentationCoordinator::DetachSurface(int plane)
 {
   // parked, and no flip in flight
-  CAmlPresenterHold hold;
+  CAmlPresenterHold hold("detach surface");
   std::unique_lock lock(m_uiMutex);
   AbandonLostCommit(plane);
   ReclaimPlane(plane);
@@ -293,7 +294,7 @@ bool CPresentationCoordinator::DisableGraphicsPlane(
     const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
 {
   // parked, and no flip in flight: this thread owns the commit
-  CAmlPresenterHold hold;
+  CAmlPresenterHold hold("graphics plane off");
   uint32_t primaryFb;
   bool on;
   {
@@ -399,6 +400,7 @@ bool CPresentationCoordinator::UiInFlight()
 
 void CPresentationCoordinator::Process()
 {
+  OUTPUT::SetThreadRole("C");
   SetPriority(ThreadPriority::ABOVE_NORMAL);
   aml_presenter_set_running(true);
   m_lastTickNs = MonotonicNs();
@@ -678,6 +680,7 @@ void CPresentationCoordinator::CommitUi()
 
 void CPresentationCoordinator::CommitWorker()
 {
+  OUTPUT::SetThreadRole("C");
   // The meson commit ioctl can block for a vsync (and, in the worst case,
   // seconds) on the previous commit's cleanup: never on the coordinator.
   std::unique_lock lock(m_uiMutex);
@@ -807,11 +810,15 @@ void CPresentationCoordinator::CountPlacement(double pts, unsigned int sequence)
 void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 {
   // a hold that landed during the wait is acknowledged before any release
-  if (aml_presenter_check_hold(tick.epoch, !UiInFlight()))
+  AmlEpochHold hold;
+  if (aml_presenter_check_hold(tick.epoch, !UiInFlight(), &hold))
   {
     m_lastTickNs = tick.wokeNs;
     return;
   }
+  tick.holdSite = hold.site;
+  tick.holdTid = hold.tid;
+  tick.holdReleaseNs = hold.releaseNs;
 
   const int64_t diagWait = MonotonicNs();
   std::unique_lock lock(m_videoMutex);

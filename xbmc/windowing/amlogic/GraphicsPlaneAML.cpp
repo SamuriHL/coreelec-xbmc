@@ -11,16 +11,20 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h"
+#include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
@@ -55,6 +59,24 @@ void DestroyPlaneFb(gbm_bo* bo, void* data)
   if (fb->id)
     drmModeRmFB(fb->fd, fb->id);
   delete fb;
+}
+
+// test: special://profile/displaystate_ghold holds "<ms>"; G switches the plane off that often
+int TestHoldMs()
+{
+  static const int ms = []
+  {
+    XFILE::CFile file;
+    std::vector<uint8_t> buf;
+    if (!XFILE::CFile::Exists("special://profile/displaystate_ghold") ||
+        file.LoadFile("special://profile/displaystate_ghold", buf) <= 0)
+      return 0;
+    const int value = std::atoi(std::string(buf.begin(), buf.end()).c_str());
+    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - test: plane off and re-submitted every {} ms",
+              value);
+    return value;
+  }();
+  return ms;
 }
 
 bool SameGraphics(const SHdrGraphics& a, const SHdrGraphics& b)
@@ -112,6 +134,7 @@ bool CGraphicsPlaneAML::Start()
     CLog::Log(LOGWARNING, "CGraphicsPlaneAML - no overlay plane on the GUI's CRTC");
     return false;
   }
+  m_gholdMs = TestHoldMs();
   Create();
   return true;
 }
@@ -649,6 +672,7 @@ void CGraphicsPlaneAML::DrawGraphics()
 
 void CGraphicsPlaneAML::Process()
 {
+  OUTPUT::SetThreadRole("G");
   if (!InitGL() || (!m_testPattern && !InitProgram()))
   {
     DeinitGL();
@@ -674,6 +698,12 @@ void CGraphicsPlaneAML::Process()
       }
       m_wake.Wait(100ms);
       continue;
+    }
+    // test hold (displaystate_ghold): the epoch change below re-submits the plane
+    if (m_gholdMs > 0 && MonotonicNs() - m_gholdNs >= m_gholdMs * 1000000LL)
+    {
+      m_gholdNs = MonotonicNs();
+      SwitchOff();
     }
     // a display transaction moved or rescaled the CRTC: the plane still has
     // the old rect until committed again (R6)

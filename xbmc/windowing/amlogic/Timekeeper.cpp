@@ -8,6 +8,7 @@
 
 #include "Timekeeper.h"
 
+#include "ThreadRole.h"
 #include "filesystem/File.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
@@ -287,6 +288,7 @@ bool CTimekeeper::ReadModeNow(uint64_t& num, uint64_t& den)
 void CTimekeeper::Run()
 {
   pthread_setname_np(pthread_self(), "Timekeeper");
+  OUTPUT::SetThreadRole("timekeeper");
 
   drmEventContext context = {};
   context.version = 4;
@@ -548,6 +550,7 @@ void CTimekeeper::Publish(int64_t vblankNs, bool synthetic)
 void CTimekeeper::Report()
 {
   pthread_setname_np(pthread_self(), "TimekeeperLog");
+  OUTPUT::SetThreadRole("timekeeper");
   bool startLogged = false;
   int64_t lastEpoch = 0;
   uint64_t validLogged = 0;

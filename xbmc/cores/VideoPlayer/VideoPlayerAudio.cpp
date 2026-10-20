@@ -23,6 +23,7 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/SettingsMirror.h"
+#include "windowing/amlogic/ThreadRole.h"
 
 #include <mutex>
 
@@ -329,6 +330,7 @@ void CVideoPlayerAudio::UpdatePlayerInfo()
 
 void CVideoPlayerAudio::Process()
 {
+  OUTPUT::SetThreadRole("A");
   CLog::Log(LOGINFO, "running thread: CVideoPlayerAudio::Process()");
 
   DVDAudioFrame audioframe;

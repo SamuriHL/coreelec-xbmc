@@ -71,6 +71,9 @@ struct SPresentTick
   int64_t vblankNs = 0; //!< CLOCK_MONOTONIC hardware time; 0 = timer fallback tick
   int64_t wokeNs = 0;
   unsigned int epoch = 0; //!< display epoch (aml_presenter_epoch)
+  const char* holdSite = nullptr; //!< the hold whose release started epoch; null = none
+  int holdTid = 0;
+  int64_t holdReleaseNs = 0; //!< steady_clock
 };
 
 struct SPresentResult
@@ -413,6 +416,19 @@ protected:
   std::atomic<double> m_timingLatencyMs{0.0}; //!< latency tweak + display latency
   std::atomic<int> m_presentVblanks{-1};
   std::atomic<unsigned int> m_timingEpoch{0}; //!< display epoch it was published in
+  //! ticks refused for one display epoch, logged once when that epoch ends (coordinator thread)
+  struct SRefusedTicks
+  {
+    unsigned int epoch = 0;
+    int ticks = 0;
+    int64_t sinceNs = 0; //!< steady_clock, the first refused tick
+    const char* holdSite = nullptr; //!< the hold whose release started the epoch; null = unknown
+    int holdTid = 0;
+    int64_t holdReleaseNs = 0; //!< steady_clock
+  } m_refused;
+  //! counts a refused tick; returns the refusal of an earlier epoch it ends (ticks 0 = none)
+  SRefusedTicks NoteRefusedTick(const SPresentTick& tick, int64_t nowNs);
+  static void LogRefusedTicks(const SRefusedTicks& refused, int64_t endNs, bool published);
   //! Phase 4 shadow: the last frame released while playing, and its vblank
   //! (coordinator thread only)
   bool m_shadowValid = false;

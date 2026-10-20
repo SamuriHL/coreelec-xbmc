@@ -134,4 +134,6 @@ private:
   uint32_t m_lastFb = 0; //!< the fb last submitted
   bool m_lastVisible = false;
   unsigned int m_epoch = 0;
+  int m_gholdMs = 0; //!< test: displaystate_ghold
+  int64_t m_gholdNs = 0;
 };

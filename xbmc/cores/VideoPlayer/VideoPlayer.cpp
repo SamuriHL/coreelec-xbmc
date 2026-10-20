@@ -60,6 +60,7 @@
 #include "utils/FontUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/PresentationTimeline.h"
+#include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
@@ -3139,6 +3140,7 @@ void CVideoPlayer::ConvertLostDisplayToPause()
 
 void CVideoPlayer::Process()
 {
+  OUTPUT::SetThreadRole("P");
   // Try to resolve the correct mime type. This can take some time, for example if a requested
   // item is located at a slow/not reachable remote source. So, do mime type detection in vp worker
   // thread, not directly when initializing the player to keep GUI responsible.

@@ -351,18 +351,26 @@ bool aml_last_present_rendered();
 // the coordinator parks - no frame selection, no QBUF - until it is released.
 // Acquire returns once the coordinator has acknowledged (bounded); every
 // acquire and release starts a new display epoch.
-void aml_presenter_hold_acquire();
+//! site names the hold in the coordinator's TIMING lines
+void aml_presenter_hold_acquire(const char* site);
 void aml_presenter_hold_release();
 struct CAmlPresenterHold
 {
-  CAmlPresenterHold() { aml_presenter_hold_acquire(); }
+  explicit CAmlPresenterHold(const char* site) { aml_presenter_hold_acquire(site); }
   ~CAmlPresenterHold() { aml_presenter_hold_release(); }
   CAmlPresenterHold(const CAmlPresenterHold&) = delete;
   CAmlPresenterHold& operator=(const CAmlPresenterHold&) = delete;
 };
+//! the hold whose release started a display epoch; site null = not started by a hold release
+struct AmlEpochHold
+{
+  const char* site = nullptr;
+  int tid = 0;
+  int64_t releaseNs = 0; //!< steady_clock
+};
 // coordinator side: true while held; acknowledges the hold when park is set
-// (nothing of its own in flight); epoch = the current display epoch
-bool aml_presenter_check_hold(unsigned int& epoch, bool park = true);
+// (nothing of its own in flight); epoch = the current display epoch, hold = its hold
+bool aml_presenter_check_hold(unsigned int& epoch, bool park = true, AmlEpochHold* hold = nullptr);
 unsigned int aml_presenter_epoch();
 
 // A frame queued to amvideo after vblank S is on VD1 from S+2: the vsync ISR

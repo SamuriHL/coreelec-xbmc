@@ -414,7 +414,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   forceUpdate = true;
   // before the lock and before m_Resolution changes: the presentation
   // coordinator releases no video until the display transaction is over
-  CAmlPresenterHold presenterHold;
+  CAmlPresenterHold presenterHold("mode set");
 #endif
 
   // If the user asked us to guess, go with desktop

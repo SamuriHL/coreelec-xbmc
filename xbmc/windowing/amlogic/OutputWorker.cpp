@@ -8,6 +8,7 @@
 
 #include "OutputWorker.h"
 
+#include "ThreadRole.h"
 #include "filesystem/File.h"
 #include "platform/linux/SysfsPath.h"
 #include "utils/log.h"
@@ -210,6 +211,7 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
 void COutputWorker::Process()
 {
   pthread_setname_np(pthread_self(), "OutputWorker");
+  SetThreadRole("W");
   std::unique_lock lock(m_mutex);
   while (true)
   {

@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
+#include <vector>
 
 extern "C"
 {
@@ -2606,12 +2607,16 @@ unsigned int s_parkedEpoch = 0;
 std::atomic<unsigned int> s_displayEpoch{1};
 std::atomic<bool> s_videoPresenter{false};
 int s_wakeFd = -1;
+std::vector<AmlEpochHold> s_holds; // the holds held now
+AmlEpochHold s_epochHold; // the hold whose release started s_epochHoldEpoch
+unsigned int s_epochHoldEpoch = 0;
 } // namespace
 
-void aml_presenter_hold_acquire()
+void aml_presenter_hold_acquire(const char* site)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   s_holdDepth++;
+  s_holds.push_back({site, static_cast<int>(gettid()), 0});
   const unsigned int epoch = ++s_displayEpoch;
   if (!s_presenterRunning)
     return;
@@ -2650,13 +2655,30 @@ void aml_presenter_hold_release()
   std::unique_lock<std::mutex> lock(s_holdMutex);
   if (s_holdDepth > 0)
     s_holdDepth--;
-  ++s_displayEpoch;
+  const unsigned int epoch = ++s_displayEpoch;
+  // a thread releases its holds in reverse order (CAmlPresenterHold is scoped)
+  const int tid = static_cast<int>(gettid());
+  for (auto it = s_holds.rbegin(); it != s_holds.rend(); ++it)
+  {
+    if (it->tid == tid)
+    {
+      s_epochHold = *it;
+      s_epochHold.releaseNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+      s_epochHoldEpoch = epoch;
+      s_holds.erase(std::next(it).base());
+      break;
+    }
+  }
 }
 
-bool aml_presenter_check_hold(unsigned int& epoch, bool park)
+bool aml_presenter_check_hold(unsigned int& epoch, bool park, AmlEpochHold* hold)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   epoch = s_displayEpoch.load();
+  if (hold)
+    *hold = s_epochHoldEpoch == epoch ? s_epochHold : AmlEpochHold{};
   if (s_holdDepth == 0)
     return false;
   if (park && s_parkedEpoch != epoch)

@@ -27,6 +27,7 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#include "windowing/amlogic/ThreadRole.h"
 
 #include "platform/linux/SysfsPath.h"
 
@@ -387,6 +388,7 @@ inline MsgQueueReturnCode CVideoPlayerVideo::GetMessage(std::shared_ptr<CDVDMsg>
 
 void CVideoPlayerVideo::Process()
 {
+  OUTPUT::SetThreadRole("V");
   CLog::Log(LOGINFO, "running thread: video_thread");
 
   double pts = 0;

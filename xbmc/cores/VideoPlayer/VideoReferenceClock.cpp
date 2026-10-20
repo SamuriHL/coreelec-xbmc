@@ -16,6 +16,9 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/VideoSync.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#endif
 
 #include <algorithm>
 #include <mutex>
@@ -70,6 +73,9 @@ void CVideoReferenceClock::UpdateClock(int NrVBlanks, uint64_t time)
 
 void CVideoReferenceClock::Process()
 {
+#if defined(HAS_LIBAMCODEC)
+  OUTPUT::SetThreadRole("RefClock");
+#endif
   bool SetupSuccess = false;
   int64_t Now;
   int setupFailures = 0;

@@ -27,6 +27,9 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/ThreadRole.h"
+#endif
 
 #include <algorithm>
 #include <time.h>
@@ -1230,6 +1233,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
 
 void CActiveAE::Process()
 {
+#if defined(HAS_LIBAMCODEC)
+  OUTPUT::SetThreadRole("A");
+#endif
   Message *msg = NULL;
   Protocol *port = NULL;
   bool gotMsg;

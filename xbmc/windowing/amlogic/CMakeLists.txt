@@ -16,7 +16,8 @@ set(HEADERS WinSystemAmlogic.h
             AudioFollower.h
             WireClassProbe.h
             OutputWorker.h
-            SettingsMirror.h)
+            SettingsMirror.h
+            ThreadRole.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp

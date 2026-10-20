@@ -30,6 +30,7 @@
 #include "threads/SingleLock.h"
 #if defined(HAS_LIBAMCODEC)
 #include "HwDecRender/PresentationCoordinator.h"
+#include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #else
@@ -55,9 +56,14 @@ static inline bool aml_codec_speed_fix() { return false; }
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
+#include <string>
+#include <thread>
 #include <typeinfo>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 #include <time.h>
 
@@ -65,6 +71,47 @@ using namespace std::chrono_literals;
 
 namespace
 {
+int64_t SteadyNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+#if defined(HAS_LIBAMCODEC)
+// test: special://profile/displaystate_mainstall holds "<after-set|framemove> <ms>"; main sleeps
+// there, after an RM-decided mode set or at the top of every FrameMove
+void TestMainStall(const char* where)
+{
+  static const auto stall = []
+  {
+    std::pair<std::string, int> result{"", 0};
+    XFILE::CFile file;
+    std::vector<uint8_t> buf;
+    if (XFILE::CFile::Exists("special://profile/displaystate_mainstall") &&
+        file.LoadFile("special://profile/displaystate_mainstall", buf) > 0)
+    {
+      std::string line(buf.begin(), buf.end());
+      line = line.substr(0, line.find('\n'));
+      const auto space = line.rfind(' ');
+      if (space != std::string::npos)
+      {
+        result = {line.substr(0, space), std::atoi(line.c_str() + space + 1)};
+        CLog::Log(LOGWARNING, "TIMING: test stall of {} ms on main at \"{}\"", result.second,
+                  result.first);
+      }
+    }
+    return result;
+  }();
+  if (stall.second > 0 && stall.first == where)
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
+}
+#else
+void TestMainStall(const char*)
+{
+}
+#endif
+
 // Disc-session mode hold: keep the incumbent display RESOLUTION (no HDMI
 // re-clock for a menu's resolution - strict sinks re-train on every re-clock),
 // but adopt the CONTENT'S refresh rate. Holding the GUI's 60Hz over a disc's
@@ -450,6 +497,7 @@ bool CRenderManager::IsPresenting()
 
 void CRenderManager::FrameMove()
 {
+  TestMainStall("framemove");
   bool firstFrame = false;
 
   {
@@ -1334,6 +1382,7 @@ void CRenderManager::UpdateResolution()
           if (m_tweakToAudio)
             UpdateLatencyTweak(res);
           CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+          TestMainStall("after-set");
           UpdateLatencyTweak();
           if (m_pRenderer)
             m_pRenderer->Update();
@@ -2306,6 +2355,42 @@ void CRenderManager::ShadowReference(SPresentResult& result, bool forced)
   result.frametime = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
 }
 
+CRenderManager::SRefusedTicks CRenderManager::NoteRefusedTick(const SPresentTick& tick,
+                                                              int64_t nowNs)
+{
+  SRefusedTicks ended;
+  if (m_refused.ticks && m_refused.epoch != tick.epoch)
+  {
+    ended = m_refused;
+    m_refused.ticks = 0;
+  }
+  if (!m_refused.ticks)
+  {
+    m_refused.epoch = tick.epoch;
+    m_refused.sinceNs = nowNs;
+    m_refused.holdSite = tick.holdSite;
+    m_refused.holdTid = tick.holdTid;
+    m_refused.holdReleaseNs = tick.holdReleaseNs;
+  }
+  m_refused.ticks++;
+  return ended;
+}
+
+void CRenderManager::LogRefusedTicks(const SRefusedTicks& refused, int64_t endNs, bool published)
+{
+  const auto ms = [](int64_t ns) { return static_cast<double>(ns) / 1e6; };
+  const char* end = published ? "published" : "superseded";
+  if (refused.holdSite)
+    CLog::Log(LOGINFO,
+              "TIMING refused {} ticks / {:.1f} ms for epoch {} (hold {} tid {}), {} {:.1f} ms "
+              "after the hold release",
+              refused.ticks, ms(endNs - refused.sinceNs), refused.epoch, refused.holdSite,
+              refused.holdTid, end, ms(endNs - refused.holdReleaseNs));
+  else
+    CLog::Log(LOGINFO, "TIMING refused {} ticks / {:.1f} ms for epoch {} (no hold release), {}",
+              refused.ticks, ms(endNs - refused.sinceNs), refused.epoch, end);
+}
+
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
 {
   // TEMP TICKDIAG (timebase audit Q6): where a slow coordinator tick spends its time
@@ -2334,6 +2419,19 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     }
   } diagLog{diag0, diagLock, diagPresent, diagPrepare, diagFrame};
 
+  // a refusal this tick ended, logged once the locks are released
+  struct RefusedLog
+  {
+    SRefusedTicks ended;
+    int64_t endNs = 0;
+    bool published = false;
+    ~RefusedLog()
+    {
+      if (ended.ticks)
+        LogRefusedTicks(ended, endNs, published);
+    }
+  } refusedLog;
+
   std::unique_lock lock(m_statelock);
   diagLock = diagClock::now();
   if (m_renderState != STATE_CONFIGURED || !m_presenterMode || !m_pRenderer)
@@ -2351,7 +2449,19 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   }
   // the display timing of this display epoch has not been published yet
   if (m_timingEpoch != tick.epoch)
+  {
+    refusedLog.endNs = SteadyNs();
+    refusedLog.ended = NoteRefusedTick(tick, refusedLog.endNs);
     return;
+  }
+  if (m_refused.ticks)
+  {
+    refusedLog.ended = m_refused;
+    refusedLog.endNs = SteadyNs();
+    // a later epoch may already be published when its first tick comes
+    refusedLog.published = m_refused.epoch == tick.epoch;
+    m_refused.ticks = 0;
+  }
 
   CheckEnableClockSync();
 
