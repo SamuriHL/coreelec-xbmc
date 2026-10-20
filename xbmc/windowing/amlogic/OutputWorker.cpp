@@ -14,6 +14,7 @@
 
 #include <pthread.h>
 #include <set>
+#include <unistd.h>
 #include <utility>
 
 namespace OUTPUT
@@ -33,6 +34,7 @@ bool IsOutputTarget(const std::string& path)
   static const char* const excluded[] = {
       "/sys/class/amdolby_vision/graphic_fmt",
       "/sys/module/aml_media/parameters/osd_pq_passthrough",
+      "/sys/class/amdolby_vision/debug", // the decoder's layer switches (I3's decoder-side exception)
   };
   for (const char* p : excluded)
     if (path == p)
@@ -64,8 +66,9 @@ void NoteWrite(const std::string& target)
   char name[16] = {};
   pthread_getname_np(pthread_self(), name, sizeof(name));
   const bool onW = COutputWorker::Get().OnWorker();
-  CLog::Log(LOGINFO, "OUTPUT write: {} by {}{}", target, onW ? "W" : name,
-            onW ? "" : (active ? " (not W)" : " (not W, W not running)"));
+  // with the tid: a name over 15 characters cannot be set, so VideoPlayerVideo shows as VideoPlayer
+  CLog::Log(LOGINFO, "OUTPUT write: {} by {}{} tid {}", target, onW ? "W" : name,
+            onW ? "" : (active ? " (not W)" : " (not W, W not running)"), gettid());
 }
 
 void StartAccounting()

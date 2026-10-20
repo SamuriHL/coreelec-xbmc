@@ -36,6 +36,7 @@
 #include "windowing/WinSystem.h"
 
 #include "platform/linux/SysfsPath.h"
+#include "windowing/amlogic/OutputWorker.h"
 
 #include <unistd.h>
 #include <algorithm>
@@ -58,6 +59,19 @@ namespace
 {
 
 std::mutex pollSyncMutex;
+
+// the DV layer switches: the sysfs node is the same kernel control as the CRTC property, without
+// m_drmSection and a blocking commit (5.B1-6); outputworker_off keeps the property
+void SetDvDebug(CAMLDisplay* display, const char* cmd)
+{
+  if (OUTPUT::COutputWorker::SwitchedOff())
+  {
+    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, cmd);
+    return;
+  }
+  CSysfsPath("/sys/class/amdolby_vision/debug", std::string(cmd));
+  CLog::Log(LOGINFO, "CAMLCodec: dv_debug '{}' via sysfs", cmd);
+}
 
 }
 
@@ -2237,9 +2251,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     aml_drop_kept_frame("the next stream composites an enhancement layer");
     auto* display =
         static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+    SetDvDebug(display, "enable_fel 0");
+    SetDvDebug(display, "enable_mel 0");
+    SetDvDebug(display, "force_unmap");
   }
 
   // a picture kept across the reinit stays until this decoder's first frame
@@ -2558,8 +2572,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     // dual-layer branch below writes both switches itself
     if (aml_frame_kept() && hints.dovi.dv_profile != 4 && hints.dovi.dv_profile != 7)
     {
-      AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
-      AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+      SetDvDebug(AmlDisplay, "enable_fel 0");
+      SetDvDebug(AmlDisplay, "enable_mel 0");
     }
 
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
@@ -2574,12 +2588,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       // frame path.
       // both layer switches are written at every open: a close that kept its
       // picture (design 4.3) skips the reset to 0
-      AmlDisplay->aml_set_drmProperty(
-          "dv_debug", DRM_MODE_OBJECT_CRTC,
-          doviIsFEL || (isDualStream && !hints.stills) ? "enable_fel 1" : "enable_fel 0");
-      AmlDisplay->aml_set_drmProperty(
-          "dv_debug", DRM_MODE_OBJECT_CRTC,
-          doviIsFEL || (isDualStream && !hints.stills) ? "enable_mel 1" : "enable_mel 0");
+      SetDvDebug(AmlDisplay,
+                 doviIsFEL || (isDualStream && !hints.stills) ? "enable_fel 1" : "enable_fel 0");
+      SetDvDebug(AmlDisplay,
+                 doviIsFEL || (isDualStream && !hints.stills) ? "enable_mel 1" : "enable_mel 0");
       if (doviIsFEL || (isDualStream && !hints.stills))
       {
         am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
@@ -3047,9 +3059,9 @@ void CAMLCodec::CloseDecoder()
   // here would drop the kept frame's DV path
   if (!keepFrame)
   {
-    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
-    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
-    AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+    SetDvDebug(AmlDisplay, "enable_fel 0");
+    SetDvDebug(AmlDisplay, "enable_mel 0");
+    SetDvDebug(AmlDisplay, "force_unmap");
     ShowMainVideo(false);
   }
 
@@ -4154,12 +4166,12 @@ bool CAMLCodec::StepDeferredFelKeep()
     aml_drop_kept_frame("FEL first frame (test: deferred from the open)");
     auto* display =
         static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 0");
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+    SetDvDebug(display, "enable_fel 0");
+    SetDvDebug(display, "enable_mel 0");
+    SetDvDebug(display, "force_unmap");
     // as the open does for this stream after its own reset
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_fel 1");
-    display->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 1");
+    SetDvDebug(display, "enable_fel 1");
+    SetDvDebug(display, "enable_mel 1");
     return true;
   }
   stage = 2;
