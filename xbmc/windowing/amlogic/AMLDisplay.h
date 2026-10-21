@@ -145,6 +145,10 @@ public:
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
   bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }
+  //! a hotplug set commits even with no display (more than the dummy mode)
+  bool aml_get_drmDevice_hotplug_commits();
+  //! the last mode set returned without a commit: no display and not a hotplug set
+  bool aml_get_drmDevice_set_not_connected() const { return m_setNotConnected; }
   bool aml_output_wire_stale();
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
@@ -194,6 +198,7 @@ private:
   // the way out - see leaving_dv_wire().
   bool m_wireDvTunnel{false};
   bool m_modeHeld{false};
+  bool m_setNotConnected{false};
   bool m_fracCommitted{false}; //!< the last aml_set_drmDevice_active re-clocked the live mode
   int m_width;
   int m_height;
@@ -226,6 +231,11 @@ public:
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
+  bool aml_set_not_connected() const
+  {
+    return m_amlDRMUtils->aml_get_drmDevice_set_not_connected();
+  }
+  bool aml_hotplug_set_commits() { return m_amlDRMUtils->aml_get_drmDevice_hotplug_commits(); }
   //! 5.V1-2: the refresh the display runs after a successful set of res; held: the set kept the
   //! live mode, whose frac policy may differ from res's
   float aml_committed_refresh(const RESOLUTION_INFO& res, bool& held) const;
@@ -238,7 +248,9 @@ public:
   int aml_get_display_modes_count(drmModeConnection *connection) const
     { return m_amlDRMUtils->aml_get_drmDevice_modes_count(connection); }
   std::string aml_get_preferred_mode();
-  bool aml_get_native_resolution(RESOLUTION_INFO *res);
+  //! nativeGui: DISABLEGUISCALING as the caller read it (5.B2-5a's W, which reads no CSettings)
+  bool aml_get_native_resolution(RESOLUTION_INFO* res,
+                                 std::optional<bool> nativeGui = std::nullopt);
   bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions);
   int aml_get_drmProperty(std::string name,
                           unsigned int obj_type,
@@ -278,6 +290,8 @@ public:
   void SetInFenceFd(int fd) { m_amlDRMUtils->SetInFenceFd(fd); }
   int TakeOutFenceFd() const { return m_amlDRMUtils->TakeOutFenceFd(); }
   bool GetHotPlug() { bool ret = m_bHotPlug; m_bHotPlug = false; return ret; }
+  //! 5.B2-5a: GetHotPlug without the clear
+  bool PeekHotPlug() const { return m_bHotPlug; }
   void SetHotPlug() { m_bHotPlug = true; }
 
   CHDRCapabilities GetHDRCaps() const
@@ -300,7 +314,9 @@ public:
   }
 private:
   std::unique_ptr<CAMLDRMUtils> m_amlDRMUtils;
-  bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
+  bool aml_mode_to_resolution(const char* mode,
+                              RESOLUTION_INFO* res,
+                              std::optional<bool> nativeGuiIn = std::nullopt);
   bool m_bHotPlug = false;
   RenderStereoMode m_stereo_mode;
   CHDRCapabilities m_hdr_caps;

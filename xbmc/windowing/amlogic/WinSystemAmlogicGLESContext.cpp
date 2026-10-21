@@ -36,10 +36,224 @@
 #include "windowing/amlogic/WireClassProbe.h"
 
 #include <chrono>
+#include <cmath>
+#include <mutex>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
 using namespace std::chrono_literals;
+
+namespace KODI::WINDOWING::AML
+{
+// 5.B2-5a: main's mode set request, read on main and taken by value, with main's decision and
+// W's shadow of it
+struct SDriveShadow
+{
+  struct Decision
+  {
+    bool valid{true}; //!< the current mode was read
+    bool noop{false};
+    bool hdr{false};
+    bool frac{false};
+    bool stereo{false};
+    bool hotplug{false};
+    bool wire{false};
+    bool force{false};
+    bool fracReclock{false};
+    bool notCommitted{false};
+    const char* reply{"failed"};
+  };
+  uint64_t id{0};
+  RESOLUTION_INFO res;
+  bool fullScreen{false};
+  RenderStereoMode stereo{RenderStereoMode::OFF};
+  StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
+  bool nativeGUI{false};
+  bool hotplug{false};
+  bool fracRequest{false};
+  uint64_t jobsStarted{0};
+  uint64_t backupsVersion{0};
+  bool posted{false};
+  bool raced{false};
+  bool wasNativeGUI{false};
+  Decision main;
+  Decision w;
+};
+} // namespace KODI::WINDOWING::AML
+
+namespace
+{
+// W's copy of the set backups (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI,
+// m_bWindowCreated), written from main's after each set that ran the job
+struct ShadowBackups
+{
+  StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
+  RenderStereoMode stereo{RenderStereoMode::OFF};
+  bool fullScreen{false};
+  bool nativeGUI{false};
+  bool windowCreated{false};
+};
+
+std::mutex s_shadowMutex;
+ShadowBackups s_shadowBackups;
+uint64_t s_shadowBackupsVersion{0}; // 0: not seeded
+uint64_t s_shadowSets{0};
+uint64_t s_shadowMatch{0};
+uint64_t s_shadowDiff{0};
+uint64_t s_shadowRaced{0};
+uint64_t s_shadowRacedDiff{0};
+
+bool DriveShadowOn()
+{
+  static const bool on = []
+  {
+    const bool result = OUTPUT::OutputDriveOn() && !OUTPUT::OutputDriveSkip("B2-5a");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-5a: W shadows the mode set decision");
+    return result;
+  }();
+  return on;
+}
+
+// on W, with no write: CreateNewWindow's no-op test, force reasons and re-clock request, from the
+// request, W's backups and W's own reads (never GetHotPlug, which clears)
+void ShadowDecide(CAMLDisplay& display, SDriveShadow& s)
+{
+  ShadowBackups b;
+  {
+    std::unique_lock lock(s_shadowMutex);
+    b = s_shadowBackups;
+    s.raced = s_shadowBackupsVersion != s.backupsVersion;
+  }
+  // the job this runs in is the one started since main's reads
+  s.raced = s.raced || OUTPUT::COutputWorker::Get().JobsStarted() - 1 != s.jobsStarted;
+  s.wasNativeGUI = b.nativeGUI;
+
+  SDriveShadow::Decision& d = s.w;
+  const RESOLUTION_INFO& res = s.res;
+  const int fractional = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
+  d.frac = display.aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) != fractional;
+  d.hdr = b.hdrType != s.hdrType;
+  d.stereo = b.stereo != s.stereo;
+  d.hotplug = s.hotplug;
+  d.wire = display.aml_output_wire_stale();
+
+  RESOLUTION_INFO cur;
+  cur.iWidth = cur.iHeight = 0;
+  if (!display.aml_get_native_resolution(&cur, s.nativeGUI))
+  {
+    d.valid = false;
+    return;
+  }
+
+  const bool sameSize = cur.iWidth == res.iWidth && cur.iHeight == res.iHeight &&
+                        cur.iScreenWidth == res.iScreenWidth &&
+                        cur.iScreenHeight == res.iScreenHeight;
+  d.noop = sameSize && b.fullScreen == s.fullScreen && cur.fRefreshRate == res.fRefreshRate &&
+           (cur.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+           b.windowCreated && s.nativeGUI == b.nativeGUI && !d.hdr && !d.hotplug && !d.frac &&
+           !d.stereo && !d.wire;
+  if (d.noop)
+  {
+    d.reply = "done(noChange)";
+    return;
+  }
+
+  if (d.hotplug || d.stereo)
+    d.force = true;
+  else if (sameSize && MathUtils::FloatEquals(cur.fRefreshRate, res.fRefreshRate, 0.06f))
+    d.force = d.frac || d.hdr || d.wire;
+  const float familyRate = std::round(res.fRefreshRate);
+  d.fracReclock = d.frac && s.fracRequest &&
+                  (familyRate == 24.0f || familyRate == 30.0f || familyRate == 60.0f);
+  // posted, it runs beside main, whose connector cache it must not read (r1 M5)
+  if (s.posted)
+    d.reply = "commit";
+  else
+    d.notCommitted = !display.aml_get_display_connected() &&
+                     !(d.hotplug && display.aml_hotplug_set_commits());
+}
+
+// on W, after main's commit in the same job
+void ShadowCommitted(SDriveShadow& s, bool committed, bool notConnected)
+{
+  s.main.notCommitted = committed && notConnected;
+  s.main.reply = !committed ? "failed" : s.main.notCommitted ? "not-committed" : "done";
+  if (s.w.valid && !s.w.noop)
+    s.w.reply = s.w.notCommitted ? "not-committed" : committed ? "done" : "failed";
+}
+
+void ShadowLog(const SDriveShadow& s, uint64_t ledgerSet, const char* handler)
+{
+  const SDriveShadow::Decision& m = s.main;
+  const SDriveShadow::Decision& w = s.w;
+  std::string diff;
+  const auto field = [&diff](const char* name, bool differs)
+  {
+    if (differs)
+      diff += (diff.empty() ? "" : ",") + std::string(name);
+  };
+  field("valid", m.valid != w.valid);
+  field("noop", m.noop != w.noop);
+  field("hdr", m.hdr != w.hdr);
+  field("frac", m.frac != w.frac);
+  field("stereo", m.stereo != w.stereo);
+  field("hotplug", m.hotplug != w.hotplug);
+  field("wire", m.wire != w.wire);
+  field("force", m.force != w.force);
+  field("reclock", m.fracReclock != w.fracReclock);
+  field("reply", std::string(m.reply) != w.reply);
+
+  const auto describe = [](const SDriveShadow::Decision& d)
+  {
+    std::string reasons;
+    for (const auto& [name, on] : {std::pair{"hdr", d.hdr}, std::pair{"frac", d.frac},
+                                   std::pair{"stereo", d.stereo}, std::pair{"hotplug", d.hotplug},
+                                   std::pair{"wire", d.wire}})
+      if (on)
+        reasons += (reasons.empty() ? "" : ",") + std::string(name);
+    return fmt::format("{} force({})={} reclock={} reply={}",
+                       !d.valid ? "failed" : d.noop ? "noop" : "commit",
+                       reasons.empty() ? "-" : reasons, d.force ? 1 : 0, d.fracReclock ? 1 : 0,
+                       d.reply);
+  };
+
+  std::unique_lock lock(s_shadowMutex);
+  ++s_shadowSets;
+  if (s.raced)
+  {
+    ++s_shadowRaced;
+    if (!diff.empty())
+      ++s_shadowRacedDiff;
+  }
+  else if (diff.empty())
+    ++s_shadowMatch;
+  else
+    ++s_shadowDiff;
+  CLog::Log(LOGINFO,
+            "OUTPUTDRIVE shadow set={} {}{} {} ledger={} w: {} main: {} nativeGUI={} was={} "
+            "handler={} diff={}",
+            s.id, diff.empty() ? "MATCH" : "DIFF", s.raced ? " raced" : "",
+            s.posted ? "posted" : "job", ledgerSet, describe(w), describe(m), s.nativeGUI ? 1 : 0,
+            s.wasNativeGUI ? 1 : 0, handler, diff.empty() ? "-" : diff);
+  CLog::Log(LOGINFO,
+            "OUTPUTDRIVE shadow count sets={} match={} diff={} raced={} raced_diff={}",
+            s_shadowSets, s_shadowMatch, s_shadowDiff, s_shadowRaced, s_shadowRacedDiff);
+}
+
+// a set with no mode set job: W shadows it after main's decision, on the lane its job would use
+void PostDriveShadow(const std::shared_ptr<SDriveShadow>& shadow, CAMLDisplay* display)
+{
+  shadow->posted = true;
+  OUTPUT::COutputWorker::Get().Post(
+      shadow->hotplug ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "drive shadow",
+      [shadow, display]
+      {
+        ShadowDecide(*display, *shadow);
+        ShadowLog(*shadow, 0, "-");
+      });
+}
+} // namespace
 
 CWinSystemAmlogicGLESContext::CWinSystemAmlogicGLESContext()
 : m_pGLContext(new CEGLContextUtils(EGL_PLATFORM_GBM_MESA, "EGL_EXT_platform_base"))
@@ -200,13 +414,32 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
   bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);
   bool force_mode_switch_by_fractional_rate = (cur_fractional_rate != fractional_rate);
+  // 5.B2-5a: before GetHotPlug clears the flag
+  const std::shared_ptr<SDriveShadow> shadow =
+      m_outputWorkerStarted && DriveShadowOn()
+          ? BeginDriveShadow(res, fullScreen, stereo_mode, hdrType, nativeGUI)
+          : nullptr;
   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
   bool force_mode_switch_by_wire = m_amlDisplay->aml_output_wire_stale();
+  if (shadow)
+  {
+    SDriveShadow::Decision& d = shadow->main;
+    d.hdr = force_mode_switch_by_hdr;
+    d.frac = force_mode_switch_by_fractional_rate;
+    d.stereo = force_mode_switch_by_stereo_mode;
+    d.hotplug = force_mode_switch_by_hotplug;
+    d.wire = force_mode_switch_by_wire;
+  }
 
   // get current used resolution
   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution", __FUNCTION__);
+    if (shadow)
+    {
+      shadow->main.valid = false;
+      PostDriveShadow(shadow, m_amlDisplay.get());
+    }
     SetPresentationReady(false);
     return false;
   }
@@ -244,6 +477,12 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_wire)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    if (shadow)
+    {
+      shadow->main.noop = true;
+      shadow->main.reply = "done(noChange)";
+      PostDriveShadow(shadow, m_amlDisplay.get());
+    }
     aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
     WIRECLASS::CWireClassProbe::Get().Notify("no mode set", WIRECLASS::FromHdrType(hdrType));
     return true;
@@ -281,6 +520,16 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   const float familyRate = std::round(res.fRefreshRate);
   m_frac_reclock = force_mode_switch_by_fractional_rate && aml_frac_reclock_request() &&
                    (familyRate == 24.0f || familyRate == 30.0f || familyRate == 60.0f);
+  if (shadow)
+  {
+    shadow->main.force = m_force_mode_switch;
+    shadow->main.fracReclock = m_frac_reclock;
+    CAMLDisplay* const display = m_amlDisplay.get();
+    m_shadowBefore = [shadow, display] { ShadowDecide(*display, *shadow); };
+    m_shadowAfter = [shadow](bool committed, bool notConnected)
+    { ShadowCommitted(*shadow, committed, notConnected); };
+    m_driveShadow = shadow;
+  }
 
   // refresh backup data
   m_hdrType = hdrType;
@@ -469,6 +718,11 @@ bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INF
   const int guiLocked = m_guiLocked;
   m_guiDiscarded = 0;
   const bool created = CreateNewWindow("", fullScreen, res);
+  if (const auto shadow = std::exchange(m_driveShadow, nullptr))
+  {
+    NoteDriveShadowBackups();
+    ShadowLog(*shadow, m_ledgerSet, created ? "ok" : "failed");
+  }
   // 5.B2-1: once per mode set that reached its lost walk
   if (m_ledgerSet != ledgerSet)
   {
@@ -483,6 +737,45 @@ bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INF
 
   CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
   return true;
+}
+
+std::shared_ptr<SDriveShadow> CWinSystemAmlogicGLESContext::BeginDriveShadow(
+    const RESOLUTION_INFO& res,
+    bool fullScreen,
+    RenderStereoMode stereo,
+    StreamHdrType hdrType,
+    bool nativeGUI)
+{
+  static uint64_t id = 0;
+  bool seeded;
+  {
+    std::unique_lock lock(s_shadowMutex);
+    seeded = s_shadowBackupsVersion != 0;
+  }
+  if (!seeded)
+    NoteDriveShadowBackups();
+
+  auto shadow = std::make_shared<SDriveShadow>();
+  shadow->id = ++id;
+  shadow->res = res;
+  shadow->fullScreen = fullScreen;
+  shadow->stereo = stereo;
+  shadow->hdrType = hdrType;
+  shadow->nativeGUI = nativeGUI;
+  shadow->hotplug = m_amlDisplay->PeekHotPlug();
+  // the request's RAII scope ends with RM's set call, so it is taken here
+  shadow->fracRequest = aml_frac_reclock_request();
+  shadow->jobsStarted = OUTPUT::COutputWorker::Get().JobsStarted();
+  std::unique_lock lock(s_shadowMutex);
+  shadow->backupsVersion = s_shadowBackupsVersion;
+  return shadow;
+}
+
+void CWinSystemAmlogicGLESContext::NoteDriveShadowBackups()
+{
+  std::unique_lock lock(s_shadowMutex);
+  s_shadowBackups = {m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, m_bWindowCreated};
+  ++s_shadowBackupsVersion;
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

@@ -21,6 +21,7 @@
 #include "windowing/Resolution.h"
 
 #include <atomic>
+#include <functional>
 #include <optional>
 #include <gbm.h>
 
@@ -125,6 +126,10 @@ protected:
   //! 5.B2-4's switch (surface epoch, C's cleared UI buffer): OUTPUT::OutputDriveOn() and no
   //! outputdrive_skip "B2-4", read once; read only after the boot set
   static bool SurfaceEpochOn();
+  //! 5.B2-5a: W's shadow of this set's decision, run in the mode set job before the commit,
+  //! then given the commit's result (set by the GLES context for one set)
+  std::function<void()> m_shadowBefore;
+  std::function<void(bool committed, bool notConnected)> m_shadowAfter;
   bool m_presentationReady{false};
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;

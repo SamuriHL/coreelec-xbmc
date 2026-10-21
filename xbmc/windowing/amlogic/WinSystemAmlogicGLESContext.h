@@ -32,6 +32,8 @@ namespace WINDOWING
 namespace AML
 {
 
+struct SDriveShadow;
+
 class CWinSystemAmlogicGLESContext : public CWinSystemAmlogic, public CRenderSystemGLES
 {
 public:
@@ -157,6 +159,16 @@ private:
   //! 5.B2-4: the UI epoch of the GUI surface (0: off, or the boot set's surface)
   uint64_t m_surfaceEpoch{0};
   int m_guiLockCapStops{0};
+  //! 5.B2-5a: main's request for W's shadow; seeds W's backups from main's at the first one
+  std::shared_ptr<SDriveShadow> BeginDriveShadow(const RESOLUTION_INFO& res,
+                                                 bool fullScreen,
+                                                 RenderStereoMode stereo,
+                                                 StreamHdrType hdrType,
+                                                 bool nativeGUI);
+  //! W's backups from main's after a set
+  void NoteDriveShadowBackups();
+  //! the shadow of a set that ran main's mode set job, logged when the set is done
+  std::shared_ptr<SDriveShadow> m_driveShadow;
 };
 
 }

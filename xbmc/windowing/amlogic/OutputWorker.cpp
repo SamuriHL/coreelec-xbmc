@@ -236,6 +236,7 @@ void COutputWorker::Process()
       break;
     Job job = std::move(lane->front());
     lane->pop_front();
+    ++m_jobsStarted;
     lock.unlock();
     if (m_stallMs > 0 && m_stallJob == job.name)
       std::this_thread::sleep_for(std::chrono::milliseconds(m_stallMs));

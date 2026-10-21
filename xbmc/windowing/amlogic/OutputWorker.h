@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -67,6 +68,8 @@ public:
   //! Queues fn on W and returns (inline when W is not active; queued behind the running job
   //! when called on W). fn must capture by value.
   void Post(Lane lane, const char* name, std::function<void()> fn, uint64_t generation = 0);
+  //! jobs W has started (5.B2-5a: a shadow's reads raced one)
+  uint64_t JobsStarted() const { return m_jobsStarted.load(); }
 
 private:
   struct Result
@@ -97,6 +100,7 @@ private:
   bool m_stop = false;
   bool m_stopping = false;
   uint64_t m_nextId = 1;
+  std::atomic<uint64_t> m_jobsStarted{0};
   // test: special://profile/outputworker_stall holds "<job name> <ms>"; W sleeps before that job
   std::string m_stallJob;
   int m_stallMs = 0;

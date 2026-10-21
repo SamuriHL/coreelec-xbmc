@@ -699,6 +699,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
   m_modeHeld = false;
+  m_setNotConnected = false;
   const bool _hotplug_mode_switch = hotplug_mode_switch && m_connector && m_connector->count_modes > 1;
   const bool _force_mode_switch = force_mode_switch || _hotplug_mode_switch;
 
@@ -717,6 +718,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   if (!aml_get_drmDevice_connected() && !_hotplug_mode_switch)
   {
     CLog::Log(LOGWARNING, "CAMLDRMUtils::{} - connector of drmDevice is not connected", __FUNCTION__);
+    m_setNotConnected = true;
     ret = true;
     return ret;
   }
@@ -1199,6 +1201,12 @@ int CAMLDRMUtils::aml_get_drmDevice_modes_count(drmModeConnection *connection)
   mode_count = m_connector->count_modes;
 
   return mode_count;
+}
+
+bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  return m_connector && m_connector->count_modes > 1;
 }
 
 // get preferred mode of drmDevice
@@ -1697,7 +1705,9 @@ std::string CAMLDisplay::aml_get_preferred_mode()
   return mode;
 }
 
-bool CAMLDisplay::aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
+bool CAMLDisplay::aml_mode_to_resolution(const char* mode,
+                                         RESOLUTION_INFO* res,
+                                         std::optional<bool> nativeGuiIn)
 {
   int width = 0, height = 0, rrate = 60;
   char smode[2] = { 0 };
@@ -1711,7 +1721,7 @@ bool CAMLDisplay::aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
   if(!mode)
     return false;
 
-  const bool nativeGui = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
+  const bool nativeGui = nativeGuiIn ? *nativeGuiIn : CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
   std::string fromMode = mode;
   StringUtils::Trim(fromMode);
   // strips, for example, 720p* to 720p
@@ -1812,10 +1822,10 @@ bool CAMLDisplay::aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
   return res->iWidth > 0 && res->iHeight> 0;
 }
 
-bool CAMLDisplay::aml_get_native_resolution(RESOLUTION_INFO *res)
+bool CAMLDisplay::aml_get_native_resolution(RESOLUTION_INFO* res, std::optional<bool> nativeGui)
 {
   std::string mode = m_amlDRMUtils->aml_get_drmDevice_mode();
-  bool result = aml_mode_to_resolution(mode.c_str(), res);
+  bool result = aml_mode_to_resolution(mode.c_str(), res, nativeGui);
 
   if (m_amlDRMUtils->aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1)
     res->fRefreshRate = FractionalRate(res->fRefreshRate);

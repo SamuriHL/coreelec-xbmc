@@ -768,9 +768,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
         m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
         [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
          force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, frac = fracReclock,
-         windowed = !fullScreen, commitTiming, coordinator, uiEpoch]
+         windowed = !fullScreen, commitTiming, coordinator, uiEpoch,
+         shadowBefore = std::exchange(m_shadowBefore, nullptr),
+         shadowAfter = std::exchange(m_shadowAfter, nullptr)]
         {
+          if (shadowBefore)
+            shadowBefore();
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
+          if (shadowAfter)
+            shadowAfter(*committed, display->aml_set_not_connected());
           OUTPUT::TestStopAt("4");
           if (*committed)
           {
