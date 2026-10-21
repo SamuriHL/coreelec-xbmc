@@ -104,6 +104,18 @@ protected:
 
   CCriticalSection m_resourceSection;
   std::vector<IDispResource*> m_resources;
+  //! 5.B2-1 LEDGER lines (design §4.3, log only): each lost and reset call, by the mode set
+  //! or lost span it belongs to; called under m_resourceSection, except LedgerSetFailed
+  void LedgerBegin(const char* kind);
+  void LedgerLost(IDispResource* resource);
+  void LedgerReset(IDispResource* resource, std::chrono::milliseconds delay);
+  void LedgerResetDone();
+  void LedgerSetFailed();
+  std::atomic<uint64_t> m_ledgerSet{0};
+  std::atomic_int m_ledgerLost{0};
+  int m_ledgerReset{0};
+  std::atomic_bool m_ledgerFailed{false};
+  std::chrono::steady_clock::time_point m_ledgerAt{};
   std::unique_ptr<CLibInputHandler> m_libinput;
   bool m_force_mode_switch;
   bool m_hotplug_mode_switch{false};

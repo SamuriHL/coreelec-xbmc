@@ -2625,6 +2625,16 @@ int s_wakeFd = -1;
 std::vector<AmlEpochHold> s_holds; // the holds held now
 AmlEpochHold s_epochHold; // the hold whose release started s_epochHoldEpoch
 unsigned int s_epochHoldEpoch = 0;
+// test (5.B2-1): special://profile/outputdrive_cstall holds "<ms>"; C withholds its ack of a
+// mode set's park that long, so a value over 2 s reaches the park timeout
+int s_cstallMs = 0;
+unsigned int s_cstallEpoch = 0;
+std::chrono::steady_clock::time_point s_cstallUntil;
+// 5.B2-1: the holds taken while a mode set's hold is held, logged at its release
+unsigned int s_parkSet = 0;
+int s_parkSetTid = 0;
+int s_parkCount = 0;
+std::string s_parkSites;
 } // namespace
 
 void aml_presenter_hold_acquire(const char* site)
@@ -2632,9 +2642,28 @@ void aml_presenter_hold_acquire(const char* site)
   std::unique_lock<std::mutex> lock(s_holdMutex);
   s_holdDepth++;
   s_holds.push_back({site, static_cast<int>(gettid()), 0});
+  if (!s_parkSetTid && site && strcmp(site, "mode set") == 0)
+  {
+    s_parkSetTid = static_cast<int>(gettid());
+    s_parkCount = 0;
+    s_parkSites.clear();
+    ++s_parkSet;
+  }
+  if (s_parkSetTid)
+  {
+    ++s_parkCount;
+    s_parkSites += (s_parkSites.empty() ? "" : ",") + std::string(site ? site : "?");
+  }
   const unsigned int epoch = ++s_displayEpoch;
   if (!s_presenterRunning)
     return;
+  if (s_cstallMs > 0 && site && strcmp(site, "mode set") == 0)
+  {
+    s_cstallEpoch = epoch;
+    s_cstallUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(s_cstallMs);
+    CLog::Log(LOGWARNING, "OUTPUTDRIVE: test park ack withheld {} ms (epoch {})", s_cstallMs,
+              epoch);
+  }
   if (s_wakeFd >= 0)
   {
     const uint64_t one = 1;
@@ -2667,6 +2696,7 @@ void aml_presenter_hold_acquire(const char* site)
 
 void aml_presenter_hold_release()
 {
+  std::string parks;
   std::unique_lock<std::mutex> lock(s_holdMutex);
   if (s_holdDepth > 0)
     s_holdDepth--;
@@ -2682,10 +2712,19 @@ void aml_presenter_hold_release()
                                   std::chrono::steady_clock::now().time_since_epoch())
                                   .count();
       s_epochHoldEpoch = epoch;
+      if (s_parkSetTid == tid && it->site && strcmp(it->site, "mode set") == 0)
+      {
+        parks = StringUtils::Format("PARK set={} n={} sites={}", s_parkSet, s_parkCount,
+                                    s_parkSites);
+        s_parkSetTid = 0;
+      }
       s_holds.erase(std::next(it).base());
       break;
     }
   }
+  lock.unlock();
+  if (!parks.empty())
+    CLog::Log(LOGINFO, "{}", parks);
 }
 
 bool aml_presenter_check_hold(unsigned int& epoch, bool park, AmlEpochHold* hold)
@@ -2698,6 +2737,8 @@ bool aml_presenter_check_hold(unsigned int& epoch, bool park, AmlEpochHold* hold
     return false;
   if (park && s_parkedEpoch != epoch)
   {
+    if (epoch == s_cstallEpoch && std::chrono::steady_clock::now() < s_cstallUntil)
+      return true;
     s_parkedEpoch = epoch;
     s_holdCond.notify_all();
   }
@@ -2742,6 +2783,12 @@ void aml_timing_inputs_bump()
 uint64_t aml_timing_inputs_gen()
 {
   return s_timingInputsGen.load(std::memory_order_acquire);
+}
+
+void aml_presenter_set_test_cstall(int ms)
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  s_cstallMs = ms;
 }
 
 void aml_presenter_set_running(bool running)

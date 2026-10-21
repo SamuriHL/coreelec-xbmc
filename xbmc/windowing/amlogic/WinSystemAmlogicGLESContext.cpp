@@ -250,6 +250,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   // destroy old window, then create a new one
   DestroyWindow();
+  OUTPUT::TestStopAt("3");
 
   // check if a forced mode switch is required
   if (force_mode_switch_by_hotplug)
@@ -286,6 +287,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   m_bFullScreen = fullScreen;
   m_nativeGUI = nativeGUI;
 
+  const bool afterBootSet = m_outputWorkerStarted;
   if (!CWinSystemAmlogic::CreateNewWindow(name, fullScreen, res))
   {
     return false;
@@ -294,9 +296,10 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   // the disc-session DV engage waits for this mode set, so the sink locks once
   aml_dv_engage_pending_disc_session(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
   WIRECLASS::CWireClassProbe::Get().Notify("mode set", WIRECLASS::FromHdrType(hdrType));
+  OUTPUT::TestStopAt("5");
 
   uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
-  if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format))
+  if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format, afterBootSet))
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{} - failed to create GBM surface", __FUNCTION__);
     DestroyWindow();
@@ -327,8 +330,14 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
+    {
       (*i)->OnResetDisplay();
+      LedgerReset(*i, 0ms);
+    }
+    LedgerResetDone();
     CloseLostSpan();
+    lock.unlock();
+    OUTPUT::TestStopAt("8");
   }
 
   if (m_amlDisplay->aml_get_display_connected())
@@ -429,7 +438,20 @@ bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int
 
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
-  if (!CreateNewWindow("", fullScreen, res))
+  const uint64_t ledgerSet = m_ledgerSet;
+  const int guiLocked = m_guiLocked;
+  m_guiDiscarded = 0;
+  const bool created = CreateNewWindow("", fullScreen, res);
+  // 5.B2-1: once per mode set that reached its lost walk
+  if (m_ledgerSet != ledgerSet)
+  {
+    if (!created)
+      LedgerSetFailed();
+    CLog::Log(LOGINFO, "OUTPUTDRIVE set={} {} guiLocked {} discarded {}", m_ledgerSet.load(),
+              created ? "ok" : "failed", guiLocked, m_guiDiscarded);
+    m_guiLockedLogSet = created ? m_ledgerSet.load() : 0;
+  }
+  if (!created)
     return false;
 
   CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
@@ -528,8 +550,14 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
+    {
       (*i)->OnResetDisplay();
+      LedgerReset(*i, m_resetDelay);
+    }
+    LedgerResetDone();
     CloseLostSpan();
+    lock.unlock();
+    OUTPUT::TestStopAt("8");
   }
 }
 
@@ -575,6 +603,12 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   const uint64_t seq = m_coordinator->SubmitUi(bo, fbId, req, fence);
   if (m_guiRepaintFrames > 0)
     m_guiRepaintFrames--;
+  if (m_guiLockedLogSet && m_guiRepaintFrames == 0)
+  {
+    CLog::Log(LOGINFO, "OUTPUTDRIVE set={} guiLocked {} after the repaint frames", m_guiLockedLogSet,
+              m_guiLocked);
+    m_guiLockedLogSet = 0;
+  }
 
   // At most one frame ahead: this one is committed once the previous flip
   // lands, as the render thread's own flip used to wait for it. Rendering the
@@ -598,6 +632,7 @@ void CWinSystemAmlogicGLESContext::DetachGuiSurface()
     return;
   m_coordinator->DetachUiSurface();
   ReleaseReturnedGuiBuffers();
+  m_guiDiscarded += m_guiLocked;
   // anything still counted belongs to the old surface and never comes back
   m_guiLocked = 0;
 }

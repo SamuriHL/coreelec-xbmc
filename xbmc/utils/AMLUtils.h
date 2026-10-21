@@ -389,6 +389,8 @@ uint64_t aml_timing_inputs_gen();
 // on S6: v4l2_qbuf, amvideo_vf_peek, drm_vblank_event, 718 of 718 frames).
 constexpr int AML_VD1_PRESENT_VBLANKS = 2;
 void aml_presenter_set_running(bool running);
+//! 5.B2-1 test (outputdrive_cstall): withhold the ack of a mode set's park for ms
+void aml_presenter_set_test_cstall(int ms);
 //! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
 void aml_presenter_set_wake_fd(int fd);
 // true while a coordinator releases the video plane, so the GUI loop paces

@@ -28,6 +28,7 @@
 #if defined(HAS_LIBAMCODEC)
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
@@ -435,6 +436,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   // before the lock and before m_Resolution changes: the presentation
   // coordinator releases no video until the display transaction is over
   CAmlPresenterHold presenterHold("mode set");
+  OUTPUT::TestStopAt("1");
 #endif
 
   // If the user asked us to guess, go with desktop
@@ -536,6 +538,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     }
     TimingInputsWritten();
   }
+#if defined(HAS_LIBAMCODEC)
+  OUTPUT::TestStopAt("7");
+#endif
 }
 
 void CGraphicContext::ApplyVideoResolution(RESOLUTION res)

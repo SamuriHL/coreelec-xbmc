@@ -11,7 +11,10 @@
 #include <string.h>
 #include <float.h>
 #include <cmath>
+#include <cstdlib>
+#include <cxxabi.h>
 #include <exception>
+#include <typeinfo>
 #include <utility>
 
 #include "ServiceBroker.h"
@@ -342,8 +345,12 @@ void CWinSystemAmlogic::OpenLostSpan()
   m_lostRetryDelay = std::chrono::milliseconds(1000);
   m_lostRetry.Set(m_lostRetryDelay);
   CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
+  LedgerBegin("lost span");
   for (IDispResource* resource : m_resources)
+  {
     resource->OnLostDisplay();
+    LedgerLost(resource);
+  }
 }
 
 void CWinSystemAmlogic::CloseLostSpan()
@@ -376,7 +383,62 @@ bool CWinSystemAmlogic::HoldIfDisplayLost(IDispResource* resource)
   if (!m_lostOpen)
     return false;
   resource->OnLostDisplay();
+  LedgerLost(resource);
   return true;
+}
+
+namespace
+{
+std::string ListenerName(IDispResource* resource)
+{
+  const char* mangled = typeid(*resource).name();
+  int status = 0;
+  char* name = abi::__cxa_demangle(mangled, nullptr, nullptr, &status);
+  std::string result = status == 0 && name ? name : mangled;
+  free(name);
+  return result;
+}
+} // namespace
+
+void CWinSystemAmlogic::LedgerBegin(const char* kind)
+{
+  if (const int owed = m_ledgerLost.load())
+    CLog::Log(LOGINFO, "LEDGER set={} lost {} owed into set={}", m_ledgerSet.load(), owed,
+              m_ledgerSet.load() + 1);
+  m_ledgerFailed = false;
+  m_ledgerAt = std::chrono::steady_clock::now();
+  CLog::Log(LOGINFO, "LEDGER set={} begins ({})", ++m_ledgerSet, kind);
+}
+
+void CWinSystemAmlogic::LedgerLost(IDispResource* resource)
+{
+  ++m_ledgerLost;
+  CLog::Log(LOGINFO, "LEDGER lost {} set={}", ListenerName(resource), m_ledgerSet.load());
+}
+
+void CWinSystemAmlogic::LedgerReset(IDispResource* resource, std::chrono::milliseconds delay)
+{
+  ++m_ledgerReset;
+  CLog::Log(LOGINFO, "LEDGER reset {} set={} after {} ms delay={} after_failed={}",
+            ListenerName(resource), m_ledgerSet.load(),
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - m_ledgerAt)
+                .count(),
+            delay.count(), m_ledgerFailed.load() ? 1 : 0);
+}
+
+void CWinSystemAmlogic::LedgerResetDone()
+{
+  CLog::Log(LOGINFO, "LEDGER set={} lost {} reset {}", m_ledgerSet.load(), m_ledgerLost.load(),
+            m_ledgerReset);
+  m_ledgerLost = 0;
+  m_ledgerReset = 0;
+}
+
+void CWinSystemAmlogic::LedgerSetFailed()
+{
+  m_ledgerFailed = true;
+  CLog::Log(LOGINFO, "LEDGER set={} failed, lost {} owed", m_ledgerSet.load(), m_ledgerLost.load());
 }
 
 void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *data)
@@ -679,11 +741,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
 
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    LedgerBegin("mode set");
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
     {
       (*i)->OnLostDisplay();
+      LedgerLost(*i);
     }
   }
+  OUTPUT::ArmDemuxBlock();
+  OUTPUT::TestStopAt("2");
 
   // the commit job (5.B1-7): W sets the mode; main keeps the settings reads, the display
   // resources and the GL work
@@ -697,8 +763,10 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
          windowed = !fullScreen]
         {
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
+          OUTPUT::TestStopAt("4");
           if (*committed)
             DISPLAYSTATE::PublishMode(*display, res, windowed);
+          OUTPUT::TestStopAt("6");
         });
     ret = *committed;
     if (ret)
@@ -711,6 +779,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   if (!m_outputWorkerStarted)
   {
     m_outputWorkerStarted = true;
+    aml_presenter_set_test_cstall(OUTPUT::TestCStallMs());
     aml_displaystate_init();
     OUTPUT::COutputWorker::Get().Start();
     if (aml_displaystate_on())

@@ -108,4 +108,21 @@ void NoteWrite(const std::string& target);
 void StartAccounting();
 void StopAccounting();
 
+// 5.B2-1 test hooks: each special://profile/outputdrive_* file is read once, default off. The
+// steps are design §4.2's ("1" park .. "8" display reset), at today's inline points.
+//! outputdrive_stopat "<step> [ms]": posts a playback stop at that step, then waits <ms> there
+void TestStopAt(const char* step);
+//! outputdrive_commitfail "[n]": the n-th mode set after the boot set (default 1) fails once,
+//! after its commit
+bool TestCommitFail();
+//! outputdrive_demuxblock "<ms>": a mode set's lost walk makes P's next demux read sleep <ms>
+void ArmDemuxBlock();
+void TestDemuxBlock();
+//! a player open drops an arm left by an earlier set
+void DisarmDemuxBlock();
+//! outputdrive_cstall "<ms>": C withholds its ack of a mode set's park for <ms>
+int TestCStallMs();
+//! outputdrive_skip "<substep>[,<substep>]": true for a listed 5.B2 sub-step (bisect only)
+bool OutputDriveSkip(const std::string& substep);
+
 } // namespace OUTPUT

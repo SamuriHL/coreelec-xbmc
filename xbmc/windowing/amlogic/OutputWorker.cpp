@@ -8,13 +8,19 @@
 
 #include "OutputWorker.h"
 
+#include "ServiceBroker.h"
 #include "ThreadRole.h"
 #include "filesystem/File.h"
+#include "messaging/ApplicationMessenger.h"
 #include "platform/linux/SysfsPath.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 
 #include <pthread.h>
+#include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <optional>
 #include <set>
 #include <unistd.h>
 #include <utility>
@@ -101,6 +107,7 @@ void COutputWorker::Start()
     return;
   }
   m_stop = false;
+  OutputDriveSkip("");
   {
     XFILE::CFile file;
     std::vector<uint8_t> buf;
@@ -250,6 +257,137 @@ void COutputWorker::Process()
       m_doneCond.notify_all();
     }
   }
+}
+
+namespace
+{
+// the first line of special://profile/<name>, or nullopt without the file
+std::optional<std::string> ReadTestSwitch(const char* name)
+{
+  const std::string path = std::string("special://profile/") + name;
+  if (!XFILE::CFile::Exists(path))
+    return std::nullopt;
+  XFILE::CFile file;
+  std::vector<uint8_t> buf;
+  file.LoadFile(path, buf);
+  std::string line(buf.begin(), buf.end());
+  return line.substr(0, line.find('\n'));
+}
+
+std::atomic_bool s_demuxBlockArmed{false};
+} // namespace
+
+void TestStopAt(const char* step)
+{
+  static const auto stop = []
+  {
+    std::pair<std::string, int> result{"", 0};
+    if (const auto line = ReadTestSwitch("outputdrive_stopat"))
+    {
+      const auto space = line->find(' ');
+      result = {line->substr(0, space),
+                space == std::string::npos ? 0 : std::atoi(line->c_str() + space + 1)};
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test stop at step \"{}\", then {} ms there",
+                result.first, result.second);
+    }
+    return result;
+  }();
+  if (stop.first.empty() || stop.first != step)
+    return;
+  CLog::Log(LOGWARNING, "OUTPUTDRIVE: test stop posted at step {}", step);
+  if (auto messenger = CServiceBroker::GetAppMessenger())
+    messenger->PostMsg(TMSG_MEDIA_STOP);
+  if (stop.second > 0)
+    std::this_thread::sleep_for(std::chrono::milliseconds(stop.second));
+}
+
+bool TestCommitFail()
+{
+  static std::atomic_int remaining{[]
+  {
+    const auto line = ReadTestSwitch("outputdrive_commitfail");
+    if (!line)
+      return 0;
+    const int n = std::max(1, std::atoi(line->c_str()));
+    CLog::Log(LOGWARNING, "OUTPUTDRIVE: test failure after the commit of mode set {}", n);
+    return n;
+  }()};
+  if (remaining.load() <= 0 || --remaining != 0)
+    return false;
+  CLog::Log(LOGWARNING, "OUTPUTDRIVE: test failure after the commit");
+  return true;
+}
+
+namespace
+{
+int DemuxBlockMs()
+{
+  static const int ms = []
+  {
+    const auto line = ReadTestSwitch("outputdrive_demuxblock");
+    const int value = line ? std::atoi(line->c_str()) : 0;
+    if (value > 0)
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test demux block of {} ms after each lost walk", value);
+    return value;
+  }();
+  return ms;
+}
+} // namespace
+
+void ArmDemuxBlock()
+{
+  if (DemuxBlockMs() > 0)
+    s_demuxBlockArmed = true;
+}
+
+void DisarmDemuxBlock()
+{
+  s_demuxBlockArmed = false;
+}
+
+void TestDemuxBlock()
+{
+  if (!s_demuxBlockArmed.load(std::memory_order_relaxed) || !s_demuxBlockArmed.exchange(false))
+    return;
+  CLog::Log(LOGWARNING, "OUTPUTDRIVE: test demux block {} ms", DemuxBlockMs());
+  std::this_thread::sleep_for(std::chrono::milliseconds(DemuxBlockMs()));
+}
+
+int TestCStallMs()
+{
+  static const int ms = []
+  {
+    const auto line = ReadTestSwitch("outputdrive_cstall");
+    const int value = line ? std::atoi(line->c_str()) : 0;
+    if (value > 0)
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test park ack withheld {} ms at every mode set", value);
+    return value;
+  }();
+  return ms;
+}
+
+bool OutputDriveSkip(const std::string& substep)
+{
+  static const std::vector<std::string> skipped = []
+  {
+    std::vector<std::string> list;
+    if (const auto line = ReadTestSwitch("outputdrive_skip"))
+    {
+      size_t begin = 0;
+      while (begin <= line->size())
+      {
+        const size_t end = std::min(line->find(',', begin), line->size());
+        std::string name = line->substr(begin, end - begin);
+        StringUtils::Trim(name);
+        if (!name.empty())
+          list.push_back(name);
+        begin = end + 1;
+      }
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE skip {}", *line);
+    }
+    return list;
+  }();
+  return !substep.empty() && std::find(skipped.begin(), skipped.end(), substep) != skipped.end();
 }
 
 } // namespace OUTPUT

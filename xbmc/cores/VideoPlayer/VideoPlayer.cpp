@@ -60,6 +60,7 @@
 #include "utils/FontUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/PresentationTimeline.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "utils/StreamDetails.h"
@@ -867,6 +868,7 @@ CVideoPlayer::~CVideoPlayer()
 bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options)
 {
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
+  OUTPUT::DisarmDemuxBlock();
 
   BDSTAGE::Play();
 
@@ -1493,6 +1495,7 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
 
 bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 {
+  OUTPUT::TestDemuxBlock();
 
   // check if we should read from subtitle demuxer
   if (m_pSubtitleDemuxer && m_VideoPlayerSubtitle->AcceptsData())

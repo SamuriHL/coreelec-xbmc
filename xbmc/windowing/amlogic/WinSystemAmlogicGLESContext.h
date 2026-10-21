@@ -148,6 +148,10 @@ private:
   bool m_hdrGraphicsShown{false}; //!< the plane was last given something to show
   //! GUI buffers locked for the coordinator, not yet released
   int m_guiLocked{0};
+  //! 5.B2-1 log only: m_guiLocked at the last surface detach; the set whose count is logged
+  //! after its repaint frames
+  int m_guiDiscarded{0};
+  uint64_t m_guiLockedLogSet{0};
   std::vector<gbm_bo*> m_guiReturned;
 };
 

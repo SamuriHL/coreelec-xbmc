@@ -739,6 +739,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             if (m_keepOutputAcrossDisplay)
             {
               m_extDisplayLost = true;
+              m_extLostIgnored = 0;
               msg->Reply(CActiveAEControlProtocol::ACC);
               return;
             }
@@ -752,7 +753,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::DEVICECHANGE:
           // no reopen inside a mode change, as a suspended engine drops it
           if (m_extDisplayLost)
+          {
+            LogIgnoredInDisplayLost("DEVICECHANGE");
             return;
+          }
           time_t now;
           time(&now);
           CLog::Log(LOGDEBUG,"CActiveAE - device change event");
@@ -791,10 +795,14 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::DEVICECOUNTCHANGE:
           if (!m_extDisplayLost)
             HandleDeviceCountChange(reinterpret_cast<const char*>(msg->data), false);
+          else
+            LogIgnoredInDisplayLost("DEVICECOUNTCHANGE");
           return;
         case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
           if (!m_extDisplayLost)
             HandleDeviceCountChange("", true);
+          else
+            LogIgnoredInDisplayLost("DEFAULTDEVICECHANGE");
           return;
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
@@ -3792,6 +3800,16 @@ void CActiveAE::ValidateOutputDevices(bool saveChanges)
       }
     }
   }
+}
+
+void CActiveAE::LogIgnoredInDisplayLost(const char* type)
+{
+  // a burst of device events in one window is logged once past the first few
+  if (++m_extLostIgnored <= 3)
+    CLog::Log(LOGINFO, "CActiveAE - device change ignored in a kept display-lost window ({})",
+              type);
+  else if (m_extLostIgnored == 4)
+    CLog::Log(LOGINFO, "CActiveAE - further device changes in this display-lost window not logged");
 }
 
 void CActiveAE::HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged)

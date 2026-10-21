@@ -93,7 +93,7 @@ CAMLGBMUtils::CAMLGBMUtils(int fd)
   }
 }
 
-bool CAMLGBMUtils::CreateSurface(int width, int height, uint32_t format)
+bool CAMLGBMUtils::CreateSurface(int width, int height, uint32_t format, bool testFailure)
 {
   m_buffer.reset();
   m_drm_fb = nullptr;
@@ -117,6 +117,9 @@ bool CAMLGBMUtils::CreateSurface(int width, int height, uint32_t format)
                                        format,
                                        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING));
   }
+
+  if (testFailure && OUTPUT::TestCommitFail())
+    m_surface.reset();
 
   if (!m_surface)
   {

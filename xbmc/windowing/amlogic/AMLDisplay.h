@@ -32,7 +32,8 @@ public:
   CAMLGBMUtils(int fd);
   struct gbm_device *GetDevice() const { return m_device.get(); }
   struct gbm_surface *GetSurface() const { return m_surface.get(); }
-  bool CreateSurface(int width, int height, uint32_t format);
+  //! testFailure: outputdrive_commitfail may fail this call (test only)
+  bool CreateSurface(int width, int height, uint32_t format, bool testFailure = false);
   uint32_t GetFBId() { return m_drm_fb->fb_id; }
   bool LockFrontBuffer(int fd);
   // real_player: the GUI plane buffers the presentation coordinator commits.

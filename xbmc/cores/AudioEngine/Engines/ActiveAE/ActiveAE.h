@@ -334,6 +334,7 @@ protected:
   void LoadSettings(AEAudioFormat *format = NULL);
   void ValidateOutputDevices(bool saveChanges);
   void HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged);
+  void LogIgnoredInDisplayLost(const char* type);
   bool NeedReconfigureBuffers();
   bool NeedReconfigureSink();
   void ApplySettingsToFormat(AEAudioFormat& format,
@@ -390,6 +391,7 @@ protected:
   //! design §18.18: an HDMI sink stays open across a display reset
   std::atomic_bool m_keepOutputAcrossDisplay{false};
   bool m_extDisplayLost = false;
+  unsigned int m_extLostIgnored = 0;
   std::atomic_bool m_outputIsHdmi{true};
   bool m_heldFormatValid = false;
   AEAudioFormat m_heldFormat;
