@@ -993,6 +993,10 @@ void CWinSystemAmlogicGLESContext::ReportDriveSet(
   {
     if (!created)
       LedgerSetFailed();
+    // 5.B2-6, Q9: W committed but main's handler failed (no GUI surface): the set stays paused,
+    // its SETTLE is dropped (W's FAILED reply logged this ERROR on W already)
+    if (!created && job.kind != OUTPUT::DriveReply::FAILED && OUTPUT::SettleOnW())
+      SettleHandlerFailed(job);
     CLog::Log(LOGINFO, "OUTPUTDRIVE set={} {} guiLocked {} discarded {}", job.ledgerSet,
               created ? "ok" : "failed", job.guiLocked, m_guiDiscarded);
     m_guiLockedLogSet = created ? job.ledgerSet : 0;
@@ -1428,6 +1432,33 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
   m_resetPending = false;
 }
 
+void CWinSystemAmlogicGLESContext::SettleCancel(const char* why)
+{
+  SSettle& settle = m_settle;
+  CLog::Log(LOGINFO, "SETTLE set={} request={} dropped: {}", settle.ledgerSet, settle.request,
+            why);
+  settle.armed = false;
+  ++settle.gen;
+  m_resetPending = false;
+}
+
+void CWinSystemAmlogicGLESContext::SettleHandlerFailed(const SDriveJob& job)
+{
+  CLog::Log(LOGERROR,
+            "LEDGER owed after failed set set={} lost {} (request {}, handler failed): no reset "
+            "until a set succeeds",
+            job.ledgerSet, m_ledgerLost.load(), job.id);
+  // before the post: a check already queued drops it too. m_settleHandled never names a request
+  // whose handler failed, so no check can reset it meanwhile
+  m_settleFailed = job.id;
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "settle drop",
+                                    [this, id = job.id]
+                                    {
+                                      if (m_settle.armed && m_settle.request == id)
+                                        SettleCancel("its handler failed");
+                                    });
+}
+
 void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
 {
   // no park: a no-change or a failed decision; an armed SETTLE stays, as today's timer
@@ -1443,7 +1474,9 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
     return;
   }
   // at delay 0 main's handler resets at once, as today, except at a film start (Q6, D8)
-  const bool lockWait = job.delay <= 0 && job.filmStart;
+  // a start with no display (not-committed) keeps today's reset at once
+  const bool lockWait =
+      job.delay <= 0 && job.filmStart && job.kind == OUTPUT::DriveReply::DONE;
   if (job.delay <= 0 && !lockWait)
     return;
 
@@ -1478,6 +1511,11 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
   SSettle& settle = m_settle;
   if (!settle.armed || settle.gen != gen)
     return;
+  if (m_settleFailed == settle.request)
+  {
+    SettleCancel("its handler failed");
+    return;
+  }
   const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - settle.modeSetAt);
   const auto cap = settle.delay + 3000ms;
@@ -1507,7 +1545,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
   // once the set's handler has run; then as main's poll at delay > 0 (presentation ready, no
   // hotplug pending), as the handler's reset at delay 0
   if (since >= settle.delay && (locked || since > cap) && m_settleHandled == settle.request &&
-      (settle.lockWait || (IsPresentationReady() && !IsHotplugPending())) &&
+      !IsHotplugPending() && (settle.lockWait || IsPresentationReady()) &&
       DisplayResetAllowed())
   {
     settle.armed = false;

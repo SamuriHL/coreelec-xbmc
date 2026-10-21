@@ -1088,6 +1088,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           return;
         case CActiveAEControlProtocol::DISPLAYRESET:
           m_extDisplayLost = false;
+          // a kept-lost window ending here is dropped, as today (no replay later)
+          m_extLostRecord = false;
+          m_extLostChanges = 0;
           if (m_extSuspended)
             return;
           CLog::Log(LOGDEBUG,"CActiveAE - display reset event");

@@ -205,6 +205,12 @@ private:
   SSettle m_settle;
   //! main: the request whose handler reached the reset (its new surface is up)
   std::atomic<uint64_t> m_settleHandled{0};
+  //! main: the request whose handler failed (its SETTLE is dropped, Q9)
+  std::atomic<uint64_t> m_settleFailed{0};
+  //! W: ends the armed SETTLE unreset
+  void SettleCancel(const char* why);
+  //! main: a committed set whose handler failed: the Q9 ERROR, its SETTLE dropped on W
+  void SettleHandlerFailed(const SDriveJob& job);
   //! W, at the park of a set: an armed SETTLE ends unreset; its owed lost stay in the ledger
   //! and go to this set's reset (union)
   void SettleSupersede(const SDriveJob& job);
