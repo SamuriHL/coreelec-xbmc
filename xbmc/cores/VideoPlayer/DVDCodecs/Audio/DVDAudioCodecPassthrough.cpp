@@ -78,6 +78,7 @@ CDVDAudioCodecPassthrough::~CDVDAudioCodecPassthrough(void)
       settings->UnregisterCallback(this);
   }
 
+  GapSummary("close");
   Dispose();
 }
 
@@ -217,11 +218,17 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
   m_parser.SetDefeatTrueHDDialNorm(m_defeatTrueHDDialNorm);
   m_parser.SetDefeatDTSDialNorm(m_defeatDTSDialNorm);
 
+  const bool gapActive = GapActive();
+  m_parser.SetCheckAC3CRC(gapActive);
+  uint64_t framesOut = m_parser.GetFramesOut();
   if (m_backlogSize)
   {
     m_dataSize = m_bufferSize;
     unsigned int consumed = m_parser.AddData(m_backlogBuffer, m_backlogSize, &m_buffer, &m_dataSize);
     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+    if (gapActive && m_parser.GetFramesOut() != framesOut)
+      GapFrameParsed();
+    framesOut = m_parser.GetFramesOut();
     if (consumed != m_backlogSize)
     {
       memmove(m_backlogBuffer, m_backlogBuffer+consumed, m_backlogSize-consumed);
@@ -246,6 +253,8 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       boundaryMark = true;
       m_boundaryMarkPending = false;
     }
+    if (gapActive && iSize > 0)
+      GapPacket(packet.pts, boundaryMark);
   }
 
   if (m_lavStyleSyncEnabled)
@@ -323,6 +332,8 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
     const bool wasLocked = m_parser.IsValid();
     int used = m_parser.AddData(pData, iSize, &m_buffer, &m_dataSize);
     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+    if (gapActive && m_parser.GetFramesOut() != framesOut)
+      GapFrameParsed();
     // A packet parsed from its start (no backlog ahead of it) emits its own first
     // unit here: while the stream waits for its seed, remember the latest such
     // packet's pts and the units before it (counted where they are packed)
@@ -530,6 +541,17 @@ unsigned int CDVDAudioCodecPassthrough::PackTrueHD()
 
 void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
 {
+  // a dropped frame hands out nothing: take the next one the parser holds, or
+  // the next packet's frame would replace it in the buffer
+  do
+  {
+    m_frameDropped = false;
+    GetFrame(frame);
+  } while (m_frameDropped && m_boundaryEnabled);
+}
+
+void CDVDAudioCodecPassthrough::GetFrame(DVDAudioFrame& frame)
+{
   frame.nb_frames = GetData(frame.data);
   frame.framesOut = 0;
   frame.padBefore = 0;
@@ -576,11 +598,59 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
           static_cast<double>(samplesOffset) / m_format.m_sampleRate * DVD_TIME_BASE;
   }
 
-  const double demuxerPts = m_currentPts;
-  const bool haveDemuxerPts = IsValidPts(demuxerPts);
-  const bool boundaryFrame = m_currentMark;
+  double demuxerPts = m_currentPts;
+  bool boundaryFrame = m_currentMark;
   m_currentMark = false;
   bool seeded = false;
+  const bool frameSized = streamType == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_EAC3 ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTS_2048 ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTSHD ||
+                          streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+  // After a byte loss the slots hold the pts of lost bytes: until they agree
+  // with the frames' own pts again, a frame's own pts and list mark stand in
+  // for them. The first frame with its own pts re-anchors the clock.
+  bool reanchor = false;
+  GapFrame gap;
+  if (m_gapFrame.valid && GapActive())
+  {
+    gap = m_gapFrame;
+    const bool fire = GapFrameOut(demuxerPts, boundaryFrame, frame.duration);
+    if (gap.inOverride)
+    {
+      demuxerPts = gap.ownPts;
+      boundaryFrame = gap.listMark;
+    }
+    if (gap.bogus)
+    {
+      // a frame made from lost bytes (logged with the loss)
+      frame.nb_frames = 0;
+      m_frameDropped = true;
+      m_currentPts = LOCAL_NOPTS;
+      return;
+    }
+    if (fire && frameSized && frame.duration > 0.0)
+    {
+      // the clock did not move for frames dropped: this step replaces theirs
+      m_boundaryDrops = 0;
+      m_boundaryDropMark = false;
+      const double step = gap.ownPts - m_internalClock;
+      if (step > DVD_SEC_TO_TIME(30) || step < -DVD_SEC_TO_TIME(1))
+      {
+        CLog::Log(LOGINFO,
+                  "CDVDAudioCodecPassthrough: passthrough discontinuity: {} bytes lost, J {:+.3f} "
+                  "ms, out of range: resync",
+                  gap.regionLost, -step / 1000.0);
+        m_needsResync = true;
+      }
+      else
+        reanchor = true;
+    }
+  }
+  const bool haveDemuxerPts = IsValidPts(demuxerPts);
 
   // STEP 1: resync the internal clock when needed (codec creation, after seeks).
   // This seed is EXACT - it is the true PTS of the content being emitted - and
@@ -631,9 +701,18 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   if (m_boundaryDrops > 0)
   {
     m_boundaryDrops--;
+    // its boundary is taken on the first frame kept
+    if (boundaryFrame)
+      m_boundaryDropMark = true;
     frame.nb_frames = 0;
+    m_frameDropped = true;
     m_currentPts = LOCAL_NOPTS;
     return;
+  }
+  if (m_boundaryDropMark && haveDemuxerPts)
+  {
+    boundaryFrame = true;
+    m_boundaryDropMark = false;
   }
   if (seeded)
   {
@@ -646,14 +725,6 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     // standing jitter before the boundary; negative is an overlap
     const double step = m_lastJitter - (m_internalClock - demuxerPts + samplesOffsetTime);
     const double frameTime = frame.duration;
-    const bool frameSized = streamType == CAEStreamInfo::STREAM_TYPE_AC3 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_EAC3 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTS_2048 ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD ||
-                            streamType == CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
     const bool realise = m_boundaryEnabled && frameSized && frameTime > 0.0 &&
                          std::abs(step) <= DVD_MSEC_TO_TIME(100);
     // the content's lag behind its labels once the step is taken
@@ -678,6 +749,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     {
       m_boundaryDrops = drops - 1;
       frame.nb_frames = 0;
+      m_frameDropped = true;
       m_currentPts = LOCAL_NOPTS;
       return;
     }
@@ -686,6 +758,50 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
       // the residual before the boundary stands
       frame.padBefore = pad;
       m_internalClock = demuxerPts + m_lastJitter;
+    }
+  }
+  else if (reanchor)
+  {
+    // where the emitted content ends against this frame's own pts
+    const double step = gap.ownPts - m_internalClock;
+    const double frameTime = frame.duration;
+    m_jitterTracker.Reset();
+    if (step > 0.0)
+    {
+      // E-AC-3 frames of under 6 blocks share an IEC burst: a pause would split it
+      if (streamType == CAEStreamInfo::STREAM_TYPE_EAC3 && m_parser.GetEAC3BlocksDiv() > 1)
+        CLog::Log(LOGINFO,
+                  "CDVDAudioCodecPassthrough: passthrough discontinuity: {} bytes lost, J {:+.3f} "
+                  "ms, gap {:+.3f} ms not padded ({} E-AC-3 frames per burst)",
+                  gap.regionLost, -step / 1000.0, step / 1000.0, m_parser.GetEAC3BlocksDiv());
+      else
+      {
+        frame.padBefore = step;
+        CLog::Log(LOGINFO,
+                  "CDVDAudioCodecPassthrough: passthrough discontinuity: {} bytes lost, J {:+.3f} "
+                  "ms, gap {:+.3f} ms padded",
+                  gap.regionLost, -step / 1000.0, step / 1000.0);
+      }
+      m_internalClock = gap.ownPts;
+      m_lastJitter = 0.0;
+      m_labelLag = 0.0;
+    }
+    else
+    {
+      // an overlap: the clock stays continuous and the overlapped frames go,
+      // leaving the kept frame within half a frame of its label
+      const unsigned int drops = static_cast<unsigned int>(std::lround(-step / frameTime));
+      m_lastJitter = -step - drops * frameTime;
+      m_jitterThreshold = std::max(m_jitterThreshold, frameTime / 2 + DVD_MSEC_TO_TIME(4));
+      CLog::Log(LOGINFO,
+                "CDVDAudioCodecPassthrough: passthrough discontinuity: {} bytes lost, J {:+.3f} "
+                "ms, {} frames dropped (residual {:+.3f} ms)",
+                gap.regionLost, -step / 1000.0, drops, m_lastJitter / 1000.0);
+      m_boundaryDrops = drops - 1;
+      frame.nb_frames = 0;
+      m_frameDropped = true;
+      m_currentPts = LOCAL_NOPTS;
+      return;
     }
   }
 
@@ -792,11 +908,26 @@ void CDVDAudioCodecPassthrough::ClearBoundary()
   m_currentMark = false;
   m_nextMark = false;
   m_boundaryDrops = 0;
+  m_boundaryDropMark = false;
   m_lastJitter = 0.0;
 }
 
 void CDVDAudioCodecPassthrough::Reset()
 {
+  GapSummary("reset");
+  m_gapPackets.clear();
+  m_gapD = GapDetail{};
+  m_gapFrame = GapFrame{};
+  m_gapHavePrev = false;
+  m_gapPrevLost = 0;
+  m_gapPadding = 0;
+  m_gapCrcOff = false;
+  m_gapCarryMark = false;
+  m_gapArmed = false;
+  m_gapOverride = false;
+  m_gapPrevJValid = false;
+  m_gapUnarmedLatched = false;
+  m_gapSinceMark = UINT_MAX;
   m_haveOffsetCorrection = false;
   ClearBoundary();
   m_trueHDoffset = 0;
@@ -903,4 +1034,331 @@ void CDVDAudioCodecPassthrough::SyncToResyncPts(double pts)
 int CDVDAudioCodecPassthrough::GetBufferSize()
 {
   return (int)m_parser.GetBufferSize();
+}
+
+namespace
+{
+std::string GapPts(double pts)
+{
+  return IsValidPts(pts) ? fmt::format("{:.3f}s", pts / DVD_TIME_BASE) : std::string("none");
+}
+} // namespace
+
+void CDVDAudioCodecPassthrough::GapPacket(double pts, bool mark)
+{
+  // the packet's bytes follow what the parser took in and the backlog
+  const uint64_t offset = m_parser.GetFedBytes() + m_backlogSize;
+  if (m_gapPackets.size() >= GAP_MAX_PACKETS)
+  {
+    m_gapN.overflow++;
+    if (m_gapD.overflow++ < GAP_MAX_DETAIL)
+      CLog::Log(LOGINFO, "PTGAP overflow: packet list cleared at offset {}", offset);
+    m_gapPackets.clear();
+  }
+  m_gapPackets.push_back({offset, IsValidPts(pts) ? pts : LOCAL_NOPTS, mark, false});
+}
+
+void CDVDAudioCodecPassthrough::GapFrameParsed()
+{
+  const uint64_t offset = m_parser.GetLastFrameOffset();
+  if (m_gapFrame.valid)
+  {
+    m_gapN.doubleEmit++;
+    if (m_gapD.doubleEmit++ < GAP_MAX_DETAIL)
+      CLog::Log(LOGINFO, "PTGAP double emit: frame at offset {} replaced by offset {}",
+                m_gapFrame.offset, offset);
+  }
+
+  GapFrame f;
+  f.valid = true;
+  f.offset = offset;
+
+  uint64_t lost = 0;
+  if (m_gapHavePrev)
+  {
+    if (offset >= m_gapPrevEnd)
+      lost = offset - m_gapPrevEnd;
+    else
+      m_gapN.backOffset++;
+  }
+  m_gapHavePrev = true;
+  m_gapPrevEnd = offset + m_parser.GetLastFrameBytes();
+  // the same loss on every frame is padding between frames, not a loss
+  const bool newLoss = lost > 0 && lost != m_gapPrevLost && lost != m_gapPadding;
+  if (lost > 0 && lost == m_gapPrevLost)
+  {
+    if (!m_gapArmed)
+      m_gapPadding = lost;
+    m_gapN.repeatLostFrames++;
+    m_gapN.repeatLostValue = lost;
+  }
+  else if (lost > 0)
+  {
+    m_gapN.losses++;
+    m_gapN.lostBytes += lost;
+  }
+  m_gapPrevLost = lost;
+
+  // the packet the frame starts in
+  while (m_gapPackets.size() >= 2 && m_gapPackets[1].offset <= offset)
+  {
+    if (!m_gapPackets.front().used && m_gapPackets.front().mark)
+      m_gapCarryMark = true;
+    m_gapPackets.pop_front();
+  }
+  bool own = false;
+  bool mark = false;
+  if (!m_gapPackets.empty() && m_gapPackets.front().offset <= offset && !m_gapPackets.front().used)
+  {
+    GapPacketEntry& e = m_gapPackets.front();
+    e.used = true;
+    // bytes lost after the packet's start: its pts was for them
+    if ((lost == 0 || e.offset == offset) && IsValidPts(e.pts))
+    {
+      own = true;
+      f.ownPts = e.pts;
+    }
+    if (e.mark && own)
+      mark = true;
+    else if (e.mark)
+      m_gapCarryMark = true;
+  }
+  if (own && m_gapCarryMark)
+  {
+    mark = true;
+    m_gapCarryMark = false;
+  }
+  f.listMark = mark;
+
+  const CAEStreamInfo& info = m_parser.GetStreamInfo();
+  if (newLoss || (m_gapArmed && lost > 0))
+  {
+    if (!m_gapArmed)
+    {
+      m_gapRegionLost = 0;
+      m_gapRegionFrames = 0;
+      m_gapRegionInfoChanges = 0;
+      m_gapRegionOffset = offset - lost;
+      m_gapCrcFailMs = 0.0;
+    }
+    m_gapArmed = true;
+    m_gapOverride = true;
+    m_gapRegionLost += lost;
+  }
+  // a frame failing its CRC inside a loss is made of lost bytes too. Past 1 s
+  // of such frames with no bytes lost before them, the stream's CRCs are not
+  // trusted: frames with their own pts then go on as without the check (and
+  // end the region); those without stay dropped.
+  if (m_gapArmed && !m_parser.LastFrameCRCValid())
+  {
+    if (lost == 0 && !m_gapCrcOff)
+    {
+      m_gapCrcFailMs += m_format.m_streamInfo.GetDuration();
+      if (m_gapCrcFailMs > 1000.0)
+      {
+        m_gapCrcOff = true;
+        CLog::Log(LOGINFO, "PTGAP crc rule off: {:.0f} ms of contiguous CRC-failing frames",
+                  m_gapCrcFailMs);
+      }
+    }
+    if (!own || !m_gapCrcOff)
+    {
+      if (mark)
+        m_gapCarryMark = true;
+      own = false;
+      mark = false;
+      f.ownPts = LOCAL_NOPTS;
+      f.listMark = false;
+      f.bogus = true;
+      m_gapRegionLost += m_parser.GetLastFrameBytes();
+    }
+  }
+  if (m_gapArmed && (own || mark))
+  {
+    f.endsRegion = true;
+    f.regionLost = m_gapRegionLost;
+    f.regionFrames = m_gapRegionFrames;
+    f.regionInfoChanges = m_gapRegionInfoChanges;
+    f.regionOffset = m_gapRegionOffset;
+    m_gapArmed = false;
+  }
+  else if (m_gapArmed)
+  {
+    m_gapRegionFrames++;
+    if (info.m_type != m_gapInfoType || info.m_sampleRate != m_gapInfoRate ||
+        info.m_channels != m_gapInfoChannels)
+    {
+      m_gapRegionInfoChanges++;
+      f.bogus = true;
+      if (m_gapD.info++ < GAP_MAX_DETAIL)
+        CLog::Log(LOGINFO,
+                  "PTGAP info change inside loss: offset {} type {} rate {} ch {} (before: type {} "
+                  "rate {} ch {}), frame dropped",
+                  offset, static_cast<int>(info.m_type), info.m_sampleRate, info.m_channels,
+                  static_cast<int>(m_gapInfoType), m_gapInfoRate, m_gapInfoChannels);
+    }
+  }
+  if (!m_gapArmed)
+  {
+    m_gapInfoType = info.m_type;
+    m_gapInfoRate = info.m_sampleRate;
+    m_gapInfoChannels = info.m_channels;
+  }
+  f.inOverride = m_gapOverride;
+  m_gapFrame = f;
+}
+
+bool CDVDAudioCodecPassthrough::GapFrameOut(double demuxerPts, bool slotMark, double frameTime)
+{
+  const GapFrame f = m_gapFrame;
+  m_gapFrame.valid = false;
+  if (!m_gapAnnounced)
+  {
+    m_gapAnnounced = true;
+    CLog::Log(LOGINFO, "PTGAP active ({})", m_codecName);
+  }
+
+  m_gapN.frames++;
+  const bool slot = IsValidPts(demuxerPts);
+  const bool own = IsValidPts(f.ownPts);
+  if (own)
+    m_gapN.own++;
+  if (own && slot)
+  {
+    if (std::abs(f.ownPts - demuxerPts) <= DVD_MSEC_TO_TIME(1))
+    {
+      m_gapN.agree++;
+      m_gapOverride = false;
+    }
+    else
+    {
+      m_gapN.mismatch++;
+      if (f.inOverride)
+        m_gapN.mismatchOverride++;
+      if (m_gapD.mismatch++ < GAP_MAX_DETAIL)
+        CLog::Log(LOGINFO, "PTGAP mismatch: offset {} own {} slot {} diff {:+.3f} ms{}", f.offset,
+                  GapPts(f.ownPts), GapPts(demuxerPts),
+                  (demuxerPts - f.ownPts) / 1000.0, f.inOverride ? " (override)" : "");
+    }
+  }
+  else if (slot)
+    m_gapN.slotOnly++;
+  else if (own)
+    m_gapN.ownOnly++;
+
+  if (slotMark && f.listMark)
+    m_gapN.markAgree++;
+  else if (slotMark || f.listMark)
+  {
+    if (slotMark)
+      m_gapN.markSlotOnly++;
+    else
+      m_gapN.markListOnly++;
+    if (m_gapD.mark++ < GAP_MAX_DETAIL)
+      CLog::Log(LOGINFO, "PTGAP mark: {} only at offset {} (own {} slot {})",
+                slotMark ? "slot" : "list", f.offset, GapPts(f.ownPts), GapPts(demuxerPts));
+  }
+  if (slotMark)
+    m_gapSinceMark = 0;
+  else if (own && m_gapSinceMark != UINT_MAX)
+    m_gapSinceMark++;
+
+  const bool haveClock = !m_needsResync && IsValidPts(m_internalClock);
+  const double jitter = own && haveClock ? m_internalClock - f.ownPts : 0.0;
+
+  bool fire = false;
+  if (f.endsRegion)
+  {
+    const char* decision;
+    // slot marks do not count during an override
+    if (f.listMark || (slotMark && !f.inOverride))
+    {
+      decision = "mark";
+      m_gapN.armedMark++;
+    }
+    else if (m_needsResync)
+    {
+      decision = "seed";
+      m_gapN.armedSeed++;
+    }
+    else if (!haveClock || !own)
+    {
+      decision = "no-clock";
+      m_gapN.armedNoClock++;
+    }
+    else if (std::abs(jitter) >= frameTime / 2)
+    {
+      decision = "fire";
+      m_gapN.armedFire++;
+      fire = true;
+      // the armed rule takes this step: not an unarmed event
+      m_gapUnarmedLatched = std::abs(jitter) > DVD_MSEC_TO_TIME(100);
+    }
+    else
+    {
+      decision = "small";
+      m_gapN.armedSmall++;
+    }
+    m_gapN.regionFrames += f.regionFrames;
+    m_gapN.infoChanges += f.regionInfoChanges;
+    if (m_gapD.loss++ < GAP_MAX_DETAIL)
+      CLog::Log(LOGINFO,
+                "PTGAP loss: {} bytes from offset {}, {} frames inside, {} info changes, ends at "
+                "offset {} own {} J {:+.3f} ms -> {}",
+                f.regionLost, f.regionOffset, f.regionFrames, f.regionInfoChanges, f.offset,
+                GapPts(f.ownPts), jitter / 1000.0, decision);
+  }
+
+  if (own && haveClock)
+  {
+    const double limit = DVD_MSEC_TO_TIME(100);
+    const bool big = std::abs(jitter) > limit;
+    if (big && m_gapPrevJValid && std::abs(m_gapPrevJ) > limit &&
+        (jitter > 0) == (m_gapPrevJ > 0) && std::abs(jitter - m_gapPrevJ) < frameTime / 2 &&
+        !m_gapUnarmedLatched)
+    {
+      m_gapUnarmedLatched = true;
+      const bool afterMark = m_gapSinceMark <= 2;
+      if (f.inOverride || f.endsRegion)
+        m_gapN.unarmedFireInLoss++;
+      else
+        m_gapN.unarmedFire++;
+      if (afterMark && !f.inOverride && !f.endsRegion)
+        m_gapN.unarmedFireAfterMark++;
+      if (m_gapD.unarmed++ < GAP_MAX_DETAIL)
+        CLog::Log(LOGINFO, "PTGAP unarmed: J {:+.3f} ms at own {} ({})", jitter / 1000.0,
+                  GapPts(f.ownPts),
+                  f.inOverride || f.endsRegion ? "in loss" : (afterMark ? "after mark" : "free"));
+    }
+    if (!big)
+      m_gapUnarmedLatched = false;
+    m_gapPrevJ = jitter;
+    m_gapPrevJValid = true;
+  }
+
+  m_gapContent += frameTime;
+  if (m_gapContent >= DVD_SEC_TO_TIME(300))
+  {
+    m_gapContent = 0.0;
+    GapSummary("periodic");
+  }
+  return fire;
+}
+
+void CDVDAudioCodecPassthrough::GapSummary(const char* reason)
+{
+  if (!m_gapN.frames)
+    return;
+  const GapCounts& n = m_gapN;
+  CLog::Log(LOGINFO,
+            "PTGAP summary {} ({}): frames {} own {} agree {} mismatch {} (override {}) slotOnly {} "
+            "ownOnly {} | marks agree {} slotOnly {} listOnly {} | losses {} lostBytes {} "
+            "regionFrames {} infoChanges {} | armed fire {} small {} mark {} seed {} noClock {} | "
+            "unarmed fire {} (afterMark {}) inLoss {} | repeatLost {} (bytes {}) doubleEmit {} overflow {} "
+            "backOffset {}",
+            reason, m_codecName, n.frames, n.own, n.agree, n.mismatch, n.mismatchOverride,
+            n.slotOnly, n.ownOnly, n.markAgree, n.markSlotOnly, n.markListOnly, n.losses,
+            n.lostBytes, n.regionFrames, n.infoChanges, n.armedFire, n.armedSmall, n.armedMark,
+            n.armedSeed, n.armedNoClock, n.unarmedFire, n.unarmedFireAfterMark, n.unarmedFireInLoss,
+            n.repeatLostFrames, n.repeatLostValue, n.doubleEmit, n.overflow, n.backOffset);
 }

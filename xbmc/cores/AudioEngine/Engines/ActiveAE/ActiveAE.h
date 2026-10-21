@@ -371,6 +371,7 @@ protected:
   bool RunStages();
   bool HasWork();
   CSampleBuffer* SyncStream(CActiveAEStream *stream);
+  bool SplitRawPad(CActiveAEStream* stream, CSampleBuffer* buffer);
 
   void ResampleSounds();
   bool ResampleSound(CActiveAESound *sound);

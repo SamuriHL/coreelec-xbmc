@@ -206,6 +206,9 @@ protected:
   DVDAudioFrame m_padFrame;
   std::shared_ptr<CDVDMsgGeneralSynchronize> m_pendingSync;
   std::chrono::steady_clock::time_point m_pendingProgressAt;
+  // the sink's delay read once past the least limit of that pending span
+  std::chrono::steady_clock::time_point m_pendingDelayFor;
+  double m_pendingDelay = 0.0;
   bool m_pcmStepPositive{false};
 };
 

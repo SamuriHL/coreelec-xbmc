@@ -1662,6 +1662,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
       if (initSink && (*it)->m_processingBuffers)
       {
         (*it)->m_processingBuffers->Flush();
+        (*it)->m_padSplit = false;
         m_discardBufferPools.push_back((*it)->m_processingBuffers->GetResampleBuffers());
         m_discardBufferPools.push_back((*it)->m_processingBuffers->GetAtempoBuffers());
         (*it)->m_processingBuffers.reset();
@@ -1875,6 +1876,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   stream->m_paused = false;
   stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
   stream->m_syncError.Flush();
+  stream->m_padSplit = false;
   // A flush (seek, stream switch) is a deliberate re-anchor: the fresh landing
   // toward zero IS the intended alignment, so drop the anchor epoch's target.
   // The landing that follows starts the next epoch and captures the new one.
@@ -2165,15 +2167,37 @@ bool CActiveAE::HoldStream(CActiveAEStream* stream)
   if (m_vizBuffers)
     m_vizBuffers->Flush();
 
+  // A gap after the cut (a pad over 100 ms) was paid as pauses that are gone
+  // now, or not at all: the buffer after it owes all of it again. The split
+  // leaves every such buffer some pad, so a pad marks it.
+  const bool gaps = aml_presentation_validated();
+  const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+  const auto labelMs = [](const CSampleBuffer* samples)
+  {
+    return samples->ptsUs ? static_cast<double>(samples->ptsUs) / 1000.0
+                          : static_cast<double>(samples->timestamp);
+  };
+  double contentEndMs = fromMs;
   for (CSampleBuffer* samples : older)
   {
+    const double gapMs = labelMs(samples) - contentEndMs;
     samples->landNs = 0;
     samples->landEpoch = 0;
-    samples->padMs = 0;
+    samples->padMs = gaps && samples->labelled && samples->padMs > 0 && gapMs > 100 ? gapMs : 0;
     samples->sinkHold = false;
+    if (samples->labelled)
+      contentEndMs = labelMs(samples) + frameMs;
+  }
+  if (gaps && stream->m_padSplit && !stream->m_processingBuffers->m_outputSamples.empty())
+  {
+    CSampleBuffer* split = stream->m_processingBuffers->m_outputSamples.front();
+    const double gapMs = labelMs(split) - contentEndMs;
+    if (split->labelled && gapMs > split->padMs)
+      split->padMs = std::min(gapMs, stream->m_padSplitMs);
   }
   const size_t kept = older.size();
   stream->m_processingBuffers->Prepend(older);
+  stream->m_padSplit = false;
   // a start landed but not yet reached plays nothing now
   if (stream->m_schedEpoch)
     m_sink.AbandonStart(stream->m_schedEpoch);
@@ -3049,7 +3073,14 @@ bool CActiveAE::RunStages()
           if (!buffer)
           {
             buffer = (*it)->m_processingBuffers->m_outputSamples.front();
+            if (SplitRawPad(*it, buffer))
+            {
+              if (!(*it)->m_syncWaitSilence)
+                busy = true;
+              continue;
+            }
             (*it)->m_processingBuffers->m_outputSamples.pop_front();
+            (*it)->m_padSplit = false;
           }
           // A packet SyncStream skipped (no data, no pause burst) plays for no
           // time. Queued to the sink it would still count as a full frame of
@@ -3057,6 +3088,9 @@ bool CActiveAE::RunStages()
           // sync measurement for a whole queue depth.
           if (buffer->pkt->nb_samples == 0 && buffer->pkt->pause_burst_ms == 0)
           {
+            if (m_mode == MODE_RAW && buffer->padMs > 0 && aml_presentation_validated())
+              CLog::Log(LOGINFO, "ActiveAE - pad of {:.3f} ms dropped with a skipped frame",
+                        buffer->padMs);
             buffer->Return();
             busy = true; // run the next walk step now, as a queued buffer would
             continue;
@@ -3130,6 +3164,69 @@ int64_t CurrentMonotonicNs()
   return static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
 }
 } // namespace
+
+// A pad over 100 ms before a RAW buffer goes out as whole-ms pauses of up to a
+// frame, ahead of the buffer, so the sink's delay stays current while it plays;
+// the sink writes the last part, up to a frame, sample-exact. Returns true while
+// the buffer must wait.
+bool CActiveAE::SplitRawPad(CActiveAEStream* stream, CSampleBuffer* buffer)
+{
+  // a tag lands only before its start commits: after it, the sink ignores it
+  if (m_mode != MODE_RAW || !aml_presentation_validated() ||
+      (buffer->landNs && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_SCHEDULED))
+    return false;
+  if (!stream->m_padSplit && buffer->padMs <= 100)
+    return false;
+
+  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
+  {
+    CLog::Log(LOGINFO, "ActiveAE - pad of {:.3f} ms cleared: stream muted", buffer->padMs);
+    buffer->padMs = 0;
+    stream->m_padSplit = false;
+    return false;
+  }
+  // a frame SyncStream skipped: dropped with its pad
+  if (buffer->pkt->nb_samples == 0)
+    return false;
+
+  const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+  const int burstMs = static_cast<int>(frameMs);
+  if (burstMs < 1)
+    return false;
+  if (!stream->m_padSplit)
+  {
+    stream->m_padSplit = true;
+    stream->m_padSplitBursts = 0;
+    stream->m_padSplitSkips = 0;
+    stream->m_padSplitMs = buffer->padMs;
+  }
+  if (buffer->padMs <= frameMs)
+  {
+    CLog::Log(LOGINFO,
+              "ActiveAE - pad of {:.3f} ms split: {} pauses of {} ms, {:.3f} ms sample-exact{}",
+              stream->m_padSplitMs, stream->m_padSplitBursts, burstMs, buffer->padMs,
+              stream->m_padSplitSkips
+                  ? fmt::format(", {} frames skipped ({:.3f} ms)", stream->m_padSplitSkips,
+                                stream->m_padSplitSkips * frameMs)
+                  : std::string());
+    stream->m_padSplit = false;
+    return false;
+  }
+
+  CSampleBuffer* pause = m_silenceBuffers->GetFreeBuffer();
+  if (!pause)
+  {
+    stream->m_syncWaitSilence = true;
+    return true;
+  }
+  pause->pkt->nb_samples = 0;
+  pause->pkt->pause_burst_ms = burstMs;
+  buffer->padMs -= burstMs;
+  stream->m_padSplitBursts++;
+  m_stats.AddSamples(1, m_streams, burstMs, 0.0);
+  m_sinkBuffers->m_inputSamples.push_back(pause);
+  return true;
+}
 
 CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
 {
@@ -3234,6 +3331,52 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         const double frameMs =
             raw ? stream->m_format.m_streamInfo.GetDuration()
                 : (rate ? static_cast<double>(buf->pkt->nb_samples) * 1000.0 / rate : 0.0);
+        // A gap lands where its silence starts (at the start at the latest): a
+        // pause lands there and the split pays the rest of the pad after it.
+        // Behind a landing already queued, the split pays it all.
+        if (raw && buf->padMs > 100 && !buf->landNs && aml_presentation_validated())
+        {
+          if (stream->m_schedLandNs)
+            return ret;
+          const double gapStartMs = std::max(ptsMs - buf->padMs, stream->m_schedClockMs);
+          buf->padMs = ptsMs - gapStartMs;
+          const int burstMs = static_cast<int>(frameMs);
+          if (buf->padMs > 100 && burstMs >= 1)
+          {
+            double speed = stream->m_pClock->GetClockSpeed();
+            if (speed <= 0.0)
+              speed = 1.0;
+            const int64_t landNs =
+                stream->m_schedNs +
+                static_cast<int64_t>((gapStartMs - stream->m_schedClockMs) * 1e6 / speed);
+            if (landNs - CurrentMonotonicNs() > 450000000LL)
+            {
+              stream->m_syncWaitSilence = true;
+              return ret;
+            }
+            ret = m_silenceBuffers->GetFreeBuffer();
+            if (!ret)
+            {
+              stream->m_syncWaitSilence = true;
+              return ret;
+            }
+            ret->pkt->nb_samples = 0;
+            ret->pkt->pause_burst_ms = burstMs;
+            ret->landNs = landNs;
+            ret->landEpoch = stream->m_schedEpoch;
+            stream->m_schedLandNs = landNs;
+            stream->m_padSplit = true;
+            stream->m_padSplitBursts = 1;
+            stream->m_padSplitSkips = 0;
+            stream->m_padSplitMs = buf->padMs;
+            buf->padMs -= burstMs;
+            CLog::Log(LOGINFO, "ActiveAE - scheduled start {}: gap of {:.3f} ms lands at {:.3f} ms",
+                      stream->m_schedEpoch, stream->m_padSplitMs, gapStartMs);
+            return ret;
+          }
+          // what is left of the gap the landing pads
+          buf->padMs = 0;
+        }
         if (ptsMs + frameMs <= stream->m_schedClockMs + 0.001)
         {
           // ends before the first picture: there is nothing to hear it with
@@ -3574,7 +3717,26 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         {
           stream->m_syncError.Correction(frameError);
           error += frameError;
-          buf->pkt->nb_samples = 0;
+          // a pad still owed before the frame goes first
+          const double frameMs = stream->m_format.m_streamInfo.GetDuration();
+          if (frameMs > 0.0 && buf->padMs >= frameMs &&
+              !(buf->landNs &&
+                stream->m_syncState == CAESyncInfo::AESyncState::SYNC_SCHEDULED) &&
+              aml_presentation_validated())
+          {
+            if (!stream->m_padSplit && buf->padMs > 100)
+            {
+              stream->m_padSplit = true;
+              stream->m_padSplitBursts = 0;
+              stream->m_padSplitSkips = 0;
+              stream->m_padSplitMs = buf->padMs;
+            }
+            if (stream->m_padSplit)
+              stream->m_padSplitSkips++;
+            buf->padMs -= frameMs;
+          }
+          else
+            buf->pkt->nb_samples = 0;
           stream->m_syncError.SetErrorInterval();
         }
       }

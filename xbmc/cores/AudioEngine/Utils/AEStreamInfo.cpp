@@ -108,6 +108,7 @@ void CAEStreamParser::Reset()
   m_bufferSize = 0;
   m_needBytes = 0;
   m_hasSync = false;
+  m_fedBytes = 0;
 }
 
 int CAEStreamParser::AddData(uint8_t* data,
@@ -130,6 +131,7 @@ int CAEStreamParser::AddData(uint8_t* data,
 
     memcpy(m_buffer + m_bufferSize, data, copy);
     m_bufferSize += copy;
+    m_fedBytes += copy;
     m_skipBytes -= copy;
 
     if (m_skipBytes)
@@ -159,6 +161,7 @@ int CAEStreamParser::AddData(uint8_t* data,
       unsigned int copy = std::min(room, size);
       memcpy(m_buffer + m_bufferSize, data, copy);
       m_bufferSize += copy;
+      m_fedBytes += copy;
       consumed += copy;
       data += copy;
       size -= copy;
@@ -248,6 +251,47 @@ unsigned int PopCount(uint32_t x)
   for (; x; x >>= 1)
     c += x & 1;
   return c;
+}
+
+// An AC-3 frame, or an E-AC-3 frame and its dependents, each passing the
+// whole-frame CRC (A/52: the bytes after the sync word check to zero).
+bool AC3FramesCRCValid(const uint8_t* data, unsigned int size)
+{
+  const AVCRC* crcTable = av_crc_get_table(AV_CRC_16_ANSI);
+  unsigned int offset = 0;
+  while (offset + 8 <= size)
+  {
+    const uint8_t* frame = data + offset;
+    if (frame[0] != 0x0B || frame[1] != 0x77)
+      return false;
+
+    const uint8_t bsid = frame[5] >> 3;
+    unsigned int frameBytes = 0;
+    if (bsid <= 10)
+    {
+      const uint8_t fscod = frame[4] >> 6;
+      const uint8_t frmsizecod = frame[4] & 0x3F;
+      if (fscod == 3 || frmsizecod > 37)
+        return false;
+      const unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
+      if (fscod == 0)
+        frameBytes = bitRate * 4;
+      else if (fscod == 1)
+        frameBytes = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0)) * 2;
+      else
+        frameBytes = bitRate * 8;
+    }
+    else if (bsid <= 0x11)
+      frameBytes = ((((frame[2] & 0x7) << 8) | frame[3]) + 1) * 2;
+    else
+      return false;
+
+    if (frameBytes < 8 || offset + frameBytes > size ||
+        av_crc(crcTable, 0, frame + 2, frameBytes - 2))
+      return false;
+    offset += frameBytes;
+  }
+  return offset == size;
 }
 
 // Dolby dialnorm (AC-3, E-AC-3, TrueHD): code 1..31 (1..63 for TrueHD 2ch) is the
@@ -665,6 +709,16 @@ void CAEStreamParser::ProcessTrueHDDialNorm(uint8_t* data, unsigned int majorSyn
 
 void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
 {
+  // the frame starts at m_buffer[0]
+  m_lastFrameOffset = m_fedBytes - m_bufferSize;
+  m_lastFrameBytes = m_fsize;
+  m_framesOut++;
+  // before the dialnorm defeat, which re-derives the CRCs
+  m_lastFrameCRCValid =
+      !m_checkAC3CRC || (m_info.m_type != CAEStreamInfo::STREAM_TYPE_AC3 &&
+                         m_info.m_type != CAEStreamInfo::STREAM_TYPE_EAC3) ||
+      AC3FramesCRCValid(m_buffer, m_fsize);
+
   // if the caller wants the packet
   if (buffer)
   {

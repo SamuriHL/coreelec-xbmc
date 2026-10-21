@@ -21,6 +21,8 @@
 #include "settings/lib/ISettingCallback.h"
 
 #include <atomic>
+#include <climits>
+#include <cstdint>
 
 #include <deque>
 #include <list>
@@ -68,7 +70,12 @@ public:
 
 private:
   int GetData(uint8_t** dst);
+  void GetFrame(DVDAudioFrame& frame);
   void UpdateDialNormSettings();
+  void GapPacket(double pts, bool mark);
+  void GapFrameParsed();
+  bool GapFrameOut(double demuxerPts, bool slotMark, double frameTime);
+  void GapSummary(const char* reason);
   unsigned int PackTrueHD();
   CDVDStreamInfo m_hints;
   CAEStreamParser m_parser;
@@ -159,7 +166,80 @@ private:
   bool m_currentMark{false}; // m_currentPts / m_nextPts open the corrected timeline
   bool m_nextMark{false};
   unsigned int m_boundaryDrops{0}; // overlapped incoming frames still to drop
+  bool m_boundaryDropMark{false}; // a mark frame was among them
+  bool m_frameDropped{false};
   double m_lastJitter{0.0};
   // pts less the label of the content emitted (TIMEKEEPER pins by label)
   double m_labelLag{0.0};
+
+  //============================================================================
+  // PTGAP (docs/passthrough_gap_design.md): each frame's own pts by byte
+  // offset against today's label, and byte losses. After a loss the own pts
+  // stand in for the slots until the two agree again, and the first frame with
+  // its own pts re-anchors the clock (the armed rule).
+  //============================================================================
+  struct GapPacketEntry
+  {
+    uint64_t offset;
+    double pts;
+    bool mark;
+    bool used;
+  };
+  std::deque<GapPacketEntry> m_gapPackets;
+  static constexpr size_t GAP_MAX_PACKETS = 256;
+  static constexpr unsigned int GAP_MAX_DETAIL = 16;
+  // the frame parsed and not yet handed out
+  struct GapFrame
+  {
+    bool valid{false};
+    uint64_t offset{0};
+    double ownPts{LOCAL_NOPTS};
+    bool listMark{false};
+    bool endsRegion{false};
+    bool inOverride{false};
+    bool bogus{false}; // made of lost bytes (failed CRC or another format): dropped
+    uint64_t regionLost{0};
+    unsigned int regionFrames{0};
+    unsigned int regionInfoChanges{0};
+    uint64_t regionOffset{0};
+  } m_gapFrame;
+  bool m_gapHavePrev{false};
+  uint64_t m_gapPrevEnd{0};
+  uint64_t m_gapPrevLost{0};
+  uint64_t m_gapPadding{0}; // the loss repeated frame to frame
+  double m_gapCrcFailMs{0.0}; // CRC-failing frames with own pts in this loss
+  bool m_gapCrcOff{false}; // the CRC check is off until Reset()
+  bool m_gapCarryMark{false};
+  bool m_gapArmed{false};
+  bool m_gapOverride{false};
+  uint64_t m_gapRegionLost{0};
+  uint64_t m_gapRegionOffset{0};
+  unsigned int m_gapRegionFrames{0};
+  unsigned int m_gapRegionInfoChanges{0};
+  CAEStreamInfo::DataType m_gapInfoType{CAEStreamInfo::STREAM_TYPE_NULL};
+  unsigned int m_gapInfoRate{0};
+  unsigned int m_gapInfoChannels{0};
+  double m_gapPrevJ{0.0};
+  bool m_gapPrevJValid{false};
+  bool m_gapUnarmedLatched{false};
+  unsigned int m_gapSinceMark{UINT_MAX};
+  double m_gapContent{0.0};
+  bool m_gapAnnounced{false};
+  bool GapActive() const
+  {
+    return m_boundaryEnabled && m_lavStyleSyncEnabled && m_hints.codec != AV_CODEC_ID_TRUEHD;
+  }
+  struct GapCounts
+  {
+    uint64_t frames, own, slotOnly, ownOnly, agree, mismatch, mismatchOverride;
+    uint64_t markAgree, markSlotOnly, markListOnly;
+    uint64_t losses, lostBytes, regionFrames, infoChanges;
+    uint64_t armedFire, armedSmall, armedMark, armedSeed, armedNoClock;
+    uint64_t unarmedFire, unarmedFireAfterMark, unarmedFireInLoss;
+    uint64_t repeatLostFrames, repeatLostValue, doubleEmit, overflow, backOffset;
+  } m_gapN{};
+  struct GapDetail
+  {
+    unsigned int loss, mismatch, mark, unarmed, doubleEmit, overflow, info;
+  } m_gapD{};
 };

@@ -86,6 +86,15 @@ public:
   enum CAEStreamInfo::DataType GetDataType() const { return m_info.m_type; }
   bool IsLittleEndian() const { return m_info.m_dataIsLE; }
   unsigned int GetBufferSize() const { return m_bufferSize; }
+  //! stream position since Reset(): bytes taken in, and where the last frame
+  //! handed out started and how long it was in the stream
+  uint64_t GetFedBytes() const { return m_fedBytes; }
+  uint64_t GetLastFrameOffset() const { return m_lastFrameOffset; }
+  unsigned int GetLastFrameBytes() const { return m_lastFrameBytes; }
+  uint64_t GetFramesOut() const { return m_framesOut; }
+  //! check each AC-3/E-AC-3 frame handed out against its CRC
+  void SetCheckAC3CRC(bool value) { m_checkAC3CRC = value; }
+  bool LastFrameCRCValid() const { return m_lastFrameCRCValid; }
   CAEStreamInfo& GetStreamInfo() { return m_info; }
   void Reset();
 
@@ -95,6 +104,12 @@ private:
   uint8_t m_buffer[MAX_IEC61937_PACKET];
   unsigned int m_bufferSize = 0;
   unsigned int m_skipBytes = 0;
+  uint64_t m_fedBytes = 0;
+  uint64_t m_lastFrameOffset = 0;
+  unsigned int m_lastFrameBytes = 0;
+  uint64_t m_framesOut = 0;
+  bool m_checkAC3CRC = false;
+  bool m_lastFrameCRCValid = true;
 
   typedef unsigned int (CAEStreamParser::*ParseFunc)(uint8_t *data, unsigned int size);
 

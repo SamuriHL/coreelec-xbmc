@@ -11,6 +11,7 @@
 #include "ActiveAE.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "utils/AMLUtils.h"
 #include "utils/log.h"
 
 #include <unistd.h>
@@ -64,6 +65,10 @@ CActiveAEStream::CActiveAEStream(AEAudioFormat* format, unsigned int streamid, C
   m_muteLastPhase = 0.0;
   m_mutePauseCarry = 0.0;
   m_syncWaitSilence = false;
+  m_padSplit = false;
+  m_padSplitBursts = 0;
+  m_padSplitSkips = 0;
+  m_padSplitMs = 0.0;
 }
 
 void CActiveAEStream::IncFreeBuffers()
@@ -758,10 +763,14 @@ float CActiveAEStreamBuffers::GetDelay()
   const bool isRaw = m_inputFormat.m_dataFormat == AE_FMT_RAW;
   const float rawPacketTime =
       isRaw ? static_cast<float>(m_inputFormat.m_streamInfo.GetDuration()) / 1000.0f : 0.0f;
+  // a RAW buffer's pad plays before it (the engine pays it out as pauses)
+  const bool rawPad = isRaw && aml_presentation_validated();
 
   for (auto &buf : m_inputSamples)
   {
     delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    if (rawPad)
+      delay += static_cast<float>(buf->padMs / 1000.0);
   }
 
   delay += m_resampleBuffers->GetDelay();
@@ -770,6 +779,8 @@ float CActiveAEStreamBuffers::GetDelay()
   for (auto &buf : m_outputSamples)
   {
     delay += isRaw ? rawPacketTime : (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
+    if (rawPad)
+      delay += static_cast<float>(buf->padMs / 1000.0);
   }
 
   return delay;

@@ -590,6 +590,9 @@ void CVideoPlayerAudio::Process()
             if (!HeldForDisplay())
               m_audioSink.Resume();
             m_stalled = false;
+            // nothing could be taken while paused: a gap's pad kept the wait long
+            if (m_worker && m_boundaryEnabled && m_speed == DVD_PLAYSPEED_PAUSE)
+              m_pendingProgressAt = std::chrono::steady_clock::now();
 
             // Resuming re-runs the ENTIRE AE start-sync: CActiveAE's
             // RESUMESTREAM sets the stream back to SYNC_START, and if the pause
@@ -806,10 +809,25 @@ MsgQueueReturnCode CVideoPlayerAudio::WorkerGet(std::shared_ptr<CDVDMsg>& pMsg,
     // today's write gives up after the sink's delay + the frame + 2 s: log it
     // the same way (not while paused), keep the frame, and start the count again
     const auto now = steady_clock::now();
-    // the sink's delay only past the least limit: it is a call into the engine
+    // the sink's delay only past the least limit: it is a call into the engine.
+    // A gap's pad drains the delay while nothing can be added: the write's
+    // limit is the delay when it started, so keep the first reading.
+    double delay = 0.0;
+    if (now - m_pendingProgressAt > 2100ms)
+    {
+      delay = m_audioSink.GetDelay();
+      if (m_boundaryEnabled)
+      {
+        if (m_pendingDelayFor != m_pendingProgressAt)
+        {
+          m_pendingDelayFor = m_pendingProgressAt;
+          m_pendingDelay = delay;
+        }
+        delay = std::max(delay, m_pendingDelay);
+      }
+    }
     if (now - m_pendingProgressAt > 2100ms &&
-        now - m_pendingProgressAt >
-            duration<double>(m_audioSink.GetDelay() / DVD_TIME_BASE + 2.0 + 0.1))
+        now - m_pendingProgressAt > duration<double>(delay / DVD_TIME_BASE + 2.0 + 0.1))
     {
       if (m_speed != DVD_PLAYSPEED_PAUSE)
         CLog::Log(LOGERROR, "CDVDAudio::AddPacketsRenderer - timeout adding data to renderer");
