@@ -1510,6 +1510,11 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
     DISPLAYSTATE::CountMode(shadow, "fps@vpv-configure", config_framerate,
                             shadow.state ? shadow.state->fps : 0.0f,
                             DISPLAYSTATE::FracHeld(shadow, static_cast<float>(config_framerate)));
+    // 5.B2-3: the committed mode's
+    DISPLAYSTATE::ModeTiming committed;
+    if (DISPLAYSTATE::CommitTimingOn() &&
+        DISPLAYSTATE::CommittedTiming(committed, "fps@vpv-configure"))
+      config_framerate = committed.fps;
   }
   if (m_processInfo.GetVideoInterlaced())
   {

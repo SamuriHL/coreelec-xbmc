@@ -296,6 +296,11 @@ float CVideoSyncAML::GetFps()
     DISPLAYSTATE::CountMode(shadow, "fps@vsa-getfps", m_fps,
                             shadow.state ? shadow.state->fps : 0.0f,
                             DISPLAYSTATE::FracHeld(shadow, m_fps));
+    // 5.B2-3: the committed mode's
+    DISPLAYSTATE::ModeTiming committed;
+    if (DISPLAYSTATE::CommitTimingOn() &&
+        DISPLAYSTATE::CommittedTiming(committed, "fps@vsa-getfps"))
+      m_fps = m_reportedFps = committed.fps;
   }
 
   // Hand the clock the measured panel rate when it materially disagrees with

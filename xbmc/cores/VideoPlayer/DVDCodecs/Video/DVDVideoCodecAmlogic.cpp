@@ -1271,8 +1271,8 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const auto winSystem = CServiceBroker::GetWinSystem();
   CGraphicContext& gfx = winSystem->GetGfxContext();
 
-  const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
-                         m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
+  const bool hdrDisplay = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
+  bool isHDRUsed = hdrDisplay && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
   float refresh = gfx.GetFPS();
   const bool windowed = gfx.GetVideoResolution() == RES_WINDOW;
   if (windowed)
@@ -1280,14 +1280,18 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
 
   const int height = gfx.GetResInfo().iScreenHeight;
   const auto advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-  const double latencyTweak =
+  double latencyTweak =
       static_cast<double>(advancedSettings->GetLatencyTweak(refresh, isHDRUsed, height));
   const double videoDelay =
       static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
 
   const float fps = gfx.GetFPS();
-  const double display =
+  double display =
       fps > 0.0f ? AML_VD1_PRESENT_VBLANKS * 1000.0 / static_cast<double>(fps) : 0.0;
+  // 5.B2-3: the committed mode's, after the shadow below compared today's
+  DISPLAYSTATE::ModeTiming committed;
+  const bool fromCommit = DISPLAYSTATE::CommitTimingOn() &&
+                          DISPLAYSTATE::CommittedTiming(committed, "mode@dvca-latency");
   if (aml_displaystate_on())
   {
     const auto shadow = DISPLAYSTATE::BeginModeShadow();
@@ -1303,6 +1307,17 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
     DISPLAYSTATE::CountMode(shadow, "windowed@dvca-latency", windowed, state && state->windowed);
     DISPLAYSTATE::CountMode(shadow, "latency@dvca-latency", latencyTweak + display, stateLatency,
                             fracHeld);
+  }
+  if (fromCommit)
+  {
+    if (!committed.todaysTweak)
+    {
+      isHDRUsed =
+          DISPLAYSTATE::HdrDisplay(hdrDisplay) && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
+      latencyTweak = static_cast<double>(advancedSettings->GetLatencyTweak(
+          committed.windowed ? 0.0f : committed.fps, isHDRUsed, committed.screenHeight));
+    }
+    display = AML_VD1_PRESENT_VBLANKS * 1000.0 / static_cast<double>(committed.fps);
   }
   return DVD_MSEC_TO_TIME(latencyTweak + display - videoDelay -
                           static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
@@ -1332,7 +1347,10 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
       const double nowUs = static_cast<double>(now.tv_sec) * 1e6 + now.tv_nsec / 1e3;
       target += std::max(0.0, nowUs + RenderDisplayLatency() - startNs / 1e3);
     }
-    const float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+    float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+    DISPLAYSTATE::ModeTiming committed;
+    if (DISPLAYSTATE::CommitTimingOn() && DISPLAYSTATE::CommittedTiming(committed, "fps@dvca-meta"))
+      fps = committed.fps;
     if (fps > 0.0f)
       target += DVD_TIME_BASE / 2.0 / static_cast<double>(fps);
   }

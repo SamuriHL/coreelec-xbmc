@@ -756,20 +756,30 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   {
     auto committed = std::make_shared<bool>(false);
     CAMLDisplay* display = m_amlDisplay.get();
+    // 5.B2-3: the commit is counted and bumps the timing inputs before the unpark; the boot set
+    // stays today's (before W, and before display state's init)
+    const bool commitTiming = m_outputWorkerStarted && DISPLAYSTATE::CommitTimingOn();
     OUTPUT::COutputWorker::Get().Run(
         m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
         [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
          force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, frac = fracReclock,
-         windowed = !fullScreen]
+         windowed = !fullScreen, commitTiming]
         {
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           OUTPUT::TestStopAt("4");
           if (*committed)
+          {
             DISPLAYSTATE::PublishMode(*display, res, windowed);
+            if (commitTiming)
+            {
+              DISPLAYSTATE::NoteCommit();
+              aml_timing_inputs_bump();
+            }
+          }
           OUTPUT::TestStopAt("6");
         });
     ret = *committed;
-    if (ret)
+    if (ret && !commitTiming)
       DISPLAYSTATE::NoteCommit();
   }
   if (ret)

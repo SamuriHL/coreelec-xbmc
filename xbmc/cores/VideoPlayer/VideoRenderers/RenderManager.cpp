@@ -218,6 +218,9 @@ CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
   m_playerPort(player)
 {
   m_render_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
+#if defined(HAS_LIBAMCODEC)
+  m_commitTiming = DISPLAYSTATE::CommitTimingOn();
+#endif
 }
 
 CRenderManager::~CRenderManager()
@@ -1322,26 +1325,36 @@ void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
   const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   const RESOLUTION_INFO res = target != RES_INVALID ? gfx.GetResInfo(target) : gfx.GetResInfo();
   float fps = target != RES_INVALID ? res.fRefreshRate : gfx.GetFPS();
-  const bool isHDREnabled = CServiceBroker::GetWinSystem()->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
-  const bool isHDRUsed = isHDREnabled && (m_picture.hdrType != StreamHdrType::HDR_TYPE_NONE);
+  bool isHDREnabled = CServiceBroker::GetWinSystem()->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
 
   float refresh = fps;
   if ((target != RES_INVALID ? target : gfx.GetVideoResolution()) == RES_WINDOW)
     refresh = 0; // No idea about refresh rate when windowed, just get the default latency
+  int height = res.iScreenHeight;
 #if defined(HAS_LIBAMCODEC)
   if (target == RES_INVALID && aml_displaystate_on())
     DISPLAYSTATE::ShadowMainWindowed("windowed@latency-tweak", res,
                                      gfx.GetVideoResolution() == RES_WINDOW);
+  // 5.B2-3: the committed mode's tweak; the pre-set latch keeps its target
+  DISPLAYSTATE::ModeTiming committed;
+  if (target == RES_INVALID && m_commitTiming &&
+      DISPLAYSTATE::CommittedTiming(committed, "mode@latency-tweak") && !committed.todaysTweak)
+  {
+    refresh = committed.windowed ? 0.0f : committed.fps;
+    height = committed.screenHeight;
+    isHDREnabled = DISPLAYSTATE::HdrDisplay(isHDREnabled);
+  }
 #endif
+  const bool isHDRUsed = isHDREnabled && (m_picture.hdrType != StreamHdrType::HDR_TYPE_NONE);
   m_latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
-          refresh, isHDRUsed, res.iScreenHeight));
+          refresh, isHDRUsed, height));
 
   m_latencyTweakMs = m_latencyTweak;
   TimingInputsWritten();
 
   CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}, HDR used: {}",
-    m_latencyTweak, refresh, res.iScreenHeight, isHDRUsed);
+    m_latencyTweak, refresh, height, isHDRUsed);
   PublishDisplayTiming();
 }
 
@@ -1356,11 +1369,16 @@ void CRenderManager::PublishDisplayTiming()
 #if defined(HAS_LIBAMCODEC)
   if (aml_displaystate_on())
   {
-    // the counter before any input: a write after it bumps it again
+    // the counters before any input: a write after them bumps them again
+    const uint64_t commitCount = DISPLAYSTATE::CommitCount();
     const uint64_t inputsGen = aml_timing_inputs_gen();
     const unsigned int epoch = aml_presenter_epoch();
     const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
-    const float fps = gfx.GetFPS();
+    const float gcFps = gfx.GetFPS();
+    DISPLAYSTATE::ModeTiming committed;
+    const float fps = m_commitTiming && DISPLAYSTATE::CommittedTiming(committed, "fps@publish")
+                          ? committed.fps
+                          : gcFps;
     const int vblanks = m_presentVblanks;
     const double display = vblanks >= 0 && fps > 0.0f
                                ? vblanks * 1000.0 / static_cast<double>(fps)
@@ -1368,9 +1386,9 @@ void CRenderManager::PublishDisplayTiming()
     const double latencyMs = (m_tweakToAudio ? 0.0 : m_latencyTweak) + display;
     m_timingFps = fps;
     m_timingLatencyMs = latencyMs;
-    WriteTimingSnapshot(fps, latencyMs, inputsGen);
+    WriteTimingSnapshot(fps, latencyMs, inputsGen, commitCount);
     m_timingEpoch = epoch;
-    DISPLAYSTATE::ShadowMainMode("fps@publish", "height@publish", gfx.GetResInfo(), fps);
+    DISPLAYSTATE::ShadowMainMode("fps@publish", "height@publish", gfx.GetResInfo(), gcFps);
     return;
   }
 #endif
@@ -1389,7 +1407,10 @@ void CRenderManager::PublishDisplayTiming()
   m_timingEpoch = epoch;
 }
 
-void CRenderManager::WriteTimingSnapshot(float fps, double latencyMs, uint64_t inputsGen)
+void CRenderManager::WriteTimingSnapshot(float fps,
+                                         double latencyMs,
+                                         uint64_t inputsGen,
+                                         uint64_t commitCount)
 {
   std::unique_lock lock(m_timingSnapshot.writeLock);
   auto& s = m_timingSnapshot;
@@ -1398,19 +1419,40 @@ void CRenderManager::WriteTimingSnapshot(float fps, double latencyMs, uint64_t i
   s.fps.store(fps, std::memory_order_relaxed);
   s.latencyMs.store(latencyMs, std::memory_order_relaxed);
   s.inputsGen.store(inputsGen, std::memory_order_relaxed);
+  s.commitCount.store(commitCount, std::memory_order_relaxed);
   s.seq.store(++s.writerSeq, std::memory_order_release);
 }
 
-bool CRenderManager::ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen) const
+bool CRenderManager::ReadTimingSnapshot(STickTiming& timing,
+                                        uint64_t& inputsGen,
+                                        uint64_t& commitCount) const
 {
   const auto& s = m_timingSnapshot;
   const uint32_t seq0 = s.seq.load(std::memory_order_acquire);
   timing.fps = s.fps.load(std::memory_order_relaxed);
   timing.latencyMs = s.latencyMs.load(std::memory_order_relaxed);
   inputsGen = s.inputsGen.load(std::memory_order_relaxed);
+  commitCount = s.commitCount.load(std::memory_order_relaxed);
   std::atomic_thread_fence(std::memory_order_acquire);
   return !(seq0 & 1) && seq0 == s.seq.load(std::memory_order_relaxed);
 }
+
+#if defined(HAS_LIBAMCODEC)
+bool CRenderManager::ComposeCommitTiming(STickTiming& timing, uint64_t& inputsGen) const
+{
+  // as PublishDisplayTiming: the counter first, the latched tweak, the committed fps
+  inputsGen = aml_timing_inputs_gen();
+  DISPLAYSTATE::ModeTiming committed;
+  const int vblanks = m_presentVblanks;
+  // with the tweak on the video (realtime input) the latched one is the old mode's until main's
+  // after-set latch: wait for main, as off does
+  if (!m_tweakToAudio || vblanks < 0 || !DISPLAYSTATE::CommittedTiming(committed))
+    return false;
+  timing.fps = committed.fps;
+  timing.latencyMs = vblanks * 1000.0 / static_cast<double>(committed.fps);
+  return true;
+}
+#endif
 
 bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& decisions) const
 {
@@ -2657,11 +2699,54 @@ void CRenderManager::LogRefusedTicks(const SRefusedTicks& refused, int64_t endNs
 void CRenderManager::LogAheadTicks(const SAheadTicks& ahead, int64_t endNs, const char* end)
 {
   CLog::Log(LOGINFO,
-            "TIMING ahead-of-main {} ticks / {:.1f} ms for epoch {} (hold {} tid {}) at {:.6f} Hz "
-            "{:.6f} ms, inputs {}: {}",
-            ahead.ticks, static_cast<double>(endNs - ahead.sinceNs) / 1e6, ahead.epoch,
+            "TIMING {} {} ticks / {:.1f} ms for epoch {} (hold {} tid {}) at {:.6f} Hz "
+            "{:.6f} ms, inputs {}{}: {}",
+            ahead.commits ? "after-commit" : "ahead-of-main", ahead.ticks,
+            static_cast<double>(endNs - ahead.sinceNs) / 1e6, ahead.epoch,
             ahead.holdSite ? ahead.holdSite : "none", ahead.holdTid, ahead.timing.fps,
-            ahead.timing.latencyMs, ahead.inputsGen, end);
+            ahead.timing.latencyMs, ahead.inputsGen,
+            ahead.commits ? StringUtils::Format(" commit {}", ahead.commits) : "", end);
+}
+
+#if defined(HAS_LIBAMCODEC)
+void CRenderManager::CheckCommittedFps(const SPresentTick& tick,
+                                       const STickTiming* timing,
+                                       SFpsMismatch& ended,
+                                       SFpsMismatch& begun)
+{
+  DISPLAYSTATE::ModeTiming committed;
+  const bool known = DISPLAYSTATE::CommittedTiming(committed);
+  const float presented = TimingFps(timing);
+  const bool mismatch = known && presented != committed.fps;
+  if (m_fpsMismatch.ticks &&
+      (!mismatch || m_fpsMismatch.epoch != tick.epoch || m_fpsMismatch.presented != presented ||
+       m_fpsMismatch.committed != committed.fps))
+  {
+    ended = m_fpsMismatch;
+    m_fpsMismatch.ticks = 0;
+  }
+  if (!mismatch)
+    return;
+  if (!m_fpsMismatch.ticks)
+  {
+    m_fpsMismatch = {tick.epoch, 0, SteadyNs(), presented, committed.fps};
+    begun = m_fpsMismatch;
+    begun.ticks = 1;
+  }
+  m_fpsMismatch.ticks++;
+}
+#endif
+
+void CRenderManager::LogFpsMismatch(const SFpsMismatch& run, int64_t endNs, bool ended)
+{
+  if (!ended)
+    CLog::Log(LOGERROR, "TIMING presented fps {:.6f} committed {:.6f}: begins in epoch {}",
+              run.presented, run.committed, run.epoch);
+  else
+    CLog::Log(LOGERROR,
+              "TIMING presented fps {:.6f} committed {:.6f}: {} ticks / {:.1f} ms for epoch {}",
+              run.presented, run.committed, run.ticks,
+              static_cast<double>(endNs - run.sinceNs) / 1e6, run.epoch);
 }
 
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
@@ -2701,13 +2786,20 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     SAheadTicks aheadEnded;
     const char* aheadEnd = nullptr;
     STickTiming aheadPublished{}; //!< set on a DIFF
+    SFpsMismatch fpsEnded;
+    SFpsMismatch fpsBegun;
     ~RefusedLog()
     {
       if (aheadEnded.ticks)
         LogAheadTicks(aheadEnded, endNs, aheadEnd);
       if (aheadPublished.fps)
-        CLog::Log(LOGERROR, "TIMING ahead-of-main DIFF: published {:.6f} Hz {:.6f} ms",
-                  aheadPublished.fps, aheadPublished.latencyMs);
+        CLog::Log(LOGERROR, "TIMING {} DIFF: published {:.6f} Hz {:.6f} ms",
+                  aheadEnded.commits ? "after-commit" : "ahead-of-main", aheadPublished.fps,
+                  aheadPublished.latencyMs);
+      if (fpsEnded.ticks)
+        LogFpsMismatch(fpsEnded, SteadyNs(), true);
+      if (fpsBegun.ticks)
+        LogFpsMismatch(fpsBegun, fpsBegun.sinceNs, false);
       if (ended.ticks)
         LogRefusedTicks(ended, endNs, published);
     }
@@ -2739,10 +2831,23 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     // no input of main's last publish written since (a hold outside a mode set): its timing is
     // this epoch's. A write since waits for main.
     uint64_t inputsGen = 0;
-    if (aml_displaystate_on() && ReadTimingSnapshot(aheadTiming, inputsGen) &&
-        inputsGen == aml_timing_inputs_gen())
+    uint64_t commits = 0;
+    const bool snapshot =
+        aml_displaystate_on() && ReadTimingSnapshot(aheadTiming, inputsGen, commits);
+    // 5.B2-3: a W commit main has not published: the committed mode's timing (I5)
+    const uint64_t commitCount = m_commitTiming ? DISPLAYSTATE::CommitCount() : 0;
+    uint64_t commitGen = 0;
+    if (snapshot && commitCount > commits && ComposeCommitTiming(aheadTiming, commitGen))
     {
-      if (m_ahead.ticks && (m_ahead.epoch != tick.epoch || m_ahead.inputsGen != inputsGen))
+      inputsGen = commitGen;
+      commits = commitCount;
+    }
+    else
+      commits = 0;
+    if (snapshot && (commits || inputsGen == aml_timing_inputs_gen()))
+    {
+      if (m_ahead.ticks && (m_ahead.epoch != tick.epoch || m_ahead.inputsGen != inputsGen ||
+                            m_ahead.commits != commits))
       {
         refusedLog.aheadEnded = m_ahead;
         refusedLog.aheadEnd = "superseded";
@@ -2750,7 +2855,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       }
       if (!m_ahead.ticks)
         m_ahead = {tick.epoch, 0, refusedLog.endNs, tick.holdSite, tick.holdTid, aheadTiming,
-                   inputsGen};
+                   inputsGen, commits};
       m_ahead.ticks++;
       timing = &aheadTiming;
     }
@@ -2773,16 +2878,20 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     // main's publish for this epoch: with no write in between, the values the ticks used
     STickTiming published;
     uint64_t inputsGen = 0;
+    uint64_t commits = 0;
     refusedLog.endNs = SteadyNs();
     refusedLog.aheadEnded = m_ahead;
-    if (!ReadTimingSnapshot(published, inputsGen) || inputsGen != m_ahead.inputsGen)
+    const bool read = ReadTimingSnapshot(published, inputsGen, commits);
+    const bool write = inputsGen != m_ahead.inputsGen;
+    // after-commit ticks: main's after-set latch writes before its publish; compare anyway
+    if (!read || (m_ahead.commits ? commits != m_ahead.commits : write))
       refusedLog.aheadEnd = "published after a write";
     else if (published.fps == m_ahead.timing.fps &&
              published.latencyMs == m_ahead.timing.latencyMs)
-      refusedLog.aheadEnd = "published, same";
+      refusedLog.aheadEnd = write ? "published after a write, same" : "published, same";
     else
     {
-      refusedLog.aheadEnd = "published, DIFF";
+      refusedLog.aheadEnd = write ? "published after a write, DIFF" : "published, DIFF";
       refusedLog.aheadPublished = published;
     }
     m_ahead.ticks = 0;
@@ -2796,6 +2905,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     refusedLog.published = !timing && m_refused.epoch == tick.epoch;
     m_refused.ticks = 0;
   }
+
+#if defined(HAS_LIBAMCODEC)
+  if (m_commitTiming)
+    CheckCommittedFps(tick, timing, refusedLog.fpsEnded, refusedLog.fpsBegun);
+#endif
 
   CheckEnableClockSync(timing);
 

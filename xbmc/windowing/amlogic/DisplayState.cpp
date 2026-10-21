@@ -9,6 +9,7 @@
 #include "DisplayState.h"
 
 #include "AMLDisplay.h"
+#include "OutputWorker.h"
 #include "settings/DisplaySettings.h"
 #include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
@@ -33,6 +34,13 @@ uint64_t s_capsEpoch = 0;
 
 std::atomic<uint64_t> s_modePublishes{0};
 std::atomic<uint64_t> s_commits{0};
+// ModeTiming packed (5.B2-3): fps bits 0-31, height 32-47, windowed 48, frac-held 49, a mode 61,
+// connected 62, published 63
+std::atomic<uint64_t> s_timing{0};
+constexpr uint64_t TIMING_FRAC_HELD = 1ull << 49;
+constexpr uint64_t TIMING_MODE = 1ull << 61;
+constexpr uint64_t TIMING_CONNECTED = 1ull << 62;
+constexpr uint64_t TIMING_PUBLISHED = 1ull << 63;
 // caps writes begun, and the last one a caps publish read after: pending while they differ
 std::atomic<uint64_t> s_capsGen{0};
 std::atomic<uint64_t> s_capsDoneGen{0};
@@ -225,8 +233,17 @@ void Store(DisplayState& s, const char* kind)
 {
   s.epoch = ++s_epoch;
   s_state.store(std::make_shared<const DisplayState>(s));
-  CLog::Log(LOGINFO, "DISPLAYSTATE publish {} {} connected {} fd {} crtc {}", kind, Describe(s),
-            s.connected, s.drmFd, s.crtcId);
+  uint32_t fpsBits = 0;
+  std::memcpy(&fpsBits, &s.fps, sizeof(fpsBits));
+  const uint64_t height = static_cast<uint64_t>(std::clamp(s.screenHeight, 0, 0xffff));
+  // a seed with no committed mode has no mode fields
+  const bool mode = s.refresh > 0 || !s.strId.empty();
+  s_timing.store(TIMING_PUBLISHED | (s.connected ? TIMING_CONNECTED : 0) |
+                     (mode ? TIMING_MODE : 0) | (s.fracHeld ? TIMING_FRAC_HELD : 0) |
+                     (s.windowed ? 1ull << 48 : 0) | height << 32 | fpsBits,
+                 std::memory_order_release);
+  CLog::Log(LOGINFO, "DISPLAYSTATE publish {} {}{} connected {} fd {} crtc {}", kind, Describe(s),
+            s.fracHeld ? " frac-held" : "", s.connected, s.drmFd, s.crtcId);
 }
 
 // a failed read (the hdr_cap sysfs read throws) skips this publish and stays on W; the caps
@@ -423,6 +440,35 @@ void NoteCommit()
 uint64_t CommitCount()
 {
   return s_commits.load();
+}
+
+bool CommitTimingOn()
+{
+  static const bool on = []
+  {
+    const bool result = OUTPUT::OutputDriveOn() && !OUTPUT::OutputDriveSkip("B2-3");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-3: timing from the committed mode");
+    return result;
+  }();
+  return on;
+}
+
+bool CommittedTiming(ModeTiming& timing, const char* field)
+{
+  const uint64_t word = s_timing.load(std::memory_order_acquire);
+  if (!(word & TIMING_CONNECTED) || !(word & TIMING_MODE))
+  {
+    if (field)
+      Fallback(field, word & TIMING_MODE ? DISCONNECTED : NOT_PUBLISHED);
+    return false;
+  }
+  const uint32_t fpsBits = static_cast<uint32_t>(word);
+  std::memcpy(&timing.fps, &fpsBits, sizeof(fpsBits));
+  timing.screenHeight = static_cast<int>((word >> 32) & 0xffff);
+  timing.windowed = (word >> 48) & 1;
+  timing.todaysTweak = (word & TIMING_FRAC_HELD) || s_restored.load();
+  return true;
 }
 
 void GcSetBegins()

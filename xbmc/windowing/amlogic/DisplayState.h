@@ -64,9 +64,25 @@ void PublishSeed(const CAMLDisplay& display, const RESOLUTION_INFO* res, bool wi
 
 //! main, before a write of the caps, the DRM ids or the table; the next caps publish ends it
 void CapsWriteBegins();
-//! main, after a mode set job returned success
+//! a mode set's commit: W's job after PublishMode under 5.B2-3, else main after the job
 void NoteCommit();
 uint64_t CommitCount();
+
+// 5.B2-3 (I5): the timing readers take the committed mode
+//! 5.B2-3's switch: OUTPUT::OutputDriveOn() and no outputdrive_skip "B2-3", read once
+bool CommitTimingOn();
+struct ModeTiming
+{
+  float fps = 60.0f; //!< CGraphicContext::GetFPS's rule, of the committed refresh
+  int screenHeight = 0;
+  bool windowed = false;
+  //! a frac-held set, or a failure after the commit: the latency tweak keeps today's bucket (the
+  //! set's target, GC's), so the tweak that landed the audio stays
+  bool todaysTweak = false;
+};
+//! the last publish's mode, one lock-free word (the coordinator reads it); false before the
+//! first publish of a mode and while disconnected, with R10's log line when a field is named
+bool CommittedTiming(ModeTiming& timing, const char* field = nullptr);
 //! CGraphicContext::SetVideoResolutionInternal: before m_Resolution changes, and once switched
 //! is known
 void GcSetBegins();

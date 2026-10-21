@@ -6886,6 +6886,8 @@ void CVideoPlayer::ApplyAudioOffset()
   if (m_caching != CACHESTATE_DONE || m_clock.IsPaused() ||
       m_streamPlayerSpeed != DVD_PLAYSPEED_NORMAL)
     return;
+  CLog::Log(LOGINFO, "VideoPlayer: audio offset {:+.0f} ms, re-landed mid-play",
+            want * 1000.0 / DVD_TIME_BASE);
   m_VideoPlayerAudio->SendMessage(
       std::make_shared<CDVDMsgDouble>(CDVDMsg::PLAYER_AUDIO_RELAND, want), 1);
   m_landedAudioOffset = want;

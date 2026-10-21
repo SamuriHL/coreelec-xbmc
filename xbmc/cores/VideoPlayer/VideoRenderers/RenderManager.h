@@ -455,10 +455,16 @@ protected:
     std::atomic<float> fps{60.0f};
     std::atomic<double> latencyMs{0.0};
     std::atomic<uint64_t> inputsGen{UINT64_MAX}; //!< none published yet
+    std::atomic<uint64_t> commitCount{UINT64_MAX}; //!< DISPLAYSTATE::CommitCount, read first
   } m_timingSnapshot;
-  void WriteTimingSnapshot(float fps, double latencyMs, uint64_t inputsGen);
+  void WriteTimingSnapshot(float fps, double latencyMs, uint64_t inputsGen, uint64_t commitCount);
   //! false on a read that overlapped a write
-  bool ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen) const;
+  bool ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen, uint64_t& commitCount) const;
+  //! 5.B2-3's switch, read at construction
+  bool m_commitTiming = false;
+  //! 5.B2-3: what a publish now would compose, from the committed mode (coordinator thread);
+  //! inputsGen: the timing inputs' counter, read first
+  bool ComposeCommitTiming(STickTiming& timing, uint64_t& inputsGen) const;
   //! ticks presented with the snapshot for one display epoch (coordinator thread)
   struct SAheadTicks
   {
@@ -469,6 +475,7 @@ protected:
     int holdTid = 0;
     STickTiming timing{};
     uint64_t inputsGen = 0;
+    uint64_t commits = 0; //!< 5.B2-3: the W commit composed from; 0 = main's snapshot
   } m_ahead;
   static void LogAheadTicks(const SAheadTicks& ahead, int64_t endNs, const char* end);
   //! ticks refused for one display epoch, logged once when that epoch ends (coordinator thread)
@@ -481,6 +488,21 @@ protected:
     int holdTid = 0;
     int64_t holdReleaseNs = 0; //!< steady_clock
   } m_refused;
+  //! 5.B2-3: ticks presented with an fps other than the committed mode's (coordinator thread)
+  struct SFpsMismatch
+  {
+    unsigned int epoch = 0;
+    int ticks = 0;
+    int64_t sinceNs = 0;
+    float presented = 0.0f;
+    float committed = 0.0f;
+  } m_fpsMismatch;
+  //! the run this tick ends, and the one it begins (ticks 0 = none), logged after the locks
+  void CheckCommittedFps(const SPresentTick& tick,
+                         const STickTiming* timing,
+                         SFpsMismatch& ended,
+                         SFpsMismatch& begun);
+  static void LogFpsMismatch(const SFpsMismatch& run, int64_t endNs, bool ended);
   //! counts a refused tick; returns the refusal of an earlier epoch it ends (ticks 0 = none)
   SRefusedTicks NoteRefusedTick(const SPresentTick& tick, int64_t nowNs);
   static void LogRefusedTicks(const SRefusedTicks& refused, int64_t endNs, bool published);

@@ -394,11 +394,13 @@ bool OutputDriveSkip(const std::string& substep)
 namespace
 {
 std::atomic_bool s_coordinatorStarted{false};
+std::atomic_bool s_coordinatorNoted{false};
 } // namespace
 
 void NoteCoordinatorStarted(bool started)
 {
   s_coordinatorStarted = started;
+  s_coordinatorNoted = true;
 }
 
 bool OutputDriveOn()
@@ -407,6 +409,9 @@ bool OutputDriveOn()
   {
     aml_displaystate_init();
     const bool displayState = aml_displaystate_on();
+    // a caller before GLES init latches off for good
+    if (!s_coordinatorNoted)
+      CLog::Log(LOGERROR, "OUTPUTDRIVE: switch read before the coordinator was noted");
     const bool coordinator = s_coordinatorStarted.load();
     const bool result = displayState && aml_presentation_validated() && coordinator &&
                         !XFILE::CFile::Exists("special://profile/outputdrive_off");
