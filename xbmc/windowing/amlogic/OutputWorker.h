@@ -167,6 +167,9 @@ bool ModeSetsOnW();
 //! ModeSetsOnW and no outputdrive_skip "B2-6". Not latched (ModeSetsOnW is false until W starts);
 //! the switch line is logged once
 bool SettleOnW();
+//! 5.B2-5c: the lost walk runs right after W's park (ModeSetsOnW, no outputdrive_skip "B2-5c",
+//! no outputdrive_order "today")
+bool LostFirstOn();
 //! 5.B2-7: C runs the blocking plane-off commits (G's and S1''s), and no thread but W in its
 //! park takes a presenter hold: ModeSetsOnW and no outputdrive_skip "B2-7"
 bool PlaneOffOnC();

@@ -546,6 +546,11 @@ bool SettleOnW()
   return on;
 }
 
+bool LostFirstOn()
+{
+  return ModeSetsOnW() && !OutputDriveSkip("B2-5c") && !TestOrderToday();
+}
+
 bool PlaneOffOnC()
 {
   if (!ModeSetsOnW())

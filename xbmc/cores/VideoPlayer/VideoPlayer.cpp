@@ -9693,9 +9693,11 @@ void CVideoPlayer::OnLostDisplay()
     // gate (§18.24): the next frame is never behind the held clock
     double front = DVD_NOPTS_VALUE;
     double step = 0.0;
-    if (m_renderManager.GetResumePts(front, step))
+    const bool out = m_renderManager.GetResumePts(front, step);
+    if (out)
       CLog::Log(LOGINFO, "VideoPlayer: display lost, next frame {:+.1f} ms from the clock",
                 (front - m_clock.GetClock()) * 1000.0 / DVD_TIME_BASE);
+    m_lostMaxStep = out ? step : 0.0;
   }
   // Causes https://github.com/xbmc/xbmc/issues/15447
   // FlushRenderer();
@@ -9737,8 +9739,11 @@ void CVideoPlayer::OnResetDisplay()
     m_clock.SetAudioOffset(m_requestedAudioOffset -
                            DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak()));
   int64_t discRunNs = 0;
+  // 5.B2-5c: the clock held at the park, the frames out were released up to a vsync of the lost
+  // mode past it; the new mode's vsync can be shorter
+  const double lostStep = OUTPUT::LostFirstOn() ? m_lostMaxStep.exchange(0.0) : 0.0;
   if (m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep) &&
-      m_clock.UnpauseAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
+      m_clock.UnpauseAt(pts, std::max(maxStep, lostStep), RESUME_LEAD, startNs, startClock))
   {
     m_displayResumeScheduled = true;
     discRunNs = startNs;
