@@ -13,6 +13,7 @@
 #include "filesystem/File.h"
 #include "messaging/ApplicationMessenger.h"
 #include "platform/linux/SysfsPath.h"
+#include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
@@ -388,6 +389,32 @@ bool OutputDriveSkip(const std::string& substep)
     return list;
   }();
   return !substep.empty() && std::find(skipped.begin(), skipped.end(), substep) != skipped.end();
+}
+
+namespace
+{
+std::atomic_bool s_coordinatorStarted{false};
+} // namespace
+
+void NoteCoordinatorStarted(bool started)
+{
+  s_coordinatorStarted = started;
+}
+
+bool OutputDriveOn()
+{
+  static const bool on = []
+  {
+    aml_displaystate_init();
+    const bool displayState = aml_displaystate_on();
+    const bool coordinator = s_coordinatorStarted.load();
+    const bool result = displayState && aml_presentation_validated() && coordinator &&
+                        !XFILE::CFile::Exists("special://profile/outputdrive_off");
+    CLog::Log(LOGINFO, "OUTPUTDRIVE {} (display state {}, coordinator {})", result ? "on" : "off",
+              displayState ? "on" : "off", coordinator ? "started" : "not started");
+    return result;
+  }();
+  return on;
 }
 
 } // namespace OUTPUT

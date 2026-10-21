@@ -557,7 +557,7 @@ protected:
   void BdSegmentTransition(bool glided = false);
   //! real_player E1 (docs/real_player_disc_session_design.md §3): a start is
   //! committed with the clock paused until the output mode is final
-  void HoldStart();
+  void HoldStart(std::optional<unsigned int> decisions);
   void ReleaseAudioSessionHold();
   void CheckHeldStart();
   //! a user resume landing on the timeline like a start (design §16.21)

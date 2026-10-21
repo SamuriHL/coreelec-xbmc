@@ -2574,14 +2574,15 @@ void CVideoPlayer::ArmBdjStartForSegment()
     }
 }
 
-void CVideoPlayer::HoldStart()
+void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
 {
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
   m_cachingStall = false;
   m_startHeld = true;
   m_startReleasedClock = DVD_NOPTS_VALUE;
-  m_startHeldDecisions = m_renderManager.GetResolutionDecisions();
+  // 5.B2-2: the count read with the pending test; without it today's snapshot
+  m_startHeldDecisions = decisions.value_or(m_renderManager.GetResolutionDecisions());
   m_startHeldSince = std::chrono::steady_clock::now();
   m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
@@ -2591,8 +2592,9 @@ void CVideoPlayer::HoldStart()
   m_clock.SetStartHeld(aml_presentation_validated());
   m_VideoPlayerVideo->SetStartHeld(true);
   m_renderManager.SetStartHeld(true);
-  CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {})",
-            m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions);
+  CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {}{})",
+            m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions,
+            decisions ? ", read with the pending test" : "");
 }
 
 void CVideoPlayer::CheckHeldStart()
@@ -4361,8 +4363,9 @@ void CVideoPlayer::HandlePlaySpeed()
       // target count as dropped although its keyframe is the first picture
       const bool videoPictured = m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
                                  (m_CurrentVideo.packets > 0 || m_scheduledStart);
+      std::optional<unsigned int> heldDecisions;
       const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 && videoPictured &&
-                             m_renderManager.IsResolutionUpdatePending();
+                             m_renderManager.IsResolutionUpdatePending(heldDecisions);
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
       // ahead with the audio landing there. The clock starts at the first
@@ -4438,7 +4441,8 @@ void CVideoPlayer::HandlePlaySpeed()
       {
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
-        HoldStart();
+        // scheduleStart alone never read the count: today's snapshot (r1 L3)
+        HoldStart(holdStart ? heldDecisions : std::nullopt);
         if (holdStart)
           m_discTime.SetStartHeld(true);
         // the clock ran from the discontinuity to the pause (up to 0.9 ms

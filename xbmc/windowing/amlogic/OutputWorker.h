@@ -125,4 +125,10 @@ int TestCStallMs();
 //! outputdrive_skip "<substep>[,<substep>]": true for a listed 5.B2 sub-step (bisect only)
 bool OutputDriveSkip(const std::string& substep);
 
+//! 5.B2: GLES init records whether the presentation coordinator started
+void NoteCoordinatorStarted(bool started);
+//! 5.B2's switch (outputdrive_off), read at the first call: on needs DisplayState, a
+//! validated SoC and a started coordinator; off = today's code
+bool OutputDriveOn();
+
 } // namespace OUTPUT

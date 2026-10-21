@@ -26,6 +26,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include "PlatformDefs.h"
 
@@ -156,8 +157,10 @@ public:
   //! real_player E1: output-mode decisions made so far (UpdateResolution passes)
   unsigned int GetResolutionDecisions() const { return m_resolutionDecisions; }
   //! a mode decision is due: the session's first, or one for fullscreen video
-  //! (UpdateResolution decides only then, so a windowed trigger waits for the user)
-  bool IsResolutionUpdatePending() const;
+  //! (UpdateResolution decides only then, so a windowed trigger waits for the user).
+  //! 5.B2-2: also while a consumed trigger's set runs; decisions gets the count read
+  //! with it (left unset under outputdrive_off)
+  bool IsResolutionUpdatePending(std::optional<unsigned int>& decisions) const;
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }
@@ -293,6 +296,7 @@ protected:
   std::atomic_bool m_showVideo = {false};
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
+  bool m_resolutionInFlight = false; //!< m_statelock: consumed, its count not yet bumped (5.B2-2)
   std::atomic_bool m_startHeld{false};
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   //! from a start the clock had yet to make until its display phase is measured:

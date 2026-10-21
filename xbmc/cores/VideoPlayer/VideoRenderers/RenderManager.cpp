@@ -33,6 +33,7 @@
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
@@ -84,6 +85,13 @@ int64_t SteadyNs()
 }
 
 #if defined(HAS_LIBAMCODEC)
+// 5.B2-2's switch, one value for both of its sites
+bool HeldStartPendingWindow()
+{
+  static const bool on = OUTPUT::OutputDriveOn() && !OUTPUT::OutputDriveSkip("B2-2");
+  return on;
+}
+
 // test: special://profile/displaystate_mainstall holds "<after-set|framemove> <ms>"; main sleeps
 // there, after an RM-decided mode set or at the top of every FrameMove
 void TestMainStall(const char* where)
@@ -1404,8 +1412,22 @@ bool CRenderManager::ReadTimingSnapshot(STickTiming& timing, uint64_t& inputsGen
   return !(seq0 & 1) && seq0 == s.seq.load(std::memory_order_relaxed);
 }
 
-bool CRenderManager::IsResolutionUpdatePending() const
+bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& decisions) const
 {
+  // 5.B2-2 (P5-18's twin): the consume clears the trigger before its set runs, so
+  // the set is pending until its count lands; flag and count are read under the
+  // lock that writes both, never in-flight with the new count
+  std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+#if defined(HAS_LIBAMCODEC)
+  if (HeldStartPendingWindow())
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    lock.lock();
+    decisions = m_resolutionDecisions.load();
+    if (m_resolutionInFlight)
+      return true;
+  }
+#endif
   // A held start waits for this decision. A session's first start goes
   // fullscreen just after the hold begins, so it always waits. Later, with the
   // GUI over the video (a seek there raises the trigger again), none comes
@@ -1450,6 +1472,9 @@ void CRenderManager::UpdateResolution()
         std::string stereoMode;
         StreamHdrType hdrType;
         bool fracArmed;
+#if defined(HAS_LIBAMCODEC)
+        const bool outputDrive = HeldStartPendingWindow(); // read before the lock
+#endif
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
@@ -1459,6 +1484,10 @@ void CRenderManager::UpdateResolution()
           stereoMode = m_picture.stereoMode;
           hdrType = m_picture.hdrType;
           m_bTriggerUpdateResolution = false;
+#if defined(HAS_LIBAMCODEC)
+          // pending until the count below (5.B2-2)
+          m_resolutionInFlight = outputDrive;
+#endif
           fracArmed = std::exchange(m_reclockArmed, false);
           if (fracArmed && std::chrono::steady_clock::now() - m_reclockArmedAt > 12s)
           {
@@ -1569,8 +1598,22 @@ void CRenderManager::UpdateResolution()
           CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm kept for the stereo choice");
         }
         // after the mode set: a real change has already run OnLostDisplay
-        ++m_resolutionDecisions;
-        m_sessionModeDecided = true;
+#if defined(HAS_LIBAMCODEC)
+        if (outputDrive)
+        {
+          // one step for IsResolutionUpdatePending's locked read (5.B2-2)
+          MAINCOUPLING_ACCESSOR("RM m_statelock");
+          std::unique_lock lock(m_statelock);
+          ++m_resolutionDecisions;
+          m_sessionModeDecided = true;
+          m_resolutionInFlight = false;
+        }
+        else
+#endif
+        {
+          ++m_resolutionDecisions;
+          m_sessionModeDecided = true;
+        }
         m_playerPort->VideoParamsChange();
       }
     }

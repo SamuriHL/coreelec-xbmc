@@ -126,6 +126,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     if (!m_coordinator->Start())
       m_coordinator.reset();
   }
+  OUTPUT::NoteCoordinatorStarted(m_coordinator != nullptr);
 
   const int graphicsPlane =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoGraphicsPlane;
