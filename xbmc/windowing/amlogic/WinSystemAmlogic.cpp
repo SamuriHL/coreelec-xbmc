@@ -710,6 +710,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
           OUTPUT::Lane::RESTORE, "display state seed",
           [display = m_amlDisplay.get(), res, ret, windowed = !fullScreen]
           { DISPLAYSTATE::PublishSeed(*display, ret ? &res : nullptr, windowed); });
+    // GuiInputs: the stereo mode main set before the switch was read
+    DISPLAYSTATE::PublishGuiInputs(
+        {CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode()});
     OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
                                       [] { aml_display_vsvdb_refill(); });
   }

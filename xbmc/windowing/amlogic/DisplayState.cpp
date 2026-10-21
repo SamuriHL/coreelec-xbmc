@@ -556,6 +556,38 @@ void ShadowDrm(int fd, uint32_t crtc)
                });
 }
 
+namespace
+{
+std::atomic<int> s_guiStereoMode{-1}; // -1: not published
+} // namespace
+
+void PublishGuiInputs(const GuiInputs& inputs)
+{
+  if (aml_displaystate_on())
+    s_guiStereoMode.store(static_cast<int>(inputs.stereoMode), std::memory_order_release);
+}
+
+RenderStereoMode GuiStereoMode(RenderStereoMode today)
+{
+  if (!aml_displaystate_on())
+    return today;
+  const int published = s_guiStereoMode.load(std::memory_order_acquire);
+  if (published < 0)
+  {
+    Count("stereo@ovc-guiinputs", SKIPPED);
+    return today;
+  }
+  if (published == static_cast<int>(today))
+    Count("stereo@ovc-guiinputs", MATCH);
+  else
+    CountDiff("stereo@ovc-guiinputs", DIFF,
+              [&] {
+                return StringUtils::Format("guiinputs {} today {}", published,
+                                           static_cast<int>(today));
+              });
+  return static_cast<RenderStereoMode>(published);
+}
+
 void Tick()
 {
   if (!aml_displaystate_on())

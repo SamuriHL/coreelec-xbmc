@@ -22,6 +22,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING(what) static_cast<void>(0)
@@ -339,8 +340,10 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
     const BitmapStereoLayout layout =
         GetBitmapStereoLayout(CServiceBroker::GetDataCacheCore().GetVideoStereoMode());
     MAINCOUPLING("GC GetStereoMode");
-    const RenderStereoMode renderMode =
-        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+    RenderStereoMode renderMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+#if defined(HAS_LIBAMCODEC)
+    renderMode = DISPLAYSTATE::GuiStereoMode(renderMode);
+#endif
     if (IsStereoscopicOutputMode(renderMode) && layout != BitmapStereoLayout::MONO &&
         !overlay->palette.empty())
     {

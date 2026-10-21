@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "rendering/RenderSystemTypes.h"
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 
@@ -107,6 +108,16 @@ void ShadowHdrHlg(bool today);
 void ShadowHdr10Plus(bool today);
 void ShadowHas2160(bool today);
 void ShadowDrm(int fd, uint32_t crtc);
+
+// 5.V1-8 (S1): what main's GUI state gives the video side, published by main
+struct GuiInputs
+{
+  RenderStereoMode stereoMode = RenderStereoMode::OFF;
+};
+void PublishGuiInputs(const GuiInputs& inputs);
+//! the published stereo mode, counted against today's GC read; today's read before main's
+//! first publish and under displaystate_off
+RenderStereoMode GuiStereoMode(RenderStereoMode today);
 
 // main only: the shadows' readers only count
 //! logs new DIFF/FAIL details, and the counters every 10 s

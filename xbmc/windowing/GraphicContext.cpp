@@ -1109,6 +1109,14 @@ uint32_t CGraphicContext::GetDepth(uint32_t addLayers)
   return layer;
 }
 
+void CGraphicContext::SetStereoMode(RenderStereoMode mode)
+{
+#if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::PublishGuiInputs({mode});
+#endif
+  m_stereoMode = mode;
+}
+
 void CGraphicContext::SetFPS(float fps)
 {
   m_fFPSOverride = fps;

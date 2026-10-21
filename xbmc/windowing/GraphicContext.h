@@ -159,7 +159,7 @@ public:
   void SetCameraPosition(const CPoint &camera);
   void SetStereoView(RenderStereoView view);
   RenderStereoView GetStereoView() { return m_stereoView; }
-  void SetStereoMode(RenderStereoMode mode) { m_stereoMode = mode; }
+  void SetStereoMode(RenderStereoMode mode);
   RenderStereoMode GetStereoMode() { return m_stereoMode; }
   void SetHDRType(StreamHdrType hdrType)  { m_hdrType = hdrType; }
   StreamHdrType GetHDRType()  { return m_hdrType; }
