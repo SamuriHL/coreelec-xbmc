@@ -1206,6 +1206,29 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
 bool CRenderManager::IsGuiLayer()
 {
+#if defined(HAS_LIBAMCODEC)
+  // 5.V1-7 (MC-25): the overlay renderer's lock is not taken inside m_statelock, which the
+  // coordinator takes every tick
+  if (aml_displaystate_on())
+  {
+    int index;
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      std::unique_lock lock(m_statelock);
+
+      if (!m_pRenderer)
+        return false;
+
+      index = (m_presentsource != -1) ? m_presentsource : 0;
+      if ((m_pRenderer->IsGuiLayer() && IsPresenting()) || m_renderedDebugOverlay)
+        return true;
+
+      if (m_renderDebug && m_debugTimer.IsTimePast())
+        return true;
+    }
+    return m_overlays.HasVisibleOverlay(index);
+  }
+#endif
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
