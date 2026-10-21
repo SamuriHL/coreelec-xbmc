@@ -498,7 +498,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
   if (m_bitstream)
   {
-    const CHDRCapabilities caps = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
+    const CHDRCapabilities caps =
+        DISPLAYSTATE::HdrCaps(CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities());
     const auto& dvsettings = OUTPUT::CSettingsMirror::Get();
 
     // HDR10+ -> Dolby Vision profile 8.1 conversion. When enabled on a DV display,

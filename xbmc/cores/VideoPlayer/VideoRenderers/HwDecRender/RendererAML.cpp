@@ -22,6 +22,7 @@
 #include "utils/ScreenshotAML.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
 
@@ -166,7 +167,7 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // wasn't tagged PQ (OSD left sRGB, dim/desaturated), and a DV source forced to
   // SDR on an HDR display (OSD PQ-encoded then tone-mapped a second time).
   const unsigned int dv_output_mode(aml_dv_get_output_mode());
-  m_isHdrDisplay = CServiceBroker::GetWinSystem()->IsHDRDisplay();
+  m_isHdrDisplay = DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
   m_guiEncoding = ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay);
   const bool core_is_pq(m_guiEncoding == GuiEncoding::Composite);
   const bool gui_is_pq(m_guiEncoding != GuiEncoding::Srgb);

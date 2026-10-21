@@ -40,6 +40,7 @@
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
@@ -2762,7 +2763,10 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 
         MAINCOUPLING("CAMLDisplay aml_display_support_3d");
         if (pStream->codecpar->codec_id == AV_CODEC_ID_H264 &&
-            static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
+            DISPLAYSTATE::Support3d(
+                static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+                    ->GetAmlDisplay()
+                    ->aml_display_support_3d()))
         {
           if (CDVDCodecUtils::IsH264AnnexB(m_pFormatContext->iformat->name, pStream))
           {

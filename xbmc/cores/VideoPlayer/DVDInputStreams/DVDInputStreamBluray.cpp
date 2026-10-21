@@ -3841,7 +3841,10 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities()
         break;
       }
     }
-    DISPLAYSTATE::ShadowHas2160(uhdDisplayCap & 0x01);
+    if (DISPLAYSTATE::Has2160(uhdDisplayCap & 0x01))
+      uhdDisplayCap |= 0x01;
+    else
+      uhdDisplayCap &= ~0x01u;
     // display capability, straight from the EDID caps
     if (aml_display_support_dv())
       uhdDisplayCap |= 0x04;

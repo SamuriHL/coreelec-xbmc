@@ -33,13 +33,30 @@ uint64_t s_capsEpoch = 0;
 
 std::atomic<uint64_t> s_modePublishes{0};
 std::atomic<uint64_t> s_commits{0};
-std::atomic<bool> s_capsPending{false};
+// caps writes begun, and the last one a caps publish read after: pending while they differ
+std::atomic<uint64_t> s_capsGen{0};
+std::atomic<uint64_t> s_capsDoneGen{0};
+// the last caps publish failed: the state holds older caps until a good one
+std::atomic<bool> s_capsFailed{false};
 std::atomic<bool> s_inSet{false};
 std::atomic<bool> s_restored{false};
 uint64_t s_setBeginPublishes = 0; // main
 
 // the publisher's own accessor reads are not compares
 thread_local bool t_publishing = false;
+// why a reader keeps today's read (R10)
+enum Cause
+{
+  NOT_PUBLISHED,
+  DISCONNECTED,
+  CAPS_PENDING,
+  CAPS_FAILED,
+  CAUSES
+};
+
+// the state the last accessor shadow on this thread compared with; null on a skip, for t_cause
+thread_local std::shared_ptr<const DisplayState> t_compared;
+thread_local Cause t_cause = NOT_PUBLISHED;
 
 enum Column
 {
@@ -212,37 +229,38 @@ void Store(DisplayState& s, const char* kind)
             s.connected, s.drmFd, s.crtcId);
 }
 
-// a failed read (the hdr_cap sysfs read throws) skips this publish and stays on W
+// a failed read (the hdr_cap sysfs read throws) skips this publish and stays on W; the caps
+// readers keep today's read until a caps publish succeeds
 void PublishWithCaps(DisplayState& s, const CAMLDisplay& display, const char* kind)
 {
+  // a write begun after this load stays pending for its own publish
+  const uint64_t gen = s_capsGen.load();
   struct SPublishing
   {
     SPublishing() { t_publishing = true; }
-    ~SPublishing()
-    {
-      t_publishing = false;
-      s_capsPending = false;
-    }
+    ~SPublishing() { t_publishing = false; }
   } publishing;
+  std::string error;
   try
   {
     FillLink(s, display);
     FillCaps(s, display);
     Store(s, kind);
+    s_capsFailed = false;
+    s_capsDoneGen = gen;
     return;
   }
   catch (const std::exception& e)
   {
-    static std::atomic<bool> logged{false};
-    if (!logged.exchange(true))
-      CLog::Log(LOGWARNING, "DISPLAYSTATE caps read failed, not published: {}", e.what());
+    error = e.what();
   }
   catch (...)
   {
-    static std::atomic<bool> logged{false};
-    if (!logged.exchange(true))
-      CLog::Log(LOGWARNING, "DISPLAYSTATE caps read failed, not published");
+    error = "unknown error";
   }
+  if (!s_capsFailed.exchange(true))
+    CLog::Log(LOGWARNING, "DISPLAYSTATE caps read failed, not published: {}", error);
+  s_capsDoneGen = gen;
 }
 
 template<typename F>
@@ -254,17 +272,28 @@ void ShadowCaps(const char* field, bool equal, F&& detail)
     CountDiff(field, DIFF, detail);
 }
 
-// the caps state to compare against, or null for a skip
-std::shared_ptr<const DisplayState> CapsState(const char* field)
+// the caps state to compare against, or null for a skip, with its cause
+std::shared_ptr<const DisplayState> CapsState(const char* field, Cause* cause = nullptr)
 {
-  const bool pending = s_capsPending.load();
-  auto state = Connected();
-  if (pending || !state)
-  {
-    Count(field, SKIPPED);
-    return nullptr;
-  }
-  return state;
+  // doneGen before failed: a publish stores failed (and the state) before doneGen
+  const bool pending = s_capsGen.load() != s_capsDoneGen.load();
+  const bool failed = s_capsFailed.load();
+  auto state = s_state.load();
+  Cause skip;
+  if (failed)
+    skip = CAPS_FAILED;
+  else if (pending)
+    skip = CAPS_PENDING;
+  else if (!state)
+    skip = NOT_PUBLISHED;
+  else if (!state->connected)
+    skip = DISCONNECTED;
+  else
+    return state;
+  Count(field, SKIPPED);
+  if (cause)
+    *cause = skip;
+  return nullptr;
 }
 
 bool Active()
@@ -280,11 +309,15 @@ std::string CapsString(const CHDRCapabilities& c)
                              c.SupportsDVPlayerLED());
 }
 
-void ShadowBool(const char* field, bool today, bool DisplayState::*member)
+//! the state compared with, null on a skip
+std::shared_ptr<const DisplayState> ShadowBool(const char* field,
+                                               bool today,
+                                               bool DisplayState::*member,
+                                               Cause* cause = nullptr)
 {
   if (!Active())
-    return;
-  const auto state = CapsState(field);
+    return nullptr;
+  auto state = CapsState(field, cause);
   if (state)
     ShadowCaps(field, (*state).*member == today,
                [&]
@@ -292,6 +325,43 @@ void ShadowBool(const char* field, bool today, bool DisplayState::*member)
                  return StringUtils::Format("displaystate {} today {} ({})", (*state).*member,
                                             today, Describe(*state));
                });
+  return state;
+}
+
+// R10: a reader keeps today's read; logged once per cause and published state
+void Fallback(const char* field, Cause cause)
+{
+  static constexpr const char* causes[CAUSES] = {"before W's first publish", "not connected",
+                                                 "main writing the caps", "caps read failed"};
+  static std::array<std::atomic<uint64_t>, CAUSES> logged{};
+  const auto state = s_state.load();
+  const uint64_t key = (state ? state->epoch : 0) + 1;
+  if (logged[cause].exchange(key) != key)
+    CLog::Log(LOGINFO, "DISPLAYSTATE {} reads today's value: {}", field, causes[cause]);
+}
+
+//! the state the accessor's shadow compared with, for the value just read
+std::shared_ptr<const DisplayState> TakeCompared(const char* field)
+{
+  std::shared_ptr<const DisplayState> state;
+  state.swap(t_compared);
+  if (!state)
+    Fallback(field, t_cause);
+  return state;
+}
+
+bool PickBool(const char* field, bool today, bool DisplayState::*member)
+{
+  if (!Active())
+    return today;
+  Cause cause = NOT_PUBLISHED;
+  const auto state = ShadowBool(field, today, member, &cause);
+  if (!state)
+  {
+    Fallback(field, cause);
+    return today;
+  }
+  return (*state).*member;
 }
 } // namespace
 
@@ -341,7 +411,7 @@ void PublishSeed(const CAMLDisplay& display, const RESOLUTION_INFO* res, bool wi
 void CapsWriteBegins()
 {
   if (aml_displaystate_on())
-    s_capsPending = true;
+    s_capsGen.fetch_add(1);
 }
 
 void NoteCommit()
@@ -481,11 +551,15 @@ void CountMode(
 
 void ShadowHdrCaps(const CHDRCapabilities& today)
 {
+  if (!aml_displaystate_on())
+    return;
+  t_compared = nullptr;
   if (!Active())
     return;
-  const auto state = CapsState("hdrcaps@caps");
+  const auto state = CapsState("hdrcaps@caps", &t_cause);
   if (!state)
     return;
+  t_compared = state;
   const CHDRCapabilities& c = state->hdrCaps;
   const bool equal = c.SupportsHDR10() == today.SupportsHDR10() &&
                      c.SupportsHLG() == today.SupportsHLG() &&
@@ -503,11 +577,15 @@ void ShadowHdrCaps(const CHDRCapabilities& today)
 
 void ShadowDv(bool today)
 {
+  if (!aml_displaystate_on())
+    return;
+  t_compared = nullptr;
   if (!Active())
     return;
-  const auto state = CapsState("dv@caps");
+  const auto state = CapsState("dv@caps", &t_cause);
   if (!state)
     return;
+  t_compared = state;
   const bool dv = state->hdrCaps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
   ShadowCaps("dv@caps", dv == today,
              [&] {
@@ -518,27 +596,8 @@ void ShadowDv(bool today)
 
 void Shadow3d(bool today)
 {
-  ShadowBool("3d@caps", today, &DisplayState::support3d);
-}
-
-void ShadowHdrPq(bool today)
-{
-  ShadowBool("hdr-pq@sysfs", today, &DisplayState::hdrPq);
-}
-
-void ShadowHdrHlg(bool today)
-{
-  ShadowBool("hdr-hlg@sysfs", today, &DisplayState::hdrHlg);
-}
-
-void ShadowHdr10Plus(bool today)
-{
-  ShadowBool("hdr10plus@sysfs", today, &DisplayState::hdr10Plus);
-}
-
-void ShadowHas2160(bool today)
-{
-  ShadowBool("has2160@bd-uhd", today, &DisplayState::has2160);
+  if (aml_displaystate_on())
+    t_compared = ShadowBool("3d@caps", today, &DisplayState::support3d, &t_cause);
 }
 
 void ShadowDrm(int fd, uint32_t crtc)
@@ -554,6 +613,63 @@ void ShadowDrm(int fd, uint32_t crtc)
                                             state->drmFd, state->crtcId, fd, crtc,
                                             Describe(*state));
                });
+}
+
+CHDRCapabilities HdrCaps(const CHDRCapabilities& today)
+{
+  if (!Active())
+    return today;
+  const auto state = TakeCompared("hdrcaps@caps");
+  return state ? state->hdrCaps : today;
+}
+
+bool HdrDisplay(bool today)
+{
+  if (!Active())
+    return today;
+  const auto state = TakeCompared("hdrcaps@caps");
+  if (!state)
+    return today;
+  const CHDRCapabilities& c = state->hdrCaps;
+  return c.SupportsHDR10() || c.SupportsHDR10Plus() || c.SupportsHLG() ||
+         c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+}
+
+bool Dv(bool today)
+{
+  if (!Active())
+    return today;
+  const auto state = TakeCompared("dv@caps");
+  return state ? state->hdrCaps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE
+               : today;
+}
+
+bool Support3d(bool today)
+{
+  if (!Active())
+    return today;
+  const auto state = TakeCompared("3d@caps");
+  return state ? state->support3d : today;
+}
+
+bool HdrPq(bool today)
+{
+  return PickBool("hdr-pq@sysfs", today, &DisplayState::hdrPq);
+}
+
+bool HdrHlg(bool today)
+{
+  return PickBool("hdr-hlg@sysfs", today, &DisplayState::hdrHlg);
+}
+
+bool Hdr10Plus(bool today)
+{
+  return PickBool("hdr10plus@sysfs", today, &DisplayState::hdr10Plus);
+}
+
+bool Has2160(bool today)
+{
+  return PickBool("has2160@bd-uhd", today, &DisplayState::has2160);
 }
 
 namespace

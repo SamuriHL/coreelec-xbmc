@@ -26,6 +26,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "utils/StreamDetails.h"
@@ -2404,7 +2405,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   // enable Dolby Vision driver when 'dovi.ko' is available
   bool device_support_dv(aml_support_dolby_vision());
   MAINCOUPLING("CAMLDisplay aml_display_support_dv");
-  bool display_support_dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_dv());
+  bool display_support_dv(
+      DISPLAYSTATE::Dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+                           ->GetAmlDisplay()
+                           ->aml_display_support_dv()));
   bool user_dv_disable(OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   // VS10 engine can output SDR/HDR10 to a non-DV display, so allow the DV core
   // to be enabled even when the display itself does not advertise DV support.

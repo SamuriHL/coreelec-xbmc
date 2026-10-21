@@ -320,8 +320,9 @@ bool aml_dolby_vision_enabled()
   bool dv_user_enabled(!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
 
   bool dv_enabled = (!!aml_support_dolby_vision() &&
-                     static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-                         ->GetAmlDisplay()->aml_display_support_dv());
+                     DISPLAYSTATE::Dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+                                          ->GetAmlDisplay()
+                                          ->aml_display_support_dv()));
 
   return ((dv_enabled && !!dv_user_enabled) == 1);
 }
@@ -397,9 +398,11 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
   else
     user_convert_to_dv = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
 
-  bool convert_to_dv = (!!aml_support_dolby_vision() &&
-                        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-                            ->GetAmlDisplay()->aml_display_support_dv());
+  bool convert_to_dv =
+      (!!aml_support_dolby_vision() &&
+       DISPLAYSTATE::Dv(static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+                            ->GetAmlDisplay()
+                            ->aml_display_support_dv()));
 
   return ((convert_to_dv && !!user_convert_to_dv && !!dv_user_enabled) == 1);
 }
@@ -426,7 +429,7 @@ bool aml_display_support_dv()
   auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (!winSystem || !winSystem->GetAmlDisplay())
     return false;
-  return winSystem->GetAmlDisplay()->aml_display_support_dv();
+  return DISPLAYSTATE::Dv(winSystem->GetAmlDisplay()->aml_display_support_dv());
 }
 
 bool aml_display_support_3d()
@@ -438,7 +441,7 @@ bool aml_display_support_3d()
   auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (!winSystem || !winSystem->GetAmlDisplay())
     return false;
-  return winSystem->GetAmlDisplay()->aml_display_support_3d();
+  return DISPLAYSTATE::Support3d(winSystem->GetAmlDisplay()->aml_display_support_3d());
 }
 
 bool aml_display_support_hdr_pq()
@@ -447,8 +450,7 @@ bool aml_display_support_hdr_pq()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("SMPTE ST 2084: 1") != std::string::npos);
-  DISPLAYSTATE::ShadowHdrPq(support);
-  return support;
+  return DISPLAYSTATE::HdrPq(support);
 }
 
 bool aml_display_support_hdr_hlg()
@@ -457,8 +459,7 @@ bool aml_display_support_hdr_hlg()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("Hybrid Log-Gamma: 1") != std::string::npos);
-  DISPLAYSTATE::ShadowHdrHlg(support);
-  return support;
+  return DISPLAYSTATE::HdrHlg(support);
 }
 
 bool aml_display_support_hdr10plus()
@@ -467,8 +468,7 @@ bool aml_display_support_hdr10plus()
   CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
   if (hdr_cap.Exists())
     support = (hdr_cap.Get<std::string>().value().find("HDR10Plus Supported: 1") != std::string::npos);
-  DISPLAYSTATE::ShadowHdr10Plus(support);
-  return support;
+  return DISPLAYSTATE::Hdr10Plus(support);
 }
 
 AMLHdmiAudioCaps aml_get_hdmi_audio_caps()
@@ -1056,7 +1056,7 @@ void aml_hdr_conversion_refresh(const char* origin)
   }
   s_hdrConvPending = false;
   CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-  if (!winSystem || !winSystem->IsHDRDisplay())
+  if (!winSystem || !DISPLAYSTATE::HdrDisplay(winSystem->IsHDRDisplay()))
     return;
   const bool sdr2hdr =
       OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);

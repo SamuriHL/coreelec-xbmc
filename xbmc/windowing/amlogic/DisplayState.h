@@ -19,9 +19,9 @@
 class CAMLDisplay;
 
 // Phase 5 step 5.V1-2: what the output is, published by W (design I3) after each commit and
-// caps refresh. Shadow only: every reader still reads today's source, and the shadows count
-// "DISPLAYSTATE <field> match n diff m skipped k ..." against it. displaystate_off: nothing is
-// published, compared or logged.
+// caps refresh. The caps readers take its values (5.V1-3); the others still read today's
+// source. The shadows count "DISPLAYSTATE <field> match n diff m skipped k ..." against today's
+// read. displaystate_off: nothing is published, compared or logged.
 
 namespace DISPLAYSTATE
 {
@@ -103,11 +103,22 @@ void CountMode(const ModeShadow& shadow,
 void ShadowHdrCaps(const CHDRCapabilities& today);
 void ShadowDv(bool today);
 void Shadow3d(bool today);
-void ShadowHdrPq(bool today);
-void ShadowHdrHlg(bool today);
-void ShadowHdr10Plus(bool today);
-void ShadowHas2160(bool today);
 void ShadowDrm(int fd, uint32_t crtc);
+
+// 5.V1-3: the caps readers' values. Under on, the published value: the one the shadow compared
+// with today's read (the accessor's shadow, run on this thread for the value passed in, or
+// the shadow here); today's read before W's first publish, while disconnected, while main
+// writes the caps or after a failed caps read, logged once per cause and publish. Under off,
+// today's read.
+CHDRCapabilities HdrCaps(const CHDRCapabilities& today);
+//! CWinSystemAmlogic::IsHDRDisplay's rule
+bool HdrDisplay(bool today);
+bool Dv(bool today);
+bool Support3d(bool today);
+bool HdrPq(bool today);
+bool HdrHlg(bool today);
+bool Hdr10Plus(bool today);
+bool Has2160(bool today);
 
 // 5.V1-8 (S1): what main's GUI state gives the video side, published by main
 struct GuiInputs

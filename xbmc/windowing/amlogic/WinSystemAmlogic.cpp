@@ -404,7 +404,11 @@ void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *dat
     udev_device_unref(device);
 
     if (isHotplug)
+    {
+      // the caps may change from here: HotplugEvent publishes them on every path
+      DISPLAYSTATE::CapsWriteBegins();
       winSystem->m_hotplugPending.store(true);
+    }
   }
 }
 
