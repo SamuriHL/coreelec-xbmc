@@ -684,6 +684,15 @@ void CRenderManager::BeginFile()
       CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm dropped (new file)");
     m_reclockPending = false;
     m_reclockArmed = false;
+#if defined(HAS_LIBAMCODEC)
+    // 5.B2-5b: a retry of the last file's set is not this file's
+    if (m_rmRetry)
+    {
+      m_rmRetry = false;
+      m_resolutionInFlight = false;
+      CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry abandoned (new file)");
+    }
+#endif
   }
   // the kernel's DV wait (amdv_wait_delay vsyncs before the mode set) is
   // armed by the file's first picture: left at its first value, a second DV
@@ -760,6 +769,14 @@ void CRenderManager::UnInit()
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   m_presenterMode = false;
+#if defined(HAS_LIBAMCODEC)
+  if (m_rmRetry)
+  {
+    m_rmRetry = false;
+    m_resolutionInFlight = false;
+    CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry abandoned (uninit)");
+  }
+#endif
 
   m_overlays.UnInit();
   // UnInit empties the overlay render buffers but, unlike Flush(), does not
@@ -1483,17 +1500,43 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
   return gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot();
 }
 
+#if defined(HAS_LIBAMCODEC)
+void CRenderManager::AbandonRmRetry(const char* why)
+{
+  if (!m_rmRetry)
+    return;
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (!m_rmRetry)
+    return;
+  // a stuck in-flight flag would hold every later start until a decision or the 12 s cap
+  m_rmRetry = false;
+  m_resolutionInFlight = false;
+  CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry abandoned ({})", why);
+}
+#endif
+
 void CRenderManager::UpdateResolution()
 {
   if (m_bTriggerUpdateResolution)
   {
+#if defined(HAS_LIBAMCODEC)
+    if (m_rmRetry && !(CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
+                       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()))
+      AbandonRmRetry("left fullscreen");
+#endif
     if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
     {
       auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_videostarted);
 
       int wait = m_amdv_wait_delay.load();
       if (wait == -1)
+      {
+#if defined(HAS_LIBAMCODEC)
+        AbandonRmRetry("a new file's DV wait");
+#endif
         return;
+      }
 
       if (wait > 0)
       {
@@ -1516,6 +1559,9 @@ void CRenderManager::UpdateResolution()
         bool fracArmed;
 #if defined(HAS_LIBAMCODEC)
         const bool outputDrive = HeldStartPendingWindow(); // read before the lock
+        // 5.B2-5b: W's reply was failed or failed(park)
+        bool setFailed = false;
+        const char* setFailedReply = "";
 #endif
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -1606,6 +1652,8 @@ void CRenderManager::UpdateResolution()
             UpdateLatencyTweak(res);
 #if defined(HAS_LIBAMCODEC)
           const uint64_t commits = DISPLAYSTATE::CommitCount();
+          uint64_t replySeq = 0;
+          OUTPUT::LastDriveReply(replySeq);
 #endif
           {
             // UpdateResolution runs on main, where SetVideoResolution runs inline
@@ -1614,8 +1662,22 @@ void CRenderManager::UpdateResolution()
               explicit FracReclockRequest(bool request) { aml_set_frac_reclock_request(request); }
               ~FracReclockRequest() { aml_set_frac_reclock_request(false); }
             } fracRequest(fracReclock);
+#if defined(HAS_LIBAMCODEC)
+            // 5.B2-5b: the request is origin=rm (r1 M4)
+            OUTPUT::CDriveOriginRm origin;
+#endif
             CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           }
+#if defined(HAS_LIBAMCODEC)
+          {
+            uint64_t seq = 0;
+            const OUTPUT::DriveReply reply = OUTPUT::LastDriveReply(seq);
+            setFailed = seq != replySeq && (reply == OUTPUT::DriveReply::FAILED ||
+                                            reply == OUTPUT::DriveReply::FAILED_PARK);
+            if (setFailed)
+              setFailedReply = OUTPUT::DriveReplyName(reply);
+          }
+#endif
           TestMainStall("after-set");
           UpdateLatencyTweak();
 #if defined(HAS_LIBAMCODEC)
@@ -1646,9 +1708,28 @@ void CRenderManager::UpdateResolution()
           // one step for IsResolutionUpdatePending's locked read (5.B2-2)
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
-          ++m_resolutionDecisions;
-          m_sessionModeDecided = true;
-          m_resolutionInFlight = false;
+          // 5.B2-5b (r2 N5): a failed set is not a decision. The trigger is raised again once,
+          // with the in-flight flag kept, so the held start waits for the retry's reply (or
+          // the 12 s cap); the retry's result counts, whatever it is
+          if (setFailed && OUTPUT::ModeSetsOnW() && !m_rmRetry)
+          {
+            m_rmRetry = true;
+            m_bTriggerUpdateResolution = true;
+            // the same request: the re-clock it consumed goes with it
+            if (fracArmed)
+              m_reclockArmed = true;
+            CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry ({})", setFailedReply);
+          }
+          else
+          {
+            if (m_rmRetry)
+              CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry done ({})",
+                        setFailed ? setFailedReply : "set");
+            m_rmRetry = false;
+            ++m_resolutionDecisions;
+            m_sessionModeDecided = true;
+            m_resolutionInFlight = false;
+          }
         }
         else
 #endif

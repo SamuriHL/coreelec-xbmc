@@ -161,6 +161,10 @@ public:
   //! 5.B2-2: also while a consumed trigger's set runs; decisions gets the count read
   //! with it (left unset under outputdrive_off)
   bool IsResolutionUpdatePending(std::optional<unsigned int>& decisions) const;
+#if defined(HAS_LIBAMCODEC)
+  //! 5.B2-5b: the retry will not run (left fullscreen, a new file): its in-flight flag goes
+  void AbandonRmRetry(const char* why);
+#endif
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }
@@ -297,6 +301,9 @@ protected:
   std::atomic_bool m_displayLost = {false};
   std::atomic<unsigned int> m_resolutionDecisions{0};
   bool m_resolutionInFlight = false; //!< m_statelock: consumed, its count not yet bumped (5.B2-2)
+  //! written under m_statelock: 5.B2-5b (r2 N5), an origin=rm set failed and its trigger was
+  //! raised once more
+  std::atomic_bool m_rmRetry{false};
   std::atomic_bool m_startHeld{false};
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   //! from a start the clock had yet to make until its display phase is measured:
