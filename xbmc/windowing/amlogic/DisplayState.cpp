@@ -600,21 +600,6 @@ void Shadow3d(bool today)
     t_compared = ShadowBool("3d@caps", today, &DisplayState::support3d, &t_cause);
 }
 
-void ShadowDrm(int fd, uint32_t crtc)
-{
-  if (!Active())
-    return;
-  const auto state = CapsState("drm@frame-latency");
-  if (state)
-    ShadowCaps("drm@frame-latency", state->drmFd == fd && state->crtcId == crtc,
-               [&]
-               {
-                 return StringUtils::Format("displaystate fd {} crtc {} today fd {} crtc {} ({})",
-                                            state->drmFd, state->crtcId, fd, crtc,
-                                            Describe(*state));
-               });
-}
-
 CHDRCapabilities HdrCaps(const CHDRCapabilities& today)
 {
   if (!Active())
@@ -670,6 +655,28 @@ bool Hdr10Plus(bool today)
 bool Has2160(bool today)
 {
   return PickBool("has2160@bd-uhd", today, &DisplayState::has2160);
+}
+
+void DrmIds(int& fd, uint32_t& crtc)
+{
+  if (!Active())
+    return;
+  Cause cause = NOT_PUBLISHED;
+  const auto state = CapsState("drm@frame-latency", &cause);
+  if (!state)
+  {
+    Fallback("drm@frame-latency", cause);
+    return;
+  }
+  ShadowCaps("drm@frame-latency", state->drmFd == fd && state->crtcId == crtc,
+             [&]
+             {
+               return StringUtils::Format("displaystate fd {} crtc {} today fd {} crtc {} ({})",
+                                          state->drmFd, state->crtcId, fd, crtc,
+                                          Describe(*state));
+             });
+  fd = state->drmFd;
+  crtc = state->crtcId;
 }
 
 namespace

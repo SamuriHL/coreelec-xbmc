@@ -1035,9 +1035,9 @@ float CWinSystemAmlogic::GetFrameLatencyAdjustment()
   // Milliseconds since the last hardware vblank. The render manager subtracts
   // it from the display latency so a frame-phase sample is referenced to the
   // vblank, not to whenever the render loop reached it.
-  const int fd = GetDRMDeviceFd();
-  const uint32_t crtc = GetDRMCrtcId();
-  DISPLAYSTATE::ShadowDrm(fd, crtc);
+  int fd = GetDRMDeviceFd();
+  uint32_t crtc = GetDRMCrtcId();
+  DISPLAYSTATE::DrmIds(fd, crtc);
   if (fd < 0 || crtc == 0)
     return 0.0f;
 

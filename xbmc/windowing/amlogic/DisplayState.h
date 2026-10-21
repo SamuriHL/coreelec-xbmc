@@ -103,7 +103,6 @@ void CountMode(const ModeShadow& shadow,
 void ShadowHdrCaps(const CHDRCapabilities& today);
 void ShadowDv(bool today);
 void Shadow3d(bool today);
-void ShadowDrm(int fd, uint32_t crtc);
 
 // 5.V1-3: the caps readers' values. Under on, the published value: the one the shadow compared
 // with today's read (the accessor's shadow, run on this thread for the value passed in, or
@@ -119,6 +118,8 @@ bool HdrPq(bool today);
 bool HdrHlg(bool today);
 bool Hdr10Plus(bool today);
 bool Has2160(bool today);
+//! 5.V1-6 (MC-46): the DRM fd and CRTC id, by the same rules
+void DrmIds(int& fd, uint32_t& crtc);
 
 // 5.V1-8 (S1): what main's GUI state gives the video side, published by main
 struct GuiInputs
