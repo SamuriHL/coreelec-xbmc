@@ -799,6 +799,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     OUTPUT::COutputWorker::Get().Start();
     // 5.B2-5b: from here on W runs main's mode sets
     OUTPUT::NoteModeSetsOnW(OUTPUT::COutputWorker::Get().Active() && ModeSetsOnWSwitch());
+    if (OUTPUT::ModeSetsOnW())
+      LostFirstSwitch();
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",
@@ -868,6 +870,18 @@ bool CWinSystemAmlogic::ModeSetsOnWSwitch()
       return false;
     }
     CLog::Log(LOGINFO, "OUTPUTDRIVE B2-5b: W runs main's mode sets");
+    return true;
+  }();
+  return on;
+}
+
+bool CWinSystemAmlogic::LostFirstSwitch()
+{
+  static const bool on = []
+  {
+    if (OUTPUT::OutputDriveSkip("B2-5c") || OUTPUT::TestOrderToday())
+      return false;
+    CLog::Log(LOGINFO, "OUTPUTDRIVE B2-5c: W's lost walk right after the park");
     return true;
   }();
   return on;

@@ -129,6 +129,9 @@ protected:
   //! 5.B2-5b's switch: OUTPUT::OutputDriveOn(), no outputdrive_skip "B2-5b", and B2-3 and
   //! B2-4 on; read once, at W's start (OUTPUT::ModeSetsOnW() from then on)
   static bool ModeSetsOnWSwitch();
+  //! 5.B2-5c's switch: under 5.B2-5b, the lost walk right after the park; no outputdrive_skip
+  //! "B2-5c" and no outputdrive_order "today" (both: B2-5b's order). Read once, at W's start
+  static bool LostFirstSwitch();
   //! CreateNewWindow's lost walk; 5.B2-5b runs it on W in main's mode set job, main waiting
   void LostWalk();
   //! 5.B2-5b: CreateNewWindow's arming of the delayed reset, on main from W's reply (r1 M9),

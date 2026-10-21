@@ -998,7 +998,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
 {
   // On W. Reads no CSettings and no plain member of main's: main waits (or gave up, an ERROR
   // path), so its state comes in the request and goes back in the reply. Today's
-  // CreateNewWindow sequence, in today's order.
+  // CreateNewWindow sequence, in today's order (5.B2-5c: the lost walk moved to after the park).
   const auto start = std::chrono::steady_clock::now();
   const auto sinceStart = [&start]
   {
@@ -1104,6 +1104,21 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
               "n={})",
               job.id, ++s_unparkedSets);
 
+  // WSA CreateNewWindow's lost walk. 5.B2-5c: right after the park (design §4.2 step 2), before
+  // the planes off; outputdrive_order "today" and the skip keep B2-5b's order, after them
+  const bool lostFirst = LostFirstSwitch();
+  const auto lostWalk = [&]
+  {
+    LostWalk();
+    job.lostWalked = true;
+    job.ledgerSet = m_ledgerSet.load();
+    job.lostMs = sinceStart();
+    CLog::Log(LOGINFO, "OUTPUTDRIVE B2-5c order={} set={}", lostFirst ? "lost-first" : "today",
+              job.ledgerSet);
+  };
+  if (lostFirst)
+    lostWalk();
+
   // step 3, at DestroyWindow's place in today's order: the graphics plane off, then rule S1'
   // (X1's GUI plane off, every GUI buffer back, the UI surface epoch); the EGL surface stays
   // until main's handler
@@ -1152,11 +1167,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // refresh backup data
   job.result = {job.hdrType, job.stereo, job.fullScreen, job.nativeGUI, false};
 
-  // WSA CreateNewWindow: the lost walk, then the commit
-  LostWalk();
-  job.lostWalked = true;
-  job.ledgerSet = m_ledgerSet.load();
-  job.lostMs = sinceStart();
+  // WSA CreateNewWindow: the lost walk (B2-5b's order), then the commit
+  if (!lostFirst)
+    lostWalk();
 
   const bool committed = display->set_native_resolution(res, job.fbName, job.stereo,
                                                         force_mode_switch, hotplug_mode_switch,

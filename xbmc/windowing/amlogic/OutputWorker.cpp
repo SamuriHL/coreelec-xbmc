@@ -390,6 +390,24 @@ int TestCStallNth()
   return CStall().second;
 }
 
+bool TestOrderToday()
+{
+  static const bool today = []
+  {
+    auto line = ReadTestSwitch("outputdrive_order");
+    if (!line)
+      return false;
+    StringUtils::Trim(*line);
+    const bool result = *line == "today";
+    if (result)
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test order today: the lost walk after the planes off");
+    else
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test order \"{}\" not known, ignored", *line);
+    return result;
+  }();
+  return today;
+}
+
 bool OutputDriveSkip(const std::string& substep)
 {
   static const std::vector<std::string> skipped = []

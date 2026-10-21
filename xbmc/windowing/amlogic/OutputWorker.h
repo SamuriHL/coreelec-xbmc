@@ -128,6 +128,9 @@ void DisarmDemuxBlock();
 //! of the n-th mode set's park after the boot set (5.B2-5b: a start whose retry is not stalled)
 int TestCStallMs();
 int TestCStallNth();
+//! outputdrive_order "today": 5.B2-5c's A/B, W's mode sets keep B2-5b's order (the lost walk
+//! after the planes off)
+bool TestOrderToday();
 //! outputdrive_skip "<substep>[,<substep>]": true for a listed 5.B2 sub-step (bisect only)
 bool OutputDriveSkip(const std::string& substep);
 
