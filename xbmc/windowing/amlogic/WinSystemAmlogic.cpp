@@ -740,17 +740,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
   }
 
-  {
-    std::unique_lock<CCriticalSection> lock(m_resourceSection);
-    LedgerBegin("mode set");
-    for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
-    {
-      (*i)->OnLostDisplay();
-      LedgerLost(*i);
-    }
-  }
-  OUTPUT::ArmDemuxBlock();
-  OUTPUT::TestStopAt("2");
+  LostWalk();
 
   // the commit job (5.B1-7): W sets the mode; main keeps the settings reads, the display
   // resources and the GL work
@@ -807,6 +797,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     aml_presenter_set_test_cstall(OUTPUT::TestCStallMs());
     aml_displaystate_init();
     OUTPUT::COutputWorker::Get().Start();
+    // 5.B2-5b: from here on W runs main's mode sets
+    OUTPUT::NoteModeSetsOnW(OUTPUT::COutputWorker::Get().Active() && ModeSetsOnWSwitch());
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",
@@ -833,6 +825,52 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_force_mode_switch = false;
   m_hotplug_mode_switch = false;
   return ret;
+}
+
+void CWinSystemAmlogic::LostWalk()
+{
+  {
+    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    LedgerBegin("mode set");
+    for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
+    {
+      (*i)->OnLostDisplay();
+      LedgerLost(*i);
+    }
+  }
+  OUTPUT::ArmDemuxBlock();
+  OUTPUT::TestStopAt("2");
+}
+
+void CWinSystemAmlogic::ArmDelayedReset(int delay, std::chrono::steady_clock::time_point modeSetAt)
+{
+  // WSA::CreateNewWindow's arming, on main from W's reply: counted from W's commit
+  m_delayDispReset = true;
+  m_resetDelay = std::chrono::milliseconds(static_cast<unsigned int>(delay * 100));
+  const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - modeSetAt);
+  m_dispResetTimer.Set(std::max(m_resetDelay - since, std::chrono::milliseconds(0)));
+  m_modeSetAt = modeSetAt;
+  m_sinkLockedReads = 0;
+  m_sinkLockPoll.Set(0ms);
+}
+
+bool CWinSystemAmlogic::ModeSetsOnWSwitch()
+{
+  static const bool on = []
+  {
+    if (!OUTPUT::OutputDriveOn() || OUTPUT::OutputDriveSkip("B2-5b"))
+      return false;
+    // S1' needs B2-4's epoch and C's buffer; the timing after W's commit is B2-3's
+    if (!SurfaceEpochOn() || !DISPLAYSTATE::CommitTimingOn())
+    {
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE B2-5b off: it needs B2-3 and B2-4 (skipped)");
+      return false;
+    }
+    CLog::Log(LOGINFO, "OUTPUTDRIVE B2-5b: W runs main's mode sets");
+    return true;
+  }();
+  return on;
 }
 
 bool CWinSystemAmlogic::SurfaceEpochOn()

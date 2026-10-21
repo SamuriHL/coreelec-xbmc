@@ -32,12 +32,15 @@
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/WireClassProbe.h"
 
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <mutex>
+#include <optional>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -78,6 +81,60 @@ struct SDriveShadow
   bool wasNativeGUI{false};
   Decision main;
   Decision w;
+};
+
+// 5.B2-5b: one mode set of main's. The request is read on main and taken by value (W reads no
+// CSettings and no plain member of main's); the reply is W's, read by main after the job
+struct SDriveJob
+{
+  struct Backups
+  {
+    StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
+    RenderStereoMode stereo{RenderStereoMode::OFF};
+    bool fullScreen{false};
+    bool nativeGUI{false};
+    bool windowCreated{false};
+  };
+
+  // the request (design §4.5)
+  uint64_t id{0};
+  RESOLUTION_INFO res;
+  int resIndex{-1}; //!< GC's RESOLUTION, for a late reply's GC update
+  std::string fbName;
+  bool fullScreen{false};
+  RenderStereoMode stereo{RenderStereoMode::OFF};
+  StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
+  bool nativeGUI{false}; //!< DISABLEGUISCALING, read on main
+  bool hotplug{false}; //!< GetHotPlug, read (and cleared) on main
+  bool fracRequest{false}; //!< RM's re-clock request (its scope ends with RM's set call)
+  bool originRm{false};
+  int delay{0}; //!< videoscreen.delayrefreshchange, 0.1 s units
+  uint32_t uiFormat{0};
+  OUTPUT::Lane lane{OUTPUT::Lane::SETTINGS};
+  Backups backups; //!< main's (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, created)
+  CPresentationCoordinator* coordinator{nullptr};
+  CGraphicsPlaneAML* graphicsPlane{nullptr};
+
+  // the reply
+  OUTPUT::DriveReply kind{OUTPUT::DriveReply::FAILED};
+  bool armDelay{false}; //!< today's set reaches WSA's delay arming (r2 N4)
+  bool tornDown{false}; //!< planes off and the reclaim ran (or, unparked, is main's to run)
+  bool parkRetried{false}; //!< the park was not acked in 2 s; it was waited for 500 ms more
+  bool unparked{false}; //!< nor then: the set ran unparked (S1' with the plane off, no cbuf)
+  bool lostWalked{false}; //!< the lost walk ran: its LEDGER set is ledgerSet
+  uint64_t ledgerSet{0};
+  int guiLocked{0}; //!< main's m_guiLocked when it posted the request
+  bool offRefused{false}; //!< S1''s GUI plane off was refused (the SB3 state)
+  uint64_t uiEpoch{0}; //!< the UI surface epoch the job started
+  Backups result;
+  std::chrono::steady_clock::time_point modeSetAt{};
+  int64_t parkMs{-1}, offMs{-1}, lostMs{-1}, commitMs{-1}, engageMs{-1};
+
+  // the hand-over: main waits, bounded; a reply it gave up on goes to the late list
+  std::mutex mutex;
+  std::condition_variable cond;
+  bool done{false};
+  bool abandoned{false};
 };
 } // namespace KODI::WINDOWING::AML
 
@@ -240,6 +297,12 @@ void ShadowLog(const SDriveShadow& s, uint64_t ledgerSet, const char* handler)
             "OUTPUTDRIVE shadow count sets={} match={} diff={} raced={} raced_diff={}",
             s_shadowSets, s_shadowMatch, s_shadowDiff, s_shadowRaced, s_shadowRacedDiff);
 }
+
+// 5.B2-5b: replies main gave up on (after 15 s), for MessagePump
+std::mutex s_lateMutex;
+// sets run today's way after two unacked parks (W only; gate target 0)
+int s_unparkedSets = 0;
+std::vector<std::shared_ptr<SDriveJob>> s_late;
 
 // a set with no mode set job: W shadows it after main's decision, on the lane its job would use
 void PostDriveShadow(const std::shared_ptr<SDriveShadow>& shadow, CAMLDisplay* display)
@@ -582,19 +645,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   m_guiRepaintFrames = 3;
 
   if (!m_delayDispReset && DisplayResetAllowed())
-  {
-    std::unique_lock<CCriticalSection> lock(m_resourceSection);
-    // tell any shared resources
-    for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
-    {
-      (*i)->OnResetDisplay();
-      LedgerReset(*i, 0ms);
-    }
-    LedgerResetDone();
-    CloseLostSpan();
-    lock.unlock();
-    OUTPUT::TestStopAt("8");
-  }
+    ResetDisplayNow();
 
   if (m_amlDisplay->aml_get_display_connected())
     SetPresentationReady(true);
@@ -604,6 +655,21 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     m_coordinator->SetTickSource(m_timekeeper->TickFd(), m_timekeeper->CrtcId());
 
   return true;
+}
+
+void CWinSystemAmlogicGLESContext::ResetDisplayNow()
+{
+  std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  // tell any shared resources
+  for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
+  {
+    (*i)->OnResetDisplay();
+    LedgerReset(*i, 0ms);
+  }
+  LedgerResetDone();
+  CloseLostSpan();
+  lock.unlock();
+  OUTPUT::TestStopAt("8");
 }
 
 bool CWinSystemAmlogicGLESContext::StartTimekeeper()
@@ -714,6 +780,10 @@ bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int
 
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
+  // 5.B2-5b: after the boot set, which stays inline (ruling 4, MC-40)
+  if (OUTPUT::ModeSetsOnW())
+    return SetFullScreenOnW(fullScreen, res);
+
   const uint64_t ledgerSet = m_ledgerSet;
   const int guiLocked = m_guiLocked;
   m_guiDiscarded = 0;
@@ -776,6 +846,566 @@ void CWinSystemAmlogicGLESContext::NoteDriveShadowBackups()
   std::unique_lock lock(s_shadowMutex);
   s_shadowBackups = {m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, m_bWindowCreated};
   ++s_shadowBackupsVersion;
+}
+
+bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_INFO& res)
+{
+  m_guiDiscarded = 0;
+
+  // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
+  static uint64_t s_requests = 0;
+  auto job = std::make_shared<SDriveJob>();
+  job->id = ++s_requests;
+  job->res = res;
+  job->resIndex = OUTPUT::DriveResolution();
+  job->fbName = m_framebuffer_name;
+  job->fullScreen = fullScreen;
+  MAINCOUPLING("GC GetStereoMode");
+  job->stereo = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+  job->nativeGUI = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
+  MAINCOUPLING("GC GetHDRType");
+  job->hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
+  job->hotplug = m_amlDisplay->GetHotPlug();
+  job->fracRequest = aml_frac_reclock_request();
+  job->originRm = OUTPUT::DriveOriginRm();
+  job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
+  job->uiFormat = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
+  job->backups = {m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, m_bWindowCreated};
+  job->coordinator = m_coordinator.get();
+  job->graphicsPlane = m_graphicsPlane.get();
+  job->guiLocked = m_guiLocked;
+  m_drivePosted = job->id;
+  // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
+  job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
+              : job->originRm ? OUTPUT::Lane::MIDPLAY
+                              : OUTPUT::Lane::SETTINGS;
+
+  const auto posted = std::chrono::steady_clock::now();
+  OUTPUT::COutputWorker::Get().Post(job->lane, "mode set",
+                                    [this, job]
+                                    {
+                                      // a throw replies failed, and main is answered
+                                      try
+                                      {
+                                        RunModeSetJob(*job);
+                                      }
+                                      catch (const std::exception& e)
+                                      {
+                                        CLog::Log(LOGERROR, "OUTPUTDRIVE request {} threw: {}",
+                                                  job->id, e.what());
+                                        job->kind = OUTPUT::DriveReply::FAILED;
+                                      }
+                                      catch (...)
+                                      {
+                                        CLog::Log(LOGERROR, "OUTPUTDRIVE request {} threw",
+                                                  job->id);
+                                        job->kind = OUTPUT::DriveReply::FAILED;
+                                      }
+                                      bool late;
+                                      {
+                                        std::unique_lock lock(job->mutex);
+                                        job->done = true;
+                                        late = job->abandoned;
+                                      }
+                                      job->cond.notify_all();
+                                      if (late)
+                                      {
+                                        std::unique_lock lock(s_lateMutex);
+                                        s_late.push_back(job);
+                                      }
+                                    });
+
+  // design §4.5: the gfx lock released across the wait (every recursion level); ERROR at 5 s,
+  // given up at 15 s
+  bool gaveUp = false;
+  {
+    CSingleExit gfxExit(CServiceBroker::GetWinSystem()->GetGfxContext());
+    std::unique_lock lock(job->mutex);
+    const auto done = [&job] { return job->done; };
+    if (!job->cond.wait_for(lock, 5s, done))
+    {
+      CLog::Log(LOGERROR, "OUTPUTDRIVE request {} still waiting after 5000 ms", job->id);
+      if (!job->cond.wait_for(lock, 10s, done))
+      {
+        job->abandoned = true;
+        gaveUp = true;
+      }
+    }
+  }
+  const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - posted)
+                          .count();
+
+  bool created = false;
+  if (gaveUp)
+  {
+    // the outcome is unknown, not a failure: RM does not retry on it (review S1/S2); main's
+    // ledger lines wait for the reply, which is applied when it comes if no request followed
+    CLog::Log(LOGERROR,
+              "OUTPUTDRIVE request {} given up after 15000 ms; its reply is applied when it "
+              "comes, if it is still the latest request",
+              job->id);
+    SetPresentationReady(false);
+    // the wire is unknown to main now: the next set runs in full
+    m_bWindowCreated = false;
+    OUTPUT::NoteDriveReply(OUTPUT::DriveReply::GAVE_UP);
+  }
+  else
+  {
+    const auto handlerStart = std::chrono::steady_clock::now();
+    created = ApplyDriveReply(*job);
+    OUTPUT::NoteDriveReply(job->kind);
+    ReportDriveSet(*job, created, waitMs,
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - handlerStart)
+                       .count(),
+                   false);
+  }
+  if (!created)
+    return false;
+
+  CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::ReportDriveSet(
+    const SDriveJob& job, bool created, int64_t waitMs, int64_t handlerMs, bool late)
+{
+  CLog::Log(late ? LOGERROR : LOGINFO,
+            "OUTPUTDRIVE set request={} ledger={} origin={} reply={} handler={} park={} park_ms={} "
+            "off_ms={} lost_ms={} commit_ms={} engage_ms={} wait_ms={} handler_ms={} "
+            "uiepoch={} off={} guiLocked {}{}",
+            job.id, job.ledgerSet, job.originRm ? "rm" : job.hotplug ? "hotplug" : "main",
+            OUTPUT::DriveReplyName(job.kind), created ? "ok" : "failed",
+            job.unparked ? "unacked" : job.parkRetried ? "retried" : "acked", job.parkMs,
+            job.offMs, job.lostMs, job.commitMs, job.engageMs, waitMs, handlerMs, job.uiEpoch,
+            !job.tornDown ? "-" : job.offRefused ? "refused" : "done", job.guiLocked,
+            late ? " (late)" : "");
+  // 5.B2-1: once per mode set that reached its lost walk, from the job's own record (never a
+  // compare of the live counter, which a job main gave up on may still move)
+  if (job.lostWalked)
+  {
+    if (!created)
+      LedgerSetFailed();
+    CLog::Log(LOGINFO, "OUTPUTDRIVE set={} {} guiLocked {} discarded {}", job.ledgerSet,
+              created ? "ok" : "failed", job.guiLocked, m_guiDiscarded);
+    m_guiLockedLogSet = created ? job.ledgerSet : 0;
+  }
+}
+
+void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
+{
+  // On W. Reads no CSettings and no plain member of main's: main waits (or gave up, an ERROR
+  // path), so its state comes in the request and goes back in the reply. Today's
+  // CreateNewWindow sequence, in today's order.
+  const auto start = std::chrono::steady_clock::now();
+  const auto sinceStart = [&start]
+  {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+  };
+  CAMLDisplay* const display = m_amlDisplay.get();
+  const RESOLUTION_INFO& res = job.res;
+  job.result = job.backups;
+
+  // the decision (GLES CreateNewWindow), from the request and W's own reads (D1)
+  const int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
+  const int cur_fractional_rate =
+      display->aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR);
+  const bool force_mode_switch_by_hdr = job.backups.hdrType != job.hdrType;
+  const bool force_mode_switch_by_stereo_mode = job.backups.stereo != job.stereo;
+  const bool force_mode_switch_by_fractional_rate = cur_fractional_rate != fractional_rate;
+  const bool force_mode_switch_by_hotplug = job.hotplug;
+  const bool force_mode_switch_by_wire = display->aml_output_wire_stale();
+
+  RESOLUTION_INFO current_resolution;
+  current_resolution.iWidth = current_resolution.iHeight = 0;
+  if (!display->aml_get_native_resolution(&current_resolution, job.nativeGUI))
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution",
+              __FUNCTION__);
+    job.kind = OUTPUT::DriveReply::FAILED;
+    return;
+  }
+
+  const std::string new_hdrStr = CStreamDetails::HdrTypeToString(job.hdrType);
+  const std::string old_hdrStr = CStreamDetails::HdrTypeToString(job.backups.hdrType);
+  CLog::Log(LOGDEBUG,
+            "CWinSystemAmlogicGLESContext::{}: "
+            "m_bWindowCreated: {}, "
+            "hdrType: {}({}), "
+            "force mode switch by - hdr: {}, frac rate: {}, stereo mode: {}, hotplug: {}, wire: {}",
+            __FUNCTION__, job.backups.windowCreated, new_hdrStr.empty() ? "none" : new_hdrStr,
+            old_hdrStr.empty() ? "none" : old_hdrStr, force_mode_switch_by_hdr,
+            force_mode_switch_by_fractional_rate, force_mode_switch_by_stereo_mode,
+            force_mode_switch_by_hotplug, force_mode_switch_by_wire);
+  CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
+    "cur: iWidth: {:04d}, iHeight: {:04d}, iScreenWidth: {:04d}, iScreenHeight: {:04d}, fRefreshRate: {:02.2f}, dwFlags: {:02x}, nativeGUI: {}",
+    __FUNCTION__,
+    current_resolution.iWidth, current_resolution.iHeight, current_resolution.iScreenWidth, current_resolution.iScreenHeight,
+    current_resolution.fRefreshRate, current_resolution.dwFlags, job.backups.nativeGUI);
+  CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
+    "res: iWidth: {:04d}, iHeight: {:04d}, iScreenWidth: {:04d}, iScreenHeight: {:04d}, fRefreshRate: {:02.2f}, dwFlags: {:02x}, nativeGUI: {}",
+    __FUNCTION__,
+    res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, job.nativeGUI);
+
+  // check if mode switch is needed
+  if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
+      current_resolution.iScreenWidth == res.iScreenWidth &&
+      current_resolution.iScreenHeight == res.iScreenHeight &&
+      job.backups.fullScreen == job.fullScreen &&
+      current_resolution.fRefreshRate == res.fRefreshRate &&
+      (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
+          (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+      job.backups.windowCreated && job.nativeGUI == job.backups.nativeGUI &&
+      !force_mode_switch_by_hdr && !force_mode_switch_by_hotplug &&
+      !force_mode_switch_by_fractional_rate && !force_mode_switch_by_stereo_mode &&
+      !force_mode_switch_by_wire)
+  {
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window",
+              __FUNCTION__);
+    // D7: parked only for a disc engage the set carries (today's engage runs parked); no
+    // not-ready, no lost walk
+    const bool dvPicture = job.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
+    {
+      std::optional<CAmlPresenterHold> hold;
+      // its own site: not a set's PARK record, not counted by outputdrive_cstall's n (N5)
+      if (dvPicture && aml_dv_disc_engage_pending())
+        hold.emplace("mode set no-op");
+      aml_dv_engage_pending_disc_session(dvPicture);
+    }
+    WIRECLASS::CWireClassProbe::Get().Notify("no mode set", WIRECLASS::FromHdrType(job.hdrType));
+    job.kind = OUTPUT::DriveReply::DONE_NO_CHANGE;
+    return;
+  }
+
+  // design §4.2 step 1: the park (not-ready is main's, from the reply). Not acked in 2 s: W
+  // waits 500 ms more on the same held epoch (no release, no second PARK record). Not acked then,
+  // the set runs unparked as today's park timeout does, and still takes the GUI plane off before
+  // the commit, as today's unacked DetachSurface and EGL destroy do; only C's cleared buffer is
+  // left out for that set
+  CAmlPresenterHold hold("mode set");
+  if (!hold.Parked())
+  {
+    CLog::Log(LOGWARNING, "OUTPUTDRIVE request {}: PARK not acked in 2 s, waiting 500 ms more",
+              job.id);
+    job.parkRetried = true;
+    hold.Rewait(500);
+  }
+  job.parkMs = sinceStart();
+  OUTPUT::TestStopAt("1");
+  job.armDelay = true;
+  job.unparked = !hold.Parked();
+  if (job.unparked)
+    CLog::Log(LOGERROR,
+              "PARK not acked twice: set runs unparked, plane off before the commit (request {}, "
+              "n={})",
+              job.id, ++s_unparkedSets);
+
+  // step 3, at DestroyWindow's place in today's order: the graphics plane off, then rule S1'
+  // (X1's GUI plane off, every GUI buffer back, the UI surface epoch); the EGL surface stays
+  // until main's handler
+  if (job.graphicsPlane)
+    job.graphicsPlane->SwitchOff();
+  uint64_t epoch = job.coordinator->UiEpoch() + 1;
+  job.offRefused = !job.coordinator->ReclaimUiForModeSet(
+      epoch, display->BuildUiPlaneOffRequestLocked(), job.uiFormat, !job.unparked);
+  job.uiEpoch = epoch;
+  job.tornDown = true;
+  job.result.windowCreated = false;
+  job.offMs = sinceStart();
+  OUTPUT::TestStopAt("3");
+
+  // check if a forced mode switch is required
+  bool force_mode_switch = false;
+  bool hotplug_mode_switch = false;
+  if (force_mode_switch_by_hotplug)
+  {
+    force_mode_switch = true;
+    hotplug_mode_switch = true;
+  }
+  else if (force_mode_switch_by_stereo_mode)
+  {
+    force_mode_switch = true;
+  }
+  else if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
+           current_resolution.iScreenWidth == res.iScreenWidth &&
+           current_resolution.iScreenHeight == res.iScreenHeight &&
+           MathUtils::FloatEquals(current_resolution.fRefreshRate, res.fRefreshRate, 0.06f))
+  {
+    // same resolution, check frac rate and other parameter
+    if (force_mode_switch_by_fractional_rate || force_mode_switch_by_hdr ||
+        force_mode_switch_by_wire)
+      force_mode_switch = true;
+  }
+
+  if (force_mode_switch)
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: force mode switch", __FUNCTION__);
+
+  // a content start takes the content's 1000/1001 rate (24/30/60 families only)
+  const float familyRate = std::round(res.fRefreshRate);
+  const bool frac_reclock = force_mode_switch_by_fractional_rate && job.fracRequest &&
+                            (familyRate == 24.0f || familyRate == 30.0f || familyRate == 60.0f);
+
+  // refresh backup data
+  job.result = {job.hdrType, job.stereo, job.fullScreen, job.nativeGUI, false};
+
+  // WSA CreateNewWindow: the lost walk, then the commit
+  LostWalk();
+  job.lostWalked = true;
+  job.ledgerSet = m_ledgerSet.load();
+  job.lostMs = sinceStart();
+
+  const bool committed = display->set_native_resolution(res, job.fbName, job.stereo,
+                                                        force_mode_switch, hotplug_mode_switch,
+                                                        frac_reclock);
+  // today's true with no display and no hotplug set (r1 M5)
+  const bool notConnected = committed && display->aml_set_not_connected();
+  OUTPUT::TestStopAt("4");
+  if (committed)
+  {
+    DISPLAYSTATE::PublishMode(*display, res, !job.fullScreen);
+    // N3 / r1 B1: counted, and the timing bumped, before the unpark
+    DISPLAYSTATE::NoteCommit();
+    aml_timing_inputs_bump();
+    // unparked: C may still be presenting; its cleared buffer is left out for this set
+    if (!job.unparked)
+      job.coordinator->PrepareClearedUi(res.iWidth, res.iHeight, epoch,
+                                        [display](uint32_t fb, int& w, int& h)
+                                        { return display->BuildFlipRequestLocked(fb, w, h); });
+  }
+  OUTPUT::TestStopAt("6");
+  // where main took the time after its commit job: the delay counts from here
+  job.modeSetAt = std::chrono::steady_clock::now();
+  job.commitMs = sinceStart();
+
+  if (committed)
+  {
+    job.result.windowCreated = true;
+    // the disc-session DV engage waits for this mode set, so the sink locks once
+    aml_dv_engage_pending_disc_session(job.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
+    WIRECLASS::CWireClassProbe::Get().Notify("mode set", WIRECLASS::FromHdrType(job.hdrType));
+    OUTPUT::TestStopAt("5");
+  }
+  job.engageMs = sinceStart();
+  job.kind = !committed      ? OUTPUT::DriveReply::FAILED
+             : notConnected ? OUTPUT::DriveReply::NOT_COMMITTED
+                            : OUTPUT::DriveReply::DONE;
+  // step 7: the unpark, at the hold's end
+}
+
+bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
+{
+  m_driveApplied = std::max(m_driveApplied, job.id);
+  // W's backups into main's members (main writes its own, r1 M9)
+  m_hdrType = job.result.hdrType;
+  m_stereo_mode = job.result.stereo;
+  m_bFullScreen = job.result.fullScreen;
+  m_nativeGUI = job.result.nativeGUI;
+  if (job.tornDown)
+  {
+    m_nWidth = job.res.iWidth;
+    m_nHeight = job.res.iHeight;
+    m_fRefreshRate = job.res.fRefreshRate;
+  }
+  // today's not-ready: WSA CreateNewWindow and DestroyWindow, or the failed decision
+  if (job.kind != OUTPUT::DriveReply::DONE_NO_CHANGE)
+    SetPresentationReady(false);
+  // r2 N4 / rev 3.1: armed for every reply that today reaches WSA's arming; after a failure
+  // presentation stays not-ready, so the armed reset waits for a successful set's
+  if (job.armDelay && job.delay > 0)
+    ArmDelayedReset(job.delay,
+                    job.tornDown ? job.modeSetAt : std::chrono::steady_clock::now());
+
+  switch (job.kind)
+  {
+    case OUTPUT::DriveReply::DONE_NO_CHANGE:
+      return true;
+    case OUTPUT::DriveReply::DONE:
+    case OUTPUT::DriveReply::NOT_COMMITTED:
+      // R4-L2: not-committed ran the reclaim too, so it rebuilds
+      return RebuildGuiSurface(job);
+    default:
+      m_bWindowCreated = job.result.windowCreated;
+      // Q9 (a): the film stays paused, the GUI frozen, until a set succeeds
+      if (job.tornDown)
+        CLog::Log(LOGERROR,
+                  "OUTPUTDRIVE request {} {}: presentation not ready until a set succeeds",
+                  job.id, OUTPUT::DriveReplyName(job.kind));
+      return false;
+  }
+}
+
+bool CWinSystemAmlogicGLESContext::RebuildGuiSurface(const SDriveJob& job)
+{
+  // rule S1', main's handler
+  CPresentationCoordinator* const coordinator = m_coordinator.get();
+  const uint64_t newEpoch = job.uiEpoch;
+  const auto start = std::chrono::steady_clock::now();
+  bool forgot = false;
+  {
+    // 1. the asserts first: every buffer main locked is in C's returned list, and C holds no
+    //    buffer below the epoch (C's own excluded); nothing else is applied before (R4-M3, SM2)
+    const auto drained = [&]
+    {
+      coordinator->TakeReturned(m_guiReturned, m_guiReturnedEpochs);
+      return !coordinator->HoldsUiEpochBelow(newEpoch) &&
+             static_cast<int>(m_guiReturned.size()) == m_guiLocked;
+    };
+    bool ok = drained();
+    // 2. bounded by the lost-flip bound (FLIP_LOST_NS), inside main's own request (D3). After
+    //    S1' everything is returned before the reply, so a wait here detects an m_guiLocked leak
+    //    (a count with no buffer behind it), not a flip still landing
+    while (!ok && std::chrono::steady_clock::now() - start < 500ms)
+    {
+      KODI::TIME::Sleep(10ms);
+      ok = drained();
+    }
+    if (!ok)
+    {
+      // 3. no retry, nothing left unbounded
+      CLog::Log(LOGERROR, "UI epoch not drained: guiLocked {} returned {} at epoch {}", m_guiLocked,
+                m_guiReturned.size(), newEpoch);
+      coordinator->ForgetUiEpoch(newEpoch);
+      coordinator->TakeReturned(m_guiReturned, m_guiReturnedEpochs);
+      forgot = true;
+    }
+
+    // 4. into the still-old surface: only buffers below the epoch
+    int released = 0;
+    for (size_t i = 0; i < m_guiReturned.size(); i++)
+    {
+      if (m_guiReturnedEpochs[i] >= newEpoch)
+        CLog::Log(LOGERROR, "UIEPOCH ASSERT a buffer of epoch {} back at the rebuild for epoch {}",
+                  m_guiReturnedEpochs[i], newEpoch);
+      else if (m_amlGBMUtils->Release(m_guiReturned[i], m_guiReturnedEpochs[i]))
+        released++;
+    }
+    m_guiReturned.clear();
+    m_guiReturnedEpochs.clear();
+    m_guiLocked -= released;
+    if (m_guiLocked != 0)
+    {
+      CLog::Log(LOGERROR, "UIEPOCH ASSERT guiLocked {} at the EGL destroy (epoch {})", m_guiLocked,
+                newEpoch);
+      m_guiDiscarded += m_guiLocked;
+      m_guiLocked = 0;
+    }
+  }
+
+  // 5. the EGL destroy: the GUI plane is already off (S1'), so normally no RmFB disables it
+  const bool planeMayBeUp = job.offRefused || forgot;
+  if (!SB3PROBE::On())
+    m_pGLContext->DestroySurface();
+  else
+  {
+    SB3PROBE::ArmRmFb();
+    const auto destroyStart = std::chrono::steady_clock::now();
+    m_pGLContext->DestroySurface();
+    const auto destroyEnd = std::chrono::steady_clock::now();
+    const SB3PROBE::RmFbResult rmFb = SB3PROBE::TakeRmFb();
+    const int64_t destroyStartNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       destroyStart.time_since_epoch())
+                                       .count();
+    CLog::Log(LOGINFO, "SB3 egl destroyed (handler) took_us={} rmfb={} first_fb={} first_at_us={} "
+                       "first_us={}",
+              std::chrono::duration_cast<std::chrono::microseconds>(destroyEnd - destroyStart)
+                  .count(),
+              rmFb.count, rmFb.firstFb,
+              rmFb.count ? (rmFb.firstNs - destroyStartNs) / 1000 : -1, rmFb.firstUs);
+  }
+  if (planeMayBeUp)
+    CLog::Log(LOGERROR, "PLANE ui may go off at the EGL destroy's RmFB (epoch {}, {})", newEpoch,
+              forgot ? "epoch forgotten" : "off refused");
+  CWinSystemAmlogic::DestroyWindow();
+
+  // 6. the new surface, with the job's epoch (never main's own)
+  uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
+  m_surfaceEpoch = newEpoch;
+  // SM6: a failure here is "done, handler failed": no surface, presentation not ready, C's
+  // buffer up, GC restored by the caller (no WINDOW_RESIZE); no detach or hold (R4-L3)
+  bool created = m_amlGBMUtils->CreateSurface(job.res.iWidth, job.res.iHeight, format, true,
+                                              newEpoch);
+  if (!created)
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{} - failed to create GBM surface",
+              __FUNCTION__);
+  else if (!m_pGLContext->CreatePlatformSurface(
+               m_amlGBMUtils->GetSurface(),
+               reinterpret_cast<EGLNativeWindowType>(m_amlGBMUtils->GetSurface())))
+  {
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{} - failed to create CreatePlatformSurface",
+              __FUNCTION__);
+    created = false;
+  }
+  else if (!m_pGLContext->BindContext())
+    created = false;
+  if (!created)
+  {
+    m_pGLContext->DestroySurface();
+    CLog::Log(LOGERROR, "OUTPUTDRIVE request {} done, handler failed: no GUI surface", job.id);
+    return false;
+  }
+  m_bWindowCreated = job.result.windowCreated;
+
+  // The new surface has no cached OSD frame for the dirty-driven GUI skip to
+  // keep on screen.
+  m_guiRepaintFrames = 3;
+
+  // at delay 0, after the unpark (5.B2-5b), in today's place after the surface
+  if (!m_delayDispReset && DisplayResetAllowed())
+    ResetDisplayNow();
+
+  if (m_amlDisplay->aml_get_display_connected())
+    SetPresentationReady(true);
+
+  // booted without a display: the timekeeper starts with the first CRTC
+  if (!m_timekeeper && StartTimekeeper() && m_coordinator && m_tickOwner)
+    m_coordinator->SetTickSource(m_timekeeper->TickFd(), m_timekeeper->CrtcId());
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::MessagePump()
+{
+  // 5.B2-5b (r1 L11): a reply main gave up on, applied normally when it comes (GC goes old ->
+  // old -> new), only if no request was posted since, and only from the top-level loop, never
+  // from a modal dialog's nested pump
+  std::vector<std::shared_ptr<SDriveJob>> late;
+  if (!CServiceBroker::GetGUI() || !CServiceBroker::GetGUI()->GetWindowManager().IsNested())
+  {
+    std::unique_lock lock(s_lateMutex);
+    late.swap(s_late);
+  }
+  for (const auto& job : late)
+  {
+    if (job->id != m_drivePosted)
+    {
+      CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
+                job->id, OUTPUT::DriveReplyName(job->kind), m_drivePosted);
+      continue;
+    }
+    CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+    std::unique_lock gfxLock(gfx);
+    const auto start = std::chrono::steady_clock::now();
+    DISPLAYSTATE::GcSetBegins();
+    m_guiDiscarded = 0;
+    const bool created = ApplyDriveReply(*job);
+    if (created)
+    {
+      CRenderSystemGLES::ResetRenderSystem(job->res.iWidth, job->res.iHeight);
+      // GC and WINDOW_RESIZE, as at the end of today's set (FinishModeChange is a no-op here)
+      if (job->resIndex >= 0)
+        gfx.ApplyModeChange(static_cast<RESOLUTION>(job->resIndex));
+    }
+    DISPLAYSTATE::GcSetEnds(created);
+    ReportDriveSet(*job, created, -1,
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count(),
+                   true);
+  }
+  return CWinSystemAmlogic::MessagePump();
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

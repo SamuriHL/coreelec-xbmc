@@ -33,6 +33,7 @@ namespace AML
 {
 
 struct SDriveShadow;
+struct SDriveJob;
 
 class CWinSystemAmlogicGLESContext : public CWinSystemAmlogic, public CRenderSystemGLES
 {
@@ -52,6 +53,8 @@ public:
                        bool fullScreen,
                        RESOLUTION_INFO& res) override;
   bool DestroyWindow() override;
+  //! 5.B2-5b: a reply main gave up on is applied here when it comes (r1 L11)
+  bool MessagePump() override;
 
   // Implementation of CRenderSystemBase via CRenderSystemGLES
   bool InitRenderSystem() override;
@@ -169,6 +172,26 @@ private:
   void NoteDriveShadowBackups();
   //! the shadow of a set that ran main's mode set job, logged when the set is done
   std::shared_ptr<SDriveShadow> m_driveShadow;
+
+  // 5.B2-5b: W runs main's mode sets (design §4.2, §4.5, §4.6; plan rule S1')
+  //! main: the request by value, W's job, the bounded wait with the gfx lock released, the reply
+  bool SetFullScreenOnW(bool fullScreen, RESOLUTION_INFO& res);
+  //! W: today's CreateNewWindow sequence, in today's order, from the request alone
+  void RunModeSetJob(SDriveJob& job);
+  //! main: the reply's state into main's members, then the OutputChanged handler; false when
+  //! the set (or its handler) failed
+  bool ApplyDriveReply(SDriveJob& job);
+  //! main's OutputChanged handler for a committed set: S1''s release and asserts, the EGL
+  //! destroy, the new surface, the delay 0 reset, presentation ready
+  bool RebuildGuiSurface(const SDriveJob& job);
+  //! the display reset at delay 0 (CreateNewWindow, and 5.B2-5b's handler)
+  void ResetDisplayNow();
+  //! the request main applied last, and the latest it posted (only its late reply is applied)
+  uint64_t m_driveApplied{0};
+  uint64_t m_drivePosted{0};
+  //! the OUTPUTDRIVE set line and B2-1's ledger lines of a set, from the job's record
+  void ReportDriveSet(
+      const SDriveJob& job, bool created, int64_t waitMs, int64_t handlerMs, bool late);
 };
 
 }

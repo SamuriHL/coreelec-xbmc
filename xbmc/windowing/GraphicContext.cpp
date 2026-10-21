@@ -36,6 +36,7 @@
 
 #include <cassert>
 #include <mutex>
+#include <optional>
 
 using KODI::UTILS::COLOR::Color;
 
@@ -433,10 +434,16 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   RESOLUTION lastRes = m_Resolution;
 #if defined(HAS_LIBAMCODEC)
   forceUpdate = true;
+  // 5.B2-5b: W parks the coordinator in its own job, and GC follows the reply
+  const bool onW = OUTPUT::ModeSetsOnW();
   // before the lock and before m_Resolution changes: the presentation
   // coordinator releases no video until the display transaction is over
-  CAmlPresenterHold presenterHold("mode set");
-  OUTPUT::TestStopAt("1");
+  std::optional<CAmlPresenterHold> presenterHold;
+  if (!onW)
+  {
+    presenterHold.emplace("mode set");
+    OUTPUT::TestStopAt("1");
+  }
 #endif
 
   // If the user asked us to guess, go with desktop
@@ -477,6 +484,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 
 #if defined(HAS_LIBAMCODEC)
   DISPLAYSTATE::GcSetBegins();
+  if (onW)
+    OUTPUT::NoteDriveResolution(res);
+  else
 #endif
   UpdateInternalStateWithResolution(res);
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
@@ -500,6 +510,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   else
     switched = CServiceBroker::GetWinSystem()->ResizeWindow(info_org.iWidth, info_org.iHeight, -1, -1);
 #if defined(HAS_LIBAMCODEC)
+  // design §4.6 (a): GC takes the mode only once its set is done (D3: still before this returns)
+  if (onW && switched)
+    UpdateInternalStateWithResolution(res);
   DISPLAYSTATE::GcSetEnds(switched);
 #endif
 

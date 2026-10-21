@@ -126,6 +126,14 @@ protected:
   //! 5.B2-4's switch (surface epoch, C's cleared UI buffer): OUTPUT::OutputDriveOn() and no
   //! outputdrive_skip "B2-4", read once; read only after the boot set
   static bool SurfaceEpochOn();
+  //! 5.B2-5b's switch: OUTPUT::OutputDriveOn(), no outputdrive_skip "B2-5b", and B2-3 and
+  //! B2-4 on; read once, at W's start (OUTPUT::ModeSetsOnW() from then on)
+  static bool ModeSetsOnWSwitch();
+  //! CreateNewWindow's lost walk; 5.B2-5b runs it on W in main's mode set job, main waiting
+  void LostWalk();
+  //! 5.B2-5b: CreateNewWindow's arming of the delayed reset, on main from W's reply (r1 M9),
+  //! counted from W's commit
+  void ArmDelayedReset(int delay, std::chrono::steady_clock::time_point modeSetAt);
   //! 5.B2-5a: W's shadow of this set's decision, run in the mode set job before the commit,
   //! then given the commit's result (set by the GLES context for one set)
   std::function<void()> m_shadowBefore;
