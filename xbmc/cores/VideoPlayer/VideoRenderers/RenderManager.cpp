@@ -2798,22 +2798,31 @@ void CRenderManager::ReencodeOnOutputChange()
   const uint64_t epoch = DISPLAYSTATE::TakeReencodeRequest();
   if (!epoch)
     return;
-  // the configured picture's params, under the locks Configure() takes: a paused film or a
-  // still has no next picture to run ConfigChanged
-  MAINCOUPLING_ACCESSOR("RM m_statelock");
-  std::unique_lock lock(m_statelock);
-  MAINCOUPLING_ACCESSOR("RM m_presentlock");
-  std::unique_lock lock2(m_presentlock);
   const char* outcome;
-  if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
-    outcome = "not configured, the next picture configures";
-  else if (!m_pRenderer->ConfigChanged(m_picture))
-    outcome = "encoding current";
-  else if (m_pRenderer->Configure(m_picture, m_fps, m_orientation))
-    outcome = "CRendererAML::Configure, no new picture";
-  else
-    outcome = "CRendererAML::Configure failed";
+  bool reencoded = false;
+  {
+    // the configured picture's params, under the locks Configure() takes: a paused film or a
+    // still has no next picture to run ConfigChanged
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
+    std::unique_lock lock2(m_presentlock);
+    if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
+      outcome = "not configured, the next picture configures";
+    else if (!m_pRenderer->ConfigChanged(m_picture))
+      outcome = "encoding current";
+    else if ((reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation)))
+      outcome = "CRendererAML::Configure, no new picture";
+    else
+      outcome = "CRendererAML::Configure failed";
+  }
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 re-encode epoch={}: {}", epoch, outcome);
+  if (!reencoded)
+    return;
+  // a static GUI is not redrawn on its own, so the plane would keep pixels encoded for the old
+  // declaration; the overlay cache rebuilds for the new regime at that render
+  OVERLAY::MarkDirty();
+  CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 re-encode epoch={}: GUI marked dirty", epoch);
 }
 
 void CRenderManager::CheckCommittedFps(const SPresentTick& tick,
