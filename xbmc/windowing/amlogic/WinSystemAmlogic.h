@@ -141,7 +141,10 @@ protected:
   //! then given the commit's result (set by the GLES context for one set)
   std::function<void()> m_shadowBefore;
   std::function<void(bool committed, bool notConnected)> m_shadowAfter;
-  bool m_presentationReady{false};
+  //! main writes it; 5.B2-6's SETTLE reads it on W
+  std::atomic_bool m_presentationReady{false};
+  //! 5.B2-6: W's SETTLE is armed (W publishes it; main's lost-span retry reads it, r1 M9)
+  std::atomic_bool m_resetPending{false};
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;
   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};

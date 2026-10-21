@@ -209,8 +209,10 @@ bool CWinSystemAmlogic::MessagePump()
 {
   // a span whose reconnect did not end it (the mode set failed): try again,
   // backing off, while the output reads connected and no reset is pending
+  // (5.B2-6: W's SETTLE publishes its own pending flag)
   if (m_lostOpen && !m_hotplugPending && !m_disconnectedSinceMs &&
-      !(m_delayDispReset && IsPresentationReady()) && m_lostRetry.IsTimePast())
+      !((m_delayDispReset || m_resetPending) && IsPresentationReady()) &&
+      m_lostRetry.IsTimePast())
   {
     CLog::Log(LOGWARNING, "CWinSystemAmlogic: display back but still lost, retrying the mode set");
     m_lostRetry.Set(m_lostRetryDelay);
@@ -804,6 +806,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     {
       LostFirstSwitch();
       DISPLAYSTATE::DvModePublishOn();
+      OUTPUT::SettleOnW();
     }
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(

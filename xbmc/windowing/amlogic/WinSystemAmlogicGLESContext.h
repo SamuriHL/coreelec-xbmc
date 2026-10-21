@@ -15,6 +15,8 @@
 #include "WinSystemAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -186,6 +188,31 @@ private:
   bool RebuildGuiSurface(const SDriveJob& job);
   //! the display reset at delay 0 (CreateNewWindow, and 5.B2-5b's handler)
   void ResetDisplayNow();
+  // 5.B2-6: SETTLE, the delayed display reset on W's clock (design §4.3, §4.4)
+  struct SSettle
+  {
+    uint64_t gen{0}; //!< every arm and supersede bumps it; a check of an older one returns
+    bool armed{false};
+    uint64_t request{0}; //!< the reset waits for main's handler of this request
+    uint64_t ledgerSet{0};
+    std::chrono::steady_clock::time_point modeSetAt{};
+    std::chrono::milliseconds delay{0};
+    bool lockWait{false}; //!< Q6: a film start at delay 0 waits for the sink lock
+    int lockedReads{0};
+    bool unreadableLogged{false};
+  };
+  //! W only
+  SSettle m_settle;
+  //! main: the request whose handler reached the reset (its new surface is up)
+  std::atomic<uint64_t> m_settleHandled{0};
+  //! W, at the park of a set: an armed SETTLE ends unreset; its owed lost stay in the ledger
+  //! and go to this set's reset (union)
+  void SettleSupersede(const SDriveJob& job);
+  //! W, after the job: SETTLE armed for a committed set at delay > 0 or a film start at delay 0;
+  //! a failed set's owed lost logged (Q9: no reset until a set succeeds)
+  void SettleAfterJob(SDriveJob& job);
+  //! W: one check of SETTLE generation gen, re-posted until the reset or a supersede
+  void SettleCheck(uint64_t gen);
   //! the request main applied last, and the latest it posted (only its late reply is applied)
   uint64_t m_driveApplied{0};
   uint64_t m_drivePosted{0};

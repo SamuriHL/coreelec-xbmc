@@ -221,6 +221,39 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
   m_cond.notify_all();
 }
 
+bool COutputWorker::PostAfter(Lane lane,
+                              const char* name,
+                              std::chrono::milliseconds after,
+                              std::function<void()> fn)
+{
+  std::unique_lock lock(m_mutex);
+  if (!m_running || m_stop)
+    return false;
+  m_timed.push_back({std::chrono::steady_clock::now() + after, lane,
+                     {name, std::move(fn), 0, m_nextId++, {}}});
+  m_cond.notify_all();
+  return true;
+}
+
+std::optional<std::chrono::steady_clock::time_point> COutputWorker::ReleaseDueLocked()
+{
+  std::optional<std::chrono::steady_clock::time_point> earliest;
+  const auto now = std::chrono::steady_clock::now();
+  for (auto it = m_timed.begin(); it != m_timed.end();)
+  {
+    if (it->due <= now)
+    {
+      m_lanes[static_cast<size_t>(it->lane)].push_back(std::move(it->job));
+      it = m_timed.erase(it);
+      continue;
+    }
+    if (!earliest || it->due < *earliest)
+      earliest = it->due;
+    ++it;
+  }
+  return earliest;
+}
+
 void COutputWorker::Process()
 {
   pthread_setname_np(pthread_self(), "OutputWorker");
@@ -234,11 +267,26 @@ void COutputWorker::Process()
           return &lane;
       return nullptr;
     };
-    m_cond.wait(lock, [&] { return m_stop || next() != nullptr; });
+    // timed jobs join their lane when due; a stop drops the ones not yet due
+    const auto timedDue = ReleaseDueLocked();
+    if (!m_stop && !next())
+    {
+      if (timedDue)
+        m_cond.wait_until(lock, *timedDue);
+      else
+        m_cond.wait(lock);
+      continue;
+    }
     // a stop drains what is queued first: a waiting caller is never left without its job
     std::deque<Job>* lane = next();
     if (!lane)
+    {
+      if (!m_timed.empty())
+        CLog::Log(LOGINFO, "OUTPUT: {} timed job(s) dropped at the stop (first: {})",
+                  m_timed.size(), m_timed.front().job.name);
+      m_timed.clear();
       break;
+    }
     Job job = std::move(lane->front());
     lane->pop_front();
     ++m_jobsStarted;
@@ -470,6 +518,7 @@ std::atomic_bool s_modeSetsOnW{false};
 DriveReply s_lastReply{DriveReply::NONE};
 uint64_t s_replySeq{0};
 int s_originRm{0};
+int s_originStartHeld{0};
 int s_driveResolution{-1};
 } // namespace
 
@@ -481,6 +530,20 @@ void NoteModeSetsOnW(bool on)
 bool ModeSetsOnW()
 {
   return s_modeSetsOnW.load(std::memory_order_relaxed);
+}
+
+bool SettleOnW()
+{
+  if (!ModeSetsOnW())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !OutputDriveSkip("B2-6");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-6: SETTLE on W's clock, the reset ledger on W");
+    return result;
+  }();
+  return on;
 }
 
 bool PlaneOffOnC()
@@ -531,19 +594,28 @@ DriveReply LastDriveReply(uint64_t& seq)
   return s_lastReply;
 }
 
-CDriveOriginRm::CDriveOriginRm()
+CDriveOriginRm::CDriveOriginRm(bool startHeld) : m_startHeld(startHeld)
 {
   ++s_originRm;
+  if (m_startHeld)
+    ++s_originStartHeld;
 }
 
 CDriveOriginRm::~CDriveOriginRm()
 {
   --s_originRm;
+  if (m_startHeld)
+    --s_originStartHeld;
 }
 
 bool DriveOriginRm()
 {
   return s_originRm > 0;
+}
+
+bool DriveFilmStart()
+{
+  return s_originStartHeld > 0;
 }
 
 void NoteDriveResolution(int res)

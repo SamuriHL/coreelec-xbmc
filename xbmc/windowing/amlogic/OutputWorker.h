@@ -18,8 +18,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 // Phase 5 step 5.B1: W, the one writer of link and DV state (design §2 I3, §4.1, §5). Jobs run
 // one at a time, highest lane first, never preempted inside a job. A caller either waits for its
@@ -68,6 +70,12 @@ public:
   //! Queues fn on W and returns (inline when W is not active; queued behind the running job
   //! when called on W). fn must capture by value.
   void Post(Lane lane, const char* name, std::function<void()> fn, uint64_t generation = 0);
+  //! Queues fn on W once after has passed (W's clock, 5.B2-6). Dropped, and false, when W is
+  //! not active; a stop drops the ones not yet due. fn must capture by value.
+  bool PostAfter(Lane lane,
+                 const char* name,
+                 std::chrono::milliseconds after,
+                 std::function<void()> fn);
   //! jobs W has started (5.B2-5a: a shadow's reads raced one)
   uint64_t JobsStarted() const { return m_jobsStarted.load(); }
 
@@ -87,13 +95,23 @@ private:
     std::shared_ptr<Result> result; // guarded by m_mutex; null for a posted job
   };
 
+  struct TimedJob
+  {
+    std::chrono::steady_clock::time_point due;
+    Lane lane;
+    Job job;
+  };
+
   COutputWorker() = default;
   void Process();
+  //! moves the due timed jobs into their lanes (m_mutex held); the earliest left, if any
+  std::optional<std::chrono::steady_clock::time_point> ReleaseDueLocked();
 
   mutable std::mutex m_mutex;
   std::condition_variable m_cond;
   std::condition_variable m_doneCond;
   std::array<std::deque<Job>, static_cast<size_t>(Lane::COUNT)> m_lanes;
+  std::vector<TimedJob> m_timed;
   std::thread m_thread;
   std::thread::id m_workerId;
   bool m_running = false;
@@ -145,6 +163,10 @@ bool OutputDriveOn();
 //! outputdrive_skip "B2-5b", and B2-3 and B2-4 on); false before that and under off
 void NoteModeSetsOnW(bool on);
 bool ModeSetsOnW();
+//! 5.B2-6: SETTLE (the delayed display reset) on W's clock, and ActiveAE's device-change replay:
+//! ModeSetsOnW and no outputdrive_skip "B2-6". Not latched (ModeSetsOnW is false until W starts);
+//! the switch line is logged once
+bool SettleOnW();
 //! 5.B2-7: C runs the blocking plane-off commits (G's and S1''s), and no thread but W in its
 //! park takes a presenter hold: ModeSetsOnW and no outputdrive_skip "B2-7"
 bool PlaneOffOnC();
@@ -164,16 +186,22 @@ const char* DriveReplyName(DriveReply reply);
 //! main: the reply of its last request, numbered (the give-up counts as FAILED)
 void NoteDriveReply(DriveReply reply);
 DriveReply LastDriveReply(uint64_t& seq);
-//! main: a request built inside this scope is the render manager's (origin=rm, r1 M4)
+//! main: a request built inside this scope is the render manager's (origin=rm, r1 M4); startHeld:
+//! the player holds a start for this decision (5.B2-6: a film start, Q6)
 class CDriveOriginRm
 {
 public:
-  CDriveOriginRm();
+  explicit CDriveOriginRm(bool startHeld = false);
   ~CDriveOriginRm();
   CDriveOriginRm(const CDriveOriginRm&) = delete;
   CDriveOriginRm& operator=(const CDriveOriginRm&) = delete;
+
+private:
+  bool m_startHeld;
 };
 bool DriveOriginRm();
+//! the request is RM's for a start the player holds (5.B2-6, Q6)
+bool DriveFilmStart();
 //! main: the RESOLUTION GC is setting, for a late reply's GC update (r1 L11)
 void NoteDriveResolution(int res);
 int DriveResolution();

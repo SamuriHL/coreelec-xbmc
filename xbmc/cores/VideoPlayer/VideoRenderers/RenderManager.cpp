@@ -1666,8 +1666,9 @@ void CRenderManager::UpdateResolution()
               ~FracReclockRequest() { aml_set_frac_reclock_request(false); }
             } fracRequest(fracReclock);
 #if defined(HAS_LIBAMCODEC)
-            // 5.B2-5b: the request is origin=rm (r1 M4)
-            OUTPUT::CDriveOriginRm origin;
+            // 5.B2-5b: the request is origin=rm (r1 M4); 5.B2-6: a film start's when the player
+            // holds a start for it (Q6's lock wait)
+            OUTPUT::CDriveOriginRm origin(m_startHeld);
 #endif
             CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           }

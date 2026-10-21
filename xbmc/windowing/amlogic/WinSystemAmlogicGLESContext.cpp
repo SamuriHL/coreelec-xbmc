@@ -108,6 +108,7 @@ struct SDriveJob
   bool hotplug{false}; //!< GetHotPlug, read (and cleared) on main
   bool fracRequest{false}; //!< RM's re-clock request (its scope ends with RM's set call)
   bool originRm{false};
+  bool filmStart{false}; //!< origin=rm for a start the player holds (5.B2-6, Q6)
   int delay{0}; //!< videoscreen.delayrefreshchange, 0.1 s units
   uint32_t uiFormat{0};
   OUTPUT::Lane lane{OUTPUT::Lane::SETTINGS};
@@ -118,6 +119,7 @@ struct SDriveJob
   // the reply
   OUTPUT::DriveReply kind{OUTPUT::DriveReply::FAILED};
   bool armDelay{false}; //!< today's set reaches WSA's delay arming (r2 N4)
+  bool settleArmed{false}; //!< 5.B2-6: W armed SETTLE for this set (main does not reset)
   bool tornDown{false}; //!< planes off and the reclaim ran (or, unparked, is main's to run)
   bool parkRetried{false}; //!< the park was not acked in 2 s; it was waited for 500 ms more
   bool unparked{false}; //!< nor then: the set ran unparked (S1' with the plane off, no cbuf)
@@ -869,6 +871,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   job->hotplug = m_amlDisplay->GetHotPlug();
   job->fracRequest = aml_frac_reclock_request();
   job->originRm = OUTPUT::DriveOriginRm();
+  job->filmStart = OUTPUT::DriveFilmStart();
   job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   job->uiFormat = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
   job->backups = {m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, m_bWindowCreated};
@@ -902,6 +905,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                                   job->id);
                                         job->kind = OUTPUT::DriveReply::FAILED;
                                       }
+                                      if (OUTPUT::SettleOnW())
+                                        SettleAfterJob(*job);
                                       bool late;
                                       {
                                         std::unique_lock lock(job->mutex);
@@ -1097,6 +1102,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   job.parkMs = sinceStart();
   OUTPUT::TestStopAt("1");
   job.armDelay = true;
+  if (OUTPUT::SettleOnW())
+    SettleSupersede(job);
   job.unparked = !hold.Parked();
   if (job.unparked)
     CLog::Log(LOGERROR,
@@ -1243,8 +1250,14 @@ bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
   if (job.kind != OUTPUT::DriveReply::DONE_NO_CHANGE)
     SetPresentationReady(false);
   // r2 N4 / rev 3.1: armed for every reply that today reaches WSA's arming; after a failure
-  // presentation stays not-ready, so the armed reset waits for a successful set's
-  if (job.armDelay && job.delay > 0)
+  // presentation stays not-ready, so the armed reset waits for a successful set's.
+  // 5.B2-6: W's SETTLE instead; a reset main armed (the inline boot set's) is superseded
+  if (OUTPUT::SettleOnW())
+  {
+    if (job.armDelay)
+      m_delayDispReset = false;
+  }
+  else if (job.armDelay && job.delay > 0)
     ArmDelayedReset(job.delay,
                     job.tornDown ? job.modeSetAt : std::chrono::steady_clock::now());
 
@@ -1382,17 +1395,155 @@ bool CWinSystemAmlogicGLESContext::RebuildGuiSurface(const SDriveJob& job)
   // keep on screen.
   m_guiRepaintFrames = 3;
 
-  // at delay 0, after the unpark (5.B2-5b), in today's place after the surface
-  if (!m_delayDispReset && DisplayResetAllowed())
+  // at delay 0, after the unpark (5.B2-5b), in today's place after the surface; 5.B2-6: unless
+  // W's SETTLE has it (a film start's lock wait)
+  if (!job.settleArmed && !m_delayDispReset && DisplayResetAllowed())
     ResetDisplayNow();
 
   if (m_amlDisplay->aml_get_display_connected())
     SetPresentationReady(true);
+  m_settleHandled = job.id;
 
   // booted without a display: the timekeeper starts with the first CRTC
   if (!m_timekeeper && StartTimekeeper() && m_coordinator && m_tickOwner)
     m_coordinator->SetTickSource(m_timekeeper->TickFd(), m_timekeeper->CrtcId());
   return true;
+}
+
+void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
+{
+  SSettle& settle = m_settle;
+  if (!settle.armed)
+    return;
+  CLog::Log(LOGINFO,
+            "LEDGER settle set={} superseded by request {} before its reset ({} ms after its "
+            "commit): lost {} owed into the next set (union)",
+            settle.ledgerSet, job.id,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - settle.modeSetAt)
+                .count(),
+            m_ledgerLost.load());
+  settle.armed = false;
+  ++settle.gen;
+  m_resetPending = false;
+}
+
+void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
+{
+  // no park: a no-change or a failed decision; an armed SETTLE stays, as today's timer
+  if (!job.armDelay)
+    return;
+  if (job.kind == OUTPUT::DriveReply::FAILED)
+  {
+    // Q9 (a): presentation stays not ready and nothing resets until a set succeeds
+    CLog::Log(LOGERROR,
+              "LEDGER owed after failed set set={} lost {} (request {}): no reset until a set "
+              "succeeds",
+              job.ledgerSet, m_ledgerLost.load(), job.id);
+    return;
+  }
+  // at delay 0 main's handler resets at once, as today, except at a film start (Q6, D8)
+  const bool lockWait = job.delay <= 0 && job.filmStart;
+  if (job.delay <= 0 && !lockWait)
+    return;
+
+  SSettle& settle = m_settle;
+  const uint64_t gen = ++settle.gen;
+  settle.armed = true;
+  settle.request = job.id;
+  settle.ledgerSet = job.ledgerSet;
+  settle.modeSetAt = job.modeSetAt;
+  settle.delay = std::chrono::milliseconds(lockWait ? 0 : job.delay * 100);
+  settle.lockWait = lockWait;
+  settle.lockedReads = 0;
+  settle.unreadableLogged = false;
+  if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle",
+                                              std::chrono::milliseconds(0),
+                                              [this, gen] { SettleCheck(gen); }))
+  {
+    // W is stopping: main's handler resets as at delay 0
+    CLog::Log(LOGWARNING, "SETTLE set={} request={} not armed: W is stopping", job.ledgerSet,
+              job.id);
+    settle.armed = false;
+    return;
+  }
+  m_resetPending = true;
+  job.settleArmed = true;
+  CLog::Log(LOGINFO, "SETTLE set={} request={} armed: delay {} ms{}", job.ledgerSet, job.id,
+            settle.delay.count(), lockWait ? ", sink lock wait (film start at delay 0)" : "");
+}
+
+void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
+{
+  SSettle& settle = m_settle;
+  if (!settle.armed || settle.gen != gen)
+    return;
+  const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - settle.modeSetAt);
+  const auto cap = settle.delay + 3000ms;
+
+  // today's SinkLockedAfterModeSet on W's clock: two locked reads 50 ms apart, the first no
+  // sooner than 100 ms after the commit; an unreadable lock (G12B) counts as locked there
+  if (settle.lockedReads < 2 && since >= 100ms && since <= cap)
+  {
+    const int locked = aml_hdmi_sink_locked();
+    if (locked < 0)
+    {
+      settle.lockedReads = 2;
+      if (!settle.unreadableLogged)
+      {
+        settle.unreadableLogged = true;
+        CLog::Log(LOGINFO, "SETTLE set={} sink lock unreadable: the 100 ms floor stands for it",
+                  settle.ledgerSet);
+      }
+    }
+    else if (locked == 1)
+      settle.lockedReads++;
+    else
+      settle.lockedReads = 0;
+  }
+  const bool locked = settle.lockedReads >= 2;
+
+  // once the set's handler has run; then as main's poll at delay > 0 (presentation ready, no
+  // hotplug pending), as the handler's reset at delay 0
+  if (since >= settle.delay && (locked || since > cap) && m_settleHandled == settle.request &&
+      (settle.lockWait || (IsPresentationReady() && !IsHotplugPending())) &&
+      DisplayResetAllowed())
+  {
+    settle.armed = false;
+    m_resetPending = false;
+    if (settle.delay.count() > 0)
+      CLog::Log(LOGINFO, "CWinSystemAmlogic: display reset {} ms after the mode set ({})",
+                since.count(), locked ? "delay and sink lock" : "sink never locked");
+    CLog::Log(LOGINFO, "SETTLE set={} request={} reset on W {} ms after the commit: {} (delay {} "
+                       "ms, lock wait {})",
+              settle.ledgerSet, settle.request, since.count(),
+              locked ? "sink locked" : "sink never locked", settle.delay.count(),
+              settle.lockWait ? 1 : 0);
+    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    for (IDispResource* resource : m_resources)
+    {
+      resource->OnResetDisplay();
+      LedgerReset(resource, settle.delay);
+    }
+    LedgerResetDone();
+    CloseLostSpan();
+    lock.unlock();
+    OUTPUT::TestStopAt("8");
+    return;
+  }
+
+  // the next check: the lock's 100 ms floor, then 50 ms reads (and polls); once locked, the
+  // delay's end; past the cap only main's handler or a later set is waited for
+  std::chrono::milliseconds next = 50ms;
+  if (since < 100ms)
+    next = 100ms - since;
+  else if (locked && since < settle.delay)
+    next = settle.delay - since;
+  else if (since > cap)
+    next = 250ms;
+  OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle", next,
+                                         [this, gen] { SettleCheck(gen); });
 }
 
 bool CWinSystemAmlogicGLESContext::MessagePump()
@@ -1515,7 +1666,8 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
       KODI::TIME::Sleep(50ms);
   }
 
-  // polled every frame so the lock reads count from the mode set
+  // polled every frame so the lock reads count from the mode set. 5.B2-6: under on only the
+  // inline boot set arms it; W's sets run SETTLE on W's clock
   const bool locked = m_delayDispReset && SinkLockedAfterModeSet();
   const auto sinceModeSet = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - m_modeSetAt);
