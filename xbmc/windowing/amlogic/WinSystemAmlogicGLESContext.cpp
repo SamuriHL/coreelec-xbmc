@@ -300,7 +300,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   OUTPUT::TestStopAt("5");
 
   uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
-  if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format, afterBootSet))
+  // 5.B2-4: the new surface takes the epoch its detach started (never main's own)
+  const bool surfaceEpoch = afterBootSet && SurfaceEpochOn() && m_coordinator;
+  if (surfaceEpoch)
+    m_surfaceEpoch = m_coordinator->UiEpoch();
+  if (!m_amlGBMUtils->CreateSurface(
+          res.iWidth, res.iHeight, format, afterBootSet,
+          surfaceEpoch ? std::optional<uint64_t>(m_surfaceEpoch) : std::nullopt))
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{} - failed to create GBM surface", __FUNCTION__);
     DestroyWindow();
@@ -589,6 +595,10 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   constexpr int GUI_LOCK_CAP = 4;
   if (m_guiLocked >= GUI_LOCK_CAP)
   {
+    // 5.B2-4 gate (P5-38): counted under on
+    if (m_outputWorkerStarted && SurfaceEpochOn() &&
+        (++m_guiLockCapStops <= 3 || m_guiLockCapStops % 100 == 0))
+      CLog::Log(LOGINFO, "UIEPOCH GUI_LOCK_CAP stop {}", m_guiLockCapStops);
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
     return false;
   }
@@ -621,7 +631,14 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   }
 
   m_guiLocked++;
-  const uint64_t seq = m_coordinator->SubmitUi(bo, fbId, req, fence);
+  const uint64_t seq = m_coordinator->SubmitUi(bo, fbId, req, fence, m_surfaceEpoch);
+  if (!seq)
+  {
+    // 5.B2-4 (SM4): refused, a buffer of a surface C no longer takes
+    if (m_amlGBMUtils->Release(bo, m_surfaceEpoch))
+      m_guiLocked--;
+    return false;
+  }
   if (m_guiRepaintFrames > 0)
     m_guiRepaintFrames--;
   if (m_guiLockedLogSet && m_guiRepaintFrames == 0)
@@ -640,19 +657,51 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 
 void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()
 {
-  m_coordinator->TakeReturned(m_guiReturned);
-  for (gbm_bo* bo : m_guiReturned)
-    m_amlGBMUtils->Release(bo);
-  m_guiLocked -= static_cast<int>(m_guiReturned.size());
+  m_coordinator->TakeReturned(m_guiReturned, m_guiReturnedEpochs);
+  if (!m_outputWorkerStarted || !SurfaceEpochOn())
+  {
+    for (gbm_bo* bo : m_guiReturned)
+      m_amlGBMUtils->Release(bo);
+    m_guiLocked -= static_cast<int>(m_guiReturned.size());
+  }
+  else
+  {
+    // 5.B2-4 (SM1): filtered on C's epoch before the bo is touched
+    int released = 0;
+    for (size_t i = 0; i < m_guiReturned.size(); i++)
+    {
+      if (m_guiReturnedEpochs[i] != m_surfaceEpoch)
+        CLog::Log(LOGERROR, "UIEPOCH ASSERT a buffer of epoch {} returned at surface epoch {}",
+                  m_guiReturnedEpochs[i], m_surfaceEpoch);
+      else if (m_amlGBMUtils->Release(m_guiReturned[i], m_guiReturnedEpochs[i]))
+        released++;
+    }
+    m_guiLocked -= released;
+    if (m_guiLocked < 0)
+    {
+      CLog::Log(LOGERROR, "UIEPOCH ASSERT m_guiLocked {}", m_guiLocked);
+      m_guiLocked = 0;
+    }
+  }
   m_guiReturned.clear();
+  m_guiReturnedEpochs.clear();
 }
 
 void CWinSystemAmlogicGLESContext::DetachGuiSurface()
 {
   if (!m_coordinator)
     return;
-  m_coordinator->DetachUiSurface();
+  // 5.B2-4: the UI epoch steps here until 5.B2-5 moves the reclaim into W's park (r1 L9)
+  const bool surfaceEpoch = m_outputWorkerStarted && SurfaceEpochOn();
+  uint64_t epoch = 0;
+  if (surfaceEpoch)
+    epoch = m_coordinator->DetachUiSurfaceNewEpoch(
+        m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID));
+  else
+    m_coordinator->DetachUiSurface();
   ReleaseReturnedGuiBuffers();
+  if (surfaceEpoch && m_coordinator->HoldsUiEpochBelow(epoch))
+    CLog::Log(LOGERROR, "UIEPOCH ASSERT C still holds a GUI buffer below epoch {}", epoch);
   m_guiDiscarded += m_guiLocked;
   // anything still counted belongs to the old surface and never comes back
   m_guiLocked = 0;

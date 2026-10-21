@@ -153,6 +153,10 @@ private:
   int m_guiDiscarded{0};
   uint64_t m_guiLockedLogSet{0};
   std::vector<gbm_bo*> m_guiReturned;
+  std::vector<uint64_t> m_guiReturnedEpochs;
+  //! 5.B2-4: the UI epoch of the GUI surface (0: off, or the boot set's surface)
+  uint64_t m_surfaceEpoch{0};
+  int m_guiLockCapStops{0};
 };
 
 }

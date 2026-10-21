@@ -147,10 +147,16 @@ CAMLGBMUtils::CAMLGBMUtils(int fd)
   }
 }
 
-bool CAMLGBMUtils::CreateSurface(int width, int height, uint32_t format, bool testFailure)
+bool CAMLGBMUtils::CreateSurface(
+    int width, int height, uint32_t format, bool testFailure, std::optional<uint64_t> surfaceEpoch)
 {
   m_buffer.reset();
   m_drm_fb = nullptr;
+  if (surfaceEpoch)
+  {
+    m_surfaceEpoch = *surfaceEpoch;
+    m_epochOn = true;
+  }
 
   uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
 
@@ -198,13 +204,16 @@ struct drm_fb* CAMLGBMUtils::GetFBFromBo(int fd, struct gbm_bo* bo)
     {
       if (fb->format == m_format)
         return fb;
-      else
-        FbDestroyCallback(bo, gbm_bo_get_user_data(bo));
+      // 5.B2-4: a failed AddFB2 below must not leave it pointing at the deleted fb
+      if (m_epochOn)
+        gbm_bo_set_user_data(bo, nullptr, nullptr);
+      FbDestroyCallback(bo, fb);
     }
   }
 
   struct drm_fb* fb = new drm_fb;
   fb->format = m_format;
+  fb->surfaceEpoch = m_surfaceEpoch;
 
   uint32_t width, height, handles[4] = {0}, strides[4] = {0}, offsets[4] = {0};
 
@@ -263,9 +272,24 @@ struct gbm_bo* CAMLGBMUtils::LockFront(int fd, uint32_t& fb_id)
   return bo;
 }
 
-void CAMLGBMUtils::Release(struct gbm_bo* bo)
+bool CAMLGBMUtils::Release(struct gbm_bo* bo, std::optional<uint64_t> epoch)
 {
+  if (epoch)
+  {
+    const drm_fb* fb = GetSurface() && *epoch == m_surfaceEpoch
+                           ? static_cast<const drm_fb*>(gbm_bo_get_user_data(bo))
+                           : nullptr;
+    if (!fb || fb->surfaceEpoch != *epoch)
+    {
+      CLog::Log(LOGERROR,
+                "UIEPOCH ASSERT not released: buffer of epoch {} (surface {}, epoch {}, fb {})",
+                *epoch, GetSurface() ? "alive" : "none", m_surfaceEpoch,
+                fb ? static_cast<int64_t>(fb->surfaceEpoch) : -1);
+      return false;
+    }
+  }
   gbm_surface_release_buffer(GetSurface(), bo);
+  return true;
 }
 
 bool CAMLGBMUtils::LockFrontBuffer(int fd)
@@ -1370,6 +1394,14 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(uint32_t fb_id)
   if (m_overlayActive)
     set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
   return req;
+}
+
+drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  src_w = m_width;
+  src_h = m_height;
+  return BuildFlipRequest(fb_id);
 }
 
 bool CAMLDRMUtils::HasOverlayPlane()

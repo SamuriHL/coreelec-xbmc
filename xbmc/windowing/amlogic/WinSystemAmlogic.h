@@ -122,6 +122,9 @@ protected:
   //! the set may re-clock a 1000/1001 rate difference at the live mode string
   bool m_frac_reclock{false};
   bool m_outputWorkerStarted{false};
+  //! 5.B2-4's switch (surface epoch, C's cleared UI buffer): OUTPUT::OutputDriveOn() and no
+  //! outputdrive_skip "B2-4", read once; read only after the boot set
+  static bool SurfaceEpochOn();
   bool m_presentationReady{false};
   bool m_nativeGUI;
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;

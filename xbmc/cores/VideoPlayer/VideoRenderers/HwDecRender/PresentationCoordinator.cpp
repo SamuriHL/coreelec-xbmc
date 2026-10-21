@@ -24,9 +24,11 @@
 #include <cstring>
 #include <string>
 
+#include <drm_fourcc.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 #include <xf86drm.h>
@@ -170,11 +172,23 @@ void CPresentationCoordinator::Stop()
   m_uiCond.notify_all();
   m_commitThread.join();
 
+  std::vector<DumbBuffer> dumbs;
   {
     std::unique_lock lock(m_uiMutex);
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       Drop(plane, m_planes[plane].ready);
+    if (m_cbufReq)
+      drmModeAtomicFree(m_cbufReq);
+    m_cbufReq = nullptr;
+    if (m_cbuf.fb)
+      dumbs.push_back(m_cbuf);
+    m_cbuf = DumbBuffer();
+    for (const Retired& retired : m_cbufRetired)
+      dumbs.push_back(retired.buffer);
+    m_cbufRetired.clear();
   }
+  for (DumbBuffer& dumb : dumbs)
+    FreeDumb(dumb);
   close(m_vblankFd);
   close(m_wakeFd);
   m_vblankFd = m_wakeFd = -1;
@@ -230,15 +244,37 @@ void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
   m_videoAttached = false;
 }
 
-uint64_t CPresentationCoordinator::Submit(
-    int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, double pts)
+uint64_t CPresentationCoordinator::Submit(int plane,
+                                          gbm_bo* bo,
+                                          uint32_t fb,
+                                          drmModeAtomicReqPtr req,
+                                          int fence,
+                                          double pts,
+                                          uint64_t epoch)
 {
   uint64_t seq;
+  bool replacedCbuf = false;
   {
     std::unique_lock lock(m_uiMutex);
+    // 5.B2-4 (SM4): a buffer of an old surface goes straight back
+    if (plane == PLANE_UI && epoch < m_uiEpoch)
+    {
+      const int refused = ++m_uiRefused;
+      const uint64_t current = m_uiEpoch;
+      lock.unlock();
+      if (req)
+        drmModeAtomicFree(req);
+      if (fence >= 0)
+        close(fence);
+      if (refused <= 3 || refused % 100 == 0)
+        CLog::Log(LOGINFO, "UIEPOCH refused submit {} of epoch {} below {}", refused, epoch,
+                  current);
+      return 0;
+    }
     UiBuffer& ready = m_planes[plane].ready;
     if (ready.req)
     {
+      replacedCbuf = ready.cOwned;
       Drop(plane, ready);
       if (plane == PLANE_UI)
         m_report.uiReplaced++;
@@ -250,12 +286,16 @@ uint64_t CPresentationCoordinator::Submit(
     ready.req = req;
     ready.fence = fence;
     ready.pts = pts;
+    ready.epoch = epoch;
+    ready.cOwned = false;
     ready.seq = seq = ++m_submitSeq;
     if (plane == PLANE_UI)
       m_report.uiSubmits++;
     else
       m_report.gfxSubmits++;
   }
+  if (replacedCbuf)
+    CLog::Log(LOGINFO, "CBUF replaced by main before its commit");
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
     CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
@@ -276,8 +316,33 @@ bool CPresentationCoordinator::WaitTaken(uint64_t seq, std::chrono::milliseconds
 void CPresentationCoordinator::TakeReturned(int plane, std::vector<gbm_bo*>& returned)
 {
   std::unique_lock lock(m_uiMutex);
-  std::vector<gbm_bo*>& from = m_planes[plane].returned;
-  returned.insert(returned.end(), from.begin(), from.end());
+  std::vector<Returned>& from = m_planes[plane].returned;
+  for (const Returned& buffer : from)
+    returned.push_back(buffer.bo);
+  from.clear();
+}
+
+void CPresentationCoordinator::TakeReturned(std::vector<gbm_bo*>& returned,
+                                            std::vector<uint64_t>& epochs)
+{
+  std::unique_lock lock(m_uiMutex);
+  std::vector<Returned>& from = m_planes[PLANE_UI].returned;
+  const auto cbuf = [this](uint32_t fb)
+  {
+    return fb == m_cbuf.fb || std::any_of(m_cbufRetired.begin(), m_cbufRetired.end(),
+                                          [fb](const Retired& r) { return r.buffer.fb == fb; });
+  };
+  for (const Returned& buffer : from)
+  {
+    // never C's own buffers (5.B2-4)
+    if (buffer.fb && cbuf(buffer.fb))
+    {
+      CLog::Log(LOGERROR, "UIEPOCH ASSERT a returned buffer carries C's fb {}", buffer.fb);
+      continue;
+    }
+    returned.push_back(buffer.bo);
+    epochs.push_back(buffer.epoch);
+  }
   from.clear();
 }
 
@@ -288,6 +353,172 @@ void CPresentationCoordinator::DetachSurface(int plane)
   std::unique_lock lock(m_uiMutex);
   AbandonLostCommit(plane);
   ReclaimPlane(plane);
+}
+
+uint64_t CPresentationCoordinator::DetachUiSurfaceNewEpoch(uint32_t format)
+{
+  CAmlPresenterHold hold("detach surface");
+  bool stale;
+  uint64_t epoch;
+  DumbBuffer shown;
+  {
+    std::unique_lock lock(m_uiMutex);
+    // C's buffer up, or its commit's flip lost: it may be on the plane
+    if (m_cbuf.fb && (m_cbufUp || m_planes[PLANE_UI].committedCOwned))
+    {
+      shown = m_cbuf;
+      m_cbuf = DumbBuffer();
+    }
+    AbandonLostCommit(PLANE_UI);
+    ReclaimPlane(PLANE_UI);
+    m_uiFormat = format;
+    epoch = ++m_uiEpoch;
+    // a request not used by now was for the old epoch
+    stale = m_cbufReq != nullptr;
+    if (stale)
+      drmModeAtomicFree(m_cbufReq);
+    m_cbufReq = nullptr;
+  }
+  if (stale)
+    CLog::Log(LOGINFO, "CBUF dropped an unused request at epoch {}", epoch);
+  // Still parked, with nothing in C's books on it: its RmFB takes the GUI plane off before
+  // commit 1, as the EGL destroy's RmFB of main's buffer does today. The next set makes a
+  // new buffer.
+  if (shown.fb)
+  {
+    CLog::Log(LOGINFO, "CBUF off at the detach: fb={} {}x{} freed", shown.fb, shown.width,
+              shown.height);
+    FreeDumb(shown);
+  }
+  return epoch;
+}
+
+uint64_t CPresentationCoordinator::UiEpoch()
+{
+  std::unique_lock lock(m_uiMutex);
+  return m_uiEpoch;
+}
+
+bool CPresentationCoordinator::HoldsUiEpochBelow(uint64_t epoch)
+{
+  std::unique_lock lock(m_uiMutex);
+  const PlaneState& ui = m_planes[PLANE_UI];
+  return (ui.ready.bo && ui.ready.epoch < epoch) ||
+         (ui.committedBo && ui.committedEpoch < epoch) || (ui.onScreen && ui.onScreenEpoch < epoch);
+}
+
+void CPresentationCoordinator::PrepareClearedUi(
+    int width,
+    int height,
+    uint64_t epoch,
+    const std::function<drmModeAtomicReqPtr(uint32_t, int&, int&)>& build)
+{
+  if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
+  {
+    CLog::Log(LOGERROR, "CBUF no buffer for a {}x{} GUI", width, height);
+    return;
+  }
+  uint32_t format;
+  uint32_t fb;
+  bool reuse;
+  {
+    std::unique_lock lock(m_uiMutex);
+    format = m_uiFormat ? m_uiFormat : DRM_FORMAT_ARGB8888;
+    reuse = m_cbuf.fb && m_cbuf.width == width && m_cbuf.height == height;
+    fb = m_cbuf.fb;
+  }
+  // C is parked: the allocation and the request stay off its thread and its lock (SL5,
+  // R4-L1, SM5)
+  DumbBuffer fresh;
+  if (!reuse)
+  {
+    if (!CreateDumb(width, height, format, fresh))
+      return;
+    fb = fresh.fb;
+  }
+  int srcWidth = 0;
+  int srcHeight = 0;
+  drmModeAtomicReqPtr req = build(fb, srcWidth, srcHeight);
+  bool stale;
+  {
+    std::unique_lock lock(m_uiMutex);
+    if (!reuse)
+    {
+      if (m_cbuf.fb)
+        m_cbufRetired.push_back({m_cbuf, m_uiFlips});
+      m_cbuf = fresh;
+    }
+    if (m_cbufReq)
+      drmModeAtomicFree(m_cbufReq);
+    stale = epoch < m_uiEpoch;
+    if (stale && req)
+      drmModeAtomicFree(req);
+    m_cbufReq = stale ? nullptr : req;
+    m_cbufEpoch = epoch;
+  }
+  CLog::Log(LOGINFO, "CBUF armed epoch={} fb={} {}x{} src={}x{} made={} request={}{}", epoch, fb,
+            width, height, srcWidth, srcHeight, reuse ? 0 : 1, req ? 1 : 0,
+            stale ? " (stale epoch: dropped)" : "");
+  if (req && (srcWidth != width || srcHeight != height))
+    CLog::Log(LOGERROR, "CBUF request src {}x{} is not the buffer's {}x{}", srcWidth, srcHeight,
+              width, height);
+}
+
+bool CPresentationCoordinator::CreateDumb(int width, int height, uint32_t format, DumbBuffer& dumb)
+{
+  drm_mode_create_dumb create = {};
+  create.width = static_cast<uint32_t>(width);
+  create.height = static_cast<uint32_t>(height);
+  create.bpp = 32;
+  if (drmIoctl(m_masterFd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0)
+  {
+    CLog::Log(LOGERROR, "CBUF dumb buffer {}x{} failed: {}", width, height, strerror(errno));
+    return false;
+  }
+  dumb.handle = create.handle;
+  dumb.width = width;
+  dumb.height = height;
+  // every byte 0: transparent, plane alpha full
+  drm_mode_map_dumb map = {};
+  map.handle = create.handle;
+  bool cleared = false;
+  if (drmIoctl(m_masterFd, DRM_IOCTL_MODE_MAP_DUMB, &map) == 0)
+  {
+    void* pixels = mmap(nullptr, create.size, PROT_READ | PROT_WRITE, MAP_SHARED, m_masterFd,
+                        static_cast<off_t>(map.offset));
+    if (pixels != MAP_FAILED)
+    {
+      std::memset(pixels, 0, create.size);
+      munmap(pixels, create.size);
+      cleared = true;
+    }
+  }
+  const uint32_t handles[4] = {create.handle};
+  const uint32_t pitches[4] = {create.pitch};
+  const uint32_t offsets[4] = {};
+  if (!cleared || drmModeAddFB2(m_masterFd, create.width, create.height, format, handles,
+                                pitches, offsets, &dumb.fb, 0) != 0)
+  {
+    CLog::Log(LOGERROR, "CBUF fb {}x{} failed (cleared {}): {}", width, height, cleared,
+              strerror(errno));
+    FreeDumb(dumb);
+    return false;
+  }
+  CLog::Log(LOGINFO, "CBUF made fb={} {}x{} pitch={}", dumb.fb, width, height, create.pitch);
+  return true;
+}
+
+void CPresentationCoordinator::FreeDumb(DumbBuffer& dumb)
+{
+  if (dumb.fb)
+    drmModeRmFB(m_masterFd, dumb.fb);
+  if (dumb.handle)
+  {
+    drm_mode_destroy_dumb destroy = {};
+    destroy.handle = dumb.handle;
+    drmIoctl(m_masterFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+  }
+  dumb = DumbBuffer();
 }
 
 bool CPresentationCoordinator::DisableGraphicsPlane(
@@ -341,11 +572,21 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
     if (plane != detached && state.committedBo)
     {
       if (state.onScreen)
-        state.returned.push_back(state.onScreen);
+        state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
       state.onScreen = state.committedBo;
       state.onScreenFb = state.committedFb;
+      state.onScreenEpoch = state.committedEpoch;
       state.committedBo = nullptr;
     }
+    else if (plane != detached && state.committedCOwned)
+    {
+      if (state.onScreen)
+        state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
+      state.onScreen = nullptr;
+      state.onScreenFb = state.committedFb;
+      m_cbufUp = true;
+    }
+    state.committedCOwned = false;
     state.inCommit = false;
   }
 }
@@ -358,20 +599,26 @@ void CPresentationCoordinator::ReclaimPlane(int plane)
   state.generation++;
   Drop(plane, state.ready);
   if (state.committedBo)
-    state.returned.push_back(state.committedBo);
+    state.returned.push_back({state.committedBo, state.committedFb, state.committedEpoch});
   if (state.onScreen)
-    state.returned.push_back(state.onScreen);
+    state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
   state.inCommit = false;
   state.committedBo = nullptr;
   state.committedFb = 0;
+  state.committedEpoch = 0;
+  state.committedCOwned = false;
   state.onScreen = nullptr;
   state.onScreenFb = 0;
+  state.onScreenEpoch = 0;
+  // R4-M4: C's own flag, cleared with the books
+  if (plane == PLANE_UI)
+    m_cbufUp = false;
 }
 
 void CPresentationCoordinator::Drop(int plane, UiBuffer& buffer)
 {
   if (buffer.bo)
-    m_planes[plane].returned.push_back(buffer.bo);
+    m_planes[plane].returned.push_back({buffer.bo, buffer.fb, buffer.epoch});
   if (buffer.req)
     drmModeAtomicFree(buffer.req);
   if (buffer.fence >= 0)
@@ -627,6 +874,8 @@ void CPresentationCoordinator::CommitUi()
     // worker is back from the ioctl
     if (m_inFlight || m_committing.req)
       return;
+    if (m_cbufReq)
+      PlaceClearedUi();
     // every plane with a submit whose GPU work is done goes in the one commit;
     // a plane left out keeps what it shows (R3)
     Committing commit;
@@ -662,11 +911,18 @@ void CPresentationCoordinator::CommitUi()
       commit.pts[plane] = ready.pts;
       m_planes[plane].inCommit = true;
       m_planes[plane].committedBo = ready.bo;
-      m_planes[plane].committedFb = ready.bo ? ready.fb : m_planes[plane].onScreenFb;
+      m_planes[plane].committedFb =
+          ready.bo || ready.cOwned ? ready.fb : m_planes[plane].onScreenFb;
+      m_planes[plane].committedEpoch = ready.epoch;
+      m_planes[plane].committedCOwned = ready.cOwned;
+      commit.cOwned |= ready.cOwned;
       ready = UiBuffer();
     }
     if (!commit.req)
       return;
+    if (commit.cOwned)
+      CLog::Log(LOGINFO, "CBUF on epoch={} fb={} graphics={}", m_cbufEpoch, m_cbuf.fb,
+                commit.has[PLANE_GRAPHICS] ? 1 : 0);
     // in flight from here: the flip event can arrive before the ioctl returns
     m_committing = commit;
     m_inFlight = true;
@@ -676,6 +932,29 @@ void CPresentationCoordinator::CommitUi()
     m_commitNs = MonotonicNs();
   }
   m_uiCond.notify_all();
+}
+
+void CPresentationCoordinator::PlaceClearedUi()
+{
+  PlaneState& ui = m_planes[PLANE_UI];
+  // one shot per set (R4-M4)
+  drmModeAtomicReqPtr req = std::exchange(m_cbufReq, nullptr);
+  // a GUI buffer of this epoch goes up instead: refused submits never queue (SM4)
+  const bool mainFirst = ui.ready.req || (ui.onScreen && ui.onScreenEpoch >= m_cbufEpoch);
+  if (mainFirst || m_cbufUp)
+  {
+    drmModeAtomicFree(req);
+    CLog::Log(LOGINFO, "CBUF not needed at epoch {} ({})", m_cbufEpoch,
+              mainFirst ? "main's buffer first" : "already up");
+    return;
+  }
+  // in the GUI plane's queue, so the graphics plane's ready frame joins its commit (SM7)
+  ui.ready.fb = m_cbuf.fb;
+  ui.ready.req = req;
+  ui.ready.fence = -1;
+  ui.ready.seq = ++m_submitSeq;
+  ui.ready.epoch = m_cbufEpoch;
+  ui.ready.cOwned = true;
 }
 
 void CPresentationCoordinator::CommitWorker()
@@ -733,15 +1012,20 @@ void CPresentationCoordinator::CommitWorker()
         if (!commit.has[plane] || commit.generation[plane] != state.generation)
           continue;
         if (state.committedBo)
-          state.returned.push_back(state.committedBo);
+          state.returned.push_back({state.committedBo, state.committedFb, state.committedEpoch});
         state.inCommit = false;
         state.committedBo = nullptr;
         state.committedFb = 0;
+        state.committedCOwned = false;
       }
       if (m_report.uiFailed++ < 3)
         CLog::Log(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
                   strerror(err));
-      if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
+      // not retried: main's first buffer of the epoch brings the GUI plane back (R4-M4);
+      // the graphics plane is not blamed for it
+      if (commit.cOwned)
+        CLog::Log(LOGERROR, "CBUF refused: {}", strerror(err));
+      else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
       {
         m_graphicsRejected = true;
         CLog::Log(LOGERROR, "CPresentationCoordinator - the graphics plane was refused ({}), "
@@ -764,21 +1048,45 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
     return;
   if (m_inFlightGfxPts != DVD_NOPTS_VALUE)
     CountPlacement(m_inFlightGfxPts, sequence);
-  for (PlaneState& state : m_planes)
+  bool cbufUp = false;
+  int64_t replacedMs = -1;
+  for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
+    PlaneState& state = m_planes[plane];
     if (!state.inCommit)
       continue;
+    if (plane == PLANE_UI)
+    {
+      m_uiFlips++;
+      if (state.committedCOwned)
+      {
+        // the GUI buffer it replaced is off screen
+        if (state.onScreen)
+          state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
+        state.onScreen = nullptr;
+        state.onScreenEpoch = 0;
+        m_cbufUp = cbufUp = true;
+        m_cbufUpNs = MonotonicNs();
+      }
+      else if (m_cbufUp && state.committedBo)
+      {
+        m_cbufUp = false;
+        replacedMs = (MonotonicNs() - m_cbufUpNs) / 1000000;
+      }
+    }
     // a property-only commit leaves the buffer on screen where it is
     if (state.committedBo)
     {
       if (state.onScreen)
-        state.returned.push_back(state.onScreen);
+        state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
       state.onScreen = state.committedBo;
+      state.onScreenEpoch = state.committedEpoch;
     }
     state.onScreenFb = state.committedFb;
     state.inCommit = false;
     state.committedBo = nullptr;
     state.committedFb = 0;
+    state.committedCOwned = false;
   }
   m_inFlight = false;
   m_inCommitTag = 0;
@@ -786,6 +1094,31 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
   m_report.uiFlips++;
   m_report.flipSum += flip;
   m_report.flipMax = std::max(m_report.flipMax, flip);
+
+  // a replaced cleared buffer, once a later GUI plane flip took it off the plane
+  std::vector<DumbBuffer> freed;
+  const PlaneState& ui = m_planes[PLANE_UI];
+  for (auto it = m_cbufRetired.begin(); it != m_cbufRetired.end();)
+  {
+    if (m_uiFlips > it->flips && it->buffer.fb != ui.onScreenFb && it->buffer.fb != ui.committedFb)
+    {
+      freed.push_back(it->buffer);
+      it = m_cbufRetired.erase(it);
+    }
+    else
+      ++it;
+  }
+  const uint64_t epoch = m_cbufEpoch;
+  lock.unlock();
+  if (cbufUp)
+    CLog::Log(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
+  if (replacedMs >= 0)
+    CLog::Log(LOGINFO, "CBUF replaced by main after {} ms", replacedMs);
+  for (DumbBuffer& dumb : freed)
+  {
+    CLog::Log(LOGINFO, "CBUF retired fb={} {}x{} freed", dumb.fb, dumb.width, dumb.height);
+    FreeDumb(dumb);
+  }
 }
 
 void CPresentationCoordinator::CountPlacement(double pts, unsigned int sequence)

@@ -24,6 +24,7 @@
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
+#include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/Resolution.h"
@@ -759,11 +760,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     // 5.B2-3: the commit is counted and bumps the timing inputs before the unpark; the boot set
     // stays today's (before W, and before display state's init)
     const bool commitTiming = m_outputWorkerStarted && DISPLAYSTATE::CommitTimingOn();
+    // 5.B2-4: C's cleared buffer for the epoch the surface detach started
+    CPresentationCoordinator* const coordinator =
+        m_outputWorkerStarted && SurfaceEpochOn() ? CPresentationCoordinator::Get() : nullptr;
+    const uint64_t uiEpoch = coordinator ? coordinator->UiEpoch() : 0;
     OUTPUT::COutputWorker::Get().Run(
         m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
         [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
          force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, frac = fracReclock,
-         windowed = !fullScreen, commitTiming]
+         windowed = !fullScreen, commitTiming, coordinator, uiEpoch]
         {
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           OUTPUT::TestStopAt("4");
@@ -775,6 +780,10 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
               DISPLAYSTATE::NoteCommit();
               aml_timing_inputs_bump();
             }
+            if (coordinator)
+              coordinator->PrepareClearedUi(
+                  res.iWidth, res.iHeight, uiEpoch, [display](uint32_t fb, int& w, int& h)
+                  { return display->BuildFlipRequestLocked(fb, w, h); });
           }
           OUTPUT::TestStopAt("6");
         });
@@ -818,6 +827,18 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_force_mode_switch = false;
   m_hotplug_mode_switch = false;
   return ret;
+}
+
+bool CWinSystemAmlogic::SurfaceEpochOn()
+{
+  static const bool on = []
+  {
+    const bool result = OUTPUT::OutputDriveOn() && !OUTPUT::OutputDriveSkip("B2-4");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-4: surface epoch and C's cleared UI buffer");
+    return result;
+  }();
+  return on;
 }
 
 // The display reset waits for the later of the user's refresh-change delay and

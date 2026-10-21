@@ -10,6 +10,7 @@
 #include <xf86drmMode.h>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@ struct drm_fb
 {
   uint32_t fb_id;
   uint32_t format;
+  uint64_t surfaceEpoch; //!< 5.B2-4: the UI epoch of the surface it was made for
 };
 
 //! 5.B2 M5 (SB3 probe, log only): the RmFBs of the GUI surface's fbs at its EGL destroy
@@ -48,14 +50,21 @@ public:
   CAMLGBMUtils(int fd);
   struct gbm_device *GetDevice() const { return m_device.get(); }
   struct gbm_surface *GetSurface() const { return m_surface.get(); }
-  //! testFailure: outputdrive_commitfail may fail this call (test only)
-  bool CreateSurface(int width, int height, uint32_t format, bool testFailure = false);
+  //! testFailure: outputdrive_commitfail may fail this call (test only); surfaceEpoch:
+  //! the UI epoch the surface's fbs carry (5.B2-4)
+  bool CreateSurface(int width,
+                     int height,
+                     uint32_t format,
+                     bool testFailure = false,
+                     std::optional<uint64_t> surfaceEpoch = std::nullopt);
   uint32_t GetFBId() { return m_drm_fb->fb_id; }
   bool LockFrontBuffer(int fd);
   // real_player: the GUI plane buffers the presentation coordinator commits.
   // Locked and released on the render thread; fb_id stays valid while locked.
   struct gbm_bo* LockFront(int fd, uint32_t& fb_id);
-  void Release(struct gbm_bo* bo);
+  //! 5.B2-4, with the epoch C returned bo with: released only into its own surface,
+  //! and the bo is not read unless that is the current one
+  bool Release(struct gbm_bo* bo, std::optional<uint64_t> epoch = std::nullopt);
 private:
   struct drm_fb* GetFBFromBo(int fd, struct gbm_bo* bo);
 
@@ -95,6 +104,8 @@ private:
   };
 
   uint32_t m_format;
+  uint64_t m_surfaceEpoch{0};
+  bool m_epochOn{false}; //!< a surface was made with an epoch (5.B2-4)
   std::unique_ptr<struct gbm_device, GbmDeviceDeleter> m_device{nullptr};
   std::unique_ptr<struct gbm_surface, GbmSurfaceDeleter> m_surface{nullptr};
   std::unique_ptr<CGBMSurfaceBuffer> m_buffer{nullptr};
@@ -138,6 +149,8 @@ public:
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
+  //! 5.B2-4: BuildFlipRequest under m_drmSection, with the source size it sets
+  drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h);
   // real_player graphics plane (osd1, under the GUI plane)
   bool HasOverlayPlane();
   //! the graphics plane showing fb_id (a src_w x src_h buffer) over the whole
@@ -242,6 +255,10 @@ public:
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id)
   {
     return m_amlDRMUtils->BuildFlipRequest(fb_id);
+  }
+  drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h)
+  {
+    return m_amlDRMUtils->BuildFlipRequestLocked(fb_id, src_w, src_h);
   }
   bool HasOverlayPlane() { return m_amlDRMUtils->HasOverlayPlane(); }
   drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h)

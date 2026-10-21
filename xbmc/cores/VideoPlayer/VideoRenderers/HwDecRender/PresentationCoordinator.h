@@ -72,22 +72,47 @@ public:
    * whatever the other plane has ready; a newer submit replaces one not yet
    * committed. bo may be null for a property-only change (fb is then the one
    * on screen). Takes ownership of req and fence. pts: the video frame the
-   * content goes with, for the placement count (graphics only).
+   * content goes with, for the placement count (graphics only). epoch: the
+   * UI surface's (5.B2-4); a UI submit below the current UI epoch is refused:
+   * 0 is returned, req and fence are freed and bo stays the caller's.
    */
-  uint64_t Submit(
-      int plane, gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, double pts = DVD_NOPTS_VALUE);
-  uint64_t SubmitUi(gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence)
+  uint64_t Submit(int plane,
+                  gbm_bo* bo,
+                  uint32_t fb,
+                  drmModeAtomicReqPtr req,
+                  int fence,
+                  double pts = DVD_NOPTS_VALUE,
+                  uint64_t epoch = 0);
+  uint64_t SubmitUi(gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, uint64_t epoch)
   {
-    return Submit(PLANE_UI, bo, fb, req, fence);
+    return Submit(PLANE_UI, bo, fb, req, fence, DVD_NOPTS_VALUE, epoch);
   }
   //! Waits until that submit leaves the queue: committed, replaced or dropped.
   bool WaitTaken(uint64_t seq, std::chrono::milliseconds timeout);
   //! Buffers no longer on screen, for their producer to release.
   void TakeReturned(int plane, std::vector<gbm_bo*>& returned);
-  void TakeReturned(std::vector<gbm_bo*>& returned) { TakeReturned(PLANE_UI, returned); }
+  //! the GUI plane's, each with the UI epoch it was submitted with
+  void TakeReturned(std::vector<gbm_bo*>& returned, std::vector<uint64_t>& epochs);
   //! Before a plane's surface goes: every buffer comes back (display fence held).
   void DetachSurface(int plane);
   void DetachUiSurface() { DetachSurface(PLANE_UI); }
+  //! 5.B2-4: DetachUiSurface, then the UI epoch steps; format: the GUI surface's, for
+  //! C's cleared buffer. Returns the new epoch.
+  uint64_t DetachUiSurfaceNewEpoch(uint32_t format);
+  uint64_t UiEpoch();
+  //! 5.B2-4: a GUI buffer of an epoch below this one is still queued, committed or on
+  //! screen (C's own buffer is not counted)
+  bool HoldsUiEpochBelow(uint64_t epoch);
+  /*!
+   * \brief 5.B2-4, on W in a mode set's job while parked: C's cleared GUI-size buffer
+   * (made only when the size changes) and its flip request for this set, built by
+   * build(fb, src width, src height) under the display's lock. C commits it once, at
+   * its first slot after the unpark, unless a GUI buffer of the epoch is there first.
+   */
+  void PrepareClearedUi(int width,
+                        int height,
+                        uint64_t epoch,
+                        const std::function<drmModeAtomicReqPtr(uint32_t, int&, int&)>& build);
   /*!
    * \brief Switches the graphics plane off, in a blocking commit built by
    * build(fb of the GUI plane on screen) while the coordinator is parked, and
@@ -118,6 +143,15 @@ private:
     int fence = -1;
     uint64_t seq = 0;
     double pts = DVD_NOPTS_VALUE;
+    uint64_t epoch = 0;
+    bool cOwned = false; //!< C's cleared buffer (no bo, never returned)
+  };
+
+  struct Returned
+  {
+    gbm_bo* bo;
+    uint32_t fb;
+    uint64_t epoch;
   };
 
   struct PlaneState
@@ -126,9 +160,12 @@ private:
     bool inCommit = false; //!< part of the commit in flight
     gbm_bo* committedBo = nullptr; //!< what that commit puts on screen (null: properties only)
     uint32_t committedFb = 0;
+    uint64_t committedEpoch = 0;
+    bool committedCOwned = false;
     gbm_bo* onScreen = nullptr;
     uint32_t onScreenFb = 0;
-    std::vector<gbm_bo*> returned;
+    uint64_t onScreenEpoch = 0;
+    std::vector<Returned> returned;
     uint64_t generation = 0; //!< surfaces detached so far
   };
 
@@ -139,6 +176,15 @@ private:
     gbm_bo* bo[PLANE_COUNT] = {};
     uint64_t generation[PLANE_COUNT] = {};
     double pts[PLANE_COUNT] = {DVD_NOPTS_VALUE, DVD_NOPTS_VALUE};
+    bool cOwned = false; //!< carries C's cleared buffer
+  };
+
+  struct DumbBuffer
+  {
+    uint32_t handle = 0;
+    uint32_t fb = 0;
+    int width = 0;
+    int height = 0;
   };
 
   //! the video frame on screen from a vblank on
@@ -161,6 +207,10 @@ private:
   //! under a hold: a commit still marked in flight lost its flip (under m_uiMutex)
   void AbandonLostCommit(int detached);
   void ReclaimPlane(int plane); // under m_uiMutex
+  //! C's cleared buffer into the GUI plane's queue, for this pass (under m_uiMutex)
+  void PlaceClearedUi();
+  bool CreateDumb(int width, int height, uint32_t format, DumbBuffer& dumb);
+  void FreeDumb(DumbBuffer& dumb);
   bool UiInFlight();
   void RunVideoTick(SPresentTick& tick);
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
@@ -212,6 +262,25 @@ private:
   bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
   //! a commit carrying it failed: left out from then on
   std::atomic<bool> m_graphicsRejected{false};
+
+  // 5.B2-4, under m_uiMutex: the UI surface epoch (0: off, or before the first set)
+  // and C's cleared buffer
+  uint64_t m_uiEpoch = 0;
+  uint32_t m_uiFormat = 0;
+  int m_uiRefused = 0;
+  DumbBuffer m_cbuf;
+  drmModeAtomicReqPtr m_cbufReq = nullptr; //!< single use: this set's flip request
+  uint64_t m_cbufEpoch = 0;
+  bool m_cbufUp = false; //!< C's buffer is the GUI plane's, as C's books have it
+  int64_t m_cbufUpNs = 0;
+  uint64_t m_uiFlips = 0;
+  struct Retired
+  {
+    DumbBuffer buffer;
+    uint64_t flips; //!< m_uiFlips when it was replaced
+  };
+  //! replaced at a GUI size change: freed after a later GUI plane flip
+  std::vector<Retired> m_cbufRetired;
 
   struct Report
   {
