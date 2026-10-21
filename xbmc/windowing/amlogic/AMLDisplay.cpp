@@ -5,8 +5,10 @@
  *  See LICENSES/README.md for more information.
  */
 #include <drm_fourcc.h>
+#include <chrono>
 #include <cmath>
 #include <fcntl.h>
+#include <fstream>
 #include <sys/ioctl.h>
 #include <amcodec/codec.h>
 
@@ -69,6 +71,49 @@ bool DvTunnelFormat(const std::string& cfg)
 }
 } // unnamed namespace
 
+namespace
+{
+int64_t SteadyNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+std::atomic<bool> s_rmFbArmed{false};
+std::atomic<int> s_rmFbCount{0};
+std::atomic<int64_t> s_rmFbFirstNs{0};
+std::atomic<int64_t> s_rmFbFirstUs{0};
+std::atomic<uint32_t> s_rmFbFirstId{0};
+} // unnamed namespace
+
+namespace SB3PROBE
+{
+bool On()
+{
+  static const bool on = []
+  {
+    const bool result = XFILE::CFile::Exists("special://profile/m5probe_on");
+    if (result)
+      CLog::Log(LOGINFO, "SB3 probe on (m5probe_on)");
+    return result;
+  }();
+  return on;
+}
+
+void ArmRmFb()
+{
+  s_rmFbCount = 0;
+  s_rmFbArmed = true;
+}
+
+RmFbResult TakeRmFb()
+{
+  s_rmFbArmed = false;
+  return {s_rmFbCount, s_rmFbFirstNs, s_rmFbFirstUs, s_rmFbFirstId};
+}
+} // namespace SB3PROBE
+
 void FbDestroyCallback(gbm_bo* bo, void* data)
 {
   drm_fb* fb = static_cast<drm_fb*>(data);
@@ -77,7 +122,16 @@ void FbDestroyCallback(gbm_bo* bo, void* data)
   {
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - removing framebuffer: {}", __FUNCTION__, fb->fb_id);
     int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+    const bool armed = s_rmFbArmed;
+    const int64_t start = armed ? SteadyNs() : 0;
     drmModeRmFB(drm_fd, fb->fb_id);
+    // 5.B2 M5: an RmFB of the fb on a plane disables it in a blocking commit
+    if (armed && s_rmFbCount++ == 0)
+    {
+      s_rmFbFirstNs = start;
+      s_rmFbFirstUs = (SteadyNs() - start) / 1000;
+      s_rmFbFirstId = fb->fb_id;
+    }
   }
 
   delete fb;
@@ -684,6 +738,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
       frac_reclock && StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) &&
       aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) != fractional_rate &&
       aml_dv_wire_format_mismatch();
+  LogUiPlaneBeforeCommit();
   ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true,
                                  frac_reclock && !fracOnWire, !fracOnWire);
 
@@ -728,6 +783,50 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to set drmDevice mode", __FUNCTION__);
 
   return ret;
+}
+
+void CAMLDRMUtils::LogUiPlaneBeforeCommit()
+{
+  // 5.B2 M5 (SB3 probe, log only): read-only, under m_drmSection
+  if (!SB3PROBE::On())
+    return;
+  if (!m_plane)
+  {
+    CLog::Log(LOGINFO, "SB3 plane at commit1: no UI plane");
+    return;
+  }
+  const uint32_t id = m_plane->plane_id;
+  const int64_t now = SteadyNs();
+  if (drmModePlanePtr plane = drmModeGetPlane(m_fd, id))
+  {
+    CLog::Log(LOGINFO, "SB3 plane at commit1 plane={} fb={} crtc={} mono={}", id, plane->fb_id,
+              plane->crtc_id, now);
+    drmModeFreePlane(plane);
+  }
+  else
+    CLog::Log(LOGINFO, "SB3 plane at commit1 plane={} unread: {} mono={}", id, strerror(errno),
+              now);
+
+  std::ifstream state("/sys/kernel/debug/dri/0/state");
+  if (!state)
+    return;
+  const std::string head = StringUtils::Format("plane[{}]:", id);
+  std::string line;
+  int lines = 0;
+  bool in = false;
+  while (std::getline(state, line) && lines < 24)
+  {
+    const bool indented = !line.empty() && (line[0] == '\t' || line[0] == ' ');
+    if (!in)
+      in = StringUtils::StartsWith(line, head);
+    else if (!indented)
+      break;
+    if (in)
+    {
+      CLog::Log(LOGINFO, "SB3 state: {}", line);
+      lines++;
+    }
+  }
 }
 
 int CAMLDRMUtils::get_drmProp(

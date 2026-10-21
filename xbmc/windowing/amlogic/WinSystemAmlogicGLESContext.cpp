@@ -427,7 +427,27 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   if (m_graphicsPlane)
     m_graphicsPlane->SwitchOff();
   DetachGuiSurface();
+  if (!SB3PROBE::On())
+  {
+    m_pGLContext->DestroySurface();
+    return CWinSystemAmlogic::DestroyWindow();
+  }
+  // 5.B2 M5 (SB3 probe, log only): whether this destroy's RmFB took the UI plane off
+  const auto steadyNs = []
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  SB3PROBE::ArmRmFb();
+  const int64_t destroyStart = steadyNs();
   m_pGLContext->DestroySurface();
+  const int64_t destroyEnd = steadyNs();
+  const SB3PROBE::RmFbResult rmFb = SB3PROBE::TakeRmFb();
+  CLog::Log(LOGINFO,
+            "SB3 egl destroyed mono={} took_us={} rmfb={} first_fb={} first_at_us={} first_us={}",
+            destroyEnd, (destroyEnd - destroyStart) / 1000, rmFb.count, rmFb.firstFb,
+            rmFb.count ? (rmFb.firstNs - destroyStart) / 1000 : -1, rmFb.firstUs);
   return CWinSystemAmlogic::DestroyWindow();
 }
 

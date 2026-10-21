@@ -26,6 +26,22 @@ struct drm_fb
   uint32_t format;
 };
 
+//! 5.B2 M5 (SB3 probe, log only): the RmFBs of the GUI surface's fbs at its EGL destroy
+namespace SB3PROBE
+{
+//! special://profile/m5probe_on, read once (default off)
+bool On();
+struct RmFbResult
+{
+  int count;
+  int64_t firstNs; //!< steady clock
+  int64_t firstUs; //!< the first RmFB's duration
+  uint32_t firstFb;
+};
+void ArmRmFb();
+RmFbResult TakeRmFb();
+} // namespace SB3PROBE
+
 class CAMLGBMUtils
 {
 public:
@@ -158,6 +174,7 @@ private:
   void set_drmProp(unsigned int id, std::string name,
     unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
+  void LogUiPlaneBeforeCommit();
   int m_fd{-1};
   // The link may carry a DV tunnel format: TV-led (RGB/444 8-bit) or
   // player-led/LLDV (YUV422 12-bit), until it is handed back to the kernel on
