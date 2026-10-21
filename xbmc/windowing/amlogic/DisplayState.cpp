@@ -23,6 +23,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace DISPLAYSTATE
 {
@@ -755,6 +756,115 @@ RenderStereoMode GuiStereoMode(RenderStereoMode today)
                                            static_cast<int>(today));
               });
   return static_cast<RenderStereoMode>(published);
+}
+
+namespace
+{
+// W's posts (a leaf lock: nothing is taken under it)
+std::mutex s_postMutex;
+uint64_t s_postedEpoch = 0;
+uint64_t s_postedPublishes = 0;
+unsigned int s_postedWriters = 0;
+std::atomic<uint64_t> s_dvPublishes{0};
+// main only
+uint64_t s_handledPublishes = 0;
+uint64_t s_reencodeRequest = 0;
+
+std::string WriterNames(unsigned int writers)
+{
+  static constexpr std::pair<unsigned int, const char*> names[] = {
+      {DV_WRITER_VS10, "vs10"},
+      {DV_WRITER_VS10_FOLLOW, "vs10_follow"},
+      {DV_WRITER_DV_APPLY, "dv_apply"},
+      {DV_WRITER_TEARDOWN, "teardown_pre"},
+  };
+  std::string result;
+  for (const auto& [bit, name] : names)
+    if (writers & bit)
+      result += (result.empty() ? "" : ",") + std::string(name);
+  return result.empty() ? "none" : result;
+}
+} // namespace
+
+bool DvModePublishOn()
+{
+  if (!OUTPUT::ModeSetsOnW())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !OUTPUT::OutputDriveSkip("B2-8");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8: a DV-mode publish posts OutputChanged; main requests "
+                         "RM's re-encode");
+    return result;
+  }();
+  return on;
+}
+
+void PublishDvMode(unsigned int oldMode, unsigned int mode, DvWriter writer)
+{
+  if (!DvModePublishOn())
+    return;
+  // the publishers' epoch is W's alone
+  if (!OUTPUT::COutputWorker::Get().OnWorker())
+  {
+    static std::atomic_bool logged{false};
+    if (!logged.exchange(true))
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE B2-8 dvmode publish off W (writer={}): not posted",
+                WriterNames(writer));
+    return;
+  }
+  uint64_t epoch = 0;
+  if (s_state.load())
+  {
+    DisplayState s = Current();
+    Store(s, "dvmode");
+    epoch = s.epoch;
+  }
+  const uint64_t publishes = s_dvPublishes.fetch_add(1) + 1;
+  {
+    std::unique_lock lock(s_postMutex);
+    s_postedEpoch = epoch;
+    s_postedPublishes = publishes;
+    s_postedWriters |= writer;
+  }
+  CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 dvmode publish epoch={} writer={} mode={}->{} posted", epoch,
+            WriterNames(writer), oldMode, mode);
+}
+
+void HandleOutputChanged()
+{
+  if (s_dvPublishes.load() == s_handledPublishes)
+    return;
+  uint64_t epoch;
+  uint64_t publishes;
+  unsigned int writers;
+  {
+    std::unique_lock lock(s_postMutex);
+    epoch = s_postedEpoch;
+    publishes = s_postedPublishes;
+    writers = std::exchange(s_postedWriters, 0u);
+  }
+  if (publishes == s_handledPublishes)
+    return;
+  const uint64_t count = publishes - s_handledPublishes;
+  s_handledPublishes = publishes;
+  const char* outcome;
+  if (!(writers & (DV_WRITER_VS10 | DV_WRITER_VS10_FOLLOW)))
+    outcome = "the decoder's next picture configures";
+  else if (s_reencodeRequest)
+    outcome = "coalesced";
+  else
+    outcome = "reconfigure requested";
+  if (writers & (DV_WRITER_VS10 | DV_WRITER_VS10_FOLLOW))
+    s_reencodeRequest = std::max<uint64_t>(epoch, 1);
+  CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 OutputChanged epoch={} publishes={} writers={}: {}", epoch,
+            count, WriterNames(writers), outcome);
+}
+
+uint64_t TakeReencodeRequest()
+{
+  return std::exchange(s_reencodeRequest, 0);
 }
 
 void Tick()

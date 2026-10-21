@@ -572,7 +572,11 @@ unsigned int aml_dv_get_vs10_pending() { return s_vs10_pending_mode; }
 // the render thread (CRendererAML::Configure) and per output picture from
 // CRendererAML::ConfigChanged.
 static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
-void aml_dv_set_output_mode(unsigned int mode) { s_dv_output_mode = mode; }
+void aml_dv_set_output_mode(unsigned int mode, DISPLAYSTATE::DvWriter writer)
+{
+  const unsigned int old = s_dv_output_mode.exchange(mode);
+  DISPLAYSTATE::PublishDvMode(old, mode, writer);
+}
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }
 
 // Keep the OSD graphics peak in step with the output mode, matching the
@@ -600,7 +604,7 @@ static void aml_dv_publish_follow_source_mode(bool dvEnabled)
   if (mode > DOLBY_VISION_OUTPUT_MODE_BYPASS)
     return;
 
-  aml_dv_set_output_mode(mode);
+  aml_dv_set_output_mode(mode, DISPLAYSTATE::DV_WRITER_VS10_FOLLOW);
   aml_dv_apply_target_overrides(mode);
   aml_dv_apply_osd_brightness(mode);
   CLog::Log(LOGINFO, "AMLUtils::aml_dv_set_vs10_mode - follow source resolved to output mode {}",
@@ -1385,7 +1389,7 @@ static void aml_dv_set_vs10_mode_now(unsigned int mode)
   // Published so CRendererAML::ConfigChanged re-resolves the GUI/OSD encoding
   // for the new output instead of keeping the stream-open one.
   CSysfsPath("/sys/class/amdolby_vision/dv_mode", (mode + 1) % 6);
-  aml_dv_set_output_mode(mode);
+  aml_dv_set_output_mode(mode, DISPLAYSTATE::DV_WRITER_VS10);
   CLog::Log(LOGINFO, "AMLUtils::{} - VS10 output mode {} (dv_mode {})",
             "aml_dv_set_vs10_mode", mode, (mode + 1) % 6);
 }

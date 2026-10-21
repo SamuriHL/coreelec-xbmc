@@ -147,6 +147,26 @@ void PublishGuiInputs(const GuiInputs& inputs);
 //! first publish and under displaystate_off
 RenderStereoMode GuiStereoMode(RenderStereoMode today);
 
+// 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
+// the GUI/OSD encoding at its next render pass
+//! the switch: ModeSetsOnW and no outputdrive_skip "B2-8", latched at its first read after W runs
+bool DvModePublishOn();
+//! the writers of the DV output mode (aml_dv_set_output_mode)
+enum DvWriter : unsigned int
+{
+  DV_WRITER_VS10 = 1,
+  DV_WRITER_VS10_FOLLOW = 2,
+  DV_WRITER_DV_APPLY = 4, //!< a decoder open: its first picture configures
+  DV_WRITER_TEARDOWN = 8, //!< a decoder close: the next decoder's first picture configures
+};
+//! W, inside the writer's job: the epoch bump (no commit count, no timing bump) and the post
+void PublishDvMode(unsigned int oldMode, unsigned int mode, DvWriter writer);
+//! main, from MessagePump: the posts since the last call; sets the re-encode request unless only
+//! decoder writers posted
+void HandleOutputChanged();
+//! main, RM's render pass: the pending request's epoch, consumed; 0 when none
+uint64_t TakeReencodeRequest();
+
 // main only: the shadows' readers only count
 //! logs new DIFF/FAIL details, and the counters every 10 s
 void Tick();

@@ -2629,7 +2629,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
 
         // Publish the resolved output mode so CRendererAML::Configure encodes the
         // GUI/OSD to match the actual signal the sink receives this stream.
-        aml_dv_set_output_mode(dv_output_mode);
+        aml_dv_set_output_mode(dv_output_mode, DISPLAYSTATE::DV_WRITER_DV_APPLY);
         dvActual.enable = dv_enable;
         dvActual.outputMode = dv_output_mode;
         {
@@ -2977,7 +2977,7 @@ void CAMLCodec::CloseDecoder()
         if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE && !aml_dv_disc_engaged() &&
             !fileEngaged)
           AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
-        aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+        aml_dv_set_output_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS, DISPLAYSTATE::DV_WRITER_TEARDOWN);
         aml_dv_apply_target_overrides(DOLBY_VISION_OUTPUT_MODE_BYPASS);
         // Clear the VS10-HDR10 OSD graphics peak: amdv_graphic_max is a module param
         // (survives the stream) and a nonzero value overrides the kernel's per-format

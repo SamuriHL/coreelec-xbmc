@@ -274,6 +274,8 @@ protected:
   void CheckEnableClockSync(const STickTiming* timing = nullptr);
   //! render thread: the display timing PrepareNextRender uses, for either thread
   void PublishDisplayTiming();
+  //! 5.B2-8 (D11): main's OutputChanged request, re-encoded with no new picture
+  void ReencodeOnOutputChange();
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);

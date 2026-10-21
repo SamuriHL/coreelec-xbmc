@@ -13,6 +13,11 @@
 #include <cstdint>
 #include <string>
 
+namespace DISPLAYSTATE
+{
+enum DvWriter : unsigned int;
+}
+
 enum AML_SUPPORT_H264_4K2K
 {
   AML_SUPPORT_H264_4K2K_UNINIT = -1,
@@ -129,7 +134,7 @@ unsigned int aml_dv_get_vs10_pending();
 // CAMLCodec::OpenDecoder and read by CRendererAML::Configure so the GUI/OSD PQ
 // encoding follows the actual output (IPT/IPT_TUNNEL/HDR10 = PQ, SDR10/SDR8 =
 // SDR) rather than the source hdrType. BYPASS = DV core not forcing an output.
-void aml_dv_set_output_mode(unsigned int mode);
+void aml_dv_set_output_mode(unsigned int mode, DISPLAYSTATE::DvWriter writer);
 unsigned int aml_dv_get_output_mode();
 bool aml_dv_wire_format_mismatch();
 bool aml_dv_wire_format_is_lldv();

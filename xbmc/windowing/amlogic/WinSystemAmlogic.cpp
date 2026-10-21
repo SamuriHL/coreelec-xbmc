@@ -221,6 +221,7 @@ bool CWinSystemAmlogic::MessagePump()
   if (m_hotplugPending.exchange(false))
     HotplugEvent();
 
+  DISPLAYSTATE::HandleOutputChanged();
   DISPLAYSTATE::Tick();
   return false;
 }
@@ -800,7 +801,10 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     // 5.B2-5b: from here on W runs main's mode sets
     OUTPUT::NoteModeSetsOnW(OUTPUT::COutputWorker::Get().Active() && ModeSetsOnWSwitch());
     if (OUTPUT::ModeSetsOnW())
+    {
       LostFirstSwitch();
+      DISPLAYSTATE::DvModePublishOn();
+    }
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",
