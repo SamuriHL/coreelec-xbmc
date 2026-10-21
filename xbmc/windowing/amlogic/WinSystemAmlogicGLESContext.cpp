@@ -1117,7 +1117,12 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
               job.ledgerSet);
   };
   if (lostFirst)
+  {
     lostWalk();
+    // a throw in the planes off now comes after the lost: the reply must not keep the window,
+    // or the next set can come out a no-change one and leave the lost owed
+    job.result.windowCreated = false;
+  }
 
   // step 3, at DestroyWindow's place in today's order: the graphics plane off, then rule S1'
   // (X1's GUI plane off, every GUI buffer back, the UI surface epoch); the EGL surface stays
