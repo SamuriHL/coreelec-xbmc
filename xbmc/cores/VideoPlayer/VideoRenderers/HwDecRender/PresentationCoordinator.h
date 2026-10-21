@@ -282,7 +282,8 @@ private:
   //! C's thread, held or after a tick's QBUF: the queued plane offs, only with no GUI flip in
   //! flight, so the blocking commit can delay C's next tick, never this one's release
   void RunPlaneOffs(bool held);
-  void RunVideoTick(SPresentTick& tick);
+  //! true: a hold landed first, nothing was released
+  bool RunVideoTick(SPresentTick& tick);
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick, const SPresentResult& result, int64_t workNs);
@@ -331,7 +332,7 @@ private:
   bool m_flipLostLogged = false;
   // 5.B2-7, under m_uiMutex
   std::deque<std::shared_ptr<PlaneOffOp>> m_planeOffs;
-  bool m_planeOffOpen = false; //!< C's loop runs and takes plane offs
+  std::atomic<bool> m_planeOffOpen{false}; //!< C's loop runs and takes plane offs
   int m_uiDeferred = 0; //!< GUI commits left for a queued plane off
   // 5.B2-7, C's thread: the tick after a plane off, for its log line
   uint64_t m_planeOffSeq = 0;

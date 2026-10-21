@@ -764,7 +764,8 @@ bool CPresentationCoordinator::RunByC(const std::vector<std::shared_ptr<PlaneOff
   if (m_uiCond.wait_until(lock, deadline, [&]
                           { return state(PlaneOffOp::State::DONE, PlaneOffOp::State::DROPPED); }))
     return state(PlaneOffOp::State::DONE, PlaneOffOp::State::DONE);
-  // what C has not started is no longer C's; the one it runs ends with its blocking commit
+  // what C has not started is no longer C's; the one it runs ends with its blocking commit and
+  // is never run again
   for (const auto& op : ops)
     if (op->state == PlaneOffOp::State::QUEUED)
       m_planeOffs.erase(std::remove(m_planeOffs.begin(), m_planeOffs.end(), op),
@@ -775,7 +776,7 @@ bool CPresentationCoordinator::RunByC(const std::vector<std::shared_ptr<PlaneOff
                   return std::none_of(ops.begin(), ops.end(), [](const auto& op)
                                       { return op->state == PlaneOffOp::State::RUNNING; });
                 });
-  return false;
+  return state(PlaneOffOp::State::DONE, PlaneOffOp::State::DONE);
 }
 
 void CPresentationCoordinator::RunPlaneOffs(bool held)
@@ -917,14 +918,13 @@ void CPresentationCoordinator::Process()
   OUTPUT::SetThreadRole("C");
   SetPriority(ThreadPriority::ABOVE_NORMAL);
   aml_presenter_set_running(true);
-  {
-    std::unique_lock lock(m_uiMutex);
-    m_planeOffOpen = true;
-  }
+  m_planeOffOpen = true;
   m_lastTickNs = MonotonicNs();
 
   while (!m_bStop)
   {
+    // 5.B2-7 (latched once W runs the mode sets); off and the skip run none of it
+    const bool planeOffOnC = OUTPUT::PlaneOffOnC();
     unsigned int epoch = 0;
     // a hold is acknowledged only once the flip in flight has landed
     const bool held = aml_presenter_check_hold(epoch, !UiInFlight());
@@ -941,7 +941,8 @@ void CPresentationCoordinator::Process()
       // of the transaction are not missed ones
       m_lastTickNs = MonotonicNs();
       m_lastSeq = 0;
-      RunPlaneOffs(true);
+      if (planeOffOnC)
+        RunPlaneOffs(true);
     }
     else
       CommitUi();
@@ -1011,12 +1012,16 @@ void CPresentationCoordinator::Process()
     if (!video)
     {
       m_lastSeq = 0;
-      m_tickSeq = 0;
-      m_tickVblankNs = 0;
+      if (planeOffOnC)
+      {
+        m_tickSeq = 0;
+        m_tickVblankNs = 0;
+      }
       if (!held)
       {
         SetState(State::IDLE, epoch);
-        RunPlaneOffs(false);
+        if (planeOffOnC)
+          RunPlaneOffs(false);
       }
       int flips;
       {
@@ -1040,18 +1045,22 @@ void CPresentationCoordinator::Process()
       tick.epoch = epoch;
       m_report.synthetic++;
     }
-    RunVideoTick(tick);
-    RunPlaneOffs(false);
+    const bool tickHeld = RunVideoTick(tick);
+    if (planeOffOnC)
+      RunPlaneOffs(tickHeld);
   }
 
+  m_planeOffOpen = false;
+  if (OUTPUT::PlaneOffOnC())
   {
-    std::unique_lock lock(m_uiMutex);
-    m_planeOffOpen = false;
-    for (const auto& op : m_planeOffs)
-      op->state = PlaneOffOp::State::DROPPED;
-    m_planeOffs.clear();
+    {
+      std::unique_lock lock(m_uiMutex);
+      for (const auto& op : m_planeOffs)
+        op->state = PlaneOffOp::State::DROPPED;
+      m_planeOffs.clear();
+    }
+    m_uiCond.notify_all();
   }
-  m_uiCond.notify_all();
   aml_presenter_set_running(false);
 }
 
@@ -1433,14 +1442,14 @@ void CPresentationCoordinator::CountPlacement(double pts, unsigned int sequence)
             pts / 1000000.0, sequence, shown->pts / 1000000.0, shown->fromSeq, m_lastSeq, frames);
 }
 
-void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
+bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 {
   // a hold that landed during the wait is acknowledged before any release
   AmlEpochHold hold;
   if (aml_presenter_check_hold(tick.epoch, !UiInFlight(), &hold))
   {
     m_lastTickNs = tick.wokeNs;
-    return;
+    return true;
   }
   tick.holdSite = hold.site;
   tick.holdTid = hold.tid;
@@ -1453,7 +1462,7 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     CLog::Log(LOGINFO, "TICKDIAG video mutex wait {} us",
               (MonotonicNs() - diagWait) / 1000);
   if (!m_video)
-    return;
+    return false;
 
   SPresentResult result;
   const int64_t start = MonotonicNs();
@@ -1461,7 +1470,7 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
 
-  if (tick.vblankNs)
+  if (tick.vblankNs && OUTPUT::PlaneOffOnC())
   {
     // 5.B2-7: the tick after a plane off C ran, released on its vblank or not
     if (m_planeOffTickOwed)
@@ -1503,6 +1512,7 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     SetState(result.playing ? State::PLAYING : State::PAUSED, tick.epoch);
 
   Account(tick, result, work);
+  return false;
 }
 
 void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,
