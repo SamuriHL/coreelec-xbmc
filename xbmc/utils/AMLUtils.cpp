@@ -2658,6 +2658,10 @@ bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
     ++s_parkCount;
     s_parkSites += (s_parkSites.empty() ? "" : ",") + std::string(site ? site : "?");
   }
+  // 5.B2-7: W's park is the only hold; a nested one is an inline fallback (C did not answer)
+  if (s_holdDepth > 1 && OUTPUT::PlaneOffOnC())
+    CLog::Log(LOGERROR, "PARK depth {} site={} under site={}", s_holdDepth, site ? site : "?",
+              s_holds.front().site ? s_holds.front().site : "?");
   const unsigned int epoch = ++s_displayEpoch;
   if (heldEpoch)
     *heldEpoch = epoch;

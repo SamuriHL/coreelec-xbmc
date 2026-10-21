@@ -16,6 +16,8 @@
 #include <condition_variable>
 #include <functional>
 #include <cstdint>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -114,8 +116,8 @@ public:
                         uint64_t epoch,
                         const std::function<drmModeAtomicReqPtr(uint32_t, int&, int&)>& build);
   /*!
-   * \brief 5.B2-5b (rule S1'), on W in a mode set's job while W holds the park (no hold
-   * taken here): the GUI plane off in off, a blocking commit made with m_uiMutex released
+   * \brief 5.B2-5b (rule S1'), in a mode set's job while W holds the park, on W or (5.B2-7)
+   * on C (no hold taken here): the GUI plane off in off, a blocking commit made with m_uiMutex released
    * (built by the caller under the display's lock, ownership taken; null: none could be
    * built), every GUI buffer back to returned, and the UI epoch set to newEpoch, from which
    * Submit refuses older buffers. False when the off was refused or not built: the books are
@@ -138,6 +140,25 @@ public:
    * takes its buffers back. False when there was nothing to carry it.
    */
   bool DisableGraphicsPlane(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
+  /*!
+   * \brief 5.B2-7 (OUTPUT::PlaneOffOnC): DisableGraphicsPlane's off without a hold, run by C
+   * on its own thread (see RunPlaneOffs); who names the caller. Inline DisableGraphicsPlane
+   * when off, when C is not running, and when C did not answer in 2 s.
+   */
+  bool SwitchGraphicsOff(const std::function<drmModeAtomicReqPtr(uint32_t)>& build,
+                         const char* who);
+  /*!
+   * \brief In a mode set's job on W, before the commit: the graphics plane off (graphicsOff
+   * empty: no graphics plane), then rule S1''s reclaim (ReclaimUiForModeSet with uiOff()'s
+   * request). 5.B2-7 and parked: both run by C in its held branch; what C has not started in
+   * 2 s runs on W, under W's acknowledged park, with no further hold. Otherwise both inline
+   * on W, as before 5.B2-7. Returns the reclaim's result.
+   */
+  bool PlanesOffForModeSet(const std::function<drmModeAtomicReqPtr(uint32_t)>& graphicsOff,
+                           const std::function<drmModeAtomicReqPtr()>& uiOff,
+                           uint64_t& newEpoch,
+                           uint32_t format,
+                           bool parked);
   //! the driver refused a commit carrying the graphics plane
   bool GraphicsRefused() const { return m_graphicsRejected; }
 
@@ -198,6 +219,27 @@ private:
     bool cOwned = false; //!< carries C's cleared buffer
   };
 
+  //! 5.B2-7: a plane off posted to C
+  struct PlaneOffOp
+  {
+    bool ui = false; //!< S1''s reclaim; else the graphics plane off
+    const char* who = "";
+    std::function<drmModeAtomicReqPtr(uint32_t)> graphicsOff;
+    std::function<drmModeAtomicReqPtr()> uiOff;
+    uint64_t epoch = 0; //!< the UI epoch asked for, then taken
+    uint32_t format = 0;
+    int64_t postedNs = 0;
+    bool uiFlipAtPost = false;
+    enum class State
+    {
+      QUEUED,
+      RUNNING,
+      DONE,
+      DROPPED, //!< C stopped first
+    } state = State::QUEUED;
+    bool result = false;
+  };
+
   struct DumbBuffer
   {
     uint32_t handle = 0;
@@ -231,6 +273,15 @@ private:
   bool CreateDumb(int width, int height, uint32_t format, DumbBuffer& dumb);
   void FreeDumb(DumbBuffer& dumb);
   bool UiInFlight();
+  //! the graphics plane off with its books, the caller parked or C itself (no hold)
+  bool GraphicsPlaneOff(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
+  //! posts ops to C and waits until deadline; false: not all ran (each op's state says which;
+  //! a QUEUED one is no longer C's)
+  bool RunByC(const std::vector<std::shared_ptr<PlaneOffOp>>& ops,
+              std::chrono::steady_clock::time_point deadline);
+  //! C's thread, held or after a tick's QBUF: the queued plane offs, only with no GUI flip in
+  //! flight, so the blocking commit can delay C's next tick, never this one's release
+  void RunPlaneOffs(bool held);
   void RunVideoTick(SPresentTick& tick);
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   void SetState(State state, unsigned int epoch);
@@ -264,7 +315,8 @@ private:
   int64_t m_lastVblankNs = 0;
 
   //! 5.B2-5b (review S2): held across a plane-off's snapshot, blocking commit and books, by
-  //! DisableGraphicsPlane and ReclaimUiForModeSet; taken before m_uiMutex, never by C's thread
+  //! DisableGraphicsPlane and ReclaimUiForModeSet; taken before m_uiMutex. From 5.B2-7 C takes
+  //! it too: no holder waits on C
   std::mutex m_planeOffMutex;
   std::mutex m_uiMutex;
   std::condition_variable m_uiCond;
@@ -277,6 +329,16 @@ private:
   bool m_commitStop = false;
   std::thread m_commitThread;
   bool m_flipLostLogged = false;
+  // 5.B2-7, under m_uiMutex
+  std::deque<std::shared_ptr<PlaneOffOp>> m_planeOffs;
+  bool m_planeOffOpen = false; //!< C's loop runs and takes plane offs
+  int m_uiDeferred = 0; //!< GUI commits left for a queued plane off
+  // 5.B2-7, C's thread: the tick after a plane off, for its log line
+  uint64_t m_planeOffSeq = 0;
+  bool m_planeOffTickOwed = false;
+  int64_t m_tickVblankNs = 0;
+  uint64_t m_tickSeq = 0;
+  int64_t m_tickPeriodNs = 0;
   int64_t m_commitNs = 0;
   double m_inFlightGfxPts = DVD_NOPTS_VALUE; //!< the graphics pts of the commit in flight
   std::vector<OnScreen> m_onScreen; //!< coordinator thread only

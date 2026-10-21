@@ -16,6 +16,7 @@
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
@@ -418,10 +419,11 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
   return true;
 }
 
-void CGraphicsPlaneAML::SwitchOff()
+void CGraphicsPlaneAML::SwitchOff(const char* who)
 {
-  if (!m_coordinator->DisableGraphicsPlane([this](uint32_t primaryFb)
-                                           { return m_amlDisplay->BuildOverlayOffRequest(primaryFb); }))
+  if (!m_coordinator->SwitchGraphicsOff([this](uint32_t primaryFb)
+                                        { return m_amlDisplay->BuildOverlayOffRequest(primaryFb); },
+                                        who))
     CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
 }
 
@@ -693,7 +695,7 @@ void CGraphicsPlaneAML::Process()
     {
       if (!m_refusedOff)
       {
-        SwitchOff();
+        SwitchOff("refused");
         m_refusedOff = true;
       }
       m_wake.Wait(100ms);
@@ -703,7 +705,10 @@ void CGraphicsPlaneAML::Process()
     if (m_gholdMs > 0 && MonotonicNs() - m_gholdNs >= m_gholdMs * 1000000LL)
     {
       m_gholdNs = MonotonicNs();
-      SwitchOff();
+      SwitchOff("ghold");
+      // 5.B2-7: C's off takes no hold, so no epoch change brings the plane back
+      if (OUTPUT::PlaneOffOnC())
+        m_epoch = 0;
     }
     // a display transaction moved or rescaled the CRTC: the plane still has
     // the old rect until committed again (R6)
@@ -726,7 +731,7 @@ void CGraphicsPlaneAML::Process()
   }
 
   m_ready = false;
-  SwitchOff();
+  SwitchOff("stop");
   ReleaseReturned();
   DeinitGL();
   CLog::Log(LOGINFO, "CGraphicsPlaneAML - stopped");

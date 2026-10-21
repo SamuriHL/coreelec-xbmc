@@ -14,6 +14,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
@@ -43,6 +44,8 @@ constexpr int64_t SYNTHETIC_TICK_NS = 50000000;
 constexpr int64_t EVENT_LOST_NS = 100000000;
 // a flip event that never came (CRTC off mid-flight): take the flip as done
 constexpr int64_t FLIP_LOST_NS = 500000000;
+// 5.B2-7: a plane off C has not started by then runs inline (today's hold bound)
+constexpr auto PLANE_OFF_BOUND = std::chrono::seconds(2);
 
 std::atomic<CPresentationCoordinator*> s_instance{nullptr};
 
@@ -630,6 +633,12 @@ bool CPresentationCoordinator::DisableGraphicsPlane(
 {
   // parked, and no flip in flight: this thread owns the commit
   CAmlPresenterHold hold("graphics plane off");
+  return GraphicsPlaneOff(build);
+}
+
+bool CPresentationCoordinator::GraphicsPlaneOff(
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
+{
   // 5.B2-5b: never between a GUI plane reclaim's snapshot and its books (uncontended off)
   std::unique_lock planeOff(m_planeOffMutex);
   uint32_t primaryFb;
@@ -657,6 +666,158 @@ bool CPresentationCoordinator::DisableGraphicsPlane(
     m_graphicsOn = false;
   ReclaimPlane(PLANE_GRAPHICS);
   return done;
+}
+
+bool CPresentationCoordinator::SwitchGraphicsOff(
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build, const char* who)
+{
+  if (!OUTPUT::PlaneOffOnC())
+    return DisableGraphicsPlane(build);
+  auto op = std::make_shared<PlaneOffOp>();
+  op->who = who;
+  op->graphicsOff = build;
+  if (RunByC({op}, std::chrono::steady_clock::now() + PLANE_OFF_BOUND))
+    return op->result;
+  // C not running (stop, teardown): inline at once, as today
+  if (op->state == PlaneOffOp::State::QUEUED)
+    CLog::Log(LOGERROR, "graphics plane off: C did not answer in 2 s, inline (who={})", who);
+  return DisableGraphicsPlane(build);
+}
+
+bool CPresentationCoordinator::PlanesOffForModeSet(
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& graphicsOff,
+    const std::function<drmModeAtomicReqPtr()>& uiOff,
+    uint64_t& newEpoch,
+    uint32_t format,
+    bool parked)
+{
+  std::shared_ptr<PlaneOffOp> graphics;
+  std::shared_ptr<PlaneOffOp> ui;
+  if (OUTPUT::PlaneOffOnC() && parked)
+  {
+    std::vector<std::shared_ptr<PlaneOffOp>> ops;
+    if (graphicsOff)
+    {
+      graphics = std::make_shared<PlaneOffOp>();
+      graphics->who = "mode_set";
+      graphics->graphicsOff = graphicsOff;
+      ops.push_back(graphics);
+    }
+    ui = std::make_shared<PlaneOffOp>();
+    ui->ui = true;
+    ui->who = "mode_set";
+    ui->uiOff = uiOff;
+    ui->epoch = newEpoch;
+    ui->format = format;
+    ops.push_back(ui);
+    if (!RunByC(ops, std::chrono::steady_clock::now() + PLANE_OFF_BOUND) &&
+        ui->state == PlaneOffOp::State::QUEUED)
+      CLog::Log(LOGERROR,
+                "mode set planes off: C did not answer in 2 s, inline on W (graphics {}, ui {})",
+                !graphics ? "-" : graphics->state == PlaneOffOp::State::DONE ? "done" : "inline",
+                ui->state == PlaneOffOp::State::DONE ? "done" : "inline");
+  }
+
+  bool graphicsDone = graphics && graphics->state == PlaneOffOp::State::DONE;
+  if (graphicsDone)
+    graphicsDone = graphics->result;
+  // unparked: B2-5c's calls, its own hold first; W's acknowledged park needs no other
+  else if (graphicsOff)
+    graphicsDone = graphics ? GraphicsPlaneOff(graphicsOff) : DisableGraphicsPlane(graphicsOff);
+  if (graphicsOff && !graphicsDone)
+    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
+
+  if (ui && ui->state == PlaneOffOp::State::DONE)
+  {
+    newEpoch = ui->epoch;
+    return ui->result;
+  }
+  return ReclaimUiForModeSet(newEpoch, uiOff(), format, parked);
+}
+
+bool CPresentationCoordinator::RunByC(const std::vector<std::shared_ptr<PlaneOffOp>>& ops,
+                                      std::chrono::steady_clock::time_point deadline)
+{
+  std::unique_lock lock(m_uiMutex);
+  if (!m_planeOffOpen)
+  {
+    for (const auto& op : ops)
+      op->state = PlaneOffOp::State::DROPPED;
+    return false;
+  }
+  const int64_t now = MonotonicNs();
+  for (const auto& op : ops)
+  {
+    op->postedNs = now;
+    op->uiFlipAtPost = m_inFlight;
+    m_planeOffs.push_back(op);
+  }
+  // under the lock: C has not left its loop, so the fd is open
+  const uint64_t one = 1;
+  if (write(m_wakeFd, &one, sizeof(one)) < 0)
+    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+  const auto state = [&ops](PlaneOffOp::State a, PlaneOffOp::State b)
+  {
+    return std::all_of(ops.begin(), ops.end(),
+                       [a, b](const auto& op) { return op->state == a || op->state == b; });
+  };
+  if (m_uiCond.wait_until(lock, deadline, [&]
+                          { return state(PlaneOffOp::State::DONE, PlaneOffOp::State::DROPPED); }))
+    return state(PlaneOffOp::State::DONE, PlaneOffOp::State::DONE);
+  // what C has not started is no longer C's; the one it runs ends with its blocking commit
+  for (const auto& op : ops)
+    if (op->state == PlaneOffOp::State::QUEUED)
+      m_planeOffs.erase(std::remove(m_planeOffs.begin(), m_planeOffs.end(), op),
+                        m_planeOffs.end());
+  m_uiCond.wait(lock,
+                [&ops]
+                {
+                  return std::none_of(ops.begin(), ops.end(), [](const auto& op)
+                                      { return op->state == PlaneOffOp::State::RUNNING; });
+                });
+  return false;
+}
+
+void CPresentationCoordinator::RunPlaneOffs(bool held)
+{
+  while (!UiInFlight())
+  {
+    std::shared_ptr<PlaneOffOp> op;
+    int deferred;
+    {
+      std::unique_lock lock(m_uiMutex);
+      if (m_planeOffs.empty())
+        return;
+      op = m_planeOffs.front();
+      m_planeOffs.pop_front();
+      op->state = PlaneOffOp::State::RUNNING;
+      deferred = std::exchange(m_uiDeferred, 0);
+    }
+    const int64_t start = MonotonicNs();
+    uint64_t epoch = op->epoch;
+    const bool result = op->ui ? ReclaimUiForModeSet(epoch, op->uiOff ? op->uiOff() : nullptr,
+                                                     op->format)
+                               : GraphicsPlaneOff(op->graphicsOff);
+    const int64_t end = MonotonicNs();
+    // how far it ran past the vblank of C's next tick (-1: no video ticks)
+    const bool ticking = !held && m_videoAttached && m_tickVblankNs && m_tickPeriodNs;
+    const int64_t lateUs =
+        ticking ? std::max<int64_t>(0, end - (m_tickVblankNs + m_tickPeriodNs)) / 1000 : -1;
+    CLog::Log(LOGINFO,
+              "PLANEOFF by C n={} op={} who={} epoch={} uiepoch={} held={} result={} wait_us={} "
+              "took_us={} tick_late_us={} uiflip_at_post={} ui_deferred={}",
+              ++m_planeOffSeq, op->ui ? "ui" : "graphics", op->who, aml_presenter_epoch(),
+              op->ui ? epoch : 0, held ? 1 : 0, result ? 1 : 0, (start - op->postedNs) / 1000,
+              (end - start) / 1000, lateUs, op->uiFlipAtPost ? 1 : 0, deferred);
+    m_planeOffTickOwed = ticking;
+    {
+      std::unique_lock lock(m_uiMutex);
+      op->epoch = epoch;
+      op->result = result;
+      op->state = PlaneOffOp::State::DONE;
+    }
+    m_uiCond.notify_all();
+  }
 }
 
 void CPresentationCoordinator::AbandonLostCommit(int detached)
@@ -756,6 +917,10 @@ void CPresentationCoordinator::Process()
   OUTPUT::SetThreadRole("C");
   SetPriority(ThreadPriority::ABOVE_NORMAL);
   aml_presenter_set_running(true);
+  {
+    std::unique_lock lock(m_uiMutex);
+    m_planeOffOpen = true;
+  }
   m_lastTickNs = MonotonicNs();
 
   while (!m_bStop)
@@ -776,6 +941,7 @@ void CPresentationCoordinator::Process()
       // of the transaction are not missed ones
       m_lastTickNs = MonotonicNs();
       m_lastSeq = 0;
+      RunPlaneOffs(true);
     }
     else
       CommitUi();
@@ -845,8 +1011,13 @@ void CPresentationCoordinator::Process()
     if (!video)
     {
       m_lastSeq = 0;
+      m_tickSeq = 0;
+      m_tickVblankNs = 0;
       if (!held)
+      {
         SetState(State::IDLE, epoch);
+        RunPlaneOffs(false);
+      }
       int flips;
       {
         std::unique_lock lock(m_uiMutex);
@@ -870,8 +1041,17 @@ void CPresentationCoordinator::Process()
       m_report.synthetic++;
     }
     RunVideoTick(tick);
+    RunPlaneOffs(false);
   }
 
+  {
+    std::unique_lock lock(m_uiMutex);
+    m_planeOffOpen = false;
+    for (const auto& op : m_planeOffs)
+      op->state = PlaneOffOp::State::DROPPED;
+    m_planeOffs.clear();
+  }
+  m_uiCond.notify_all();
   aml_presenter_set_running(false);
 }
 
@@ -980,6 +1160,13 @@ void CPresentationCoordinator::CommitUi()
     // worker is back from the ioctl
     if (m_inFlight || m_committing.req)
       return;
+    // 5.B2-7: a queued plane off goes first, with no flip in flight
+    if (!m_planeOffs.empty())
+    {
+      if (m_planes[PLANE_UI].ready.req || m_planes[PLANE_GRAPHICS].ready.req)
+        m_uiDeferred++;
+      return;
+    }
     if (m_cbufReq)
       PlaceClearedUi();
     // every plane with a submit whose GPU work is done goes in the one commit;
@@ -1273,6 +1460,23 @@ void CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   m_video->PresentTick(tick, result);
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
+
+  if (tick.vblankNs)
+  {
+    // 5.B2-7: the tick after a plane off C ran, released on its vblank or not
+    if (m_planeOffTickOwed)
+    {
+      m_planeOffTickOwed = false;
+      CLog::Log(LOGINFO, "PLANEOFF next tick n={} seq={} missed={} woke_us={} released_us={}",
+                m_planeOffSeq, tick.seq,
+                m_tickSeq && tick.seq > m_tickSeq ? tick.seq - m_tickSeq - 1 : 0,
+                (tick.wokeNs - tick.vblankNs) / 1000, (start + work - tick.vblankNs) / 1000);
+    }
+    if (m_tickSeq && tick.seq == m_tickSeq + 1)
+      m_tickPeriodNs = tick.vblankNs - m_tickVblankNs;
+    m_tickVblankNs = tick.vblankNs;
+    m_tickSeq = tick.seq;
+  }
 
   // a frame released after vblank S is on VD1 from S+2: amvideo's vsync ISR takes
   // it at S+1 and writes it through vsync RDMA, which applies at the next vsync

@@ -746,7 +746,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   // the GUI plane still shows its last buffer, which carries the off commit;
   // at a mode switch the plane comes back with the next graphics frame
   if (m_graphicsPlane)
-    m_graphicsPlane->SwitchOff();
+    m_graphicsPlane->SwitchOff("destroy_window");
   DetachGuiSurface();
   if (!SB3PROBE::On())
   {
@@ -1126,12 +1126,23 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
 
   // step 3, at DestroyWindow's place in today's order: the graphics plane off, then rule S1'
   // (X1's GUI plane off, every GUI buffer back, the UI surface epoch); the EGL surface stays
-  // until main's handler
-  if (job.graphicsPlane)
-    job.graphicsPlane->SwitchOff();
+  // until main's handler. 5.B2-7: both offs run by C in its held branch
   uint64_t epoch = job.coordinator->UiEpoch() + 1;
-  job.offRefused = !job.coordinator->ReclaimUiForModeSet(
-      epoch, display->BuildUiPlaneOffRequestLocked(), job.uiFormat, !job.unparked);
+  if (OUTPUT::PlaneOffOnC())
+    job.offRefused = !job.coordinator->PlanesOffForModeSet(
+        job.graphicsPlane ? std::function<drmModeAtomicReqPtr(uint32_t)>(
+                                [display](uint32_t primaryFb)
+                                { return display->BuildOverlayOffRequest(primaryFb); })
+                          : nullptr,
+        [display] { return display->BuildUiPlaneOffRequestLocked(); }, epoch, job.uiFormat,
+        !job.unparked);
+  else
+  {
+    if (job.graphicsPlane)
+      job.graphicsPlane->SwitchOff("mode_set");
+    job.offRefused = !job.coordinator->ReclaimUiForModeSet(
+        epoch, display->BuildUiPlaneOffRequestLocked(), job.uiFormat, !job.unparked);
+  }
   job.uiEpoch = epoch;
   job.tornDown = true;
   job.result.windowCreated = false;

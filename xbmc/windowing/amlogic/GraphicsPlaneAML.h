@@ -62,8 +62,8 @@ public:
   //! Switches the plane off and frees its surface; the coordinator must still run.
   void Stop();
   //! Switches the plane off while the GUI plane still shows a buffer to carry
-  //! the commit; the next frame switches it on again.
-  void SwitchOff();
+  //! the commit; the next frame switches it on again. who: the caller, for C's log.
+  void SwitchOff(const char* who);
   //! true once it can take graphics over from the GUI plane
   bool CanShow() const;
   //! shows these graphics from the next frame on (an empty set hides the plane)

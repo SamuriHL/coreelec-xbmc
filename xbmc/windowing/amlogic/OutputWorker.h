@@ -145,6 +145,9 @@ bool OutputDriveOn();
 //! outputdrive_skip "B2-5b", and B2-3 and B2-4 on); false before that and under off
 void NoteModeSetsOnW(bool on);
 bool ModeSetsOnW();
+//! 5.B2-7: C runs the blocking plane-off commits (G's and S1''s), and no thread but W in its
+//! park takes a presenter hold: ModeSetsOnW and no outputdrive_skip "B2-7"
+bool PlaneOffOnC();
 
 //! the reply W gave a request of main's (design §4.5)
 enum class DriveReply

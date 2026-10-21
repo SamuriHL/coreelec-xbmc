@@ -483,6 +483,21 @@ bool ModeSetsOnW()
   return s_modeSetsOnW.load(std::memory_order_relaxed);
 }
 
+bool PlaneOffOnC()
+{
+  if (!ModeSetsOnW())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !OutputDriveSkip("B2-7");
+    if (result)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE B2-7: C runs the plane-off commits; no hold outside W's "
+                         "park");
+    return result;
+  }();
+  return on;
+}
+
 const char* DriveReplyName(DriveReply reply)
 {
   switch (reply)
