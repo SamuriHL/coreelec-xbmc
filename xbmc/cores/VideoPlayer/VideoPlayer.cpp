@@ -7505,6 +7505,16 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if (pMenus && pMenus->IsInMenu())
     hint.stills = true;
 
+  // a content start may re-clock a 1000/1001 rate difference; on a navigated disc only a
+  // feature-length playlist: short non-menu playlists are bumpers and warnings
+  hint.reclockEligible = !hint.stills;
+#if defined(HAVE_LIBBLURAY)
+  if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+          std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+      bluray && bluray->IsNavigationMode())
+    hint.reclockEligible = hint.reclockEligible && bluray->IsFeatureLengthPlaylist();
+#endif
+
   if (hint.stereo_mode.empty())
   {
     CGUIComponent *gui = CServiceBroker::GetGUI();
@@ -7560,6 +7570,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
               reuse ? "MATCH, reattaching running decoder" : "no format match, normal reopen: ",
               reuse ? "" : m_CurrentVideo.hint.Differences(
                                cmp, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID));
+    // menu -> feature on the running decoder: no open to carry the arm, and the
+    // running rate is the feature's
+    if (reuse && m_CurrentVideo.hint.stills && hint.reclockEligible)
+      m_renderManager.ArmContentReclock(true);
   }
   // one-shot: each open decision consumes its own flag (streams may be opened
   // lazily per-packet in either order when the disc dictates them, so the

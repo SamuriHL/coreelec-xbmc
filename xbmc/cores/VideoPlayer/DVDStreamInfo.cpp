@@ -55,6 +55,7 @@ void CDVDStreamInfo::Clear()
   aspect   = 0.0;
   vfr      = false;
   stills   = false;
+  reclockEligible = false;
   pqAuthoredGraphics = false;
   level    = 0;
   profile  = 0;
@@ -272,6 +273,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   width    = right.width;
   aspect   = right.aspect;
   stills   = right.stills;
+  reclockEligible = right.reclockEligible;
   pqAuthoredGraphics = right.pqAuthoredGraphics;
   level    = right.level;
   profile  = right.profile;

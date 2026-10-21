@@ -278,6 +278,10 @@ void aml_hdr_conversion_player_open(bool open);
 // sinks re-train on every re-clock; see AMLUtils.cpp)
 void aml_set_disc_mode_hold(bool hold);
 bool aml_disc_mode_hold();
+//! main thread: the mode set now running is a content start that may re-clock a
+//! 1000/1001 rate difference at an unchanged mode string
+void aml_set_frac_reclock_request(bool request);
+bool aml_frac_reclock_request();
 
 // Disc-session resolution anchor. False until the first video segment of a disc
 // session has chosen a resolution from its own content; the mode hold consults it

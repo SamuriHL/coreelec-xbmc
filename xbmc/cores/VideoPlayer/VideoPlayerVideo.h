@@ -149,6 +149,7 @@ protected:
                              //this is increased exponentially from CVideoPlayerVideo::CalcFrameRate()
 
   bool m_bFpsInvalid;        // needed to ignore fps (e.g. dvd stills)
+  bool m_reclockArm = false; //!< the open's first Configure arms the render manager's re-clock
   bool m_bRenderSubs;
   float m_fForcedAspectRatio;
   //! the speed the decoder is given: the stream's, or PAUSE in a display hold

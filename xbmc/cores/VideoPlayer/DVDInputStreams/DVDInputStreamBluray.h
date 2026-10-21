@@ -180,6 +180,8 @@ public:
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
   bool IsMenuDomainVideo();
+  //! the demux-side playlist is longer than any menu loop (IsMenuDomainVideo's length test)
+  bool IsFeatureLengthPlaylist() const;
   //! a stream change is held (not a still): Read() returns nothing until NextStream()
   bool IsHoldingBoundary() const { return m_hold == HOLD_HELD && m_holdIsBoundary; }
   // The current playlist's STN table names at least one IG stream. The STN

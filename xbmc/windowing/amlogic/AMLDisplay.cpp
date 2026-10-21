@@ -35,6 +35,12 @@ constexpr float FractionalRate(float rate)
   return static_cast<float>(static_cast<double>(rate) / 1.001);
 }
 
+std::string ModeRate(const drmModeModeInfo& mode, bool fractional)
+{
+  const double rate = static_cast<double>(mode.vrefresh);
+  return StringUtils::Format("{:.3f}", fractional ? rate / 1.001 : rate);
+}
+
 // dvwireback_off: the DV wire is tracked from the core's state at each mode set, as before
 bool DvWireBackOff()
 {
@@ -607,7 +613,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_modes(void)
 // set mode of drmDevice
 bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
   const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-  bool hotplug_mode_switch)
+  bool hotplug_mode_switch, bool frac_reclock)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
@@ -669,7 +675,14 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   }
 
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
-  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true);
+  // a re-clock at the live mode string while the DV wire format is due: the colour commit's
+  // re-train takes the new rate, one re-train as without the re-clock
+  const bool fracOnWire =
+      frac_reclock && StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) &&
+      aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) != fractional_rate &&
+      aml_dv_wire_format_mismatch();
+  ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true,
+                                 frac_reclock && !fracOnWire, !fracOnWire);
 
   if (ret && _hotplug_mode_switch)
   {
@@ -685,10 +698,12 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   {
     // apply_dv_wire_format() re-trains the link itself when the DV tunnel format is
     // missing, so skip the plain UPDATE then rather than re-train twice.
-    if (_force_mode_switch && !aml_dv_wire_format_mismatch())
+    // The FRAC commit was the re-train.
+    if (_force_mode_switch && !m_fracCommitted && !fracOnWire && !aml_dv_wire_format_mismatch())
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
 
-    apply_dv_wire_format();
+    if (!apply_dv_wire_format(fracOnWire, fractional_rate) && fracOnWire)
+      ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true, true);
     // Either tunnel format counts: the leaving path has to hand the wire back
     // whether we pinned it to 8-bit (TV-led) or to 12-bit YUV422 (player-led).
     // Kept until it is handed back: a DV start engages the core after its mode
@@ -807,10 +822,10 @@ int CAMLDRMUtils::get_drmProp(
 // the attr we ask for verbatim. Only while the wire mismatches, so the BD-J
 // no-re-clock rule still holds everywhere else.
 // TV-led DV tunnels as YUV444 8-bit, LLDV as YUV422 12-bit.
-void CAMLDRMUtils::apply_dv_wire_format()
+bool CAMLDRMUtils::apply_dv_wire_format(bool commit_frac, int fractional_rate)
 {
   if (!aml_dv_wire_format_mismatch())
-    return;
+    return false;
 
   // linux/hdmi.h enum hdmi_colorspace - not exported to userspace headers here
   constexpr unsigned int HDMI_CS_YUV422 = 1;
@@ -832,13 +847,39 @@ void CAMLDRMUtils::apply_dv_wire_format()
   if (!req)
   {
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to allocate atomic request", __FUNCTION__);
-    return;
+    return false;
   }
   set_drmProp(m_connector->connector_id, "color_space", DRM_MODE_OBJECT_CONNECTOR, cs, req);
   set_drmProp(m_connector->connector_id, "color_depth", DRM_MODE_OBJECT_CONNECTOR, bd, req);
+  const bool timed = m_crtc && m_crtc->mode_valid;
+  if (commit_frac)
+  {
+    set_drmProp(m_connector->connector_id, "FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR,
+                fractional_rate, req);
+    if (timed)
+    {
+      CLog::Log(LOGINFO, "CAMLDRMUtils::{} - frac re-clock: {} -> {} (one commit, path DV-wire)",
+                __FUNCTION__,
+                ModeRate(m_crtc->mode,
+                         aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1),
+                ModeRate(m_crtc->mode, fractional_rate == 1));
+      PostModeNotice(m_crtc->mode, fractional_rate == 1);
+    }
+    m_modeHeld = false;
+  }
   if (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) != 0)
+  {
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to commit the DV wire format", __FUNCTION__);
+    if (commit_frac)
+    {
+      m_modeHeld = true;
+      if (timed)
+        PostModeNotice(m_crtc->mode,
+                       aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1);
+    }
+  }
   drmModeAtomicFree(req);
+  return true;
 }
 
 // A disc session holding DV keeps the sink's Dolby VSIF latched across its segment
@@ -1070,7 +1111,7 @@ void CAMLDRMUtils::PostModeNotice(const drmModeModeInfo& mode, bool fractional)
 }
 
 bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rate,
-  const RenderStereoMode stereo_mode, bool active)
+  const RenderStereoMode stereo_mode, bool active, bool frac_reclock, bool held_notice)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
@@ -1092,8 +1133,16 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
   // on the opening sequence. Mode-string-only matches the pre-rebase fork (smooth).
   // Deliberately NOT gated on upstream's force_mode_switch either: forcing a modeset
   // at an already-live mode string is the BD-J black regression this whole gate fixes.
+  // A content start (frac_reclock) does commit its own 1000/1001 rate: the set re-trains
+  // once either way, through the forced UPDATE otherwise.
+  const int live_fractional_rate =
+      frac_reclock ? aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) : 0;
+  const bool frac_only = frac_reclock && m_crtc && m_crtc->mode_valid &&
+                         StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) &&
+                         live_fractional_rate != fractional_rate;
   const bool mode_switch_required =
-      !StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode);
+      !StringUtils::EqualsNoCase(aml_get_drmDevice_mode(), mode) || frac_only;
+  m_fracCommitted = false;
 
   if (mode_switch_required)
   {
@@ -1126,7 +1175,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
     CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - mode {} is already set", __FUNCTION__, mode);
     // a commit the display never ran (to a disconnected connector) posted its
     // timing anyway; post the timing it runs
-    if (m_crtc && m_crtc->mode_valid)
+    if (held_notice && m_crtc && m_crtc->mode_valid)
       PostModeNotice(m_crtc->mode,
                      aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1);
     return true;
@@ -1152,6 +1201,10 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
       set_drmProp(m_crtc->crtc_id, "MODE_ID", DRM_MODE_OBJECT_CRTC, mode_blobid, req);
       set_drmProp(m_crtc->crtc_id, "ACTIVE", DRM_MODE_OBJECT_CRTC, active ? 1 : 0, req);
 
+      if (frac_only)
+        CLog::Log(LOGINFO, "CAMLDRMUtils::{} - frac re-clock: {} -> {} (one commit, path MODE_ID)",
+                  __FUNCTION__, ModeRate(m_crtc->mode, live_fractional_rate == 1),
+                  ModeRate(*drmDevicemode, fractional_rate == 1));
       // the timekeeper takes the new timing from here, never from the kernel mid-commit
       PostModeNotice(*drmDevicemode, fractional_rate == 1);
       ret = (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0);
@@ -1159,6 +1212,14 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
         CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to set drmDevice mode: {}", __FUNCTION__, drmDevicemode->name);
       else
         m_crtc->mode = *drmDevicemode;
+      m_fracCommitted = frac_only && ret;
+      if (frac_only && !ret)
+      {
+        // the live mode runs on
+        m_modeHeld = true;
+        PostModeNotice(m_crtc->mode,
+                       aml_get_drmProperty("FRAC_RATE_POLICY", DRM_MODE_OBJECT_CONNECTOR) == 1);
+      }
 
       drmModeAtomicFree(req);
       drmModeDestroyPropertyBlob(m_fd, mode_blobid);
@@ -1374,14 +1435,16 @@ void CAMLDisplay::aml_refresh_display_caps()
 }
 
 bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch)
+  const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch,
+  bool frac_reclock)
 {
   bool result = false;
 
   if (aml_get_cpufamily_id() < AML_T7)
   {
     handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch,
+                                    frac_reclock);
     if (stereo_mode != RenderStereoMode::OFF)
       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/phy", 1);
   }
@@ -1390,7 +1453,8 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string 
     if (stereo_mode == RenderStereoMode::HARDWAREBASED ||
         stereo_mode == RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
-    result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch);
+    result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch,
+                                    frac_reclock);
     if (stereo_mode != RenderStereoMode::HARDWAREBASED &&
         stereo_mode != RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
@@ -1435,7 +1499,7 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 }
 
 bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  bool force_mode_switch, bool hotplug_mode_switch)
+  bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock)
 {
   std::string mode = res.strId.c_str();
   std::vector<std::string> _mode = StringUtils::Split(mode, ' ');
@@ -1457,8 +1521,9 @@ bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string
   else
     CLog::Log(LOGDEBUG, "CAMLDisplay::{}: try to set mode: {}", __FUNCTION__, mode.c_str());
 
-  return m_amlDRMUtils->aml_set_drmDevice_mode(
-      res, mode, m_stereo_mode, framebuffer_name, force_mode_switch, hotplug_mode_switch);
+  return m_amlDRMUtils->aml_set_drmDevice_mode(res, mode, m_stereo_mode, framebuffer_name,
+                                               force_mode_switch, hotplug_mode_switch,
+                                               frac_reclock);
 }
 
 std::string CAMLDisplay::aml_get_preferred_mode()

@@ -207,6 +207,9 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
     m_processInfo.SetVideoFps(0);
   }
 
+  // only a rate the stream declares: a measured one comes in after the start
+  m_reclockArm = hint.reclockEligible && !m_bFpsInvalid;
+
   m_ptsTracker.ResetVFRDetection();
   ResetFrameRateCalc();
   m_cadence.count = 0;
@@ -1520,6 +1523,11 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
   int orientation = sorient != 0 ? (sorient + m_hints.orientation) % 360
                                  : m_hints.orientation;
 
+  if (m_reclockArm)
+  {
+    m_reclockArm = false;
+    m_renderManager.ArmContentReclock(false);
+  }
   if (!m_renderManager.Configure(*pPicture,
                                 static_cast<float>(config_framerate),
                                 orientation,

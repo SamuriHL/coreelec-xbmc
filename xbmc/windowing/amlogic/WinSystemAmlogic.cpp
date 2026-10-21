@@ -12,6 +12,7 @@
 #include <float.h>
 #include <cmath>
 #include <exception>
+#include <utility>
 
 #include "ServiceBroker.h"
 #include "application/ApplicationComponents.h"
@@ -657,6 +658,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
                                     RESOLUTION_INFO& res)
 {
   bool ret;
+  // this set's only: cleared before anything can throw
+  const bool fracReclock = std::exchange(m_frac_reclock, false);
 
   SetPresentationReady(false);
   m_nWidth        = res.iWidth;
@@ -686,9 +689,10 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     OUTPUT::COutputWorker::Get().Run(
         m_hotplug_mode_switch ? OUTPUT::Lane::RESTORE : OUTPUT::Lane::SETTINGS, "mode set",
         [committed, display, res, name = m_framebuffer_name, stereo = m_stereo_mode,
-         force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, windowed = !fullScreen]
+         force = m_force_mode_switch, hotplug = m_hotplug_mode_switch, frac = fracReclock,
+         windowed = !fullScreen]
         {
-          *committed = display->set_native_resolution(res, name, stereo, force, hotplug);
+          *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           if (*committed)
             DISPLAYSTATE::PublishMode(*display, res, windowed);
         });

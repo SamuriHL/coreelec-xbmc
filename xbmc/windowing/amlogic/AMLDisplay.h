@@ -96,9 +96,11 @@ public:
   bool aml_drmDevice_vsync();
   std::string aml_get_drmDevice_mode();
   std::string aml_get_drmDevice_modes();
+  //! frac_reclock: a content start, which re-clocks a 1000/1001 rate difference at the
+  //! live mode string
   bool aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
     const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-    bool hotplug_mode_switch);
+    bool hotplug_mode_switch, bool frac_reclock = false);
   int aml_get_drmProperty(std::string name,
                           unsigned int obj_type,
                           void* data = nullptr,
@@ -107,8 +109,11 @@ public:
   void aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value);
   int aml_get_drmDevice_modes_count(drmModeConnection *connection);
   std::string aml_get_drmDevice_preferred_mode();
+  //! frac_reclock: commit a FRAC_RATE_POLICY change at the live mode string; held_notice:
+  //! a set kept at the live mode posts its timing
   bool aml_set_drmDevice_active(std::string mode, int fractional_rate,
-    const RenderStereoMode stereo_mode, bool active);
+    const RenderStereoMode stereo_mode, bool active, bool frac_reclock = false,
+    bool held_notice = true);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
   bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }
@@ -144,7 +149,8 @@ private:
                   unsigned int obj_type,
                   void* data = nullptr,
                   int* data_len = nullptr);
-  void apply_dv_wire_format();
+  //! commit_frac: the re-train also takes fractional_rate; false when nothing was committed
+  bool apply_dv_wire_format(bool commit_frac = false, int fractional_rate = 0);
   bool leaving_dv_wire() const;
   //! tells the timekeeper the timing a mode set gives the display
   static void PostModeNotice(const drmModeModeInfo& mode, bool fractional);
@@ -157,6 +163,7 @@ private:
   // the way out - see leaving_dv_wire().
   bool m_wireDvTunnel{false};
   bool m_modeHeld{false};
+  bool m_fracCommitted{false}; //!< the last aml_set_drmDevice_active re-clocked the live mode
   int m_width;
   int m_height;
   int m_ScreenWidth;
@@ -192,10 +199,11 @@ public:
   //! live mode, whose frac policy may differ from res's
   float aml_committed_refresh(const RESOLUTION_INFO& res, bool& held) const;
   bool set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-    const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
+    const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch,
+    bool frac_reclock = false);
   void handle_display_stereo_mode(const RenderStereoMode stereo_mode);
   bool set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-    bool force_mode_switch, bool hotplug_mode_switch);
+    bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock = false);
   int aml_get_display_modes_count(drmModeConnection *connection) const
     { return m_amlDRMUtils->aml_get_drmDevice_modes_count(connection); }
   std::string aml_get_preferred_mode();

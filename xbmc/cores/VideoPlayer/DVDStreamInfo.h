@@ -85,6 +85,9 @@ public:
   double aspect; // display aspect as reported by demuxer
   bool vfr; // variable framerate
   bool stills; // there may be odd still frames in video
+  // the open may re-clock the display for a 1000/1001 rate difference (a content start);
+  // not part of Equal()
+  bool reclockEligible;
   // Blu-ray: the playlist declares PQ-authored graphics (HDR10/DV video in the
   // STN table), so PG palettes are BT.2020 PQ and drawn as HDR overlays.
   // Stamped by CVideoPlayer from CDVDInputStreamBluray; part of Equal() so a

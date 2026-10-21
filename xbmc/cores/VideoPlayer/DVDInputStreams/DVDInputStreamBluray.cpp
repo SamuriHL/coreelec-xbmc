@@ -3404,6 +3404,12 @@ bool CDVDInputStreamBluray::TitleCarriesInteractiveComposition() const
   return false;
 }
 
+bool CDVDInputStreamBluray::IsFeatureLengthPlaylist() const
+{
+  constexpr uint64_t MENU_DOMAIN_MAX_PLAYLIST_DURATION = 600ULL * 90000ULL;
+  return m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION;
+}
+
 bool CDVDInputStreamBluray::IsMenuDomainVideo()
 {
   // "Menu-domain" = video that is incidental to navigation rather than
@@ -3429,12 +3435,10 @@ bool CDVDInputStreamBluray::IsMenuDomainVideo()
   // session) must not have its whole movie classified menu-domain (that
   // routes the feature into the frame-mode/stills decoder path and the 1s
   // queue clamp - review finding A9).
-  constexpr uint64_t MENU_DOMAIN_MAX_PLAYLIST_DURATION = 600ULL * 90000ULL;
   bool domain;
   const char* reason;
   const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
-  const bool featureLength =
-      m_titleInfo && m_titleInfo->duration > MENU_DOMAIN_MAX_PLAYLIST_DURATION;
+  const bool featureLength = IsFeatureLengthPlaylist();
   if (m_popupAvailable)
   {
     // ui_model = pop-up (BD_EVENT_POPUP - emitted only by the HDMV

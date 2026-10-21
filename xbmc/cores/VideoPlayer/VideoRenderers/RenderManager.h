@@ -114,6 +114,9 @@ public:
 
   void UpdateResolution();
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
+  //! the next mode decision may re-clock a 1000/1001 rate difference (a content start);
+  //! armed at the next Configure, or now for the running stream
+  void ArmContentReclock(bool now);
   void SetViewMode(int iViewMode);
   void PreInit();
   //! a new file in the same session: resets what belongs to the last one
@@ -420,6 +423,11 @@ protected:
   // steady_clock: differenced only to bound the wait for the video layer to
   // start, so a wall-clock step must not be able to expire it early.
   std::chrono::time_point<std::chrono::steady_clock> m_videostarted;
+  // the content-start re-clock arm, under m_statelock
+  bool m_reclockPending = false;
+  bool m_reclockArmed = false;
+  std::chrono::time_point<std::chrono::steady_clock> m_reclockArmedAt;
+  void PromoteReclockArm();
   std::atomic<bool> m_displayReset{false};
 
   CPresentationCoordinator* m_coordinator = nullptr; // the win system's; AML builds only

@@ -107,6 +107,8 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
   bool m_force_mode_switch;
   bool m_hotplug_mode_switch{false};
+  //! the set may re-clock a 1000/1001 rate difference at the live mode string
+  bool m_frac_reclock{false};
   bool m_outputWorkerStarted{false};
   bool m_presentationReady{false};
   bool m_nativeGUI;

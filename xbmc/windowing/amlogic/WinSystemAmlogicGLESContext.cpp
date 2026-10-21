@@ -275,6 +275,11 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (m_force_mode_switch)
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: force mode switch", __FUNCTION__);
 
+  // a content start takes the content's 1000/1001 rate (24/30/60 families only)
+  const float familyRate = std::round(res.fRefreshRate);
+  m_frac_reclock = force_mode_switch_by_fractional_rate && aml_frac_reclock_request() &&
+                   (familyRate == 24.0f || familyRate == 30.0f || familyRate == 60.0f);
+
   // refresh backup data
   m_hdrType = hdrType;
   m_stereo_mode = stereo_mode;

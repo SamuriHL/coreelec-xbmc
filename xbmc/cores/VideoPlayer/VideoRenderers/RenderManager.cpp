@@ -49,6 +49,7 @@ static inline unsigned int aml_presenter_epoch() { return 0; }
 static inline void aml_set_video_presenter_active(bool) {}
 static inline bool aml_presentation_validated() { return false; }
 static inline bool aml_codec_speed_fix() { return false; }
+static inline void aml_set_frac_reclock_request(bool) {}
 #endif
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
@@ -297,6 +298,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         }
         m_lateframes = -1;
       }
+      PromoteReclockArm();
       return true;
     }
   }
@@ -341,6 +343,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_dvdClock.ResetVsyncAdjust();
     m_pConfigPicture = std::make_unique<VideoPicture>();
     m_pConfigPicture->CopyRef(picture);
+    PromoteReclockArm();
 
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
@@ -663,6 +666,14 @@ void CRenderManager::BeginFile()
   m_sessionModeDecided = false;
   m_startHeld = false;
   m_startGate = false;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    if (m_reclockPending || m_reclockArmed)
+      CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm dropped (new file)");
+    m_reclockPending = false;
+    m_reclockArmed = false;
+  }
   // the kernel's DV wait (amdv_wait_delay vsyncs before the mode set) is
   // armed by the file's first picture: left at its first value, a second DV
   // file in one player waited nothing, or never once an SDR file came first
@@ -1438,6 +1449,7 @@ void CRenderManager::UpdateResolution()
         int width, height;
         std::string stereoMode;
         StreamHdrType hdrType;
+        bool fracArmed;
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
@@ -1447,6 +1459,12 @@ void CRenderManager::UpdateResolution()
           stereoMode = m_picture.stereoMode;
           hdrType = m_picture.hdrType;
           m_bTriggerUpdateResolution = false;
+          fracArmed = std::exchange(m_reclockArmed, false);
+          if (fracArmed && std::chrono::steady_clock::now() - m_reclockArmedAt > 12s)
+          {
+            CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm expired");
+            fracArmed = false;
+          }
         }
 
         const RenderStereoMode user_stereo_mode =
@@ -1505,6 +1523,11 @@ void CRenderManager::UpdateResolution()
           // teardown, so plain file playback is unaffected.
           if (mayChooseMode && !held && width > 0 && height > 0)
             aml_set_disc_mode_anchored(true);
+          const bool fracReclock = fracArmed && mayChooseMode && !held;
+          if (fracArmed)
+            CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm consumed at {:.3f} fps: {}", fps,
+                      fracReclock ? "may re-clock"
+                                  : (held ? "menu hold, no re-clock" : "refresh switching off"));
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
           // the tweak before the mode set: with no refresh-change delay the
           // display reset lands the audio inside it, and lands the new tweak
@@ -1513,7 +1536,15 @@ void CRenderManager::UpdateResolution()
 #if defined(HAS_LIBAMCODEC)
           const uint64_t commits = DISPLAYSTATE::CommitCount();
 #endif
-          CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+          {
+            // UpdateResolution runs on main, where SetVideoResolution runs inline
+            struct FracReclockRequest
+            {
+              explicit FracReclockRequest(bool request) { aml_set_frac_reclock_request(request); }
+              ~FracReclockRequest() { aml_set_frac_reclock_request(false); }
+            } fracRequest(fracReclock);
+            CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+          }
           TestMainStall("after-set");
           UpdateLatencyTweak();
 #if defined(HAS_LIBAMCODEC)
@@ -1528,6 +1559,15 @@ void CRenderManager::UpdateResolution()
           if (m_pRenderer)
             m_pRenderer->Update();
         }
+        else if (fracArmed)
+        {
+          // the set waits for the user's stereo choice, which triggers again
+          MAINCOUPLING_ACCESSOR("RM m_statelock");
+          std::unique_lock lock(m_statelock);
+          m_reclockArmed = true;
+          m_reclockArmedAt = std::chrono::steady_clock::now();
+          CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm kept for the stereo choice");
+        }
         // after the mode set: a real change has already run OnLostDisplay
         ++m_resolutionDecisions;
         m_sessionModeDecided = true;
@@ -1535,6 +1575,30 @@ void CRenderManager::UpdateResolution()
       }
     }
   }
+}
+
+void CRenderManager::ArmContentReclock(bool now)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  m_reclockPending = true;
+  CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm created ({})",
+            now ? "running stream" : "stream open");
+  if (now)
+    PromoteReclockArm();
+}
+
+// m_statelock held; the decision runs on the rate just configured
+void CRenderManager::PromoteReclockArm()
+{
+  if (!m_reclockPending)
+    return;
+  m_reclockPending = false;
+  m_reclockArmed = true;
+  m_reclockArmedAt = std::chrono::steady_clock::now();
+  m_videostarted = m_reclockArmedAt;
+  m_bTriggerUpdateResolution = true;
+  CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm promoted at {:.3f} fps", m_fps);
 }
 
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)

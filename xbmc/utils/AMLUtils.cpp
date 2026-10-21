@@ -751,6 +751,10 @@ void aml_set_disc_mode_hold(bool hold)
 }
 bool aml_disc_mode_hold() { return s_disc_mode_hold.load(); }
 
+static bool s_frac_reclock_request = false;
+void aml_set_frac_reclock_request(bool request) { s_frac_reclock_request = request; }
+bool aml_frac_reclock_request() { return s_frac_reclock_request; }
+
 // Has this disc session established a resolution from the disc's own content yet?
 // Cleared at player teardown, set by the first held segment that picks one. atomic
 // for the same reason as s_disc_mode_hold: written on the player thread, read
