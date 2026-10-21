@@ -28,10 +28,13 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #endif
 
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <time.h>
 #include <memory>
 #include <mutex>
@@ -53,6 +56,28 @@ constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
 // sync measurement loop); the engine's accumulator holds scaled ms.
 constexpr double TRUEHD_PASSTHROUGH_ERROR_SCALE = 0.45;
 constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+
+#if defined(HAS_LIBAMCODEC)
+std::string ReadWhole(const char* path)
+{
+  std::ifstream file(path);
+  std::ostringstream text;
+  text << file.rdbuf();
+  return text.str();
+}
+
+// 5.B2-6: the device list (the ALSA cards) and the HDMI sink's audio block as hdmitx parsed it
+// from the EDID (the SADs an ELD carries); the second is empty while hdmitx renegotiates
+std::pair<std::string, std::string> DeviceSnapshot()
+{
+  return {ReadWhole("/proc/asound/cards"), ReadWhole("/sys/class/amhdmitx/amhdmitx0/aud_cap")};
+}
+
+bool Blank(const std::string& text)
+{
+  return text.find_first_not_of(" \t\r\n") == std::string::npos;
+}
+#endif
 
 bool IsDefaultDevice(const AESinkDevice& device)
 {
@@ -460,6 +485,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         }
         case CActiveAEControlProtocol::DISPLAYRESET:
           m_extDisplayLost = false;
+          ReplayAfterDisplayReset();
           return;
         case CActiveAEControlProtocol::APPFOCUSED:
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::APPFOCUSED, msg->data, sizeof(bool));
@@ -740,6 +766,16 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             {
               m_extDisplayLost = true;
               m_extLostIgnored = 0;
+#if defined(HAS_LIBAMCODEC)
+              // a superseding set's loss keeps the window's record and its snapshot (union)
+              if (!m_extLostRecord && OUTPUT::SettleOnW())
+              {
+                m_extLostRecord = true;
+                m_extLostChanges = 0;
+                const auto snapshot = DeviceSnapshot();
+                m_extLostSnapshot = snapshot.first + '\x1f' + snapshot.second;
+              }
+#endif
               msg->Reply(CActiveAEControlProtocol::ACC);
               return;
             }
@@ -755,6 +791,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           if (m_extDisplayLost)
           {
             LogIgnoredInDisplayLost("DEVICECHANGE");
+            RecordInDisplayLost(signal, nullptr);
             return;
           }
           time_t now;
@@ -796,13 +833,19 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           if (!m_extDisplayLost)
             HandleDeviceCountChange(reinterpret_cast<const char*>(msg->data), false);
           else
+          {
             LogIgnoredInDisplayLost("DEVICECOUNTCHANGE");
+            RecordInDisplayLost(signal, reinterpret_cast<const char*>(msg->data));
+          }
           return;
         case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
           if (!m_extDisplayLost)
             HandleDeviceCountChange("", true);
           else
+          {
             LogIgnoredInDisplayLost("DEFAULTDEVICECHANGE");
+            RecordInDisplayLost(signal, nullptr);
+          }
           return;
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
@@ -3810,6 +3853,60 @@ void CActiveAE::LogIgnoredInDisplayLost(const char* type)
               type);
   else if (m_extLostIgnored == 4)
     CLog::Log(LOGINFO, "CActiveAE - further device changes in this display-lost window not logged");
+}
+
+void CActiveAE::RecordInDisplayLost(int signal, const char* driver)
+{
+  if (!m_extLostRecord)
+    return;
+  m_extLostChanges |= 1u << signal;
+  if (driver)
+    m_extLostDriver = driver;
+}
+
+void CActiveAE::ReplayAfterDisplayReset()
+{
+#if defined(HAS_LIBAMCODEC)
+  if (!std::exchange(m_extLostRecord, false))
+    return;
+  const unsigned int changes = std::exchange(m_extLostChanges, 0);
+  if (!changes)
+    return;
+  const auto now = DeviceSnapshot();
+  const std::string::size_type split = m_extLostSnapshot.find('\x1f');
+  const std::string cardsAtLoss = m_extLostSnapshot.substr(0, split);
+  const std::string capsAtLoss =
+      split == std::string::npos ? std::string() : m_extLostSnapshot.substr(split + 1);
+  const bool known = !Blank(capsAtLoss) && !Blank(now.second);
+  const bool cards = now.first != cardsAtLoss;
+  const bool eld = known && now.second != capsAtLoss;
+  const auto has = [changes](int signal) { return (changes & (1u << signal)) != 0; };
+  const std::string kinds =
+      fmt::format("{}{}{}", has(CActiveAEControlProtocol::DEVICECHANGE) ? " DEVICECHANGE" : "",
+                  has(CActiveAEControlProtocol::DEVICECOUNTCHANGE) ? " DEVICECOUNTCHANGE" : "",
+                  has(CActiveAEControlProtocol::DEFAULTDEVICECHANGE) ? " DEFAULTDEVICECHANGE"
+                                                                     : "");
+  // an unread audio block (hdmitx renegotiating) is no evidence of a change: dropped, as today
+  if (!cards && !eld)
+  {
+    CLog::Log(LOGINFO, "CActiveAE - LEDGER device change after the reset not replayed:{} ({})",
+              kinds, known ? "device list and ELD unchanged" : "ELD unread, device list unchanged");
+    return;
+  }
+  CLog::Log(LOGINFO, "CActiveAE - LEDGER device change after the reset replayed:{} ({}{})", kinds,
+            cards ? "device list" : "", cards && eld ? ", ELD" : eld ? "ELD" : "");
+  // a full re-enumeration covers the others
+  if (has(CActiveAEControlProtocol::DEVICECHANGE))
+    m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEVICECHANGE);
+  else
+  {
+    if (has(CActiveAEControlProtocol::DEVICECOUNTCHANGE))
+      m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEVICECOUNTCHANGE,
+                                   m_extLostDriver.c_str(), m_extLostDriver.length() + 1);
+    if (has(CActiveAEControlProtocol::DEFAULTDEVICECHANGE))
+      m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEFAULTDEVICECHANGE);
+  }
+#endif
 }
 
 void CActiveAE::HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged)

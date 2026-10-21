@@ -335,6 +335,10 @@ protected:
   void ValidateOutputDevices(bool saveChanges);
   void HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged);
   void LogIgnoredInDisplayLost(const char* type);
+  //! 5.B2-6 (design §4.3, plan L4): a device change ignored in a kept display-lost window is
+  //! recorded, and replayed after the reset only if the device list or the ELD differs
+  void RecordInDisplayLost(int signal, const char* driver);
+  void ReplayAfterDisplayReset();
   bool NeedReconfigureBuffers();
   bool NeedReconfigureSink();
   void ApplySettingsToFormat(AEAudioFormat& format,
@@ -392,6 +396,12 @@ protected:
   std::atomic_bool m_keepOutputAcrossDisplay{false};
   bool m_extDisplayLost = false;
   unsigned int m_extLostIgnored = 0;
+  //! 5.B2-6: recording in this window; the snapshot at the loss; the ignored changes (bit per
+  //! signal) and the last count change's driver
+  bool m_extLostRecord = false;
+  std::string m_extLostSnapshot;
+  unsigned int m_extLostChanges = 0;
+  std::string m_extLostDriver;
   std::atomic_bool m_outputIsHdmi{true};
   bool m_heldFormatValid = false;
   AEAudioFormat m_heldFormat;
