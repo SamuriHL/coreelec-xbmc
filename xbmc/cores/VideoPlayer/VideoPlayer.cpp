@@ -9698,6 +9698,7 @@ void CVideoPlayer::OnLostDisplay()
       CLog::Log(LOGINFO, "VideoPlayer: display lost, next frame {:+.1f} ms from the clock",
                 (front - m_clock.GetClock()) * 1000.0 / DVD_TIME_BASE);
     m_lostMaxStep = out ? step : 0.0;
+    m_lostFront = out ? front : DVD_NOPTS_VALUE;
   }
   // Causes https://github.com/xbmc/xbmc/issues/15447
   // FlushRenderer();
@@ -9739,11 +9740,27 @@ void CVideoPlayer::OnResetDisplay()
     m_clock.SetAudioOffset(m_requestedAudioOffset -
                            DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak()));
   int64_t discRunNs = 0;
-  // 5.B2-5c: the clock held at the park, the frames out were released up to a vsync of the lost
-  // mode past it; the new mode's vsync can be shorter
-  const double lostStep = OUTPUT::LostFirstOn() ? m_lostMaxStep.exchange(0.0) : 0.0;
-  if (m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep) &&
-      m_clock.UnpauseAt(pts, std::max(maxStep, lostStep), RESUME_LEAD, startNs, startClock))
+  // 5.B2-5c: the clock held at the park, the frames out were released up to the lost mode's
+  // latency and vsync past it; the new mode's can be shorter. Only up to the frame out then
+  double lostStep = 0.0;
+  double lostFront = DVD_NOPTS_VALUE;
+  if (OUTPUT::LostFirstOn())
+  {
+    lostStep = m_lostMaxStep.exchange(0.0);
+    lostFront = m_lostFront.exchange(DVD_NOPTS_VALUE);
+  }
+  const bool resumable = m_displayResumeOnGrid && m_renderManager.GetResumePts(pts, maxStep);
+  double stepLimit = maxStep;
+  if (resumable && lostStep > maxStep && lostFront != DVD_NOPTS_VALUE && pts <= lostFront)
+  {
+    stepLimit = lostStep;
+    CLog::Log(LOGINFO,
+              "VideoPlayer: display back, the lost mode's step limit {:.1f} ms (the new mode's "
+              "{:.1f} ms, step {:.1f} ms)",
+              lostStep * 1000.0 / DVD_TIME_BASE, maxStep * 1000.0 / DVD_TIME_BASE,
+              (pts - held) * 1000.0 / DVD_TIME_BASE);
+  }
+  if (resumable && m_clock.UnpauseAt(pts, stepLimit, RESUME_LEAD, startNs, startClock))
   {
     m_displayResumeScheduled = true;
     discRunNs = startNs;

@@ -946,6 +946,7 @@ protected:
   std::atomic<bool> m_displayResumeScheduled{false};
   //! 5.B2-5c: the step limit at the loss, the frames out having been released on that mode's grid
   std::atomic<double> m_lostMaxStep{0.0};
+  std::atomic<double> m_lostFront{DVD_NOPTS_VALUE}; //!< the next frame at the loss
   //! the user's audio offset moves the sound, as a player's audio delay
   std::atomic<bool> m_audioOffsetToAudio{false};
   bool m_startAtFrame = false; // the start's clock is a picture's pts
