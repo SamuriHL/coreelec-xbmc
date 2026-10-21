@@ -176,6 +176,11 @@ void COutputWorker::Run(Lane lane,
                         uint64_t generation,
                         std::chrono::milliseconds errorAfter)
 {
+  // Lock rule (5.B2-5b review S4): a caller of this synchronous wait must hold none of RM's
+  // m_statelock / m_presentlock, the player clock's lock or the player's message queue locks:
+  // W's mode set job takes them (the lost walk: OnLostDisplay -> GetResumePts, the clock, the
+  // players' queues). No cheap owner check exists for those CCriticalSections (their counts are
+  // not per thread), so the rule is kept by the callers, listed in the plan's lock table.
   std::unique_lock lock(m_mutex);
   if (!m_running || m_stop || std::this_thread::get_id() == m_workerId)
   {
@@ -421,6 +426,84 @@ bool OutputDriveOn()
     return result;
   }();
   return on;
+}
+
+namespace
+{
+std::atomic_bool s_modeSetsOnW{false};
+// main only
+DriveReply s_lastReply{DriveReply::NONE};
+uint64_t s_replySeq{0};
+int s_originRm{0};
+int s_driveResolution{-1};
+} // namespace
+
+void NoteModeSetsOnW(bool on)
+{
+  s_modeSetsOnW = on;
+}
+
+bool ModeSetsOnW()
+{
+  return s_modeSetsOnW.load(std::memory_order_relaxed);
+}
+
+const char* DriveReplyName(DriveReply reply)
+{
+  switch (reply)
+  {
+    case DriveReply::DONE:
+      return "done";
+    case DriveReply::DONE_NO_CHANGE:
+      return "done(noChange)";
+    case DriveReply::NOT_COMMITTED:
+      return "not-committed";
+    case DriveReply::FAILED:
+      return "failed";
+    case DriveReply::FAILED_PARK:
+      return "failed(park)";
+    case DriveReply::GAVE_UP:
+      return "gave-up";
+    default:
+      return "none";
+  }
+}
+
+void NoteDriveReply(DriveReply reply)
+{
+  s_lastReply = reply;
+  ++s_replySeq;
+}
+
+DriveReply LastDriveReply(uint64_t& seq)
+{
+  seq = s_replySeq;
+  return s_lastReply;
+}
+
+CDriveOriginRm::CDriveOriginRm()
+{
+  ++s_originRm;
+}
+
+CDriveOriginRm::~CDriveOriginRm()
+{
+  --s_originRm;
+}
+
+bool DriveOriginRm()
+{
+  return s_originRm > 0;
+}
+
+void NoteDriveResolution(int res)
+{
+  s_driveResolution = res;
+}
+
+int DriveResolution()
+{
+  return s_driveResolution;
 }
 
 } // namespace OUTPUT

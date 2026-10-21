@@ -2635,9 +2635,11 @@ unsigned int s_parkSet = 0;
 int s_parkSetTid = 0;
 int s_parkCount = 0;
 std::string s_parkSites;
+//! 5.B2-5b: the epoch the outer mode set hold started
+unsigned int s_parkSetEpoch = 0;
 } // namespace
 
-void aml_presenter_hold_acquire(const char* site)
+bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   s_holdDepth++;
@@ -2655,8 +2657,12 @@ void aml_presenter_hold_acquire(const char* site)
     s_parkSites += (s_parkSites.empty() ? "" : ",") + std::string(site ? site : "?");
   }
   const unsigned int epoch = ++s_displayEpoch;
+  if (heldEpoch)
+    *heldEpoch = epoch;
+  if (s_parkSetTid == static_cast<int>(gettid()) && s_parkCount == 1)
+    s_parkSetEpoch = epoch;
   if (!s_presenterRunning)
-    return;
+    return true;
   if (s_cstallMs > 0 && site && strcmp(site, "mode set") == 0)
   {
     s_cstallEpoch = epoch;
@@ -2675,7 +2681,11 @@ void aml_presenter_hold_acquire(const char* site)
   // a display transaction that never runs is worse than one that races a QBUF.
   const auto start = std::chrono::steady_clock::now();
   bool warned = false;
-  while (s_presenterRunning && s_parkedEpoch != epoch)
+  // 5.B2-5b (review N1): an ack of a later epoch is one too, as C stays held across them (epochs
+  // only grow); off keeps today's wait for this exact epoch
+  const bool laterAckCounts = OUTPUT::ModeSetsOnW();
+  while (s_presenterRunning &&
+         (laterAckCounts ? s_parkedEpoch < epoch : s_parkedEpoch != epoch))
   {
     s_holdCond.wait_for(lock, std::chrono::milliseconds(20));
     const auto waited = std::chrono::steady_clock::now() - start;
@@ -2689,9 +2699,34 @@ void aml_presenter_hold_acquire(const char* site)
     {
       CLog::Log(LOGERROR, "aml_presenter_hold_acquire - coordinator did not park in 2 s, "
                           "proceeding (epoch {})", epoch);
-      return;
+      return false;
     }
   }
+  return true;
+}
+
+bool aml_presenter_hold_rewait(unsigned int epoch, int ms)
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (s_presenterRunning && s_holdDepth > 0 && s_parkedEpoch < epoch)
+  {
+    if (std::chrono::steady_clock::now() >= until)
+      return false;
+    s_holdCond.wait_for(lock, std::chrono::milliseconds(20));
+  }
+  return s_holdDepth > 0 || !s_presenterRunning;
+}
+
+bool aml_presenter_parked()
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  if (s_holdDepth <= 0)
+    return false;
+  if (!s_presenterRunning)
+    return true;
+  // epochs only grow (one per acquire and release)
+  return s_parkSetTid != 0 && s_parkedEpoch >= s_parkSetEpoch;
 }
 
 void aml_presenter_hold_release()

@@ -393,6 +393,110 @@ uint64_t CPresentationCoordinator::DetachUiSurfaceNewEpoch(uint32_t format)
   return epoch;
 }
 
+bool CPresentationCoordinator::ReclaimUiForModeSet(uint64_t& newEpoch,
+                                                   drmModeAtomicReqPtr off,
+                                                   uint32_t format,
+                                                   bool acked)
+{
+  const uint64_t requested = newEpoch;
+  static int s_refused = 0;
+  static int s_unbuilt = 0;
+  // the caller's park: C acknowledged it, so no GUI flip is in flight (R4-M1); unacked twice,
+  // the caller runs today's way on purpose (logged there)
+  if (acked && !aml_presenter_parked())
+    CLog::Log(LOGERROR, "UIEPOCH ASSERT the GUI plane reclaim runs with C not parked");
+  // G's own switch-off (a refusal, ghold) would put the GUI plane's fb it read back up
+  std::unique_lock planeOff(m_planeOffMutex);
+  uint32_t shownFb;
+  bool cbufShown;
+  {
+    std::unique_lock lock(m_uiMutex);
+    AbandonLostCommit(PLANE_UI);
+    shownFb = m_planes[PLANE_UI].onScreenFb;
+    cbufShown = m_cbufUp;
+  }
+  // blocking, as DisableGraphicsPlane's: never under m_uiMutex
+  bool done = false;
+  int err = 0;
+  int64_t tookUs = 0;
+  if (off)
+  {
+    const int64_t start = MonotonicNs();
+    done = drmModeAtomicCommit(m_masterFd, off, 0, nullptr) == 0;
+    err = errno;
+    tookUs = (MonotonicNs() - start) / 1000;
+    drmModeAtomicFree(off);
+  }
+  uint64_t previous;
+  bool stale;
+  {
+    std::unique_lock lock(m_uiMutex);
+    // done or not, every buffer goes back and nothing shows in C's books (R4-M2, R4-M4); C's
+    // own buffer is off the plane with the rest and goes up again with this set's request
+    ReclaimPlane(PLANE_UI);
+    if (format)
+      m_uiFormat = format;
+    previous = m_uiEpoch;
+    m_uiEpoch = std::max(m_uiEpoch + 1, newEpoch);
+    newEpoch = m_uiEpoch;
+    stale = m_cbufReq != nullptr;
+    if (stale)
+      drmModeAtomicFree(m_cbufReq);
+    m_cbufReq = nullptr;
+  }
+  // W is the one writer from 5.B2-5b: its next epoch is always the one taken here
+  if (newEpoch != requested)
+    CLog::Log(LOGERROR, "UIEPOCH ASSERT epoch {} asked for at epoch {}, {} taken", requested,
+              previous, newEpoch);
+  if (stale)
+    CLog::Log(LOGINFO, "CBUF dropped an unused request at epoch {}", newEpoch);
+  if (done)
+    CLog::Log(LOGINFO, "PLANE ui off done epoch={} fb={} cbuf={} took_us={}{}", newEpoch, shownFb,
+              cbufShown ? 1 : 0, tookUs, acked ? "" : " (unparked)");
+  else if (!off)
+    CLog::Log(LOGWARNING, "PLANE ui off not built (no plane or CRTC) epoch={} fb={} n={}",
+              newEpoch, shownFb, ++s_unbuilt);
+  else
+    CLog::Log(LOGERROR, "PLANE ui off refused (SB3 state) epoch={} fb={} {} n={}", newEpoch,
+              shownFb, strerror(err), ++s_refused);
+  return done;
+}
+
+void CPresentationCoordinator::ForgetUiEpoch(uint64_t epoch)
+{
+  int forgotten = 0;
+  {
+    std::unique_lock lock(m_uiMutex);
+    PlaneState& ui = m_planes[PLANE_UI];
+    if (ui.ready.bo && ui.ready.epoch < epoch)
+    {
+      Drop(PLANE_UI, ui.ready);
+      forgotten++;
+    }
+    if (ui.committedBo && ui.committedEpoch < epoch)
+    {
+      ui.returned.push_back({ui.committedBo, ui.committedFb, ui.committedEpoch});
+      ui.inCommit = false;
+      ui.committedBo = nullptr;
+      ui.committedFb = 0;
+      ui.committedEpoch = 0;
+      ui.committedCOwned = false;
+      forgotten++;
+    }
+    if (ui.onScreen && ui.onScreenEpoch < epoch)
+    {
+      ui.returned.push_back({ui.onScreen, ui.onScreenFb, ui.onScreenEpoch});
+      ui.onScreen = nullptr;
+      ui.onScreenFb = 0;
+      ui.onScreenEpoch = 0;
+      forgotten++;
+    }
+    // a commit still in its ioctl is never handed back
+    ui.generation++;
+  }
+  CLog::Log(LOGERROR, "UIEPOCH ForgetUiEpoch below {}: {} buffers", epoch, forgotten);
+}
+
 uint64_t CPresentationCoordinator::UiEpoch()
 {
   std::unique_lock lock(m_uiMutex);
@@ -526,6 +630,8 @@ bool CPresentationCoordinator::DisableGraphicsPlane(
 {
   // parked, and no flip in flight: this thread owns the commit
   CAmlPresenterHold hold("graphics plane off");
+  // 5.B2-5b: never between a GUI plane reclaim's snapshot and its books (uncontended off)
+  std::unique_lock planeOff(m_planeOffMutex);
   uint32_t primaryFb;
   bool on;
   {

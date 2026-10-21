@@ -356,15 +356,32 @@ bool aml_last_present_rendered();
 // Acquire returns once the coordinator has acknowledged (bounded); every
 // acquire and release starts a new display epoch.
 //! site names the hold in the coordinator's TIMING lines
-void aml_presenter_hold_acquire(const char* site);
+//! true once the coordinator acknowledged (or is not running); false when the 2 s bound passed
+//! and the hold is held unacknowledged. epoch: the display epoch this acquire started.
+bool aml_presenter_hold_acquire(const char* site, unsigned int* epoch = nullptr);
 void aml_presenter_hold_release();
+//! 5.B2-5b (Q5): waits up to ms more for the ack of a hold still held (the same epoch: no
+//! release, no new acquire); true once acknowledged
+bool aml_presenter_hold_rewait(unsigned int epoch, int ms);
 struct CAmlPresenterHold
 {
-  explicit CAmlPresenterHold(const char* site) { aml_presenter_hold_acquire(site); }
+  explicit CAmlPresenterHold(const char* site) : m_parked(aml_presenter_hold_acquire(site, &m_epoch))
+  {
+  }
   ~CAmlPresenterHold() { aml_presenter_hold_release(); }
   CAmlPresenterHold(const CAmlPresenterHold&) = delete;
   CAmlPresenterHold& operator=(const CAmlPresenterHold&) = delete;
+  bool Parked() const { return m_parked; }
+  bool Rewait(int ms) { return m_parked = m_parked || aml_presenter_hold_rewait(m_epoch, ms); }
+
+private:
+  unsigned int m_epoch = 0;
+  bool m_parked;
 };
+//! 5.B2-5b (S1', R4-M1): a hold is held and the coordinator's ack is for an epoch at or after
+//! the outer mode set hold's acquire (a nested hold's release leaves C held on an older ack);
+//! true too when the coordinator is not running
+bool aml_presenter_parked();
 //! the hold whose release started a display epoch; site null = not started by a hold release
 struct AmlEpochHold
 {

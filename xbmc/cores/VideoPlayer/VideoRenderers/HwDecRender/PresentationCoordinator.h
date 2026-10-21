@@ -114,6 +114,25 @@ public:
                         uint64_t epoch,
                         const std::function<drmModeAtomicReqPtr(uint32_t, int&, int&)>& build);
   /*!
+   * \brief 5.B2-5b (rule S1'), on W in a mode set's job while W holds the park (no hold
+   * taken here): the GUI plane off in off, a blocking commit made with m_uiMutex released
+   * (built by the caller under the display's lock, ownership taken; null: none could be
+   * built), every GUI buffer back to returned, and the UI epoch set to newEpoch, from which
+   * Submit refuses older buffers. False when the off was refused or not built: the books are
+   * cleared anyway (R4-M2), the old buffer may still be scanned out (the SB3 state).
+   * format: the GUI surface's, for C's cleared buffer (0: unchanged). newEpoch is set to the
+   * epoch taken (always above the current one). acked: false when W's park was not
+   * acknowledged twice; the reclaim then runs unparked, as today's DetachSurface does after its
+   * park timeout. Serialised with DisableGraphicsPlane (its off carries the GUI plane's fb).
+   */
+  bool ReclaimUiForModeSet(uint64_t& newEpoch,
+                           drmModeAtomicReqPtr off,
+                           uint32_t format,
+                           bool acked = true);
+  //! 5.B2-5b (R4-M3), main, at the bound of its handler's wait: every GUI buffer below epoch
+  //! back to returned, on screen or not; no ioctl
+  void ForgetUiEpoch(uint64_t epoch);
+  /*!
    * \brief Switches the graphics plane off, in a blocking commit built by
    * build(fb of the GUI plane on screen) while the coordinator is parked, and
    * takes its buffers back. False when there was nothing to carry it.
@@ -244,6 +263,9 @@ private:
   std::condition_variable m_vblankCond;
   int64_t m_lastVblankNs = 0;
 
+  //! 5.B2-5b (review S2): held across a plane-off's snapshot, blocking commit and books, by
+  //! DisableGraphicsPlane and ReclaimUiForModeSet; taken before m_uiMutex, never by C's thread
+  std::mutex m_planeOffMutex;
   std::mutex m_uiMutex;
   std::condition_variable m_uiCond;
   PlaneState m_planes[PLANE_COUNT];

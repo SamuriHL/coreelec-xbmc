@@ -135,4 +135,39 @@ void NoteCoordinatorStarted(bool started);
 //! validated SoC and a started coordinator; off = today's code
 bool OutputDriveOn();
 
+// 5.B2-5b: W runs main's mode sets (design §4.2, §4.5, §4.6)
+//! the win system latches it once, when W starts after the boot set (OutputDriveOn, no
+//! outputdrive_skip "B2-5b", and B2-3 and B2-4 on); false before that and under off
+void NoteModeSetsOnW(bool on);
+bool ModeSetsOnW();
+
+//! the reply W gave a request of main's (design §4.5)
+enum class DriveReply
+{
+  NONE = 0,
+  DONE,
+  DONE_NO_CHANGE,
+  NOT_COMMITTED,
+  FAILED,
+  FAILED_PARK, //!< not given from 5.B2-5b's park retry on (kept for RM's test)
+  GAVE_UP, //!< main stopped waiting at 15 s: the outcome is unknown, not a failure
+};
+const char* DriveReplyName(DriveReply reply);
+//! main: the reply of its last request, numbered (the give-up counts as FAILED)
+void NoteDriveReply(DriveReply reply);
+DriveReply LastDriveReply(uint64_t& seq);
+//! main: a request built inside this scope is the render manager's (origin=rm, r1 M4)
+class CDriveOriginRm
+{
+public:
+  CDriveOriginRm();
+  ~CDriveOriginRm();
+  CDriveOriginRm(const CDriveOriginRm&) = delete;
+  CDriveOriginRm& operator=(const CDriveOriginRm&) = delete;
+};
+bool DriveOriginRm();
+//! main: the RESOLUTION GC is setting, for a late reply's GC update (r1 L11)
+void NoteDriveResolution(int res);
+int DriveResolution();
+
 } // namespace OUTPUT

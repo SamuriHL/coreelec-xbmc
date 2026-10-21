@@ -155,6 +155,9 @@ public:
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
   //! 5.B2-4: BuildFlipRequest under m_drmSection, with the source size it sets
   drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h);
+  //! 5.B2-5b (S1'): X1's GUI plane off (FB, CRTC and both rects 0) under m_drmSection;
+  //! nullptr without a plane or CRTC
+  drmModeAtomicReqPtr BuildUiPlaneOffRequestLocked();
   // real_player graphics plane (osd1, under the GUI plane)
   bool HasOverlayPlane();
   //! the graphics plane showing fb_id (a src_w x src_h buffer) over the whole
@@ -271,6 +274,10 @@ public:
   drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h)
   {
     return m_amlDRMUtils->BuildFlipRequestLocked(fb_id, src_w, src_h);
+  }
+  drmModeAtomicReqPtr BuildUiPlaneOffRequestLocked()
+  {
+    return m_amlDRMUtils->BuildUiPlaneOffRequestLocked();
   }
   bool HasOverlayPlane() { return m_amlDRMUtils->HasOverlayPlane(); }
   drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h)

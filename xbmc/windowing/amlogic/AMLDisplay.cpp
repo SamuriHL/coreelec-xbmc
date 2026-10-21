@@ -1412,6 +1412,22 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequestLocked(uint32_t fb_id, int& sr
   return BuildFlipRequest(fb_id);
 }
 
+drmModeAtomicReqPtr CAMLDRMUtils::BuildUiPlaneOffRequestLocked()
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  if (!m_plane || !m_crtc)
+    return nullptr;
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req)
+    return nullptr;
+  // X1's measured primary-only disable: the driver takes a disable only with FB, CRTC and
+  // both rects zeroed
+  for (const char* name : {"FB_ID", "CRTC_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X",
+                           "CRTC_Y", "CRTC_W", "CRTC_H"})
+    set_drmProp(m_plane->plane_id, name, DRM_MODE_OBJECT_PLANE, 0, req);
+  return req;
+}
+
 bool CAMLDRMUtils::HasOverlayPlane()
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
