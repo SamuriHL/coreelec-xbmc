@@ -124,8 +124,10 @@ void ArmDemuxBlock();
 void TestDemuxBlock();
 //! a player open drops an arm left by an earlier set
 void DisarmDemuxBlock();
-//! outputdrive_cstall "<ms>": C withholds its ack of a mode set's park for <ms>
+//! outputdrive_cstall "<ms> [n]": C withholds its ack of a mode set's park for <ms>; with n, only
+//! of the n-th mode set's park after the boot set (5.B2-5b: a start whose retry is not stalled)
 int TestCStallMs();
+int TestCStallNth();
 //! outputdrive_skip "<substep>[,<substep>]": true for a listed 5.B2 sub-step (bisect only)
 bool OutputDriveSkip(const std::string& substep);
 

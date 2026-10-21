@@ -2628,6 +2628,8 @@ unsigned int s_epochHoldEpoch = 0;
 // test (5.B2-1): special://profile/outputdrive_cstall holds "<ms>"; C withholds its ack of a
 // mode set's park that long, so a value over 2 s reaches the park timeout
 int s_cstallMs = 0;
+int s_cstallNth = 0; //!< 0: every mode set
+int s_cstallSets = 0;
 unsigned int s_cstallEpoch = 0;
 std::chrono::steady_clock::time_point s_cstallUntil;
 // 5.B2-1: the holds taken while a mode set's hold is held, logged at its release
@@ -2663,7 +2665,8 @@ bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
     s_parkSetEpoch = epoch;
   if (!s_presenterRunning)
     return true;
-  if (s_cstallMs > 0 && site && strcmp(site, "mode set") == 0)
+  if (s_cstallMs > 0 && site && strcmp(site, "mode set") == 0 &&
+      (s_cstallNth == 0 || ++s_cstallSets == s_cstallNth))
   {
     s_cstallEpoch = epoch;
     s_cstallUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(s_cstallMs);
@@ -2820,10 +2823,11 @@ uint64_t aml_timing_inputs_gen()
   return s_timingInputsGen.load(std::memory_order_acquire);
 }
 
-void aml_presenter_set_test_cstall(int ms)
+void aml_presenter_set_test_cstall(int ms, int nth)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   s_cstallMs = ms;
+  s_cstallNth = nth;
 }
 
 void aml_presenter_set_running(bool running)

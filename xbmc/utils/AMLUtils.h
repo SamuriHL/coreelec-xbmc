@@ -407,7 +407,8 @@ uint64_t aml_timing_inputs_gen();
 constexpr int AML_VD1_PRESENT_VBLANKS = 2;
 void aml_presenter_set_running(bool running);
 //! 5.B2-1 test (outputdrive_cstall): withhold the ack of a mode set's park for ms
-void aml_presenter_set_test_cstall(int ms);
+//! nth > 0: only the nth mode set's park from here on
+void aml_presenter_set_test_cstall(int ms, int nth = 0);
 //! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
 void aml_presenter_set_wake_fd(int fd);
 // true while a coordinator releases the video plane, so the GUI loop paces

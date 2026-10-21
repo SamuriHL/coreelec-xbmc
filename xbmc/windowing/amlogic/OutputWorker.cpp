@@ -360,17 +360,34 @@ void TestDemuxBlock()
   std::this_thread::sleep_for(std::chrono::milliseconds(DemuxBlockMs()));
 }
 
-int TestCStallMs()
+namespace
 {
-  static const int ms = []
+std::pair<int, int> CStall()
+{
+  static const std::pair<int, int> stall = []
   {
     const auto line = ReadTestSwitch("outputdrive_cstall");
     const int value = line ? std::atoi(line->c_str()) : 0;
-    if (value > 0)
+    const auto space = line ? line->find(' ') : std::string::npos;
+    const int nth = space == std::string::npos ? 0 : std::max(0, std::atoi(line->c_str() + space));
+    if (value > 0 && nth > 0)
+      CLog::Log(LOGWARNING, "OUTPUTDRIVE: test park ack withheld {} ms at mode set {}", value, nth);
+    else if (value > 0)
       CLog::Log(LOGWARNING, "OUTPUTDRIVE: test park ack withheld {} ms at every mode set", value);
-    return value;
+    return std::pair<int, int>{value, nth};
   }();
-  return ms;
+  return stall;
+}
+} // namespace
+
+int TestCStallMs()
+{
+  return CStall().first;
+}
+
+int TestCStallNth()
+{
+  return CStall().second;
 }
 
 bool OutputDriveSkip(const std::string& substep)
