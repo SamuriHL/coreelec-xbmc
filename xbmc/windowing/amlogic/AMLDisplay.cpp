@@ -398,6 +398,7 @@ void CAMLDRMUtils::CleanAndClose()
   }
 
   m_connection = DRM_MODE_DISCONNECTED;
+  m_crtcIdLive.store(0, std::memory_order_release);
 }
 
 void CAMLDRMUtils::aml_init_drmDevice()
@@ -492,6 +493,7 @@ void CAMLDRMUtils::aml_init_drmDevice()
 
   if (aml_get_drmDevice_connected())
     aml_init_drmDevice_display();
+  m_crtcIdLive.store(m_crtc ? m_crtc->crtc_id : 0, std::memory_order_release);
 }
 
 void CAMLDRMUtils::aml_init_drmDevice_display()
@@ -740,6 +742,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   {
     if (m_resources && m_resources->count_crtcs > 0)
       m_crtc = drmModeGetCrtc(m_fd, m_resources->crtcs[0]);
+    m_crtcIdLive.store(m_crtc ? m_crtc->crtc_id : 0, std::memory_order_release);
 
     if (!m_crtc)
     {

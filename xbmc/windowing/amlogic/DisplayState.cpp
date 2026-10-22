@@ -287,6 +287,20 @@ void PublishWithCaps(DisplayState& s, const CAMLDisplay& display, const char* ki
   }
   if (!s_capsFailed.exchange(true))
     CLog::Log(LOGWARNING, "DISPLAYSTATE caps read failed, not published: {}", error);
+  // 5.B3-4 (hotplugworker only): the link fields still publish, over the last good caps, so the
+  // DRM readers do not keep an older link; the caps readers skip on s_capsFailed as before
+  if (OUTPUT::HotplugWorkerOn())
+  {
+    try
+    {
+      DisplayState link = Current();
+      FillLink(link, display);
+      Store(link, "link (caps failed)");
+    }
+    catch (...)
+    {
+    }
+  }
   s_capsDoneGen = gen;
 }
 
@@ -401,7 +415,12 @@ std::shared_ptr<const DisplayState> LinkState()
 {
   if (!OUTPUT::HotplugWorkerOn())
     return nullptr;
-  return s_state.load();
+  auto state = s_state.load();
+  // no plane fields: published before the latch (the boot set) or after a failed re-init; HEAD's
+  // live path is the answer there
+  if (state && !state->primaryPlaneId)
+    return nullptr;
+  return state;
 }
 
 void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed)

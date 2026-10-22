@@ -121,6 +121,12 @@ public:
 
   int aml_get_drmDevice_handle() const { return m_fd; }
   uint32_t aml_get_drmDevice_crtc_id() const { return m_crtc ? m_crtc->crtc_id : 0; }
+  //! 5.B3-4: aml_get_drmDevice_crtc_id's value as the last locked writer of m_crtc left it
+  //! (the re-init, CleanAndClose, a forced set's crtcs[0]), lock-free and without m_crtc
+  uint32_t aml_get_drmDevice_crtc_id_live() const
+  {
+    return m_crtcIdLive.load(std::memory_order_acquire);
+  }
   void aml_init_drmDevice();
   bool aml_drmDevice_vsync();
   std::string aml_get_drmDevice_mode();
@@ -236,6 +242,7 @@ private:
   drmModeConnection m_connection{DRM_MODE_DISCONNECTED};
   drmModeEncoderPtr m_encoder{nullptr};
   drmModeCrtcPtr m_crtc{nullptr};
+  std::atomic<uint32_t> m_crtcIdLive{0}; //!< m_crtc's id, written under m_drmSection
   drmModeCrtcPtr m_orig_crtc{nullptr};
   drmModePlanePtr m_plane{nullptr};
   drmModePlanePtr m_overlayPlane{nullptr};
@@ -253,6 +260,10 @@ public:
   void aml_refresh_display_caps();
   int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }
   uint32_t aml_get_Device_crtc_id() const { return m_amlDRMUtils->aml_get_drmDevice_crtc_id(); }
+  uint32_t aml_get_Device_crtc_id_live() const
+  {
+    return m_amlDRMUtils->aml_get_drmDevice_crtc_id_live();
+  }
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }

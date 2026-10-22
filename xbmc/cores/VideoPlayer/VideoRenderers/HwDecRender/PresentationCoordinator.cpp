@@ -211,8 +211,9 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
     std::unique_lock lock(m_videoMutex);
     m_video = renderManager;
   }
-  // the CRTC: under hotplugworker the published DisplayState's (5.B3-4), else the live one,
-  // safe only because this runs on the render thread, which also runs the hotplug's re-init
+  // the CRTC: under hotplugworker the published DisplayState's id (5.B3-4); under off HEAD's live
+  // read (racy, as today: this runs on VideoPlayer::OpenFile's caller via RM PreInit, not with
+  // the re-init)
   if (auto winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
     m_crtc = winSystem->GetDRMCrtcId();
 
