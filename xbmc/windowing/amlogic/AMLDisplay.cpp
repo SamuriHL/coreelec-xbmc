@@ -1247,6 +1247,12 @@ void CAMLDRMUtils::aml_get_drmDevice_ui_plane(uint32_t& plane_id,
   overlay_active = m_overlayActive;
 }
 
+bool CAMLDRMUtils::aml_get_drmDevice_crtc_dark()
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  return aml_get_drmDevice_connected() && (!m_crtc || !m_crtc->mode_valid);
+}
+
 bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
@@ -1389,7 +1395,12 @@ bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rat
       if (!ret)
         CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to set drmDevice mode: {}", __FUNCTION__, drmDevicemode->name);
       else
+      {
         m_crtc->mode = *drmDevicemode;
+        // 5.B3-5: the commit set MODE_ID, so the kernel's CRTC is enabled with this mode
+        // (drm_mode_getcrtc's mode_valid); the copy says so too, not the re-init's snapshot
+        m_crtc->mode_valid = 1;
+      }
       m_fracCommitted = frac_only && ret;
       if (frac_only && !ret)
       {

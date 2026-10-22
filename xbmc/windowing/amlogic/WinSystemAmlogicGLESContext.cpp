@@ -175,6 +175,25 @@ bool DriveShadowOn()
   return on;
 }
 
+// 5.B3-5 (design §6, every path): the current resolution for CreateNewWindow's decision. A
+// connected CRTC with no mode (disabled) is a mode set required, with an empty current
+// resolution that no "No need" test matches; today's predicate never reads that state
+bool CurrentResolution(CAMLDisplay& display,
+                       RESOLUTION_INFO& cur,
+                       std::optional<bool> nativeGui,
+                       bool& dark)
+{
+  dark = false;
+  if (display.aml_get_native_resolution(&cur, nativeGui))
+    return true;
+  if (!display.aml_crtc_dark())
+    return false;
+  dark = true;
+  cur = RESOLUTION_INFO(0, 0);
+  CLog::Log(LOGWARNING, "CWinSystemAmlogicGLESContext: dark CRTC: mode set required");
+  return true;
+}
+
 // on W, with no write: CreateNewWindow's no-op test, force reasons and re-clock request, from the
 // request, W's backups and W's own reads (never GetHotPlug, which clears)
 void ShadowDecide(CAMLDisplay& display, SDriveShadow& s)
@@ -200,7 +219,8 @@ void ShadowDecide(CAMLDisplay& display, SDriveShadow& s)
 
   RESOLUTION_INFO cur;
   cur.iWidth = cur.iHeight = 0;
-  if (!display.aml_get_native_resolution(&cur, s.nativeGUI))
+  bool dark = false;
+  if (!CurrentResolution(display, cur, s.nativeGUI, dark))
   {
     d.valid = false;
     return;
@@ -209,7 +229,8 @@ void ShadowDecide(CAMLDisplay& display, SDriveShadow& s)
   const bool sameSize = cur.iWidth == res.iWidth && cur.iHeight == res.iHeight &&
                         cur.iScreenWidth == res.iScreenWidth &&
                         cur.iScreenHeight == res.iScreenHeight;
-  d.noop = sameSize && b.fullScreen == s.fullScreen && cur.fRefreshRate == res.fRefreshRate &&
+  d.noop = !dark && sameSize && b.fullScreen == s.fullScreen &&
+           cur.fRefreshRate == res.fRefreshRate &&
            (cur.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
            b.windowCreated && s.nativeGUI == b.nativeGUI && !d.hdr && !d.hotplug && !d.frac &&
            !d.stereo && !d.wire;
@@ -498,7 +519,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   }
 
   // get current used resolution
-  if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
+  bool dark = false;
+  if (!CurrentResolution(*m_amlDisplay, current_resolution, std::nullopt, dark))
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution", __FUNCTION__);
     if (shadow)
@@ -532,7 +554,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
 
   // check if mode switch is needed
-  if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
+  if (!dark && current_resolution.iWidth == res.iWidth &&
+      current_resolution.iHeight == res.iHeight &&
       current_resolution.iScreenWidth == res.iScreenWidth &&
       current_resolution.iScreenHeight == res.iScreenHeight && m_bFullScreen == fullScreen &&
       current_resolution.fRefreshRate == res.fRefreshRate &&
@@ -1032,7 +1055,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
 
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
-  if (!display->aml_get_native_resolution(&current_resolution, job.nativeGUI))
+  bool dark = false;
+  if (!CurrentResolution(*display, current_resolution, job.nativeGUI, dark))
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution",
               __FUNCTION__);
@@ -1062,7 +1086,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, job.nativeGUI);
 
   // check if mode switch is needed
-  if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
+  if (!dark && current_resolution.iWidth == res.iWidth &&
+      current_resolution.iHeight == res.iHeight &&
       current_resolution.iScreenWidth == res.iScreenWidth &&
       current_resolution.iScreenHeight == res.iScreenHeight &&
       job.backups.fullScreen == job.fullScreen &&

@@ -164,6 +164,9 @@ public:
     const RenderStereoMode stereo_mode, bool active, bool frac_reclock = false,
     bool held_notice = true);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
+  //! 5.B3-5 (design §6): connected, and no CRTC or one with no mode (disabled): a mode set is
+  //! required, the current resolution is empty. Under m_drmSection
+  bool aml_get_drmDevice_crtc_dark();
   //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
   bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }
   //! a hotplug set commits even with no display (more than the dummy mode)
@@ -267,6 +270,7 @@ public:
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
+  bool aml_crtc_dark() const { return m_amlDRMUtils->aml_get_drmDevice_crtc_dark(); }
   bool aml_set_not_connected() const
   {
     return m_amlDRMUtils->aml_get_drmDevice_set_not_connected();
