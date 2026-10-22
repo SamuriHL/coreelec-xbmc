@@ -366,6 +366,8 @@ int aml_hdmitx_hpd_state();
 bool aml_hpd_cb_present();
 //! 5.KH's aml_drm hpd_restore: true Y, false N; nullopt without the parameter
 std::optional<bool> aml_hpd_restore();
+//! writes it (Y or N); false without the parameter or when the write fails
+bool aml_set_hpd_restore(bool restore);
 //! real_player 4a (design 4.3): keep the last picture across a decoder reinit
 //! at a disc join. The player arms the next close; the kernel keeps the frame
 //! (blackout_policy=0) until the next decoder's first frame replaces it.

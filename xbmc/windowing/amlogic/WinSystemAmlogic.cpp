@@ -590,6 +590,22 @@ bool CWinSystemAmlogic::InitWindowSystem()
   // reaches.
   aml_dv_recover_stale_disc_session();
 
+  // 5.B3-2, every session, whatever the switches: the kernel restores the link at a plug-in
+  // again (hpd_restore Y, its default), so no session inherits an N an earlier one left (written
+  // by hand, or by a session that lost its DRM master). Touches only the parameter
+  if (const std::optional<bool> before = aml_hpd_restore())
+  {
+    aml_set_hpd_restore(true);
+    const std::optional<bool> after = aml_hpd_restore();
+    if (after && *after)
+      CLog::Log(LOGINFO, "hpdRestore Y (init, was {})", *before ? "Y" : "N");
+    else
+      CLog::Log(LOGERROR, "hpdRestore {} after the init's Y write (was {})",
+                after ? "N" : "absent", *before ? "Y" : "N");
+  }
+  else
+    CLog::Log(LOGINFO, "hpdRestore absent");
+
   RefreshDisplayCapabilities();
 
   if (OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))

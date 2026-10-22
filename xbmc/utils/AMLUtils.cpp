@@ -3029,6 +3029,22 @@ std::optional<bool> aml_hpd_restore()
   return StringUtils::EqualsNoCase(value, "Y") || value == "1";
 }
 
+bool aml_set_hpd_restore(bool restore)
+{
+  CSysfsPath node{HPD_RESTORE};
+  if (!node.Exists())
+    return false;
+  try
+  {
+    node.Set<std::string>(restore ? "Y" : "N");
+  }
+  catch (const std::exception&)
+  {
+    return false; // logged by CSysfsPath
+  }
+  return true;
+}
+
 int aml_amdv_wait(StreamHdrType hdrType)
 {
   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
