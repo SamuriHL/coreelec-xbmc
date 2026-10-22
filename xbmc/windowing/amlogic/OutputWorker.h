@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Phase 5 step 5.B1: W, the one writer of link and DV state (design §2 I3, §4.1, §5). Jobs run
@@ -208,5 +209,41 @@ bool DriveFilmStart();
 //! main: the RESOLUTION GC is setting, for a late reply's GC update (r1 L11)
 void NoteDriveResolution(int res);
 int DriveResolution();
+
+// 5.B3: the hotplug path on W (design §6)
+//! the win system latches the switches once, at W's start, after NoteModeSetsOnW, and logs
+//! "HOTPLUGWORKER on|off (<reason>) hpdRestore N|Y|absent hpdCb present|absent". hotplugworker
+//! = ModeSetsOnW and no hotplugworker_off; hpdnorestore (B3-10's N write) = hotplugworker, no
+//! hpdnorestore_off and the parameter present. Both false before the latch and under off
+void LatchHotplugWorker();
+bool HotplugWorkerOn();
+bool HpdNoRestoreOn();
+//! hotplugworker_skip "<substep>[,<substep>]": true for a listed 5.B3 sub-step (bisect only)
+bool HotplugWorkerSkip(const std::string& substep);
+
+// 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
+//! hotplugworker_hold "<ms>": W sleeps <ms> before its next hotplug job (0: off)
+int TestHotplugHoldMs();
+//! hotplugworker_holdhpd: at a plug-out event W posts a hold job that spins until hpd_state
+//! reads 1, so the plug-out's read lands in the plug-in's hpd-to-uevent window
+bool TestHotplugHoldHpd();
+//! hotplugworker_retry "<ms>": the P5-9 timer's first, shortest period (0: today's)
+int TestHotplugRetryMs();
+//! hotplugworker_capsfail "<n>": called once per reconnect's caps refresh; true at the n-th,
+//! which then reports a one-mode list
+bool TestHotplugCapsFail();
+//! hotplugworker_reinit "<period ms> <seconds>": an injected re-init job on W every period for
+//! that long ({0, 0}: off)
+std::pair<int, int> TestHotplugReinit();
+//! hotplugworker_nohpdcb: W behaves as on a kernel without hpd_cb_state/hpd_cb_seq
+bool TestHotplugNoHpdCb();
+//! hotplugworker_racegap "<ms>": W sleeps between clearing jobQueued and reading receiptSeq
+int TestHotplugRaceGapMs();
+//! hotplugworker_applythrow "<n> [times]": called once per reply apply, after its table step;
+//! true for the n-th apply and the times-1 after it (times default 1): main throws there
+bool TestHotplugApplyThrow();
+//! hotplugworker_setafter "<ms>": a plug-in's receipt also posts, <ms> later, a settings
+//! resolution change from main (-1: off)
+int TestHotplugSetAfterMs();
 
 } // namespace OUTPUT

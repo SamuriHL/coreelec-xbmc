@@ -157,6 +157,9 @@ private:
   };
 
   void RefreshResolutions();
+  //! 5.B3-1 (log only): the init's "startup link" line and today's per-event read line
+  void LogStartupLink();
+  void LogHotplugRead(drmModeConnection connection, int modes);
   void OpenLostSpan();
 
   bool m_lostAtDisconnect{false};

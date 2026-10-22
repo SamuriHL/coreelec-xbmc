@@ -2932,6 +2932,103 @@ int aml_hdmi_sink_locked()
   return -1; // na, busy, err
 }
 
+namespace
+{
+constexpr const char* HPD_STATE = "/sys/class/amhdmitx/amhdmitx0/hpd_state";
+constexpr const char* HPD_CB_STATE = "/sys/module/aml_drm/parameters/hpd_cb_state";
+constexpr const char* HPD_CB_SEQ = "/sys/module/aml_drm/parameters/hpd_cb_seq";
+constexpr const char* HPD_RESTORE = "/sys/module/aml_drm/parameters/hpd_restore";
+
+// a sysfs number; nullopt when the node is missing or does not hold one
+std::optional<unsigned long> ReadSysfsNumber(const char* path)
+{
+  CSysfsPath node{path};
+  if (!node.Exists())
+    return std::nullopt;
+  const std::string text = node.Get<std::string>().value_or("");
+  if (text.empty())
+    return std::nullopt;
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long value = std::strtoul(text.c_str(), &end, 10);
+  if (errno != 0 || end == text.c_str() || *end != '\0')
+    return std::nullopt;
+  return value;
+}
+} // namespace
+
+const char* aml_hpd_source_name(HpdSource source)
+{
+  switch (source)
+  {
+    case HpdSource::CB:
+      return "cb";
+    case HpdSource::HPD_STATE:
+      return "hpd_state";
+    default:
+      return "drm";
+  }
+}
+
+bool aml_hpd_cb_present()
+{
+  return CSysfsPath(HPD_CB_STATE).Exists() && CSysfsPath(HPD_CB_SEQ).Exists();
+}
+
+int aml_hdmitx_hpd_state()
+{
+  const auto state = ReadSysfsNumber(HPD_STATE);
+  return state ? (*state ? 1 : 0) : -1;
+}
+
+bool aml_hpd_read(HpdRead& read, bool useCb)
+{
+  read = HpdRead{};
+  if (useCb && aml_hpd_cb_present())
+  {
+    // the kernel writes the pair as a seqcount under its callback mutex (5.KH): odd while it
+    // writes, +2 per callback, so a state between two equal even reads is one callback's
+    read.source = HpdSource::CB;
+    std::optional<unsigned long> before, state, after;
+    for (read.tries = 1; read.tries <= 8; ++read.tries)
+    {
+      before = ReadSysfsNumber(HPD_CB_SEQ);
+      state = ReadSysfsNumber(HPD_CB_STATE);
+      after = ReadSysfsNumber(HPD_CB_SEQ);
+      if (before && state && after && *before == *after && !(*before & 1))
+      {
+        read.state = *state ? 1 : 0;
+        read.seq = static_cast<unsigned int>(*before);
+        read.valid = true;
+        return true;
+      }
+    }
+    read.tries = 8;
+    read.seq = static_cast<unsigned int>(after.value_or(0));
+    CLog::Log(LOGERROR, "HPD read: hpd_cb_seq torn on all {} tries (last {} -> {})", read.tries,
+              before ? std::to_string(*before) : "-", after ? std::to_string(*after) : "-");
+    return false;
+  }
+  read.tries = 1;
+  read.valid = true;
+  const int state = aml_hdmitx_hpd_state();
+  if (state >= 0)
+  {
+    read.source = HpdSource::HPD_STATE;
+    read.state = state;
+  }
+  return true;
+}
+
+std::optional<bool> aml_hpd_restore()
+{
+  CSysfsPath node{HPD_RESTORE};
+  if (!node.Exists())
+    return std::nullopt;
+  const std::string value = node.Get<std::string>().value_or("");
+  return StringUtils::EqualsNoCase(value, "Y") || value == "1";
+}
+
 int aml_amdv_wait(StreamHdrType hdrType)
 {
   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)

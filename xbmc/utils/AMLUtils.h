@@ -11,6 +11,7 @@
 #include "utils/StreamDetails.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace DISPLAYSTATE
@@ -338,6 +339,33 @@ bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
 //! the sink's own TMDS lock (SCDC, hdmitx sink_lock): 1 locked, 0 not, -1 unknown
 int aml_hdmi_sink_locked();
+//! 5.B3-1: where an HPD read came from (design §6 Detection)
+enum class HpdSource
+{
+  CB = 0, //!< 5.KH's aml_drm hpd_cb_state, between two equal even hpd_cb_seq reads
+  HPD_STATE, //!< hdmitx's hpd_state (a kernel without 5.KH)
+  DRM, //!< neither node: the caller's encoder_id predicate
+};
+const char* aml_hpd_source_name(HpdSource source);
+struct HpdRead
+{
+  HpdSource source{HpdSource::DRM};
+  int state{-1}; //!< 1 connected, 0 not; -1 not read (DRM, or an invalid read)
+  unsigned int seq{0}; //!< hpd_cb_seq; 0 without 5.KH and before the first callback
+  int tries{0};
+  bool valid{false}; //!< false only when every try of the CB read was torn
+};
+//! 5.B3-1: the HPD state the last hotplug callback acted on. Sysfs reads only, no DRM object.
+//! With 5.KH (and useCb): seq, state, seq again, retried while a seq is odd or the two differ,
+//! up to 8 tries, then valid false (logged ERROR). Otherwise hpd_state, seq 0; without that node
+//! too, source DRM. Returns read.valid
+bool aml_hpd_read(HpdRead& read, bool useCb = true);
+//! hdmitx's hpd_state as it reads now: 1, 0, or -1 without the node
+int aml_hdmitx_hpd_state();
+//! 5.KH's hpd_cb_state and hpd_cb_seq both exist
+bool aml_hpd_cb_present();
+//! 5.KH's aml_drm hpd_restore: true Y, false N; nullopt without the parameter
+std::optional<bool> aml_hpd_restore();
 //! real_player 4a (design 4.3): keep the last picture across a decoder reinit
 //! at a disc join. The player arms the next close; the kernel keeps the frame
 //! (blackout_policy=0) until the next decoder's first frame replaces it.

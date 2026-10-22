@@ -266,6 +266,7 @@ void CWinSystemAmlogic::HotplugEvent()
 
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
+  LogHotplugRead(connection, mode_count);
 
   if (connection == DRM_MODE_CONNECTED)
     m_disconnectedSinceMs = 0;
@@ -338,6 +339,54 @@ void CWinSystemAmlogic::HotplugEvent()
   m_amlDisplay->SetHotPlug();
   CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, true);
   CServiceBroker::GetWinSystem()->GetGfxContext().ApplyModeChange(res);
+}
+
+namespace
+{
+std::string HpdReadText(const HpdRead& read)
+{
+  return StringUtils::Format("{}/{}/{}", read.valid ? std::to_string(read.state) : "invalid",
+                             aml_hpd_source_name(read.source), read.seq);
+}
+} // namespace
+
+void CWinSystemAmlogic::LogStartupLink()
+{
+  // 5.B3-1 (log only, every session): the link the init found, before any hotplug
+  HpdRead read;
+  aml_hpd_read(read);
+  uint32_t encoder = 0;
+  uint32_t crtc = 0;
+  std::string mode;
+  bool modeValid = false;
+  m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
+  CLog::Log(LOGINFO, "startup link hpd={} encoder_id={} crtc={} mode={} valid={}",
+            HpdReadText(read), encoder, crtc, mode.empty() ? "-" : mode, modeValid ? 1 : 0);
+}
+
+void CWinSystemAmlogic::LogHotplugRead(drmModeConnection connection, int modes)
+{
+  // 5.B3-1 (log only): today's event against the HPD reads, sysfs only (design §6, A0)
+  const bool cbPresent = aml_hpd_cb_present();
+  HpdRead read;
+  const bool cb = cbPresent && aml_hpd_read(read) && read.source == HpdSource::CB;
+  const char* const noCb = cbPresent ? "invalid" : "absent";
+  uint32_t encoder = 0;
+  uint32_t crtc = 0;
+  std::string mode;
+  bool modeValid = false;
+  m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
+  const int hpdState = aml_hdmitx_hpd_state();
+  CSysfsPath statusNode{"/sys/class/drm/card0-HDMI-A-1/status"};
+  const std::string status =
+      statusNode.Exists() ? statusNode.Get<std::string>().value_or("-") : "absent";
+  CLog::Log(LOGINFO,
+            "HOTPLUG event hpd_state={} cb_state={} cb_seq={} drm_status={} encoder_id={} "
+            "connection={} modes={}",
+            hpdState < 0 ? "absent" : std::to_string(hpdState),
+            cb ? std::to_string(read.state) : noCb, cb ? std::to_string(read.seq) : noCb,
+            status, encoder, connection == DRM_MODE_CONNECTED ? "connected" : "disconnected",
+            modes);
 }
 
 void CWinSystemAmlogic::OpenLostSpan()
@@ -633,6 +682,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
+  LogStartupLink();
 
   if (connection == DRM_MODE_DISCONNECTED)
   {
@@ -808,6 +858,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       DISPLAYSTATE::DvModePublishOn();
       OUTPUT::SettleOnW();
     }
+    // 5.B3: the hotplug switches, read once (log only until W takes the hotplug)
+    OUTPUT::LatchHotplugWorker();
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",

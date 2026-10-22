@@ -456,27 +456,33 @@ bool TestOrderToday()
   return today;
 }
 
+namespace
+{
+// a "<substep>[,<substep>]" bisect file (outputdrive_skip, hotplugworker_skip), logged by tag
+std::vector<std::string> ReadSkipList(const char* name, const char* tag)
+{
+  std::vector<std::string> list;
+  if (const auto line = ReadTestSwitch(name))
+  {
+    size_t begin = 0;
+    while (begin <= line->size())
+    {
+      const size_t end = std::min(line->find(',', begin), line->size());
+      std::string entry = line->substr(begin, end - begin);
+      StringUtils::Trim(entry);
+      if (!entry.empty())
+        list.push_back(entry);
+      begin = end + 1;
+    }
+    CLog::Log(LOGWARNING, "{} skip {}", tag, *line);
+  }
+  return list;
+}
+} // namespace
+
 bool OutputDriveSkip(const std::string& substep)
 {
-  static const std::vector<std::string> skipped = []
-  {
-    std::vector<std::string> list;
-    if (const auto line = ReadTestSwitch("outputdrive_skip"))
-    {
-      size_t begin = 0;
-      while (begin <= line->size())
-      {
-        const size_t end = std::min(line->find(',', begin), line->size());
-        std::string name = line->substr(begin, end - begin);
-        StringUtils::Trim(name);
-        if (!name.empty())
-          list.push_back(name);
-        begin = end + 1;
-      }
-      CLog::Log(LOGWARNING, "OUTPUTDRIVE skip {}", *line);
-    }
-    return list;
-  }();
+  static const std::vector<std::string> skipped = ReadSkipList("outputdrive_skip", "OUTPUTDRIVE");
   return !substep.empty() && std::find(skipped.begin(), skipped.end(), substep) != skipped.end();
 }
 
@@ -631,6 +637,219 @@ void NoteDriveResolution(int res)
 int DriveResolution()
 {
   return s_driveResolution;
+}
+
+namespace
+{
+std::atomic_bool s_hotplugWorker{false};
+std::atomic_bool s_hpdNoRestore{false};
+} // namespace
+
+void LatchHotplugWorker()
+{
+  static std::atomic_bool latched{false};
+  if (latched.exchange(true))
+    return;
+  const char* reason = "";
+  bool on = false;
+  if (COutputWorker::SwitchedOff())
+    reason = "outputworker_off";
+  else if (!ModeSetsOnW())
+    reason = "it needs outputdrive and W's mode sets";
+  else if (XFILE::CFile::Exists("special://profile/hotplugworker_off"))
+    reason = "hotplugworker_off";
+  else
+    on = true;
+  const std::optional<bool> restore = aml_hpd_restore();
+  const bool cb = aml_hpd_cb_present() && !(on && TestHotplugNoHpdCb());
+  bool noRestore = false;
+  if (on)
+  {
+    if (XFILE::CFile::Exists("special://profile/hpdnorestore_off"))
+      reason = "hpdnorestore_off";
+    else if (!restore)
+      reason = "hpdnorestore: no parameter";
+    else
+    {
+      reason = "hpdnorestore";
+      noRestore = true;
+    }
+  }
+  s_hotplugWorker = on;
+  s_hpdNoRestore = noRestore;
+  CLog::Log(LOGINFO, "HOTPLUGWORKER {} ({}) hpdRestore {} hpdCb {}", on ? "on" : "off", reason,
+            restore ? (*restore ? "Y" : "N") : "absent", cb ? "present" : "absent");
+}
+
+bool HotplugWorkerOn()
+{
+  return s_hotplugWorker.load(std::memory_order_relaxed);
+}
+
+bool HpdNoRestoreOn()
+{
+  return s_hpdNoRestore.load(std::memory_order_relaxed);
+}
+
+bool HotplugWorkerSkip(const std::string& substep)
+{
+  static const std::vector<std::string> skipped =
+      ReadSkipList("hotplugworker_skip", "HOTPLUGWORKER");
+  return !substep.empty() && std::find(skipped.begin(), skipped.end(), substep) != skipped.end();
+}
+
+namespace
+{
+// the first number of a hotplugworker_* file; fallback without the file
+int HotplugTestValue(const char* name, int fallback)
+{
+  const auto line = ReadTestSwitch(name);
+  return line ? std::atoi(line->c_str()) : fallback;
+}
+} // namespace
+
+int TestHotplugHoldMs()
+{
+  static const int ms = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_hold", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold of {} ms before the next hotplug job",
+                value);
+    return value;
+  }();
+  return ms;
+}
+
+bool TestHotplugHoldHpd()
+{
+  static const bool on = []
+  {
+    const bool result = XFILE::CFile::Exists("special://profile/hotplugworker_holdhpd");
+    if (result)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold at a plug-out until hpd_state reads 1");
+    return result;
+  }();
+  return on;
+}
+
+int TestHotplugRetryMs()
+{
+  static const int ms = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_retry", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test retry timer's first period {} ms", value);
+    return value;
+  }();
+  return ms;
+}
+
+bool TestHotplugCapsFail()
+{
+  static std::atomic_int remaining{[]
+  {
+    const auto line = ReadTestSwitch("hotplugworker_capsfail");
+    if (!line)
+      return 0;
+    const int n = std::max(1, std::atoi(line->c_str()));
+    CLog::Log(LOGWARNING, "HOTPLUGWORKER: test one-mode caps at reconnect {}", n);
+    return n;
+  }()};
+  if (remaining.load() <= 0 || --remaining != 0)
+    return false;
+  CLog::Log(LOGWARNING, "HOTPLUGWORKER: test one-mode caps");
+  return true;
+}
+
+std::pair<int, int> TestHotplugReinit()
+{
+  static const std::pair<int, int> reinit = []
+  {
+    std::pair<int, int> result{0, 0};
+    if (const auto line = ReadTestSwitch("hotplugworker_reinit"))
+    {
+      const auto space = line->find(' ');
+      const int period = std::atoi(line->c_str());
+      const int seconds = space == std::string::npos ? 0 : std::atoi(line->c_str() + space + 1);
+      if (period > 0 && seconds > 0)
+      {
+        result = {period, seconds};
+        CLog::Log(LOGWARNING, "HOTPLUGWORKER: test re-init on W every {} ms for {} s", period,
+                  seconds);
+      }
+      else
+        CLog::Log(LOGWARNING, "HOTPLUGWORKER: test re-init \"{}\" not understood, ignored", *line);
+    }
+    return result;
+  }();
+  return reinit;
+}
+
+bool TestHotplugNoHpdCb()
+{
+  static const bool on = []
+  {
+    const bool result = XFILE::CFile::Exists("special://profile/hotplugworker_nohpdcb");
+    if (result)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hpd_cb_state/hpd_cb_seq taken as absent");
+    return result;
+  }();
+  return on;
+}
+
+int TestHotplugRaceGapMs()
+{
+  static const int ms = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_racegap", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test gap of {} ms before W reads the receipts",
+                value);
+    return value;
+  }();
+  return ms;
+}
+
+bool TestHotplugApplyThrow()
+{
+  static const std::pair<int, int> range = []
+  {
+    std::pair<int, int> result{0, 0};
+    if (const auto line = ReadTestSwitch("hotplugworker_applythrow"))
+    {
+      const auto space = line->find(' ');
+      const int n = std::max(1, std::atoi(line->c_str()));
+      const int times =
+          space == std::string::npos ? 1 : std::max(1, std::atoi(line->c_str() + space + 1));
+      result = {n, times};
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test throw in reply apply {} ({} times)", n, times);
+    }
+    return result;
+  }();
+  // main only
+  static int applies = 0;
+  if (range.first <= 0)
+    return false;
+  ++applies;
+  if (applies < range.first || applies >= range.first + range.second)
+    return false;
+  CLog::Log(LOGWARNING, "HOTPLUGWORKER: test throw in reply apply {}", applies);
+  return true;
+}
+
+int TestHotplugSetAfterMs()
+{
+  static const int ms = []
+  {
+    const int value = HotplugTestValue("hotplugworker_setafter", -1);
+    if (value >= 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test settings resolution change {} ms after a "
+                            "plug-in's receipt",
+                value);
+    return value;
+  }();
+  return ms;
 }
 
 } // namespace OUTPUT

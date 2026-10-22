@@ -136,6 +136,12 @@ public:
   void aml_set_drmProperty(std::string name, unsigned int obj_type, unsigned int value);
   void aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value);
   int aml_get_drmDevice_modes_count(drmModeConnection *connection);
+  //! 5.B3-1 (log only): the connector's encoder_id, the CRTC's id and its mode name as the last
+  //! re-init read them; 0, 0, "" and false without a connector or a CRTC
+  void aml_get_drmDevice_link(uint32_t& encoder_id,
+                              uint32_t& crtc_id,
+                              std::string& mode,
+                              bool& mode_valid);
   std::string aml_get_drmDevice_preferred_mode();
   //! frac_reclock: commit a FRAC_RATE_POLICY change at the live mode string; held_notice:
   //! a set kept at the live mode posts its timing
@@ -250,6 +256,13 @@ public:
     bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock = false);
   int aml_get_display_modes_count(drmModeConnection *connection) const
     { return m_amlDRMUtils->aml_get_drmDevice_modes_count(connection); }
+  void aml_get_display_link(uint32_t& encoder_id,
+                            uint32_t& crtc_id,
+                            std::string& mode,
+                            bool& mode_valid) const
+  {
+    m_amlDRMUtils->aml_get_drmDevice_link(encoder_id, crtc_id, mode, mode_valid);
+  }
   std::string aml_get_preferred_mode();
   //! nativeGui: DISABLEGUISCALING as the caller read it (5.B2-5a's W, which reads no CSettings)
   bool aml_get_native_resolution(RESOLUTION_INFO* res,

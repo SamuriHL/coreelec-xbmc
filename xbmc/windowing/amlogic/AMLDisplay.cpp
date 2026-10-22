@@ -1203,6 +1203,18 @@ int CAMLDRMUtils::aml_get_drmDevice_modes_count(drmModeConnection *connection)
   return mode_count;
 }
 
+void CAMLDRMUtils::aml_get_drmDevice_link(uint32_t& encoder_id,
+                                          uint32_t& crtc_id,
+                                          std::string& mode,
+                                          bool& mode_valid)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  encoder_id = m_connector ? m_connector->encoder_id : 0;
+  crtc_id = m_crtc ? m_crtc->crtc_id : 0;
+  mode_valid = m_crtc && m_crtc->mode_valid;
+  mode = m_crtc ? m_crtc->mode.name : "";
+}
+
 bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
