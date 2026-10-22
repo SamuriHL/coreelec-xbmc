@@ -78,8 +78,9 @@ struct DisplayState
   int uiSrcH = 0;
   int uiScreenW = 0; //!< m_ScreenWidth/m_ScreenHeight (the stereo rule of the mode set)
   int uiScreenH = 0;
-  //! G's graphics plane state at the publish; G toggles it between publishes, so it is not
-  //! compared
+  //! G's graphics plane state at the publish, for the logs only. G sets and clears
+  //! m_overlayActive with its own flips, between publishes, so this copy goes stale: B3-4 and
+  //! later must not read it (a G-side publisher first)
   bool overlayActive = false;
   //! W's no-player Restore target (B3-8); empty until then
   ModeFacts desktopMode;
@@ -153,7 +154,8 @@ void CountMode(const ModeShadow& shadow,
 
 //! 5.B3-3, at each GUI-plane flip build (BuildFlipRequest), with its own reads: counted as
 //! "DISPLAYSTATE ui-ids" against the published fields, only under hotplugworker. Called under
-//! the DRM lock; it takes only DisplayState's leaf locks
+//! the DRM lock, except from the legacy FlipPage (not used while the coordinator runs); it
+//! takes only DisplayState's leaf locks
 void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH);
 
 // shadows of the caps fields at their accessors
@@ -205,7 +207,8 @@ void PublishGuiInputsAtStart(bool nativeGui);
 //! CDisplaySettings::SetCurrentResolution (any thread): guiResolution from the current
 //! resolution
 void PublishGuiResolution();
-//! the DISABLEGUISCALING branch, before the table is rebuilt (any thread)
+//! the DISABLEGUISCALING branch, before the table is rebuilt (OnSettingChanging, the incoming
+//! value), and OnSettingChanged (the committed one); any thread
 void PublishNativeGui(bool nativeGui);
 //! main, MessagePump: videoPlaying and videoResolution, published when they change
 void PublishGuiPlayback();

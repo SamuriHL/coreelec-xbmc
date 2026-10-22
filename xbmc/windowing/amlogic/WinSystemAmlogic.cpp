@@ -356,42 +356,56 @@ std::string HpdReadText(const HpdRead& read)
 void CWinSystemAmlogic::LogStartupLink()
 {
   // 5.B3-1 (log only, every session): the link the init found, before any hotplug
-  HpdRead read;
-  aml_hpd_read(read);
-  uint32_t encoder = 0;
-  uint32_t crtc = 0;
-  std::string mode;
-  bool modeValid = false;
-  m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
-  CLog::Log(LOGINFO, "startup link hpd={} encoder_id={} crtc={} mode={} valid={}",
-            HpdReadText(read), encoder, crtc, mode.empty() ? "-" : mode, modeValid ? 1 : 0);
+  // a log line never aborts the init (HEAD has no throw here)
+  try
+  {
+    HpdRead read;
+    aml_hpd_read(read);
+    uint32_t encoder = 0;
+    uint32_t crtc = 0;
+    std::string mode;
+    bool modeValid = false;
+    m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
+    CLog::Log(LOGINFO, "startup link hpd={} encoder_id={} crtc={} mode={} valid={}",
+              HpdReadText(read), encoder, crtc, mode.empty() ? "-" : mode, modeValid ? 1 : 0);
+  }
+  catch (...)
+  {
+  }
 }
 
 void CWinSystemAmlogic::LogHotplugRead(drmModeConnection connection, int modes)
 {
   // 5.B3-1 (log only): today's event against the HPD reads, sysfs only (design §6, A0)
-  const bool cbPresent = aml_hpd_cb_present();
-  HpdRead read;
-  const bool cb = cbPresent && aml_hpd_read(read) && read.source == HpdSource::CB;
-  const char* const noCb = cbPresent ? "invalid" : "absent";
-  uint32_t encoder = 0;
-  uint32_t crtc = 0;
-  std::string mode;
-  bool modeValid = false;
-  m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
-  const int hpdState = aml_hdmitx_hpd_state();
-  CSysfsPath statusNode{"/sys/class/drm/card0-HDMI-A-1/status"};
-  const std::string status =
-      statusNode.Exists() ? statusNode.Get<std::string>().value_or("-") : "absent";
-  CLog::Log(LOGINFO,
-            "HOTPLUG event hpd_state={} cb_state={} cb_seq={} drm_status={} encoder_id={} "
-            "connection={} modes={}",
-            hpdState < 0 ? "absent" : std::to_string(hpdState),
-            cb ? std::to_string(read.state) : noCb, cb ? std::to_string(read.seq) : noCb,
-            status, encoder,
-            modes < 0 ? "-"
-                      : (connection == DRM_MODE_CONNECTED ? "connected" : "disconnected"),
-            modes < 0 ? "-" : std::to_string(modes));
+  // a log line never aborts the event (HEAD has no throw here; one call is in a catch)
+  try
+  {
+    const bool cbPresent = aml_hpd_cb_present();
+    HpdRead read;
+    const bool cb = cbPresent && aml_hpd_read(read) && read.source == HpdSource::CB;
+    const char* const noCb = cbPresent ? "invalid" : "absent";
+    uint32_t encoder = 0;
+    uint32_t crtc = 0;
+    std::string mode;
+    bool modeValid = false;
+    m_amlDisplay->aml_get_display_link(encoder, crtc, mode, modeValid);
+    const int hpdState = aml_hdmitx_hpd_state();
+    CSysfsPath statusNode{"/sys/class/drm/card0-HDMI-A-1/status"};
+    const std::string status =
+        statusNode.Exists() ? statusNode.Get<std::string>().value_or("-") : "absent";
+    CLog::Log(LOGINFO,
+              "HOTPLUG event hpd_state={} cb_state={} cb_seq={} drm_status={} encoder_id={} "
+              "connection={} modes={}",
+              hpdState < 0 ? "absent" : std::to_string(hpdState),
+              cb ? std::to_string(read.state) : noCb, cb ? std::to_string(read.seq) : noCb,
+              status, encoder,
+              modes < 0 ? "-"
+                        : (connection == DRM_MODE_CONNECTED ? "connected" : "disconnected"),
+              modes < 0 ? "-" : std::to_string(modes));
+  }
+  catch (...)
+  {
+  }
 }
 
 void CWinSystemAmlogic::OpenLostSpan()
@@ -598,21 +612,29 @@ bool CWinSystemAmlogic::InitWindowSystem()
   // 5.B3-2, every session, whatever the switches: the kernel restores the link at a plug-in
   // again (hpd_restore Y, its default), so no session inherits an N an earlier one left (written
   // by hand, or by a session that lost its DRM master). Touches only the parameter
-  if (aml_hpd_restore_present())
+  // (the sysfs calls cannot abort the init: HEAD has no throw here)
+  try
   {
-    const auto text = [](std::optional<bool> value)
-    { return value ? (*value ? "Y" : "N") : "unreadable"; };
-    const std::optional<bool> before = aml_hpd_restore();
-    aml_set_hpd_restore(true);
-    const std::optional<bool> after = aml_hpd_restore();
-    if (after && *after)
-      CLog::Log(LOGINFO, "hpdRestore Y (init, was {})", text(before));
+    if (aml_hpd_restore_present())
+    {
+      const auto text = [](std::optional<bool> value)
+      { return value ? (*value ? "Y" : "N") : "unreadable"; };
+      const std::optional<bool> before = aml_hpd_restore();
+      aml_set_hpd_restore(true);
+      const std::optional<bool> after = aml_hpd_restore();
+      if (after && *after)
+        CLog::Log(LOGINFO, "hpdRestore Y (init, was {})", text(before));
+      else
+        CLog::Log(LOGERROR, "hpdRestore not Y after the init's Y write (reads {}, was {})",
+                  text(after), text(before));
+    }
     else
-      CLog::Log(LOGERROR, "hpdRestore not Y after the init's Y write (reads {}, was {})",
-                text(after), text(before));
+      CLog::Log(LOGINFO, "hpdRestore absent");
   }
-  else
-    CLog::Log(LOGINFO, "hpdRestore absent");
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGERROR, "hpdRestore init write failed: {}", e.what());
+  }
 
   RefreshDisplayCapabilities();
 
@@ -883,7 +905,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::SettleOnW();
     }
     // 5.B3: the hotplug switches, read once (log only until W takes the hotplug)
-    OUTPUT::LatchHotplugWorker();
+    try
+    {
+      OUTPUT::LatchHotplugWorker();
+    }
+    catch (const std::exception& e)
+    {
+      // sysfs and profile-file reads only; a throw leaves hotplugworker off (HEAD's path)
+      CLog::Log(LOGERROR, "HOTPLUGWORKER switch read failed, off: {}", e.what());
+    }
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",

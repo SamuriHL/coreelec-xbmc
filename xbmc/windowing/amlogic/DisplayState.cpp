@@ -769,7 +769,8 @@ RenderStereoMode GuiStereoMode(RenderStereoMode today)
 
 namespace
 {
-// 5.B3-3's GuiInputs fields (a leaf lock: nothing is taken under it)
+// 5.B3-3's GuiInputs fields. Under it: CDisplaySettings' lock (PublishGuiResolution, so two
+// threads' publishes store in order) and CLog; never a DisplayState or W lock
 std::mutex s_guiInputsMutex;
 GuiInputs s_guiInputs;
 
@@ -820,11 +821,11 @@ void PublishGuiInputsAtStart(bool nativeGui)
 {
   if (!OUTPUT::HotplugWorkerOn())
     return;
-  const auto guiResolution = CurrentGuiResolution();
+  // main only for these two; GC's and the player's locks are not taken under the mutex
   const ModeFacts videoResolution = CurrentVideoResolution();
   const bool playing = VideoPlaying();
   std::unique_lock lock(s_guiInputsMutex);
-  s_guiInputs.guiResolution = guiResolution;
+  s_guiInputs.guiResolution = CurrentGuiResolution();
   s_guiInputs.nativeGui = nativeGui;
   s_guiInputs.videoPlaying = playing;
   s_guiInputs.videoResolution = videoResolution;
@@ -836,9 +837,12 @@ void PublishGuiResolution()
 {
   if (!OUTPUT::HotplugWorkerOn())
     return;
-  const auto guiResolution = CurrentGuiResolution();
+  // read under the lock: a settings thread's publish and main's cannot store out of order
   std::unique_lock lock(s_guiInputsMutex);
-  if (!s_guiInputs.published || s_guiInputs.guiResolution == guiResolution)
+  if (!s_guiInputs.published)
+    return;
+  const auto guiResolution = CurrentGuiResolution();
+  if (s_guiInputs.guiResolution == guiResolution)
     return;
   s_guiInputs.guiResolution = guiResolution;
   LogGuiInputs("resolution");

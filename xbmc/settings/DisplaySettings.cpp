@@ -536,6 +536,13 @@ void CDisplaySettings::OnSettingChanged(const std::shared_ptr<const CSetting>& s
   const std::string& settingId = setting->GetId();
   if (settingId == CSettings::SETTING_VIDEOSCREEN_WHITELIST)
     CResolutionUtils::PrintWhitelist();
+#if defined(HAS_LIBAMCODEC)
+  // 5.B3-3: the committed value (OnSettingChanging published the incoming one; a vetoed change
+  // calls it again with the old value)
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING)
+    DISPLAYSTATE::PublishNativeGui(
+        std::static_pointer_cast<const CSettingBool>(setting)->GetValue());
+#endif
 }
 
 void CDisplaySettings::SetMonitor(const std::string& monitor)

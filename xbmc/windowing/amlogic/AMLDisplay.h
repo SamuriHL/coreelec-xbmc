@@ -217,10 +217,10 @@ private:
   bool m_modeHeld{false};
   bool m_setNotConnected{false};
   bool m_fracCommitted{false}; //!< the last aml_set_drmDevice_active re-clocked the live mode
-  int m_width;
-  int m_height;
-  int m_ScreenWidth;
-  int m_ScreenHeight;
+  int m_width{0};
+  int m_height{0};
+  int m_ScreenWidth{0};
+  int m_ScreenHeight{0};
   CCriticalSection m_drmSection;
 
   drmModeResPtr m_resources{nullptr};
