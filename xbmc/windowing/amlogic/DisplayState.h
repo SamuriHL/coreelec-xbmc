@@ -9,11 +9,13 @@
 #pragma once
 
 #include "rendering/RenderSystemTypes.h"
+#include "utils/AMLUtils.h"
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 class CAMLDisplay;
@@ -25,6 +27,23 @@ class CAMLDisplay;
 
 namespace DISPLAYSTATE
 {
+
+//! 5.B3-3: a mode by its facts, never by an index into the resolution table
+struct ModeFacts
+{
+  std::string strId; //!< DisplayState's desktopMode: the DRM mode string
+  int screenWidth = 0;
+  int screenHeight = 0;
+  float refresh = 0.0f;
+  uint32_t dwFlags = 0;
+  bool operator==(const ModeFacts& other) const
+  {
+    return strId == other.strId && screenWidth == other.screenWidth &&
+           screenHeight == other.screenHeight && refresh == other.refresh &&
+           dwFlags == other.dwFlags;
+  }
+  bool operator!=(const ModeFacts& other) const { return !(*this == other); }
+};
 
 struct DisplayState
 {
@@ -51,6 +70,23 @@ struct DisplayState
   bool hdr10Plus = false;
   bool has2160 = false; //!< a table entry with iScreenHeight >= 2160
   uint64_t capsEpoch = 0;
+  // 5.B3-3 (design §3): the GUI plane as BuildFlipRequest programs it, read at each publish
+  // under the DRM lock, only under hotplugworker (0 otherwise); log-only ("DISPLAYSTATE ui-ids")
+  // until B3-4's readers take them
+  uint32_t primaryPlaneId = 0;
+  int uiSrcW = 0; //!< the mode set's m_width/m_height
+  int uiSrcH = 0;
+  int uiScreenW = 0; //!< m_ScreenWidth/m_ScreenHeight (the stereo rule of the mode set)
+  int uiScreenH = 0;
+  //! G's graphics plane state at the publish; G toggles it between publishes, so it is not
+  //! compared
+  bool overlayActive = false;
+  //! W's no-player Restore target (B3-8); empty until then
+  ModeFacts desktopMode;
+  //! set only by 5.E2's deferred Restore; always false in 5.B3
+  bool linkUncommitted = false;
+  //! W's last HPD read (from B3-6); not read before
+  HpdRead hpd;
 };
 
 //! null before the seed and under displaystate_off
@@ -115,6 +151,11 @@ void CountMode(const ModeShadow& shadow,
                double displayState,
                bool fracHeld = false);
 
+//! 5.B3-3, at each GUI-plane flip build (BuildFlipRequest), with its own reads: counted as
+//! "DISPLAYSTATE ui-ids" against the published fields, only under hotplugworker. Called under
+//! the DRM lock; it takes only DisplayState's leaf locks
+void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH);
+
 // shadows of the caps fields at their accessors
 void ShadowHdrCaps(const CHDRCapabilities& today);
 void ShadowDv(bool today);
@@ -140,12 +181,36 @@ void DrmIds(int& fd, uint32_t& crtc);
 // 5.V1-8 (S1): what main's GUI state gives the video side, published by main
 struct GuiInputs
 {
+  GuiInputs() = default;
+  //! 5.V1-8's publish of the stereo mode alone ({mode})
+  GuiInputs(RenderStereoMode mode) : stereoMode(mode) {}
+
   RenderStereoMode stereoMode = RenderStereoMode::OFF;
+  // 5.B3-3: W's hotplug inputs (B3-7b's field table), published only under hotplugworker
+  //! GetCurrentResolution()'s facts; nullopt: desktop (not above RES_DESKTOP)
+  std::optional<ModeFacts> guiResolution;
+  bool nativeGui = false; //!< DISABLEGUISCALING
+  bool videoPlaying = false; //!< IsPlayingVideo()
+  ModeFacts videoResolution; //!< the facts of GC's GetVideoResolution() entry
+  bool published = false; //!< false before W's start publish and under off
 };
+//! the stereo mode only (5.V1-8)
 void PublishGuiInputs(const GuiInputs& inputs);
 //! the published stereo mode, counted against today's GC read; today's read before main's
 //! first publish and under displaystate_off
 RenderStereoMode GuiStereoMode(RenderStereoMode today);
+// 5.B3-3, each a no-op without hotplugworker (OUTPUT::HotplugWorkerOn), logged "GUIINPUTS ..."
+//! at W's start, after the hotplug latch: every field
+void PublishGuiInputsAtStart(bool nativeGui);
+//! CDisplaySettings::SetCurrentResolution (any thread): guiResolution from the current
+//! resolution
+void PublishGuiResolution();
+//! the DISABLEGUISCALING branch, before the table is rebuilt (any thread)
+void PublishNativeGui(bool nativeGui);
+//! main, MessagePump: videoPlaying and videoResolution, published when they change
+void PublishGuiPlayback();
+//! the published inputs (W's hotplug job, from B3-7b); published false before the start publish
+GuiInputs GetGuiInputs();
 
 // 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
 // the GUI/OSD encoding at its next render pass

@@ -13,6 +13,7 @@
 #include <amcodec/codec.h>
 
 #include "AMLDisplay.h"
+#include "DisplayState.h"
 #include "OutputWorker.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
@@ -1215,6 +1216,22 @@ void CAMLDRMUtils::aml_get_drmDevice_link(uint32_t& encoder_id,
   mode = m_crtc ? m_crtc->mode.name : "";
 }
 
+void CAMLDRMUtils::aml_get_drmDevice_ui_plane(uint32_t& plane_id,
+                                              int& src_w,
+                                              int& src_h,
+                                              int& screen_w,
+                                              int& screen_h,
+                                              bool& overlay_active)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  plane_id = m_plane ? m_plane->plane_id : 0;
+  src_w = m_width;
+  src_h = m_height;
+  screen_w = m_ScreenWidth;
+  screen_h = m_ScreenHeight;
+  overlay_active = m_overlayActive;
+}
+
 bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
@@ -1413,6 +1430,8 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(uint32_t fb_id)
   // both planes range 65-128, and osd1 comes up above osd0: swap them
   if (m_overlayActive)
     set_drmProp(m_plane->plane_id, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
+  DISPLAYSTATE::ShadowUiIds(m_plane->plane_id, m_crtc->crtc_id, m_width, m_height, m_ScreenWidth,
+                            m_ScreenHeight);
   return req;
 }
 

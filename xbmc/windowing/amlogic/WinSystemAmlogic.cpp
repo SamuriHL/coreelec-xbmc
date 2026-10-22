@@ -224,6 +224,8 @@ bool CWinSystemAmlogic::MessagePump()
     HotplugEvent();
 
   DISPLAYSTATE::HandleOutputChanged();
+  // 5.B3-3 (hotplugworker only): playback's GuiInputs, published when they change
+  DISPLAYSTATE::PublishGuiPlayback();
   DISPLAYSTATE::Tick();
   return false;
 }
@@ -890,6 +892,11 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     // GuiInputs: the stereo mode main set before the switch was read
     DISPLAYSTATE::PublishGuiInputs(
         {CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode()});
+    // 5.B3-3: W's hotplug inputs, DISABLEGUISCALING's live value
+    if (OUTPUT::HotplugWorkerOn())
+      DISPLAYSTATE::PublishGuiInputsAtStart(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING));
     OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
                                       [] { aml_display_vsvdb_refill(); });
   }

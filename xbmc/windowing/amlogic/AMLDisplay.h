@@ -142,6 +142,14 @@ public:
                               uint32_t& crtc_id,
                               std::string& mode,
                               bool& mode_valid);
+  //! 5.B3-3: the GUI plane as BuildFlipRequest programs it, under m_drmSection; 0s and false
+  //! without a plane
+  void aml_get_drmDevice_ui_plane(uint32_t& plane_id,
+                                  int& src_w,
+                                  int& src_h,
+                                  int& screen_w,
+                                  int& screen_h,
+                                  bool& overlay_active);
   std::string aml_get_drmDevice_preferred_mode();
   //! frac_reclock: commit a FRAC_RATE_POLICY change at the live mode string; held_notice:
   //! a set kept at the live mode posts its timing
@@ -262,6 +270,16 @@ public:
                             bool& mode_valid) const
   {
     m_amlDRMUtils->aml_get_drmDevice_link(encoder_id, crtc_id, mode, mode_valid);
+  }
+  void aml_get_display_ui_plane(uint32_t& plane_id,
+                                int& src_w,
+                                int& src_h,
+                                int& screen_w,
+                                int& screen_h,
+                                bool& overlay_active) const
+  {
+    m_amlDRMUtils->aml_get_drmDevice_ui_plane(plane_id, src_w, src_h, screen_w, screen_h,
+                                              overlay_active);
   }
   std::string aml_get_preferred_mode();
   //! nativeGui: DISABLEGUISCALING as the caller read it (5.B2-5a's W, which reads no CSettings)

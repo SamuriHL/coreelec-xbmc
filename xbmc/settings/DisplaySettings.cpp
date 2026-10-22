@@ -32,6 +32,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
@@ -461,6 +462,9 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
       Clear();
 #if defined(HAS_LIBAMCODEC)
       aml_timing_inputs_bump();
+      // 5.B3-3: W's probe takes main's value (hotplugworker only)
+      DISPLAYSTATE::PublishNativeGui(
+          std::static_pointer_cast<const CSettingBool>(setting)->GetValue());
 #endif
       auto winSystem = CServiceBroker::GetWinSystem();
       winSystem->UpdateResolutions();
@@ -573,6 +577,10 @@ void CDisplaySettings::SetCurrentResolution(RESOLUTION resolution, bool save /* 
     SetChanged();
     write_resolution_ini(boot_hint_resolution(*this));
   }
+#if defined(HAS_LIBAMCODEC)
+  // 5.B3-3: GuiInputs' GuiResolution (hotplugworker only; unchanged facts are not re-published)
+  DISPLAYSTATE::PublishGuiResolution();
+#endif
 }
 
 RESOLUTION CDisplaySettings::GetDisplayResolution() const

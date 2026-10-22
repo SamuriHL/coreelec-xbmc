@@ -10,10 +10,15 @@
 
 #include "AMLDisplay.h"
 #include "OutputWorker.h"
+#include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "settings/DisplaySettings.h"
 #include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
+#include "windowing/GraphicContext.h"
+#include "windowing/WinSystem.h"
 
 #include <algorithm>
 #include <array>
@@ -208,6 +213,10 @@ void FillLink(DisplayState& s, const CAMLDisplay& display)
   s.connected = display.aml_get_display_connected();
   s.drmFd = display.aml_get_Device_handle();
   s.crtcId = display.aml_get_Device_crtc_id();
+  // 5.B3-3, only under hotplugworker (latched before W's seed): off takes no DRM lock here
+  if (OUTPUT::HotplugWorkerOn())
+    display.aml_get_display_ui_plane(s.primaryPlaneId, s.uiSrcW, s.uiSrcH, s.uiScreenW,
+                                     s.uiScreenH, s.overlayActive);
 }
 
 void FillCaps(DisplayState& s, const CAMLDisplay& display)
@@ -756,6 +765,155 @@ RenderStereoMode GuiStereoMode(RenderStereoMode today)
                                            static_cast<int>(today));
               });
   return static_cast<RenderStereoMode>(published);
+}
+
+namespace
+{
+// 5.B3-3's GuiInputs fields (a leaf lock: nothing is taken under it)
+std::mutex s_guiInputsMutex;
+GuiInputs s_guiInputs;
+
+std::string FactsString(const ModeFacts& f)
+{
+  return StringUtils::Format("{} {}x{} @ {:.3f} flags {:#x}", f.strId, f.screenWidth,
+                             f.screenHeight, f.refresh, f.dwFlags);
+}
+
+ModeFacts FactsOf(const RESOLUTION_INFO& info)
+{
+  return {info.strId, info.iScreenWidth, info.iScreenHeight, info.fRefreshRate, info.dwFlags};
+}
+
+std::optional<ModeFacts> CurrentGuiResolution()
+{
+  const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  const RESOLUTION res = displaySettings.GetCurrentResolution();
+  if (res <= RES_DESKTOP)
+    return std::nullopt;
+  return FactsOf(displaySettings.GetResolutionInfo(res));
+}
+
+ModeFacts CurrentVideoResolution()
+{
+  return FactsOf(CDisplaySettings::GetInstance().GetResolutionInfo(
+      CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()));
+}
+
+bool VideoPlaying()
+{
+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  return appPlayer && appPlayer->IsPlayingVideo();
+}
+
+// s_guiInputsMutex held
+void LogGuiInputs(const char* why)
+{
+  const GuiInputs& g = s_guiInputs;
+  CLog::Log(LOGINFO,
+            "GUIINPUTS guires {} nativeGui {} videoPlaying {} videoResolution {} ({})",
+            g.guiResolution ? FactsString(*g.guiResolution) : "desktop", g.nativeGui,
+            g.videoPlaying, FactsString(g.videoResolution), why);
+}
+} // namespace
+
+void PublishGuiInputsAtStart(bool nativeGui)
+{
+  if (!OUTPUT::HotplugWorkerOn())
+    return;
+  const auto guiResolution = CurrentGuiResolution();
+  const ModeFacts videoResolution = CurrentVideoResolution();
+  const bool playing = VideoPlaying();
+  std::unique_lock lock(s_guiInputsMutex);
+  s_guiInputs.guiResolution = guiResolution;
+  s_guiInputs.nativeGui = nativeGui;
+  s_guiInputs.videoPlaying = playing;
+  s_guiInputs.videoResolution = videoResolution;
+  s_guiInputs.published = true;
+  LogGuiInputs("start");
+}
+
+void PublishGuiResolution()
+{
+  if (!OUTPUT::HotplugWorkerOn())
+    return;
+  const auto guiResolution = CurrentGuiResolution();
+  std::unique_lock lock(s_guiInputsMutex);
+  if (!s_guiInputs.published || s_guiInputs.guiResolution == guiResolution)
+    return;
+  s_guiInputs.guiResolution = guiResolution;
+  LogGuiInputs("resolution");
+}
+
+void PublishNativeGui(bool nativeGui)
+{
+  if (!OUTPUT::HotplugWorkerOn())
+    return;
+  std::unique_lock lock(s_guiInputsMutex);
+  if (!s_guiInputs.published || s_guiInputs.nativeGui == nativeGui)
+    return;
+  s_guiInputs.nativeGui = nativeGui;
+  LogGuiInputs("gui scaling");
+}
+
+void PublishGuiPlayback()
+{
+  if (!OUTPUT::HotplugWorkerOn())
+    return;
+  const bool playing = VideoPlaying();
+  const ModeFacts videoResolution = CurrentVideoResolution();
+  std::unique_lock lock(s_guiInputsMutex);
+  if (!s_guiInputs.published ||
+      (s_guiInputs.videoPlaying == playing && s_guiInputs.videoResolution == videoResolution))
+    return;
+  s_guiInputs.videoPlaying = playing;
+  s_guiInputs.videoResolution = videoResolution;
+  LogGuiInputs("playback");
+}
+
+GuiInputs GetGuiInputs()
+{
+  GuiInputs inputs;
+  {
+    std::unique_lock lock(s_guiInputsMutex);
+    inputs = s_guiInputs;
+  }
+  const int stereo = s_guiStereoMode.load(std::memory_order_acquire);
+  if (stereo >= 0)
+    inputs.stereoMode = static_cast<RenderStereoMode>(stereo);
+  return inputs;
+}
+
+void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH)
+{
+  if (!OUTPUT::HotplugWorkerOn() || !Active())
+    return;
+  static constexpr const char* field = "ui-ids";
+  // the windows before the state, as BeginModeShadow; a re-init not yet published is a skip,
+  // as the caps readers'
+  const ModeShadow shadow = BeginModeShadow();
+  if (!shadow.state || s_capsGen.load() != s_capsDoneGen.load())
+  {
+    Count(field, SKIPPED);
+    return;
+  }
+  const DisplayState& s = *shadow.state;
+  if (s.primaryPlaneId == planeId && s.crtcId == crtcId && s.uiSrcW == srcW &&
+      s.uiSrcH == srcH && s.uiScreenW == screenW && s.uiScreenH == screenH)
+    Count(field, MATCH);
+  else if (shadow.inSet)
+    Count(field, WINDOW_SET);
+  else if (shadow.restored)
+    Count(field, WINDOW_RESTORE);
+  else
+    CountDiff(field, DIFF,
+              [&]
+              {
+                return StringUtils::Format(
+                    "displaystate plane {} crtc {} src {}x{} screen {}x{} flip plane {} crtc {} "
+                    "src {}x{} screen {}x{} ({})",
+                    s.primaryPlaneId, s.crtcId, s.uiSrcW, s.uiSrcH, s.uiScreenW, s.uiScreenH,
+                    planeId, crtcId, srcW, srcH, screenW, screenH, Describe(s));
+              });
 }
 
 namespace
