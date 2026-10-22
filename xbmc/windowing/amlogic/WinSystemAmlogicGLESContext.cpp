@@ -36,6 +36,7 @@
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/WireClassProbe.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -1580,6 +1581,10 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     next = settle.delay - since;
   else if (since > cap)
     next = 250ms;
+  // an unlocked sink resets at the cap itself: the 50 ms reads drift and would land up to 50 ms
+  // past it
+  if (!locked && since <= cap)
+    next = std::min(next, cap + 1ms - since);
   OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle", next,
                                          [this, gen] { SettleCheck(gen); });
 }
