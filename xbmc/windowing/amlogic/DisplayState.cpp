@@ -397,6 +397,13 @@ std::shared_ptr<const DisplayState> Get()
   return s_state.load();
 }
 
+std::shared_ptr<const DisplayState> LinkState()
+{
+  if (!OUTPUT::HotplugWorkerOn())
+    return nullptr;
+  return s_state.load();
+}
+
 void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed)
 {
   if (!aml_displaystate_on())

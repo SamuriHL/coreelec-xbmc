@@ -10,6 +10,7 @@
 #include <xf86drmMode.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <unistd.h>
 #include <utility>
@@ -167,6 +168,13 @@ public:
   void FlipPage(uint32_t fb_id);
   //! the GUI plane flip without fences; nullptr when there is nothing to flip to
   drmModeAtomicReqPtr BuildFlipRequest(uint32_t fb_id);
+  //! 5.B3-4 (hotplugworker): the same two from a published DisplayState (its connection,
+  //! plane and CRTC ids and GUI sizes), with no read of a DRM object a re-init frees; the zpos
+  //! swap stays on G's own m_overlayActive (design §19)
+  void FlipPage(const DISPLAYSTATE::DisplayState& state, uint32_t fb_id);
+  drmModeAtomicReqPtr BuildFlipRequest(const DISPLAYSTATE::DisplayState& state, uint32_t fb_id);
+  //! 5.B3-4 (hotplugworker): the vblank wait with the published connection
+  bool aml_drmDevice_vsync(bool connected);
   //! 5.B2-4: BuildFlipRequest under m_drmSection, with the source size it sets
   drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h);
   //! 5.B2-5b (S1'): X1's GUI plane off (FB, CRTC and both rects 0) under m_drmSection;
@@ -302,6 +310,15 @@ public:
   {
     return m_amlDRMUtils->BuildFlipRequest(fb_id);
   }
+  void FlipPage(const DISPLAYSTATE::DisplayState& state, uint32_t fb_id)
+  {
+    m_amlDRMUtils->FlipPage(state, fb_id);
+  }
+  drmModeAtomicReqPtr BuildFlipRequest(const DISPLAYSTATE::DisplayState& state, uint32_t fb_id)
+  {
+    return m_amlDRMUtils->BuildFlipRequest(state, fb_id);
+  }
+  bool aml_drmDevice_vsync(bool connected) { return m_amlDRMUtils->aml_drmDevice_vsync(connected); }
   drmModeAtomicReqPtr BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h)
   {
     return m_amlDRMUtils->BuildFlipRequestLocked(fb_id, src_w, src_h);
@@ -334,19 +351,31 @@ public:
 
   CHDRCapabilities GetHDRCaps() const
   {
-    const CHDRCapabilities caps = m_hdr_caps;
+    CHDRCapabilities caps;
+    {
+      std::unique_lock lock(m_capsMutex);
+      caps = m_hdr_caps;
+    }
     DISPLAYSTATE::ShadowHdrCaps(caps);
     return caps;
   }
   bool aml_display_support_dv() const
   {
-    const bool dv = m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+    bool dv;
+    {
+      std::unique_lock lock(m_capsMutex);
+      dv = m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+    }
     DISPLAYSTATE::ShadowDv(dv);
     return dv;
   }
   bool aml_display_support_3d() const
   {
-    const bool support = m_support_3d;
+    bool support;
+    {
+      std::unique_lock lock(m_capsMutex);
+      support = m_support_3d;
+    }
     DISPLAYSTATE::Shadow3d(support);
     return support;
   }
@@ -357,6 +386,14 @@ private:
                               std::optional<bool> nativeGuiIn = std::nullopt);
   bool m_bHotPlug = false;
   RenderStereoMode m_stereo_mode;
+  bool IsWidescreen() const
+  {
+    std::unique_lock lock(m_capsMutex);
+    return m_is_widescreen;
+  }
+  //! 5.B3-4 (unswitched, r2 M1, r3 L1): the caps fields' writes (W, or main inline) and the
+  //! readers' copies (V, P, C, main). A leaf lock, held only across a field copy
+  mutable std::mutex m_capsMutex;
   CHDRCapabilities m_hdr_caps;
   bool m_is_widescreen = false;
   bool m_support_3d = false;

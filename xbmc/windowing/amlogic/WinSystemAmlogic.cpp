@@ -1305,6 +1305,27 @@ void CWinSystemAmlogic::Unregister(IDispResource *resource)
     m_resources.erase(i);
 }
 
+uint32_t CWinSystemAmlogic::GetDRMCrtcId() const
+{
+  if (const auto state = DISPLAYSTATE::LinkState())
+    return state->crtcId;
+  return m_amlDisplay ? m_amlDisplay->aml_get_Device_crtc_id() : 0;
+}
+
+bool CWinSystemAmlogic::GetDRMConnected() const
+{
+  if (const auto state = DISPLAYSTATE::LinkState())
+    return state->connected;
+  return m_amlDisplay && m_amlDisplay->aml_get_display_connected();
+}
+
+bool CWinSystemAmlogic::DrmVsync()
+{
+  if (const auto state = DISPLAYSTATE::LinkState())
+    return m_amlDisplay->aml_drmDevice_vsync(state->connected);
+  return m_amlDisplay->aml_drmDevice_vsync();
+}
+
 float CWinSystemAmlogic::GetFrameLatencyAdjustment()
 {
   MAINCOUPLING_ACCESSOR("WinSystem GetFrameLatencyAdjustment");
@@ -1312,8 +1333,19 @@ float CWinSystemAmlogic::GetFrameLatencyAdjustment()
   // it from the display latency so a frame-phase sample is referenced to the
   // vblank, not to whenever the render loop reached it.
   int fd = GetDRMDeviceFd();
-  uint32_t crtc = GetDRMCrtcId();
-  DISPLAYSTATE::DrmIds(fd, crtc);
+  uint32_t crtc = 0;
+  if (const auto state = DISPLAYSTATE::LinkState())
+  {
+    // 5.B3-4 (C's tick, V): the last published ids, whatever DrmIds' skip cause; m_crtc is not
+    // read, so main's re-init cannot free it under this read
+    fd = state->drmFd;
+    crtc = state->crtcId;
+  }
+  else
+  {
+    crtc = GetDRMCrtcId();
+    DISPLAYSTATE::DrmIds(fd, crtc);
+  }
   if (fd < 0 || crtc == 0)
     return 0.0f;
 

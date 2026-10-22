@@ -69,8 +69,12 @@ public:
   // CE22 runs the display on DRM (mesondrmfb), so the vsync source is the DRM
   // vblank sequence, not the legacy OSD-fb ioctl.
   int GetDRMDeviceFd() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_handle() : -1; }
-  uint32_t GetDRMCrtcId() const { return m_amlDisplay ? m_amlDisplay->aml_get_Device_crtc_id() : 0; }
-  bool GetDRMConnected() const { return m_amlDisplay && m_amlDisplay->aml_get_display_connected(); }
+  //! 5.B3-4: under hotplugworker the published DisplayState's (DISPLAYSTATE::LinkState), else
+  //! today's live read of m_crtc / m_connection
+  uint32_t GetDRMCrtcId() const;
+  bool GetDRMConnected() const;
+  //! 5.B3-4: the vblank wait, gated on GetDRMConnected's source
+  bool DrmVsync();
 
   //! design §18.24 (P5-8): a lost display, held from the disconnect until a
   //! reset with the display connected again

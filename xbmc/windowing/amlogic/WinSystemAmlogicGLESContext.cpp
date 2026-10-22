@@ -650,7 +650,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (!m_delayDispReset && DisplayResetAllowed())
     ResetDisplayNow();
 
-  if (m_amlDisplay->aml_get_display_connected())
+  if (GetDRMConnected())
     SetPresentationReady(true);
 
   // booted without a display: the timekeeper starts with the first CRTC
@@ -677,7 +677,7 @@ void CWinSystemAmlogicGLESContext::ResetDisplayNow()
 
 bool CWinSystemAmlogicGLESContext::StartTimekeeper()
 {
-  const uint32_t crtc = m_amlDisplay->aml_get_Device_crtc_id();
+  const uint32_t crtc = GetDRMCrtcId();
   if (!(m_tickOwner || m_timekeeperShadow) || !crtc)
     return false;
   m_timekeeper =
@@ -1405,7 +1405,7 @@ bool CWinSystemAmlogicGLESContext::RebuildGuiSurface(const SDriveJob& job)
   if (!job.settleArmed && !m_delayDispReset && DisplayResetAllowed())
     ResetDisplayNow();
 
-  if (m_amlDisplay->aml_get_display_connected())
+  if (GetDRMConnected())
     SetPresentationReady(true);
   m_settleHandled = job.id;
 
@@ -1694,7 +1694,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
     if (m_amlGBMUtils && m_amlGBMUtils->LockFrontBuffer(m_amlDisplay->aml_get_Device_handle()))
     {
-      m_amlDisplay->FlipPage(m_amlGBMUtils->GetFBId());
+      if (const auto state = DISPLAYSTATE::LinkState())
+        m_amlDisplay->FlipPage(*state, m_amlGBMUtils->GetFBId());
+      else
+        m_amlDisplay->FlipPage(m_amlGBMUtils->GetFBId());
       if (m_guiRepaintFrames > 0)
         m_guiRepaintFrames--;
     }
@@ -1705,7 +1708,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   {
     // no vblank to wait on (disconnected, CRTC off): pace as the video
     // release's 50 ms poll did, not at 100% CPU
-    if (!m_amlDisplay->aml_drmDevice_vsync() && (m_coordinator || aml_video_presenter_active()))
+    if (!DrmVsync() && (m_coordinator || aml_video_presenter_active()))
       KODI::TIME::Sleep(50ms);
   }
 
@@ -1767,7 +1770,15 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 
   uint32_t fbId = 0;
   gbm_bo* bo = m_amlGBMUtils->LockFront(m_amlDisplay->aml_get_Device_handle(), fbId);
-  drmModeAtomicReqPtr req = bo ? m_amlDisplay->BuildFlipRequest(fbId) : nullptr;
+  drmModeAtomicReqPtr req = nullptr;
+  if (bo)
+  {
+    // 5.B3-4: under hotplugworker the request is built from the published state
+    if (const auto state = DISPLAYSTATE::LinkState())
+      req = m_amlDisplay->BuildFlipRequest(*state, fbId);
+    else
+      req = m_amlDisplay->BuildFlipRequest(fbId);
+  }
   if (!req)
   {
     if (bo)
@@ -1906,7 +1917,7 @@ void CWinSystemAmlogicGLESContext::ClearOverlayPlane()
   {
     glClear(GL_COLOR_BUFFER_BIT);
     PresentRender(true, false);
-    m_amlDisplay->aml_drmDevice_vsync();
+    DrmVsync();
   }
 
   m_guiFboClean = true;

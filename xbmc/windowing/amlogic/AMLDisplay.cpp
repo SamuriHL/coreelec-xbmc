@@ -605,6 +605,18 @@ bool CAMLDRMUtils::aml_drmDevice_vsync()
   return false;
 }
 
+bool CAMLDRMUtils::aml_drmDevice_vsync(bool connected)
+{
+  if (m_fd != -1 && connected)
+  {
+    drmVBlank vbl = {};
+    vbl.request.type = DRM_VBLANK_RELATIVE;
+    vbl.request.sequence = 1;
+    return drmWaitVBlank(m_fd, &vbl) == 0;
+  }
+  return false;
+}
+
 // get drmDevice
 int CAMLDRMUtils::aml_get_drmDevice()
 {
@@ -1435,6 +1447,35 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(uint32_t fb_id)
   return req;
 }
 
+drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequest(const DISPLAYSTATE::DisplayState& state,
+                                                   uint32_t fb_id)
+{
+  // BuildFlipRequest's request, from the published state: the ids and sizes W published
+  // after its re-init or commit, never m_plane/m_crtc, which a re-init frees
+  if (!state.connected || !state.primaryPlaneId || !state.crtcId)
+    return nullptr;
+
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req)
+    return nullptr;
+
+  const uint32_t plane = state.primaryPlaneId;
+  set_drmProp(plane, "FB_ID", DRM_MODE_OBJECT_PLANE, fb_id, req);
+  set_drmProp(plane, "CRTC_ID", DRM_MODE_OBJECT_PLANE, state.crtcId, req);
+  set_drmProp(plane, "SRC_X", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(plane, "SRC_Y", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(plane, "SRC_W", DRM_MODE_OBJECT_PLANE, state.uiSrcW << 16, req);
+  set_drmProp(plane, "SRC_H", DRM_MODE_OBJECT_PLANE, state.uiSrcH << 16, req);
+  set_drmProp(plane, "CRTC_X", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(plane, "CRTC_Y", DRM_MODE_OBJECT_PLANE, 0, req);
+  set_drmProp(plane, "CRTC_W", DRM_MODE_OBJECT_PLANE, state.uiScreenW, req);
+  set_drmProp(plane, "CRTC_H", DRM_MODE_OBJECT_PLANE, state.uiScreenH, req);
+  // G's own flag (an atomic), not the published copy: G toggles it between publishes
+  if (m_overlayActive)
+    set_drmProp(plane, "zpos", DRM_MODE_OBJECT_PLANE, 66, req);
+  return req;
+}
+
 drmModeAtomicReqPtr CAMLDRMUtils::BuildFlipRequestLocked(uint32_t fb_id, int& src_w, int& src_h)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
@@ -1548,6 +1589,31 @@ void CAMLDRMUtils::FlipPage(uint32_t fb_id)
   drmModeAtomicFree(req);
 }
 
+void CAMLDRMUtils::FlipPage(const DISPLAYSTATE::DisplayState& state, uint32_t fb_id)
+{
+  drmModeAtomicReqPtr req = BuildFlipRequest(state, fb_id);
+  if (!req)
+    return;
+
+  if (m_inFenceFd != -1)
+  {
+    set_drmProp(state.crtcId, "OUT_FENCE_PTR", DRM_MODE_OBJECT_CRTC,
+                reinterpret_cast<uint64_t>(&m_outFenceFd), req);
+    set_drmProp(state.primaryPlaneId, "IN_FENCE_FD", DRM_MODE_OBJECT_PLANE, m_inFenceFd, req);
+  }
+
+  if (drmModeAtomicCommit(m_fd, req, DRM_MODE_ATOMIC_NONBLOCK, NULL))
+    CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - failed to make drmDevice atomic commit", __FUNCTION__);
+
+  if (m_inFenceFd != -1)
+  {
+    close(m_inFenceFd);
+    m_inFenceFd = -1;
+  }
+
+  drmModeAtomicFree(req);
+}
+
 CAMLDisplay::CAMLDisplay()
 :  m_amlDRMUtils(new CAMLDRMUtils)
 ,  m_stereo_mode(RenderStereoMode::UNDEFINED)
@@ -1587,7 +1653,10 @@ void CAMLDisplay::aml_refresh_display_caps()
   if (dv_cap & LL_YCbCr_422_12BIT)
     caps.SetDolbyVisionPlayerLED();
 
-  m_hdr_caps = caps;
+  {
+    std::unique_lock lock(m_capsMutex);
+    m_hdr_caps = caps;
+  }
 
   // refresh display widescreen
   bool is_widescreen = true;
@@ -1612,7 +1681,10 @@ void CAMLDisplay::aml_refresh_display_caps()
     }
   }
 
-  m_is_widescreen = is_widescreen;
+  {
+    std::unique_lock lock(m_capsMutex);
+    m_is_widescreen = is_widescreen;
+  }
 
   // refresh 3D capability
   bool support_3d = false;
@@ -1620,7 +1692,10 @@ void CAMLDisplay::aml_refresh_display_caps()
   if (amhdmitx0_support_3d.Exists())
     support_3d = amhdmitx0_support_3d.Get<int>().value_or(0);
 
-  m_support_3d = support_3d;
+  {
+    std::unique_lock lock(m_capsMutex);
+    m_support_3d = support_3d;
+  }
 }
 
 bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
@@ -1847,7 +1922,7 @@ bool CAMLDisplay::aml_mode_to_resolution(const char* mode,
 
   // Fix pixel ratio when 4:3 resolution is used on wide screen
   const float res_ratio = static_cast<float>(res->iScreenWidth) / res->iScreenHeight;
-  if (res_ratio < 1.65f && m_is_widescreen)
+  if (res_ratio < 1.65f && IsWidescreen())
     res->fPixelRatio = (16.0f / 9.0f) / res_ratio;
 
   res->strId         = fromMode;

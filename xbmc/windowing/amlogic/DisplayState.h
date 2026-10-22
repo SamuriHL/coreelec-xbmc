@@ -92,6 +92,11 @@ struct DisplayState
 
 //! null before the seed and under displaystate_off
 std::shared_ptr<const DisplayState> Get();
+//! 5.B3-4: the DRM-object readers' source under hotplugworker: the last published state
+//! (immutable, never freed while held), whatever a caps reader's skip cause. Null without
+//! hotplugworker (latched at W's start) or before the first publish: the reader keeps HEAD's
+//! live read
+std::shared_ptr<const DisplayState> LinkState();
 
 // W's publishes (or inline on their caller while W is not running)
 void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed);

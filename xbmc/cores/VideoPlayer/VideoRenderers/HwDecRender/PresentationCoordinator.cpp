@@ -211,7 +211,8 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
     std::unique_lock lock(m_videoMutex);
     m_video = renderManager;
   }
-  // the CRTC is resolved on the render thread, which also runs the hotplug
+  // the CRTC: under hotplugworker the published DisplayState's (5.B3-4), else the live one,
+  // safe only because this runs on the render thread, which also runs the hotplug's re-init
   if (auto winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
     m_crtc = winSystem->GetDRMCrtcId();
 
