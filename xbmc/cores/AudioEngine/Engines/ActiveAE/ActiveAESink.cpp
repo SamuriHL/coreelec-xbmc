@@ -1516,10 +1516,12 @@ void CActiveAESink::Hold(double fromMs)
     // what the device fetches next is beyond reach: a margin past the play position
     const uint64_t reach = written - std::min(unplayed, written) + m_sinkFormat.m_sampleRate / 500;
     const double rate = m_sinkFormat.m_sampleRate;
+    // to the audio labels' microsecond: a video pts converted from the stream's time
+    // base lands an ulp off the burst grid, and a burst ending at the picture is out
     auto keep = std::find_if(m_heldWrites.begin(), m_heldWrites.end(),
                              [&](const HeldWrite& write) {
                                return write.start >= reach &&
-                                      write.ptsMs + write.frames * 1000.0 / rate > fromMs;
+                                      write.ptsMs + write.frames * 1000.0 / rate > fromMs + 0.001;
                              });
     if (keep != m_heldWrites.end() && written > keep->start)
     {

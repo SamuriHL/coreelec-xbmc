@@ -3234,10 +3234,11 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         const double frameMs =
             raw ? stream->m_format.m_streamInfo.GetDuration()
                 : (rate ? static_cast<double>(buf->pkt->nb_samples) * 1000.0 / rate : 0.0);
-        if (ptsMs + frameMs <= stream->m_schedClockMs)
+        if (ptsMs + frameMs <= stream->m_schedClockMs + 0.001)
         {
           // ends before the first picture: there is nothing to hear it with
-          // (a frame that straddles the start plays its head just before it)
+          // (a frame that straddles the start plays its head just before it).
+          // To the labels' microsecond: the start clock is a video pts, an ulp off
           buf->pkt->nb_samples = 0;
           buf->pkt->pause_burst_ms = 0;
           CLog::Log(LOGDEBUG, "ActiveAE - scheduled start {}: frame at {:.3f} ms before the start, dropped",
