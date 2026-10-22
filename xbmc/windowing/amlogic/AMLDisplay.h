@@ -165,7 +165,8 @@ public:
     bool held_notice = true);
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   //! 5.B3-5 (design §6): connected, and no CRTC or one with no mode (disabled): a mode set is
-  //! required, the current resolution is empty. Under m_drmSection
+  //! required, the current resolution is empty. Under m_drmSection, confirmed by a fresh
+  //! connector read (still bound)
   bool aml_get_drmDevice_crtc_dark();
   //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
   bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }

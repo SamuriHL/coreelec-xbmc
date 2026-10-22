@@ -1250,7 +1250,19 @@ void CAMLDRMUtils::aml_get_drmDevice_ui_plane(uint32_t& plane_id,
 bool CAMLDRMUtils::aml_get_drmDevice_crtc_dark()
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
-  return aml_get_drmDevice_connected() && (!m_crtc || !m_crtc->mode_valid);
+  if (!aml_get_drmDevice_connected() || (m_crtc && m_crtc->mode_valid) || !m_connector)
+    return false;
+  // r5 #16: confirmed by a fresh read. A plug-out landing inside the re-init (between its
+  // connector and CRTC ioctls) leaves the connector unbound now: today's failure then, so the
+  // set fails and the next event opens the span, as HEAD does
+  drmModeConnectorPtr connector = drmModeGetConnectorCurrent(m_fd, m_connector->connector_id);
+  const bool bound = connector && connector->encoder_id;
+  if (connector)
+    drmModeFreeConnector(connector);
+  if (!bound)
+    CLog::Log(LOGWARNING, "CAMLDRMUtils::{} - dark CRTC not confirmed: the connector is unbound",
+              __FUNCTION__);
+  return bound;
 }
 
 bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()

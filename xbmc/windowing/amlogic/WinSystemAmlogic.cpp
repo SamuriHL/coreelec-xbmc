@@ -386,15 +386,20 @@ void CWinSystemAmlogic::PostDetectShadow()
   if (m_shadowQueued.exchange(true))
     return;
   OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "hotplug shadow",
-                                    [this] { RunDetectShadow(); });
+                                    [this, posted = std::chrono::steady_clock::now()]
+                                    { RunDetectShadow(posted); });
 }
 
-void CWinSystemAmlogic::RunDetectShadow()
+void CWinSystemAmlogic::RunDetectShadow(std::chrono::steady_clock::time_point posted)
 {
   try
   {
     // receipts after this belong to the next job
     m_shadowQueued.store(false);
+    // r5 #18: how long the job queued behind W's running job; its reads are that late
+    const auto queueMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - posted)
+                             .count();
     const uint64_t receipts = m_shadowReceipts.load();
     HpdRead read;
     const bool valid = aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb());
@@ -423,8 +428,10 @@ void CWinSystemAmlogic::RunDetectShadow()
       }
       if (read.source == HpdSource::HPD_STATE && state == 0)
       {
+        // r5 #17: the receipts as they stand after the read, so only an event received after
+        // the disconnected read confirms a later connected one
         m_shadowDisconnectedRead = true;
-        m_shadowDisconnectedAt = receipts;
+        m_shadowDisconnectedAt = m_shadowReceipts.load();
       }
       else if (read.source == HpdSource::HPD_STATE && state == 1 &&
                strcmp(cls, "wait-confirm") != 0)
@@ -432,9 +439,9 @@ void CWinSystemAmlogic::RunDetectShadow()
     }
     CLog::Log(LOGINFO,
               "HOTPLUG shadow class={} source={} state={} seq={} last={} span={} encoder_id={} "
-              "tries={}",
+              "tries={} queue_ms={}",
               cls, aml_hpd_source_name(read.source), state, read.seq, m_shadowLastAct,
-              IsLostSpanOpen() ? 1 : 0, encoderId, read.tries);
+              IsLostSpanOpen() ? 1 : 0, encoderId, read.tries, queueMs);
   }
   catch (...)
   {
