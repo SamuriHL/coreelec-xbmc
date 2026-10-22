@@ -709,6 +709,20 @@ bool HotplugWorkerSkip(const std::string& substep)
   return !substep.empty() && std::find(skipped.begin(), skipped.end(), substep) != skipped.end();
 }
 
+bool DetectShadowOn()
+{
+  if (!HotplugWorkerOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-6");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-6: W shadows the hotplug detection (log only)");
+    return result;
+  }();
+  return on;
+}
+
 namespace
 {
 // the first number of a hotplugworker_* file; fallback without the file

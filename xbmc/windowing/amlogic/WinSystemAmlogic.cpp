@@ -353,6 +353,94 @@ std::string HpdReadText(const HpdRead& read)
 }
 } // namespace
 
+namespace
+{
+// 5.B3-6 (r1 M6): the HDMI connector's encoder_id from the job's own ioctls, both freed here;
+// never m_connector, which main's re-init may be freeing. -1 when it cannot be read
+int ShadowEncoderId(int fd)
+{
+  drmModeResPtr resources = drmModeGetResources(fd);
+  if (!resources)
+    return -1;
+  int encoderId = -1;
+  for (int i = 0; i < resources->count_connectors && encoderId < 0; i++)
+  {
+    drmModeConnectorPtr connector = drmModeGetConnectorCurrent(fd, resources->connectors[i]);
+    if (!connector)
+      continue;
+    if (connector->connector_type == DRM_MODE_CONNECTOR_HDMIA)
+      encoderId = static_cast<int>(connector->encoder_id);
+    drmModeFreeConnector(connector);
+  }
+  drmModeFreeResources(resources);
+  return encoderId;
+}
+} // namespace
+
+void CWinSystemAmlogic::PostDetectShadow()
+{
+  if (!OUTPUT::DetectShadowOn() || !OUTPUT::COutputWorker::Get().Active())
+    return;
+  m_shadowReceipts.fetch_add(1);
+  // one job per collapse, as the receipts collapse into main's flag
+  if (m_shadowQueued.exchange(true))
+    return;
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "hotplug shadow",
+                                    [this] { RunDetectShadow(); });
+}
+
+void CWinSystemAmlogic::RunDetectShadow()
+{
+  try
+  {
+    // receipts after this belong to the next job
+    m_shadowQueued.store(false);
+    const uint64_t receipts = m_shadowReceipts.load();
+    HpdRead read;
+    const bool valid = aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb());
+    const int encoderId = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle());
+    int state = read.state;
+    const char* cls;
+    if (!valid)
+      cls = "invalid-read";
+    else
+    {
+      // no hdmitx node either: today's predicate, on the job's own read
+      if (read.source == HpdSource::DRM)
+        state = encoderId > 0 ? 1 : 0;
+      if (read.source == HpdSource::CB && read.seq != 0 && read.seq == m_shadowLastAct)
+        cls = "echo";
+      else if (read.source == HpdSource::HPD_STATE && state == 1 && m_shadowDisconnectedRead &&
+               receipts <= m_shadowDisconnectedAt)
+        // no event since the disconnected read: W will wait for one (up to 1 s); the shadow
+        // waits for nothing and lets the next event decide
+        cls = "wait-confirm";
+      else
+      {
+        cls = state == 0 ? "loss" : (m_shadowSpan ? "restore" : "reassert");
+        m_shadowSpan = state == 0;
+        m_shadowLastAct = read.seq;
+      }
+      if (read.source == HpdSource::HPD_STATE && state == 0)
+      {
+        m_shadowDisconnectedRead = true;
+        m_shadowDisconnectedAt = receipts;
+      }
+      else if (read.source == HpdSource::HPD_STATE && state == 1 &&
+               strcmp(cls, "wait-confirm") != 0)
+        m_shadowDisconnectedRead = false;
+    }
+    CLog::Log(LOGINFO,
+              "HOTPLUG shadow class={} source={} state={} seq={} last={} span={} encoder_id={} "
+              "tries={}",
+              cls, aml_hpd_source_name(read.source), state, read.seq, m_shadowLastAct,
+              IsLostSpanOpen() ? 1 : 0, encoderId, read.tries);
+  }
+  catch (...)
+  {
+  }
+}
+
 void CWinSystemAmlogic::LogStartupLink()
 {
   // 5.B3-1 (log only, every session): the link the init found, before any hotplug
@@ -542,6 +630,7 @@ void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *dat
       // the caps may change from here: HotplugEvent publishes them on every path
       DISPLAYSTATE::CapsWriteBegins();
       winSystem->m_hotplugPending.store(true);
+      winSystem->PostDetectShadow();
     }
   }
 }
@@ -908,6 +997,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     try
     {
       OUTPUT::LatchHotplugWorker();
+      OUTPUT::DetectShadowOn();
     }
     catch (const std::exception& e)
     {

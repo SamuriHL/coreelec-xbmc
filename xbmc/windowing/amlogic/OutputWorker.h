@@ -221,6 +221,9 @@ bool HotplugWorkerOn();
 bool HpdNoRestoreOn();
 //! hotplugworker_skip "<substep>[,<substep>]": true for a listed 5.B3 sub-step (bisect only)
 bool HotplugWorkerSkip(const std::string& substep);
+//! 5.B3-6: W's hotplug detection as a log-only shadow: HotplugWorkerOn and no
+//! hotplugworker_skip "B3-6"; the switch line is logged once (read first at W's start)
+bool DetectShadowOn();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
 //! hotplugworker_hold "<ms>": W sleeps <ms> before its next hotplug job (0: off)

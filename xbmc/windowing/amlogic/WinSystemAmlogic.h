@@ -164,6 +164,17 @@ private:
   };
 
   void RefreshResolutions();
+  //! 5.B3-6 (OUTPUT::DetectShadowOn): at a receipt (the FD thread), one W job per collapse that
+  //! classifies the event as W will from B3-7b, and only logs it ("HOTPLUG shadow")
+  void PostDetectShadow();
+  void RunDetectShadow();
+  std::atomic_bool m_shadowQueued{false};
+  std::atomic<uint64_t> m_shadowReceipts{0};
+  // W only
+  unsigned int m_shadowLastAct{0}; //!< the hpd_cb_seq of the shadow's last act
+  bool m_shadowSpan{false}; //!< the shadow's own span: opened by its loss, closed by its restore
+  bool m_shadowDisconnectedRead{false}; //!< hpd_state source: the last read was disconnected
+  uint64_t m_shadowDisconnectedAt{0}; //!< the receipts seen at that read
   //! 5.B3-1 (log only): the init's "startup link" line and today's per-event read line;
   //! modes < 0: the event's re-init threw (connection and modes logged "-")
   void LogStartupLink();
