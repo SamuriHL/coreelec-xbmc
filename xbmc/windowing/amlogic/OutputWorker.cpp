@@ -660,6 +660,9 @@ void LatchHotplugWorker()
     reason = "hotplugworker_off";
   else
     on = true;
+  // primed here so a bisect file is logged at W's start, as OutputDriveSkip's
+  HotplugWorkerSkip("");
+  const bool restorePresent = aml_hpd_restore_present();
   const std::optional<bool> restore = aml_hpd_restore();
   const bool cb = aml_hpd_cb_present() && !(on && TestHotplugNoHpdCb());
   bool noRestore = false;
@@ -667,28 +670,36 @@ void LatchHotplugWorker()
   {
     if (XFILE::CFile::Exists("special://profile/hpdnorestore_off"))
       reason = "hpdnorestore_off";
-    else if (!restore)
+    else if (TestHotplugNoHpdCb())
+      // the stand-in for a kernel without 5.KH's parameters: today's restore, no N
+      reason = "hpdnorestore: nohpdcb (no parameter)";
+    else if (!restorePresent)
       reason = "hpdnorestore: no parameter";
+    else if (!restore)
+      reason = "hpdnorestore: parameter unreadable";
     else
     {
       reason = "hpdnorestore";
       noRestore = true;
     }
   }
-  s_hotplugWorker = on;
-  s_hpdNoRestore = noRestore;
+  // W already runs: hotplugworker is stored before hpdnorestore (release, acquire loads), so
+  // a reader that sees hpdnorestore also sees hotplugworker
+  s_hotplugWorker.store(on, std::memory_order_release);
+  s_hpdNoRestore.store(noRestore, std::memory_order_release);
   CLog::Log(LOGINFO, "HOTPLUGWORKER {} ({}) hpdRestore {} hpdCb {}", on ? "on" : "off", reason,
-            restore ? (*restore ? "Y" : "N") : "absent", cb ? "present" : "absent");
+            restore ? (*restore ? "Y" : "N") : (restorePresent ? "unreadable" : "absent"),
+            cb ? "present" : "absent");
 }
 
 bool HotplugWorkerOn()
 {
-  return s_hotplugWorker.load(std::memory_order_relaxed);
+  return s_hotplugWorker.load(std::memory_order_acquire);
 }
 
 bool HpdNoRestoreOn()
 {
-  return s_hpdNoRestore.load(std::memory_order_relaxed);
+  return s_hpdNoRestore.load(std::memory_order_acquire);
 }
 
 bool HotplugWorkerSkip(const std::string& substep)

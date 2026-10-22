@@ -257,6 +257,7 @@ void CWinSystemAmlogic::HotplugEvent()
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogic::{} - display rebuild failed: {}", __FUNCTION__,
               e.what());
+    LogHotplugRead(DRM_MODE_UNKNOWNCONNECTION, -1);
     // not known disconnected: an open span retries the rebuild, and the time
     // stops counting towards the pause
     m_disconnectedSinceMs = 0;
@@ -385,8 +386,10 @@ void CWinSystemAmlogic::LogHotplugRead(drmModeConnection connection, int modes)
             "connection={} modes={}",
             hpdState < 0 ? "absent" : std::to_string(hpdState),
             cb ? std::to_string(read.state) : noCb, cb ? std::to_string(read.seq) : noCb,
-            status, encoder, connection == DRM_MODE_CONNECTED ? "connected" : "disconnected",
-            modes);
+            status, encoder,
+            modes < 0 ? "-"
+                      : (connection == DRM_MODE_CONNECTED ? "connected" : "disconnected"),
+            modes < 0 ? "-" : std::to_string(modes));
 }
 
 void CWinSystemAmlogic::OpenLostSpan()
@@ -593,15 +596,18 @@ bool CWinSystemAmlogic::InitWindowSystem()
   // 5.B3-2, every session, whatever the switches: the kernel restores the link at a plug-in
   // again (hpd_restore Y, its default), so no session inherits an N an earlier one left (written
   // by hand, or by a session that lost its DRM master). Touches only the parameter
-  if (const std::optional<bool> before = aml_hpd_restore())
+  if (aml_hpd_restore_present())
   {
+    const auto text = [](std::optional<bool> value)
+    { return value ? (*value ? "Y" : "N") : "unreadable"; };
+    const std::optional<bool> before = aml_hpd_restore();
     aml_set_hpd_restore(true);
     const std::optional<bool> after = aml_hpd_restore();
     if (after && *after)
-      CLog::Log(LOGINFO, "hpdRestore Y (init, was {})", *before ? "Y" : "N");
+      CLog::Log(LOGINFO, "hpdRestore Y (init, was {})", text(before));
     else
-      CLog::Log(LOGERROR, "hpdRestore {} after the init's Y write (was {})",
-                after ? "N" : "absent", *before ? "Y" : "N");
+      CLog::Log(LOGERROR, "hpdRestore not Y after the init's Y write (reads {}, was {})",
+                text(after), text(before));
   }
   else
     CLog::Log(LOGINFO, "hpdRestore absent");

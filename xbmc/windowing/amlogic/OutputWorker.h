@@ -212,9 +212,10 @@ int DriveResolution();
 
 // 5.B3: the hotplug path on W (design §6)
 //! the win system latches the switches once, at W's start, after NoteModeSetsOnW, and logs
-//! "HOTPLUGWORKER on|off (<reason>) hpdRestore N|Y|absent hpdCb present|absent". hotplugworker
-//! = ModeSetsOnW and no hotplugworker_off; hpdnorestore (B3-10's N write) = hotplugworker, no
-//! hpdnorestore_off and the parameter present. Both false before the latch and under off
+//! "HOTPLUGWORKER on|off (<reason>) hpdRestore N|Y|absent|unreadable hpdCb present|absent".
+//! hotplugworker = ModeSetsOnW and no hotplugworker_off; hpdnorestore (B3-10's N write) =
+//! hotplugworker, no hpdnorestore_off, no hotplugworker_nohpdcb and the parameter readable. Both
+//! false before the latch and under off; HpdNoRestoreOn implies HotplugWorkerOn
 void LatchHotplugWorker();
 bool HotplugWorkerOn();
 bool HpdNoRestoreOn();

@@ -3020,13 +3020,23 @@ bool aml_hpd_read(HpdRead& read, bool useCb)
   return true;
 }
 
+bool aml_hpd_restore_present()
+{
+  return CSysfsPath(HPD_RESTORE).Exists();
+}
+
 std::optional<bool> aml_hpd_restore()
 {
   CSysfsPath node{HPD_RESTORE};
   if (!node.Exists())
     return std::nullopt;
   const std::string value = node.Get<std::string>().value_or("");
-  return StringUtils::EqualsNoCase(value, "Y") || value == "1";
+  if (StringUtils::EqualsNoCase(value, "Y") || value == "1")
+    return true;
+  if (StringUtils::EqualsNoCase(value, "N") || value == "0")
+    return false;
+  CLog::Log(LOGERROR, "hpdRestore unreadable (\"{}\")", value);
+  return std::nullopt;
 }
 
 bool aml_set_hpd_restore(bool restore)

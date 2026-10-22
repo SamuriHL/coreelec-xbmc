@@ -364,9 +364,13 @@ bool aml_hpd_read(HpdRead& read, bool useCb = true);
 int aml_hdmitx_hpd_state();
 //! 5.KH's hpd_cb_state and hpd_cb_seq both exist
 bool aml_hpd_cb_present();
-//! 5.KH's aml_drm hpd_restore: true Y, false N; nullopt without the parameter
+//! 5.KH's aml_drm hpd_restore exists
+bool aml_hpd_restore_present();
+//! 5.KH's aml_drm hpd_restore: true Y/1, false N/0; nullopt without the parameter, or for any
+//! other read (logged "unreadable")
 std::optional<bool> aml_hpd_restore();
-//! writes it (Y or N); false without the parameter or when the write fails
+//! writes it (Y or N); false without the parameter. A rejected write is only seen at the
+//! stream's close, so true means "written to the node": the read-back is the authority
 bool aml_set_hpd_restore(bool restore);
 //! real_player 4a (design 4.3): keep the last picture across a decoder reinit
 //! at a disc join. The player arms the next close; the kernel keeps the frame
