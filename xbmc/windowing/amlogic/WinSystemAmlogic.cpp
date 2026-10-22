@@ -929,6 +929,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
               CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING));
     OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::RESTORE, "vsvdb refill",
                                       [] { aml_display_vsvdb_refill(); });
+    // 5.B3-4's gate hook (hotplugworker_reinit), a no-op without its file
+    StartTestReinit();
   }
 
   // the delay is for the display to lock onto the new mode, so count it from
@@ -945,6 +947,51 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   m_force_mode_switch = false;
   m_hotplug_mode_switch = false;
   return ret;
+}
+
+namespace
+{
+// hotplugworker_reinit (B3-4's gate): W parks C, runs today's re-init (the one HotplugEvent
+// runs on main) and publishes the caps, every period until the deadline
+void PostTestReinit(CAMLDisplay* display,
+                    int periodMs,
+                    std::chrono::steady_clock::time_point until,
+                    uint64_t n)
+{
+  OUTPUT::COutputWorker::Get().PostAfter(
+      OUTPUT::Lane::SETTINGS, "test re-init", std::chrono::milliseconds(periodMs),
+      [display, periodMs, until, n]
+      {
+        {
+          CAmlPresenterHold hold("test re-init");
+          DISPLAYSTATE::CapsWriteBegins();
+          try
+          {
+            display->aml_init_drmDevice();
+          }
+          catch (const std::exception& e)
+          {
+            CLog::Log(LOGERROR, "HOTPLUGWORKER: test re-init {} failed: {}", n, e.what());
+          }
+          DISPLAYSTATE::PublishCaps(*display);
+        }
+        if (std::chrono::steady_clock::now() < until)
+          PostTestReinit(display, periodMs, until, n + 1);
+        else
+          CLog::Log(LOGWARNING, "HOTPLUGWORKER: test re-init done, {} runs", n);
+      });
+}
+} // namespace
+
+void CWinSystemAmlogic::StartTestReinit()
+{
+  const auto [periodMs, seconds] = OUTPUT::TestHotplugReinit();
+  // a W re-init races main's readers only under hotplugworker; off, they read m_crtc live
+  if (periodMs <= 0 || !OUTPUT::HotplugWorkerOn())
+    return;
+  CLog::Log(LOGWARNING, "HOTPLUGWORKER: test re-init on W started");
+  PostTestReinit(m_amlDisplay.get(), periodMs,
+                 std::chrono::steady_clock::now() + std::chrono::seconds(seconds), 1);
 }
 
 void CWinSystemAmlogic::LostWalk()
