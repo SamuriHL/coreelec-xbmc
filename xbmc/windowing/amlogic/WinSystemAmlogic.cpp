@@ -244,6 +244,9 @@ bool CWinSystemAmlogic::MessagePump()
   DISPLAYSTATE::HandleOutputChanged();
   // 5.B3-3 (hotplugworker only): playback's GuiInputs, published when they change
   DISPLAYSTATE::PublishGuiPlayback();
+  // 5.B3-7b: main's sets are applied and their GuiInputs published
+  if (m_wHotplug && m_mainRequests == 0)
+    m_guiInputsStale = false;
   DISPLAYSTATE::Tick();
   return false;
 }
@@ -813,8 +816,24 @@ void CWinSystemAmlogic::TestSetAfter()
 void CWinSystemAmlogic::RunHotplugJob(bool retry)
 {
   SHotplugReply reply;
+  // HEAD's order: no hotplug between main's set and main's apply of it, nor before its GuiInputs
+  // publish (the video's mode, P13). The job stays queued (m_jobQueued set, its receipts not
+  // read), so the receipts after this still collapse into it
+  if (!retry && (m_mainRequests > 0 || m_guiInputsStale))
+  {
+    if (!std::exchange(m_wDeferred, true))
+      CLog::Log(LOGINFO, "HOTPLUG job deferred: main's mode set is on W or not yet applied");
+    if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "hotplug", 10ms,
+                                                [this] { RunHotplugJob(false); }))
+    {
+      m_jobQueued = false;
+      CLog::Log(LOGINFO, "HOTPLUG hotplug after W stop: dropped");
+    }
+    return;
+  }
   if (!retry)
   {
+    m_wDeferred = false;
     // O1 (r2 N2): the flag cleared before the receipts are read
     m_jobQueued = false;
     if (const int gapMs = OUTPUT::TestHotplugRaceGapMs(); gapMs > 0)
@@ -1135,7 +1154,7 @@ void CWinSystemAmlogic::HotplugRetryTick(uint64_t gen)
   }
   if (IsHotplugPending() || m_disconnectedSinceMs ||
       ((m_delayDispReset || m_resetPending) && IsPresentationReady()) || replyQueued ||
-      m_applyingReply || m_mainRequests > 0)
+      m_applyingReply || m_mainRequests > 0 || m_guiInputsStale || m_lateReplies > 0)
   {
     PostHotplugRetryTick(gen, 50ms);
     return;

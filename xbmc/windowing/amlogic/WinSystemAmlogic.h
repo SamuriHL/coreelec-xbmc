@@ -253,8 +253,14 @@ protected:
   std::deque<SHotplugReply> m_replies;
   //! main: a reply is popped and being applied (scope guarded; P5-9's timer on W reads it)
   std::atomic_bool m_applyingReply{false};
-  //! main: its own mode set request is on W or being applied (P5-9's timer on W reads it)
+  //! main: its own mode set request is on W or being applied (W's hotplug jobs and P5-9's timer
+  //! wait while it is)
   std::atomic_int m_mainRequests{0};
+  //! main: set with a request, cleared at the first pump after the last one (GuiInputs then
+  //! carry its result); W's hotplug jobs and P5-9's timer wait while it is set
+  std::atomic_bool m_guiInputsStale{false};
+  //! W counts a reply main gave up on, main uncounts it when it takes it (P5-9's timer waits)
+  std::atomic_int m_lateReplies{0};
   //! main: hotplug tables applied (a late reply posted before one maps its resolution by value)
   uint64_t m_hotplugTables{0};
 
@@ -315,6 +321,7 @@ private:
   uint64_t m_wDisconnectedAt{0}; //!< the receipts counted just after that read
   std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
   bool m_wHas2160{false}; //!< W's last table
+  bool m_wDeferred{false}; //!< the queued job waits for main's set (logged once)
   uint64_t m_wRetryGen{0};
   std::chrono::milliseconds m_wRetryDelay{1000};
 

@@ -910,10 +910,14 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   // 5.B3-7b: P5-9's timer on W waits while main's request is on W or being applied
   struct SMainRequest
   {
-    explicit SMainRequest(std::atomic_int& count) : m_count(count) { ++m_count; }
+    SMainRequest(std::atomic_int& count, std::atomic_bool& stale) : m_count(count)
+    {
+      stale = true;
+      ++m_count;
+    }
     ~SMainRequest() { --m_count; }
     std::atomic_int& m_count;
-  } mainRequest(m_mainRequests);
+  } mainRequest(m_mainRequests, m_guiInputsStale);
 
   // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
   auto job = std::make_shared<SDriveJob>();
@@ -977,6 +981,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                       job->cond.notify_all();
                                       if (late)
                                       {
+                                        ++m_lateReplies;
                                         std::unique_lock lock(s_lateMutex);
                                         s_late.push_back(job);
                                       }
@@ -1018,7 +1023,11 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     OUTPUT::NoteDriveReply(OUTPUT::DriveReply::GAVE_UP);
   }
   else if (SupersededOnW(*job))
+  {
     OUTPUT::NoteDriveReply(job->kind);
+    // its LEDGER outcome: the set's lost go to the W set's reset
+    ReportDriveSet(*job, false, waitMs, 0, false);
+  }
   else
   {
     const auto handlerStart = std::chrono::steady_clock::now();
@@ -1714,6 +1723,14 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     std::unique_lock lock(s_lateMutex);
     late.swap(s_late);
   }
+  // uncounted when taken, applied or not, below
+  struct SLateTaken
+  {
+    SLateTaken(std::atomic_int& count, size_t n) : m_count(count), m_n(static_cast<int>(n)) {}
+    ~SLateTaken() { m_count -= m_n; }
+    std::atomic_int& m_count;
+    int m_n;
+  } lateTaken(m_lateReplies, late.size());
   for (const auto& job : late)
   {
     if (job->id != m_drivePosted)
