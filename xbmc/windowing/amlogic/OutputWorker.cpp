@@ -758,6 +758,21 @@ bool OrderingOn()
   return on;
 }
 
+bool HotplugOnW()
+{
+  if (!OrderingOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-7b");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-7b: W runs the hotplug (Lost, re-init, caps, Restore); "
+                         "main applies its replies");
+    return result;
+  }();
+  return on;
+}
+
 namespace
 {
 // the first number of a hotplugworker_* file; fallback without the file

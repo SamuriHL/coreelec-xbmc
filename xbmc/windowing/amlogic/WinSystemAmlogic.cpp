@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <float.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cxxabi.h>
@@ -40,6 +41,7 @@
 #include "settings/lib/SettingsManager.h"
 #include "filesystem/File.h"
 #include "guilib/DispResource.h"
+#include "messaging/ApplicationMessenger.h"
 #include "utils/AMLUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -208,21 +210,34 @@ void CWinSystemAmlogic::MonitorStop()
 
 bool CWinSystemAmlogic::MessagePump()
 {
-  // a span whose reconnect did not end it (the mode set failed): try again,
-  // backing off, while the output reads connected and no reset is pending
-  // (5.B2-6: W's SETTLE publishes its own pending flag)
-  if (m_lostOpen && !m_hotplugPending && !m_disconnectedSinceMs &&
-      !((m_delayDispReset || m_resetPending) && IsPresentationReady()) &&
-      m_lostRetry.IsTimePast())
-  {
-    CLog::Log(LOGWARNING, "CWinSystemAmlogic: display back but still lost, retrying the mode set");
-    m_lostRetry.Set(m_lostRetryDelay);
-    m_lostRetryDelay = std::min(m_lostRetryDelay * 2, std::chrono::milliseconds(30000));
-    m_hotplugPending.store(true);
-  }
+  if (!m_wHotplug && OUTPUT::HotplugOnW())
+    StartHotplugOnW();
 
-  if (m_hotplugPending.exchange(false))
-    HotplugEvent();
+  if (m_wHotplug)
+  {
+    // a receipt the FD thread took on HEAD's path before the switch was live: handed to W
+    if (m_hotplugPending.exchange(false))
+      ReceiveHotplug(false);
+    ApplyHotplugReplies();
+  }
+  else
+  {
+    // a span whose reconnect did not end it (the mode set failed): try again,
+    // backing off, while the output reads connected and no reset is pending
+    // (5.B2-6: W's SETTLE publishes its own pending flag)
+    if (m_lostOpen && !m_hotplugPending && !m_disconnectedSinceMs &&
+        !((m_delayDispReset || m_resetPending) && IsPresentationReady()) &&
+        m_lostRetry.IsTimePast())
+    {
+      CLog::Log(LOGWARNING, "CWinSystemAmlogic: display back but still lost, retrying the mode set");
+      m_lostRetry.Set(m_lostRetryDelay);
+      m_lostRetryDelay = std::min(m_lostRetryDelay * 2, std::chrono::milliseconds(30000));
+      m_hotplugPending.store(true);
+    }
+
+    if (m_hotplugPending.exchange(false))
+      HotplugEvent();
+  }
 
   DISPLAYSTATE::HandleOutputChanged();
   // 5.B3-3 (hotplugworker only): playback's GuiInputs, published when they change
@@ -233,6 +248,11 @@ bool CWinSystemAmlogic::MessagePump()
 
 void CWinSystemAmlogic::HotplugEvent()
 {
+  if (m_wHotplug)
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogic::{} called with the hotplug on W: ignored", __FUNCTION__);
+    return;
+  }
   SetPresentationReady(false);
 
   // a display coming back during playback gets the video's mode, not the
@@ -550,8 +570,12 @@ void CWinSystemAmlogic::OpenLostSpan()
   if (ordering && m_lostOpen)
     return;
   m_lostOpen = true;
-  m_lostRetryDelay = std::chrono::milliseconds(1000);
-  m_lostRetry.Set(m_lostRetryDelay);
+  // 5.B3-7b: W's job arms its own P5-9 timer
+  if (!m_wHotplug)
+  {
+    m_lostRetryDelay = std::chrono::milliseconds(1000);
+    m_lostRetry.Set(m_lostRetryDelay);
+  }
   CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
   LedgerBegin("lost span");
   // 5.B3-7a (O3): the span's fan-out is a new lost generation; a reset armed before it drops
@@ -672,6 +696,411 @@ bool CWinSystemAmlogic::ResetStillArmedLocked(uint64_t lostGen, const char* rese
   return false;
 }
 
+const char* SHotplugReply::KindName(Kind kind)
+{
+  switch (kind)
+  {
+    case Kind::ECHO:
+      return "echo";
+    case Kind::INVALID_READ:
+      return "invalid-read";
+    case Kind::WAIT_TIMEOUT:
+      return "wait-timeout";
+    case Kind::THROW:
+      return "throw";
+    case Kind::LOSS:
+      return "loss";
+    case Kind::LOSS_CAPSFAIL:
+      return "loss-capsfail";
+    case Kind::RESTORE:
+      return "restore";
+    case Kind::REASSERT:
+      return "reassert";
+    case Kind::RETRY_NOOP:
+      return "retry-noop";
+    case Kind::RETRY_RESTORE:
+      return "retry-restore";
+  }
+  return "?";
+}
+
+namespace
+{
+int64_t SteadyMs()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+bool Has2160(const std::vector<RESOLUTION_INFO>& table)
+{
+  return std::any_of(table.begin(), table.end(),
+                     [](const RESOLUTION_INFO& res) { return res.iScreenHeight >= 2160; });
+}
+
+bool SameMode(const RESOLUTION_INFO& res, const std::string& strId, float refresh, uint32_t flags)
+{
+  return StringUtils::EqualsNoCase(res.strId, strId) && std::abs(res.fRefreshRate - refresh) < 0.01f &&
+         res.dwFlags == flags;
+}
+} // namespace
+
+void CWinSystemAmlogic::StartHotplugOnW()
+{
+  // main, holding nothing; no W hotplug job exists before m_wHotplug
+  LatchRestoreInputs();
+  PublishMainSlot();
+  {
+    const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+    std::vector<RESOLUTION_INFO> table;
+    for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+      table.push_back(displaySettings.GetResolutionInfo(i));
+    m_wHas2160 = Has2160(table);
+  }
+  m_wHotplug = true;
+}
+
+void CWinSystemAmlogic::PublishMainSlot()
+{
+  const RESOLUTION_INFO slot = CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP);
+  std::unique_lock lock(m_slotMutex);
+  m_mainSlot = slot;
+}
+
+void CWinSystemAmlogic::ReceiveHotplug(bool fromFd)
+{
+  // O1: the receipt before the flag, so a queued job's read covers it
+  m_receiptSeq.fetch_add(1);
+  if (m_jobQueued.exchange(true))
+    return;
+  if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "hotplug",
+                                                  [this] { RunHotplugJob(false); }))
+  {
+    m_jobQueued = false;
+    CLog::Log(LOGINFO, "HOTPLUG hotplug after W stop: dropped");
+  }
+}
+
+void CWinSystemAmlogic::RunHotplugJob(bool retry)
+{
+  SHotplugReply reply;
+  if (!retry)
+  {
+    // O1 (r2 N2): the flag cleared before the receipts are read
+    m_jobQueued = false;
+    m_wUpTo = m_receiptSeq.load();
+  }
+  reply.upTo = m_wUpTo;
+  reply.replyId = ++m_wReplies;
+  // O4: W stopping drains its queue; main applies no reply after DestroyWindowSystem
+  if (!OUTPUT::COutputWorker::Get().Active())
+  {
+    CLog::Log(LOGINFO, "HOTPLUG job {}: hotplug after W stop: dropped", reply.replyId);
+    return;
+  }
+  try
+  {
+    HotplugJob(reply, retry);
+  }
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGERROR, "HOTPLUG job {} threw: {}", reply.replyId, e.what());
+    reply.kind = SHotplugReply::Kind::THROW;
+  }
+  catch (...)
+  {
+    CLog::Log(LOGERROR, "HOTPLUG job {} threw", reply.replyId);
+    reply.kind = SHotplugReply::Kind::THROW;
+  }
+  // ends a caps write the throw left begun (PublishCaps catches its own failure)
+  if (reply.kind == SHotplugReply::Kind::THROW)
+    DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160);
+  CLog::Log(LOGINFO,
+            "HOTPLUG job reply={} upTo={} kind={}{} source={} state={} seq={} last={} span={} "
+            "claim=no-op park_ms={} parkRetried={} modes={} table={} restore={}",
+            reply.replyId, reply.upTo, SHotplugReply::KindName(reply.kind), retry ? " (retry)" : "",
+            aml_hpd_source_name(reply.read.source), reply.read.state, reply.read.seq, m_wLastAct,
+            m_lostOpen ? 1 : 0, reply.parkMs, reply.parkRetried ? 1 : 0, reply.modes,
+            reply.hasTable ? static_cast<int>(reply.table.size()) : -1,
+            reply.restoreJob ? "yes" : "no");
+  std::unique_lock lock(m_replyMutex);
+  m_replies.push_back(std::move(reply));
+}
+
+void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
+{
+  using Kind = SHotplugReply::Kind;
+
+  // step 1: the read, before any claim or park (design §6 Detection)
+  HpdRead& read = reply.read;
+  const bool valid = aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb());
+  if (valid && read.source == HpdSource::DRM)
+    read.state = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle()) > 0 ? 1 : 0;
+
+  // HotplugEvent's video mode, at every event of a playback
+  const DISPLAYSTATE::GuiInputs gui = DISPLAYSTATE::GetGuiInputs();
+  if (!gui.videoPlaying)
+    m_wVideoMode.reset();
+  else if (!m_wVideoMode)
+    m_wVideoMode = gui.videoResolution;
+
+  if (!valid)
+  {
+    reply.kind = Kind::INVALID_READ;
+    // B3-1: one re-read 50 ms later, as a receipt of its own
+    OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "hotplug re-read", 50ms,
+                                           [this] { ReceiveHotplug(false); });
+    return;
+  }
+  if (!retry && read.source == HpdSource::CB && read.seq != 0 && read.seq == m_wLastAct)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG hpd echo: seq {} already acted on", read.seq);
+    reply.kind = Kind::ECHO;
+    return;
+  }
+  if (!retry && read.source == HpdSource::HPD_STATE && read.state == 1 && m_wDisconnectedRead &&
+      reply.upTo <= m_wDisconnectedAt)
+  {
+    // no event since the disconnected read: an event received after it confirms the connected
+    // one (up to 1 s), and its own job acts
+    const auto until = std::chrono::steady_clock::now() + 1s;
+    while (m_receiptSeq.load() <= m_wDisconnectedAt && std::chrono::steady_clock::now() < until)
+      KODI::TIME::Sleep(10ms);
+    if (m_receiptSeq.load() > m_wDisconnectedAt)
+      CLog::Log(LOGINFO, "HOTPLUG hpd confirmed by a later event: its job acts");
+    else
+      CLog::Log(LOGWARNING, "HOTPLUG hpd ahead of event: connected read with no event after the "
+                            "disconnected one");
+    reply.kind = Kind::WAIT_TIMEOUT;
+    return;
+  }
+  const bool connected = read.state == 1;
+  if (retry && !connected)
+  {
+    reply.kind = Kind::RETRY_NOOP;
+    return;
+  }
+  m_wLastAct = read.seq;
+  if (read.source == HpdSource::HPD_STATE)
+  {
+    m_wDisconnectedRead = !connected;
+    if (!connected)
+      m_wDisconnectedAt = m_receiptSeq.load();
+  }
+
+  // step 2: the claim (a no-op before 5.E2's display word), then the park (B2-5b's rule)
+  const auto start = std::chrono::steady_clock::now();
+  CAmlPresenterHold hold("hotplug");
+  if (!hold.Parked())
+  {
+    CLog::Log(LOGWARNING, "HOTPLUG job {}: PARK not acked in 2 s, waiting 500 ms more",
+              reply.replyId);
+    reply.parkRetried = true;
+    hold.Rewait(500);
+  }
+  reply.parkMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - start)
+                     .count();
+
+  // step 3: the stamp and the Lost fan-out, before the re-init; a re-assert (connected with no
+  // span) takes the fan-out unstamped
+  const bool spanWasOpen = m_lostOpen;
+  {
+    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    if (!connected && m_lostAtDisconnect)
+    {
+      if (!m_disconnectedSinceMs)
+        m_disconnectedSinceMs = SteadyMs();
+      OpenLostSpan();
+    }
+    else if (connected)
+    {
+      m_disconnectedSinceMs = 0;
+      if (!retry && !m_lostOpen && m_lostAtDisconnect)
+        OpenLostSpan();
+    }
+  }
+
+  // the VSVDB describes one display (today's order: before the re-init)
+  aml_display_vsvdb_invalidate();
+  aml_display_vsvdb_refill();
+
+  // step 4: the re-init under the park, connection from the read
+  DISPLAYSTATE::CapsWriteBegins();
+  try
+  {
+    m_amlDisplay->aml_init_drmDevice(read.source == HpdSource::DRM ? std::nullopt
+                                                                   : std::optional<bool>(connected));
+  }
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogic::{} - display rebuild failed: {}", __FUNCTION__,
+              e.what());
+    LogHotplugRead(DRM_MODE_UNKNOWNCONNECTION, -1);
+    {
+      std::unique_lock<CCriticalSection> lock(m_resourceSection);
+      m_disconnectedSinceMs = 0;
+    }
+    // the caps are published with the reply (RunHotplugJob)
+    reply.kind = Kind::THROW;
+    return;
+  }
+  drmModeConnection connection;
+  reply.modes = m_amlDisplay->aml_get_display_modes_count(&connection);
+  LogHotplugRead(connection, reply.modes);
+
+  // step 5: the caps, all before any commit (H5)
+  m_amlDisplay->aml_refresh_display_caps();
+  reply.deviceDv = aml_support_dolby_vision();
+  reply.sinkDv = reply.deviceDv && m_amlDisplay->aml_display_support_dv();
+  const CHDRCapabilities caps = m_amlDisplay->GetHDRCaps();
+  reply.hdrDisplay = caps.SupportsHDR10() || caps.SupportsHDR10Plus() || caps.SupportsHLG() ||
+                     caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+  if (reply.sinkDv)
+    reply.dvLed = DvLedClamp(
+        OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED),
+        m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR));
+  reply.hasCaps = true;
+  if (reply.hdrDisplay)
+    aml_hdr_conversion_refresh("display caps");
+
+  RESOLUTION_INFO slot;
+  if (reply.modes > 1)
+  {
+    // the probe into a by-value table, with main's DISABLEGUISCALING (H4)
+    if (!m_amlDisplay->aml_probe_resolutions(reply.table, gui.nativeGui) || reply.table.empty())
+      CLog::Log(LOGWARNING, "{}: ProbeResolutions failed.", __FUNCTION__);
+    RESOLUTION_INFO live;
+    if (m_amlDisplay->aml_get_native_resolution(&live, gui.nativeGui))
+      for (size_t i = 0; i < reply.table.size(); ++i)
+      {
+        const RESOLUTION_INFO& res = reply.table[i];
+        if (live.iWidth == res.iWidth && live.iHeight == res.iHeight &&
+            live.iScreenWidth == res.iScreenWidth && live.iScreenHeight == res.iScreenHeight &&
+            (live.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+            fabs(live.fRefreshRate - res.fRefreshRate) < FLT_EPSILON)
+          reply.liveIndex = static_cast<int>(i);
+      }
+    reply.hasTable = true;
+    if (reply.liveIndex >= 0)
+      slot = reply.table[reply.liveIndex];
+    else
+    {
+      std::unique_lock lock(m_slotMutex);
+      slot = m_mainSlot;
+    }
+    m_wHas2160 = Has2160(reply.table) || slot.iScreenHeight >= 2160;
+  }
+  DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160);
+
+  // step 6: no commit at a loss (§1 step 4's plug-out commit is gone, fc30 C3)
+  if (!connected)
+  {
+    reply.kind = reply.modes > 1 ? Kind::LOSS : Kind::LOSS_CAPSFAIL;
+    return;
+  }
+  if (reply.modes <= 1)
+  {
+    // the span stays open for P5-9's timer
+    CLog::Log(LOGWARNING,
+              "CWinSystemAmlogic - HotplugEvent mode switch ignored while HDMI DRM connector is "
+              "not ready ({:d} modes)",
+              reply.modes);
+    reply.kind = retry ? Kind::RETRY_NOOP : Kind::LOSS_CAPSFAIL;
+    return;
+  }
+
+  // step 7: the Restore at §6 row 1 (HotplugEvent's target) on W's table: RES_DESKTOP's entry,
+  // then the probe's as CDisplaySettings stores them
+  std::vector<RESOLUTION_INFO> rows{slot};
+  for (const RESOLUTION_INFO& res : reply.table)
+    rows.push_back(CDisplaySettings::AddedResolutionInfo(res));
+  size_t target = 0;
+  const std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
+  if (!preferred_mode.empty())
+  {
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (StringUtils::EqualsNoCase(rows[i].strId, preferred_mode))
+      {
+        target = i;
+        break;
+      }
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogic - HotplugEvent, preferred mode: {}, display mode: {}",
+              preferred_mode, rows[target].strId);
+  }
+  else
+    CLog::Log(LOGWARNING,
+              "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
+              rows[target].strId);
+  if (m_wVideoMode)
+  {
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (SameMode(rows[i], m_wVideoMode->strId, m_wVideoMode->refresh, m_wVideoMode->dwFlags))
+      {
+        target = i;
+        CLog::Log(LOGINFO, "CWinSystemAmlogic - HotplugEvent, restoring the video's mode {} @ {:.3f}",
+                  rows[i].strId, rows[i].fRefreshRate);
+        // kept until applied: a display may come back with fewer modes first
+        m_wVideoMode.reset();
+        break;
+      }
+  }
+  RunRestoreOnW(reply, rows[target], reply.dvLed);
+  reply.kind = retry ? Kind::RETRY_RESTORE : spanWasOpen ? Kind::RESTORE : Kind::REASSERT;
+  // step 8: the unpark at the hold's end, then the reply
+}
+
+void CWinSystemAmlogic::PostHotplugRetry()
+{
+  if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "hotplug retry",
+                                                  [this] { RunHotplugJob(true); }))
+    CLog::Log(LOGINFO, "HOTPLUG retry: W stopped, not retried");
+}
+
+int CWinSystemAmlogic::FindResolution(const std::string& strId, float refresh, uint32_t flags)
+{
+  const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); i++)
+    if (SameMode(displaySettings.GetResolutionInfo(i), strId, refresh, flags))
+      return static_cast<int>(i);
+  return -1;
+}
+
+void CWinSystemAmlogic::ApplyHotplugTable(const SHotplugReply& reply)
+{
+  // HotplugEvent's rebuild (ClearCustomResolutions, RefreshResolutions, ApplyCalibrations) from
+  // W's probe
+  CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  displaySettings.ClearCustomResolutions();
+  for (size_t i = 0; i < reply.table.size(); ++i)
+  {
+    RESOLUTION_INFO res = reply.table[i];
+    CLog::Log(LOGINFO, "Found resolution {:d} x {:d} with {:d} x {:d}{} @ {:f} Hz", res.iWidth,
+              res.iHeight, res.iScreenWidth, res.iScreenHeight,
+              res.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", res.fRefreshRate);
+    CServiceBroker::GetWinSystem()->GetGfxContext().ResetOverscan(res);
+    displaySettings.AddResolutionInfo(res);
+    if (static_cast<int>(i) == reply.liveIndex)
+      displaySettings.GetResolutionInfo(RES_DESKTOP) = res;
+  }
+  displaySettings.ApplyCalibrations();
+  PublishMainSlot();
+}
+
+void CWinSystemAmlogic::ApplyHotplugCaps(const SHotplugReply& reply)
+{
+  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  SetDvVisibility(reply.deviceDv, reply.sinkDv);
+  // the value W's Restore already used; only the settings mirror listens (no set starts)
+  if (reply.dvLed && settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) != *reply.dvLed)
+    settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, *reply.dvLed);
+  for (const char* id :
+       {CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR, CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR})
+    if (const auto setting = settings->GetSetting(id))
+      setting->SetVisible(reply.hdrDisplay);
+}
+
 void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *data)
 {
   struct callback_data *callbackData = (struct callback_data *)data;
@@ -696,7 +1125,9 @@ void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *dat
 
     udev_device_unref(device);
 
-    if (isHotplug)
+    if (isHotplug && winSystem->m_wHotplug)
+      winSystem->ReceiveHotplug(true);
+    else if (isHotplug)
     {
       // the caps may change from here: HotplugEvent publishes them on every path
       DISPLAYSTATE::CapsWriteBegins();
@@ -1075,6 +1506,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       // the B3-7a gate hook, read here so the first SETTLE reset makes no file probe
       if (OUTPUT::OrderingOn())
         OUTPUT::TestHotplugSettleGapMs();
+      // 5.B3-7b's switch line; the move itself starts at main's first pump after this set
+      OUTPUT::HotplugOnW();
     }
     catch (const std::exception& e)
     {
@@ -1140,7 +1573,11 @@ void PostTestReinit(CAMLDisplay* display,
           {
             CLog::Log(LOGERROR, "HOTPLUGWORKER: test re-init {} failed: {}", n, e.what());
           }
-          DISPLAYSTATE::PublishCaps(*display);
+          // 5.B3-7b (H4): the table is main's, unchanged by this re-init
+          const auto state = DISPLAYSTATE::Get();
+          DISPLAYSTATE::PublishCaps(*display, OUTPUT::HotplugOnW() && state
+                                                  ? std::optional<bool>(state->has2160)
+                                                  : std::nullopt);
         }
         if (std::chrono::steady_clock::now() < until)
           PostTestReinit(display, periodMs, until, n + 1);
@@ -1308,6 +1745,8 @@ void CWinSystemAmlogic::RefreshResolutions()
       CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
     }
   }
+  if (m_wHotplug)
+    PublishMainSlot();
   PublishDisplayCaps();
 }
 
@@ -1319,14 +1758,24 @@ void CWinSystemAmlogic::UpdateResolutions()
   aml_timing_inputs_bump();
 }
 
-void CWinSystemAmlogic::RefreshDisplayCapabilities()
+int CWinSystemAmlogic::DvLedClamp(int value, int dvCap)
 {
-  DISPLAYSTATE::CapsWriteBegins();
-  m_amlDisplay->aml_refresh_display_caps();
+  // Only ever move BETWEEN the two real modes. A sink that advertises neither
+  // has nothing to switch to: the previous -1 sentinel was outside
+  // AML_DISPLAY_DV_LED's range, and because dv_led_modes is an options FILLER
+  // rather than a static list, CSettingInt::CheckValidity() does not validate
+  // it - so the -1 was stored and persisted as a spinner value no option
+  // matches. Every consumer tests `== AML_DV_PLAYER_LED`, so leaving the value
+  // untouched behaves identically for the DV pipeline.
+  if (value == AML_DV_TV_LED && !(dvCap & DV_RGB_444_8BIT) && (dvCap & LL_YCbCr_422_12BIT))
+    return AML_DV_PLAYER_LED;
+  if (value == AML_DV_PLAYER_LED && !(dvCap & LL_YCbCr_422_12BIT) && (dvCap & DV_RGB_444_8BIT))
+    return AML_DV_TV_LED;
+  return value;
+}
 
-  const bool device_dv = aml_support_dolby_vision();
-  const bool sink_dv = device_dv && m_amlDisplay->aml_display_support_dv();
-
+void CWinSystemAmlogic::SetDvVisibility(bool device_dv, bool sink_dv)
+{
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
   // VISIBILITY ONLY below this point. This function runs on every display event,
@@ -1399,6 +1848,19 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
     if (setting)
       setting->SetVisible(device_dv);
   }
+}
+
+void CWinSystemAmlogic::RefreshDisplayCapabilities()
+{
+  DISPLAYSTATE::CapsWriteBegins();
+  m_amlDisplay->aml_refresh_display_caps();
+
+  const bool device_dv = aml_support_dolby_vision();
+  const bool sink_dv = device_dv && m_amlDisplay->aml_display_support_dv();
+
+  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  SetDvVisibility(device_dv, sink_dv);
 
   // Clamp the DV output mode to something this sink actually advertises. Sink
   // dependent, so it re-runs on a display change rather than only at boot.
@@ -1406,21 +1868,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
   {
     const int dv_cap = m_amlDisplay->aml_get_drmProperty("dv_cap", DRM_MODE_OBJECT_CONNECTOR);
     const int old_value = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
-    int new_value = old_value;
-
-    // Only ever move BETWEEN the two real modes. A sink that advertises neither
-    // has nothing to switch to: the previous -1 sentinel was outside
-    // AML_DISPLAY_DV_LED's range, and because dv_led_modes is an options FILLER
-    // rather than a static list, CSettingInt::CheckValidity() does not validate
-    // it - so the -1 was stored and persisted as a spinner value no option
-    // matches. Every consumer tests `== AML_DV_PLAYER_LED`, so leaving the value
-    // untouched behaves identically for the DV pipeline.
-    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT) &&
-        (dv_cap & LL_YCbCr_422_12BIT))
-      new_value = AML_DV_PLAYER_LED;
-    else if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT) &&
-             (dv_cap & DV_RGB_444_8BIT))
-      new_value = AML_DV_TV_LED;
+    const int new_value = DvLedClamp(old_value, dv_cap);
 
     if (new_value != old_value)
       settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
@@ -1465,7 +1913,7 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
   }
   else
   {
-    setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
+    auto setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
     if (setting)
       setting->SetVisible(false);
 
@@ -1481,8 +1929,18 @@ void CWinSystemAmlogic::PublishDisplayCaps()
   if (!aml_displaystate_on())
     return;
   CAMLDisplay* display = m_amlDisplay.get();
+  // 5.B3-7b (H4): main reads its own table, W does not
+  std::optional<bool> has2160;
+  if (m_wHotplug)
+  {
+    const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+    has2160 = false;
+    for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize() && !*has2160; ++i)
+      has2160 = displaySettings.GetResolutionInfo(i).iScreenHeight >= 2160;
+  }
   OUTPUT::COutputWorker::Get().Run(OUTPUT::Lane::RESTORE, "display state caps",
-                                   [display] { DISPLAYSTATE::PublishCaps(*display); });
+                                   [display, has2160]
+                                   { DISPLAYSTATE::PublishCaps(*display, has2160); });
 }
 
 bool CWinSystemAmlogic::IsHDRDisplay()

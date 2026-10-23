@@ -227,6 +227,38 @@ private:
   //! the OUTPUTDRIVE set line and B2-1's ledger lines of a set, from the job's record
   void ReportDriveSet(
       const SDriveJob& job, bool created, int64_t waitMs, int64_t handlerMs, bool late);
+
+  // 5.B3-7b: the hotplug on W (design §6; plan §4a O1, O2)
+  void LatchRestoreInputs() override;
+  void RunRestoreOnW(SHotplugReply& reply,
+                     const RESOLUTION_INFO& res,
+                     std::optional<int> dvLed) override;
+  void ApplyHotplugReplies() override;
+  //! how main applies a reply's Restore (O2)
+  enum class RestoreForm
+  {
+    ADOPT, //!< its epoch is C's current one: GC's set adopts the reply (M9)
+    BEHIND, //!< a newer set main applied rebuilt the surface: GC's row re-mapped by value
+    AHEAD, //!< a newer W set's reply, still queued, rebuilds: the table and caps only
+    AHEAD_OF_FAILED, //!< a newer set failed after its teardown: GC to the Restore's mode
+    NOT_TORN_DOWN, //!< the Restore failed before its teardown: GC's row re-mapped by value
+  };
+  static const char* RestoreFormName(RestoreForm form);
+  RestoreForm HotplugRestoreForm(const SDriveJob& job) const;
+  void ApplyHotplugReply(SHotplugReply& reply);
+  //! GC's row, read before a table step, on the new table by value (no set); false: not on it
+  bool RemapGcRow(const SHotplugReply& reply, const RESOLUTION_INFO& before);
+  //! main: a reply W's hand-off gives SetFullScreenOnW, for the adopt's GC set (one shot)
+  std::shared_ptr<SDriveJob> m_adoptJob;
+  //! main: the UI epoch of the last applied FAILED reply that had torn down (O2)
+  uint64_t m_lastFailedEpoch{0};
+  //! main: the reply whose deferral was logged
+  uint64_t m_deferLogged{0};
+  // W's Restore inputs, fixed at the hotplug's start on W (LatchRestoreInputs)
+  std::string m_wFbName;
+  uint32_t m_wUiFormat{0};
+  CPresentationCoordinator* m_wCoordinator{nullptr};
+  CGraphicsPlaneAML* m_wGraphicsPlane{nullptr};
 };
 
 }

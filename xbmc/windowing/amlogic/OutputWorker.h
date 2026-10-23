@@ -234,6 +234,10 @@ bool DetectShadowOn();
 //! m_resourceSection; O4: the FD thread's post only to a running W): HotplugWorkerOn and no
 //! hotplugworker_skip "B3-7a"; the switch line is logged once (read first at W's start)
 bool OrderingOn();
+//! 5.B3-7b: W runs the hotplug (the read, the Lost fan-out, the re-init, the caps and the Restore)
+//! and main applies its replies: OrderingOn and no hotplugworker_skip "B3-7b"; the switch line
+//! is logged once (read first at W's start)
+bool HotplugOnW();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
 //! hotplugworker_hold "<ms>": in each B3-6 shadow job W sleeps <ms> between the receipt count

@@ -20,11 +20,14 @@
 #include "ServiceBroker.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "messaging/ApplicationMessenger.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
+#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
 #include "utils/MathUtils.h"
+#include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/SettingsMirror.h"
@@ -128,6 +131,7 @@ struct SDriveJob
   uint64_t ledgerSet{0};
   uint64_t lostGen{0}; //!< 5.B3-7a: the lost generation the walk armed (0 under off)
   int guiLocked{0}; //!< main's m_guiLocked when it posted the request
+  uint64_t hotplugTables{0}; //!< 5.B3-7b: main's hotplug tables applied when it posted
   bool offRefused{false}; //!< S1''s GUI plane off was refused (the SB3 state)
   uint64_t uiEpoch{0}; //!< the UI surface epoch the job started
   Backups result;
@@ -882,6 +886,24 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
 {
   m_guiDiscarded = 0;
 
+  // 5.B3-7b (M9): GC's set inside a hotplug reply's adopt takes W's Restore, posting nothing
+  if (auto adopt = std::exchange(m_adoptJob, nullptr))
+  {
+    const auto handlerStart = std::chrono::steady_clock::now();
+    const bool created = ApplyDriveReply(*adopt);
+    OUTPUT::NoteDriveReply(adopt->kind);
+    ReportDriveSet(*adopt, created, -1,
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - handlerStart)
+                       .count(),
+                   false);
+    NoteDriveShadowBackups();
+    if (!created)
+      return false;
+    CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
+    return true;
+  }
+
   // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
   auto job = std::make_shared<SDriveJob>();
   job->id = OUTPUT::NextDriveId();
@@ -905,6 +927,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   job->coordinator = m_coordinator.get();
   job->graphicsPlane = m_graphicsPlane.get();
   job->guiLocked = m_guiLocked;
+  job->hotplugTables = m_hotplugTables;
   m_drivePosted = job->id;
   // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
   job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
@@ -993,6 +1016,9 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                        std::chrono::steady_clock::now() - handlerStart)
                        .count(),
                    false);
+    // 5.B3-7b: W's backups for its Restore
+    if (m_wHotplug)
+      NoteDriveShadowBackups();
   }
   if (!created)
     return false;
@@ -1307,6 +1333,8 @@ bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
       return RebuildGuiSurface(job);
     default:
       m_bWindowCreated = job.result.windowCreated;
+      if (job.tornDown && job.kind == OUTPUT::DriveReply::FAILED)
+        m_lastFailedEpoch = job.uiEpoch;
       // Q9 (a): the film stays paused, the GUI frozen, until a set succeeds
       if (job.tornDown)
         CLog::Log(LOGERROR,
@@ -1660,8 +1688,27 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
                 job->id, OUTPUT::DriveReplyName(job->kind), m_drivePosted);
       continue;
     }
+    // 5.B3-7b (O2, r6 M1): a torn-down late reply rebuilds only at C's current epoch; a W Restore
+    // since then owns the surface
+    if (m_wHotplug && job->tornDown && job->uiEpoch != m_coordinator->UiEpoch())
+    {
+      m_driveApplied = std::max(m_driveApplied, job->id);
+      m_hdrType = job->result.hdrType;
+      m_stereo_mode = job->result.stereo;
+      m_bFullScreen = job->result.fullScreen;
+      m_nativeGUI = job->result.nativeGUI;
+      NoteDriveShadowBackups();
+      CLog::Log(LOGERROR,
+                "OUTPUTDRIVE request {} late reply {}: its epoch {} is not C's current {}, main's "
+                "backups only",
+                job->id, OUTPUT::DriveReplyName(job->kind), job->uiEpoch,
+                m_coordinator->UiEpoch());
+      continue;
+    }
     CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
     std::unique_lock gfxLock(gfx);
+    // 5.B3-7b (O1): no hotplug reply is applied by a pump inside this GC update
+    DISPLAYSTATE::CGcSetScope gcSetScope;
     const auto start = std::chrono::steady_clock::now();
     DISPLAYSTATE::GcSetBegins();
     m_guiDiscarded = 0;
@@ -1670,9 +1717,20 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     {
       CRenderSystemGLES::ResetRenderSystem(job->res.iWidth, job->res.iHeight);
       // GC and WINDOW_RESIZE, as at the end of today's set (FinishModeChange is a no-op here)
-      if (job->resIndex >= 0)
-        gfx.ApplyModeChange(static_cast<RESOLUTION>(job->resIndex));
+      int resIndex = job->resIndex;
+      // 5.B3-7b (O2): a hotplug table since the request renumbered the rows: its mode by value
+      if (m_wHotplug && resIndex >= 0 && job->hotplugTables != m_hotplugTables)
+      {
+        resIndex = FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
+        CLog::Log(resIndex >= 0 ? LOGINFO : LOGERROR,
+                  "OUTPUTDRIVE request {} late reply: {} by value on the hotplug table ({} -> {})",
+                  job->id, job->res.strId, job->resIndex, resIndex);
+      }
+      if (resIndex >= 0)
+        gfx.ApplyModeChange(static_cast<RESOLUTION>(resIndex));
     }
+    if (m_wHotplug)
+      NoteDriveShadowBackups();
     DISPLAYSTATE::GcSetEnds(created);
     ReportDriveSet(*job, created, -1,
                    std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1681,6 +1739,316 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
                    true);
   }
   return CWinSystemAmlogic::MessagePump();
+}
+
+void CWinSystemAmlogicGLESContext::LatchRestoreInputs()
+{
+  // main, before the first W hotplug job: the field table's fixed sources (plan §4 B3-7b)
+  m_wFbName = m_framebuffer_name;
+  m_wUiFormat = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
+  m_wCoordinator = m_coordinator.get();
+  m_wGraphicsPlane = m_graphicsPlane.get();
+  NoteDriveShadowBackups();
+}
+
+void CWinSystemAmlogicGLESContext::RunRestoreOnW(SHotplugReply& reply,
+                                                 const RESOLUTION_INFO& res,
+                                                 std::optional<int> dvLed)
+{
+  // the field table (plan §4 B3-7b): no CSettings, no CDisplaySettings and no GC on W
+  ShadowBackups backups;
+  {
+    std::unique_lock lock(s_shadowMutex);
+    backups = s_shadowBackups;
+  }
+  auto job = std::make_shared<SDriveJob>();
+  job->id = OUTPUT::NextDriveId();
+  job->res = res;
+  job->fbName = m_wFbName;
+  job->fullScreen = backups.fullScreen;
+  job->stereo = DISPLAYSTATE::GetGuiInputs().stereoMode;
+  job->hdrType = backups.hdrType;
+  job->nativeGUI = backups.nativeGUI;
+  job->hotplug = true;
+  job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
+  job->uiFormat = m_wUiFormat;
+  job->lane = OUTPUT::Lane::RESTORE;
+  job->backups = {backups.hdrType, backups.stereo, backups.fullScreen, backups.nativeGUI,
+                  backups.windowCreated};
+  job->coordinator = m_wCoordinator;
+  job->graphicsPlane = m_wGraphicsPlane;
+  job->guiLocked = -1;
+  // GC's set gives a frame packing mode its full height
+  if (job->stereo == RenderStereoMode::HARDWAREBASED)
+    job->res.iHeight = res.iScreenHeight * 2 + res.iBlanking;
+  {
+    // the wire takes W's DV_LED clamp, not the setting main writes at the reply (H5)
+    std::optional<OUTPUT::CSettingsMirror::CScopedValue> led;
+    if (dvLed)
+      led.emplace(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, *dvLed);
+    try
+    {
+      RunModeSetJob(*job);
+    }
+    catch (const std::exception& e)
+    {
+      CLog::Log(LOGERROR, "OUTPUTDRIVE request {} threw: {}", job->id, e.what());
+      job->kind = OUTPUT::DriveReply::FAILED;
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "OUTPUTDRIVE request {} threw", job->id);
+      job->kind = OUTPUT::DriveReply::FAILED;
+    }
+  }
+  if (OUTPUT::SettleOnW())
+    SettleAfterJob(*job);
+  reply.restoreJob = job;
+}
+
+const char* CWinSystemAmlogicGLESContext::RestoreFormName(RestoreForm form)
+{
+  switch (form)
+  {
+    case RestoreForm::ADOPT:
+      return "adopt";
+    case RestoreForm::BEHIND:
+      return "behind";
+    case RestoreForm::AHEAD:
+      return "ahead";
+    case RestoreForm::AHEAD_OF_FAILED:
+      return "ahead of a failed set";
+    case RestoreForm::NOT_TORN_DOWN:
+      return "not torn down";
+  }
+  return "?";
+}
+
+CWinSystemAmlogicGLESContext::RestoreForm CWinSystemAmlogicGLESContext::HotplugRestoreForm(
+    const SDriveJob& job) const
+{
+  if (!job.tornDown)
+    return RestoreForm::NOT_TORN_DOWN;
+  // C's epoch moves only at W's planes-off, so it names the last set that tore the surface down
+  const uint64_t current = m_coordinator->UiEpoch();
+  if (job.uiEpoch == current)
+    return RestoreForm::ADOPT;
+  if (job.uiEpoch < m_surfaceEpoch)
+    return RestoreForm::BEHIND;
+  return current == m_lastFailedEpoch ? RestoreForm::AHEAD_OF_FAILED : RestoreForm::AHEAD;
+}
+
+void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
+{
+  while (true)
+  {
+    SHotplugReply reply;
+    {
+      std::unique_lock lock(m_replyMutex);
+      if (m_replies.empty())
+        return;
+      // O1: never inside an apply or a GC set; the reply waits, untouched, for a clear pump
+      if (m_applyingReply || DISPLAYSTATE::GcSetDepth() > 0)
+      {
+        const uint64_t id = m_replies.front().replyId;
+        lock.unlock();
+        if (id != m_deferLogged)
+        {
+          m_deferLogged = id;
+          CLog::Log(LOGINFO, "HOTPLUG reply {} apply deferred ({})", id,
+                    m_applyingReply ? "inside an apply" : "inside a GC set");
+        }
+        return;
+      }
+      reply = std::move(m_replies.front());
+      m_replies.pop_front();
+    }
+    // the take (HEAD's m_hotplugPending clear): the presentation gate opens here
+    if (reply.upTo > m_poppedReceipt)
+      m_poppedReceipt = reply.upTo;
+    ApplyHotplugReply(reply);
+  }
+}
+
+bool CWinSystemAmlogicGLESContext::RemapGcRow(const SHotplugReply& reply,
+                                              const RESOLUTION_INFO& before)
+{
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const RESOLUTION current = gfx.GetVideoResolution();
+  const RESOLUTION_INFO& now = CDisplaySettings::GetInstance().GetResolutionInfo(current);
+  if (StringUtils::EqualsNoCase(now.strId, before.strId) &&
+      std::abs(now.fRefreshRate - before.fRefreshRate) < 0.01f && now.dwFlags == before.dwFlags)
+    return true;
+  const int index = FindResolution(before.strId, before.fRefreshRate, before.dwFlags);
+  if (index < 0)
+  {
+    CLog::Log(LOGERROR, "hotplug reply {}: current mode not in the new table ({} @ {:.3f})",
+              reply.replyId, before.strId, before.fRefreshRate);
+    SetPresentationReady(false);
+    return false;
+  }
+  CLog::Log(LOGINFO, "HOTPLUG reply {}: GC's row {} re-mapped to {} ({} @ {:.3f})", reply.replyId,
+            static_cast<int>(current), index, before.strId, before.fRefreshRate);
+  gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
+{
+  using Kind = SHotplugReply::Kind;
+  const std::shared_ptr<SDriveJob> job = reply.restoreJob;
+  const RestoreForm form = job ? HotplugRestoreForm(*job) : RestoreForm::NOT_TORN_DOWN;
+  // HEAD's not-ready per kind (r2 N1): every event's, then the set that re-readies
+  const bool notReady = reply.kind == Kind::LOSS || reply.kind == Kind::LOSS_CAPSFAIL ||
+                        reply.kind == Kind::THROW ||
+                        (job && (form == RestoreForm::ADOPT || form == RestoreForm::NOT_TORN_DOWN));
+  const bool acts = notReady || job || reply.hasTable || reply.hasCaps;
+  const char* step = "pop";
+  bool adopted = false;
+  struct SApplying
+  {
+    explicit SApplying(bool& flag) : m_flag(flag) { m_flag = true; }
+    ~SApplying() { m_flag = false; }
+    bool& m_flag;
+  } applying(m_applyingReply);
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  try
+  {
+    if (acts)
+    {
+      step = "not-ready";
+      if (notReady)
+        SetPresentationReady(false);
+      // GC's row by value, before the table renumbers it
+      const RESOLUTION_INFO before = gfx.GetResInfo();
+      step = "table";
+      if (reply.hasTable)
+      {
+        ApplyHotplugTable(reply);
+        ++m_hotplugTables;
+      }
+      step = "caps";
+      if (reply.hasCaps)
+        ApplyHotplugCaps(reply);
+      aml_timing_inputs_bump();
+
+      if (job)
+      {
+        step = RestoreFormName(form);
+        switch (form)
+        {
+          case RestoreForm::ADOPT:
+          {
+            // M9: HotplugEvent's two GC calls, the set taking W's reply (today's scan, r2 N4)
+            const int index = FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
+            if (index < 0)
+            {
+              CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table ({} @ {:.3f})",
+                        reply.replyId, job->res.strId, job->res.fRefreshRate);
+              break;
+            }
+            m_adoptJob = job;
+            gfx.SetVideoResolution(static_cast<RESOLUTION>(index), true);
+            adopted = !m_adoptJob;
+            m_adoptJob.reset();
+            if (!adopted)
+              CLog::Log(LOGERROR, "hotplug reply {}: GC's set did not take the Restore",
+                        reply.replyId);
+            gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+            break;
+          }
+          case RestoreForm::BEHIND:
+          case RestoreForm::NOT_TORN_DOWN:
+            RemapGcRow(reply, before);
+            break;
+          case RestoreForm::AHEAD:
+            break;
+          case RestoreForm::AHEAD_OF_FAILED:
+          {
+            // HEAD's end state: GC on the Restore's mode, presentation as the failed set left it
+            const int index = FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
+            if (index >= 0)
+              gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+            else
+              CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table ({} @ {:.3f})",
+                        reply.replyId, job->res.strId, job->res.fRefreshRate);
+            break;
+          }
+        }
+        if (form != RestoreForm::ADOPT)
+          CLog::Log(LOGINFO,
+                    "OUTPUTDRIVE set request={} ledger={} origin=hotplug reply={} handler=not "
+                    "adopted ({}) uiepoch={}: its lost owed into the next reset",
+                    job->id, job->ledgerSet, OUTPUT::DriveReplyName(job->kind),
+                    RestoreFormName(form), job->uiEpoch);
+      }
+      else if (reply.hasTable)
+        RemapGcRow(reply, before);
+      NoteDriveShadowBackups();
+    }
+    if (reply.upTo > m_appliedReceipt)
+      m_appliedReceipt = reply.upTo;
+    CLog::Log(LOGINFO, "HOTPLUG reply {} applied: kind={} upTo={} form={} receipts {}/{}/{}",
+              reply.replyId, SHotplugReply::KindName(reply.kind), reply.upTo,
+              job ? RestoreFormName(form) : "-", m_poppedReceipt.load(), m_appliedReceipt.load(),
+              m_receiptSeq.load());
+  }
+  catch (...)
+  {
+    std::string what = "unknown exception";
+    try
+    {
+      throw;
+    }
+    catch (const std::exception& e)
+    {
+      what = e.what();
+    }
+    catch (...)
+    {
+    }
+    // r4 M2: dropped, never re-queued (a re-queued adopt would post a second mode set)
+    m_adoptJob.reset();
+    if (reply.upTo > m_appliedReceipt)
+      m_appliedReceipt = reply.upTo;
+    CLog::Log(LOGERROR, "hotplug reply {} dropped after a throw at {}: {}; presentation {}",
+              reply.replyId, step, what, IsPresentationReady() ? "ready" : "not-ready");
+    const auto state = DISPLAYSTATE::Get();
+    const int index =
+        state ? FindResolution(state->strId, state->refresh, state->dwFlags) : -1;
+    if (job && form == RestoreForm::ADOPT && !adopted)
+    {
+      // r5 M1: the wire is unknown to main now: one ordinary set by value, run in full
+      m_bWindowCreated = false;
+      if (index >= 0)
+      {
+        CLog::Log(LOGERROR, "hotplug reply {}: recovery set {} posted", reply.replyId, index);
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, index, 1);
+      }
+      else
+      {
+        CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table, recovery by "
+                            "the retry",
+                  reply.replyId);
+        PostHotplugRetry();
+      }
+    }
+    else if (adopted && index >= 0)
+    {
+      // r6 L2: the surface is rebuilt; GC to the committed mode by value, no set
+      CLog::Log(LOGERROR, "hotplug reply {}: adopted, GC re-mapped to {}", reply.replyId, index);
+      try
+      {
+        gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+      }
+      catch (const std::exception& again)
+      {
+        CLog::Log(LOGERROR, "hotplug reply {}: the re-map threw too: {}", reply.replyId,
+                  again.what());
+      }
+    }
+    NoteDriveShadowBackups();
+  }
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

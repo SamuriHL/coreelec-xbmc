@@ -21,11 +21,61 @@
 #include "windowing/Resolution.h"
 
 #include <atomic>
+#include <deque>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <vector>
 #include <gbm.h>
 
 class IDispResource;
+
+namespace KODI::WINDOWING::AML
+{
+struct SDriveJob;
+}
+
+//! 5.B3-7b (O1): the one reply of a W hotplug job, applied by main's MessagePump
+struct SHotplugReply
+{
+  enum class Kind
+  {
+    ECHO,
+    INVALID_READ,
+    WAIT_TIMEOUT,
+    THROW,
+    LOSS,
+    LOSS_CAPSFAIL,
+    RESTORE,
+    REASSERT,
+    RETRY_NOOP,
+    RETRY_RESTORE,
+  };
+  static const char* KindName(Kind kind);
+
+  uint64_t replyId{0};
+  uint64_t upTo{0}; //!< the receipts this reply answers
+  Kind kind{Kind::THROW};
+  //! the caps step ran: main sets the visibilities and the DV_LED value from these
+  bool hasCaps{false};
+  bool deviceDv{false};
+  bool sinkDv{false};
+  bool hdrDisplay{false};
+  std::optional<int> dvLed; //!< the DV_LED clamp result (a DV sink), the value W's Restore used
+  //! a multi-mode list: the probe's entries for main's table, by value, and the one RES_DESKTOP
+  //! takes (RefreshResolutions' live-mode rule; -1 keeps it)
+  bool hasTable{false};
+  std::vector<RESOLUTION_INFO> table;
+  int liveIndex{-1};
+  //! the Restore's mode set, run on W; main adopts it or maps by value (O2)
+  std::shared_ptr<KODI::WINDOWING::AML::SDriveJob> restoreJob;
+  // W's own facts, for its job line
+  HpdRead read;
+  int modes{-1};
+  int64_t parkMs{-1};
+  bool parkRetried{false};
+};
 
 class CWinSystemAmlogic : public CWinSystemBase, public ISettingCallback
 {
@@ -89,7 +139,12 @@ protected:
   //! the reset was fanned out with the display back
   void CloseLostSpan();
   std::string m_framebuffer_name;
-  bool IsHotplugPending() const { return m_hotplugPending.load(); }
+  //! 5.B3-7b (O1): with the hotplug on W, a receipt not yet answered by a popped reply
+  bool IsHotplugPending() const
+  {
+    return m_hotplugPending.load() ||
+           (m_wHotplug.load() && m_poppedReceipt.load() < m_receiptSeq.load());
+  }
   bool IsPresentationReady() const { return m_presentationReady; }
   void SetPresentationReady(bool ready) { m_presentationReady = ready; }
 
@@ -166,6 +221,39 @@ protected:
   //! 5.B2-6: W's SETTLE is armed (W publishes it; main's lost-span retry reads it, r1 M9)
   std::atomic_bool m_resetPending{false};
   bool m_nativeGUI;
+
+  // 5.B3-7b: the hotplug on W (OUTPUT::HotplugOnW, live from main's first pump after W's start)
+  //! W's Restore inputs the GLES context fixes at that pump (fbName, uiFormat, the coordinator and
+  //! graphics plane pointers, W's backups)
+  virtual void LatchRestoreInputs() {}
+  //! W: the Restore's mode set, run in the hotplug job's park; its job goes in the reply
+  virtual void RunRestoreOnW(SHotplugReply& reply,
+                             const RESOLUTION_INFO& res,
+                             std::optional<int> dvLed)
+  {
+  }
+  //! main, MessagePump: the queued replies, unless an apply or a GC set is on main's stack
+  virtual void ApplyHotplugReplies() {}
+  //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
+  void ApplyHotplugTable(const SHotplugReply& reply);
+  //! main: a reply's setting visibilities and its DV_LED value
+  void ApplyHotplugCaps(const SHotplugReply& reply);
+  //! main: the first entry from RES_DESKTOP with this mode string, refresh (0.01 Hz) and flags
+  //! (HotplugEvent's restore match); -1 when none
+  static int FindResolution(const std::string& strId, float refresh, uint32_t flags);
+  //! main: one W retry job now, whatever the span (the recovery of a dropped Restore)
+  void PostHotplugRetry();
+  std::atomic_bool m_wHotplug{false};
+  std::atomic<uint64_t> m_receiptSeq{0};
+  std::atomic<uint64_t> m_poppedReceipt{0};
+  std::atomic<uint64_t> m_appliedReceipt{0};
+  std::mutex m_replyMutex;
+  std::deque<SHotplugReply> m_replies;
+  //! main: a reply is being applied (scope guarded)
+  bool m_applyingReply{false};
+  //! main: hotplug tables applied (a late reply posted before one maps its resolution by value)
+  uint64_t m_hotplugTables{0};
+
   static std::unique_ptr<CAMLDisplay> m_amlDisplay;
   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
@@ -194,6 +282,29 @@ private:
   void LogHotplugRead(drmModeConnection connection, int modes);
   void OpenLostSpan();
 
+  // 5.B3-7b: the hotplug on W
+  //! main, the first pump after W's start under OUTPUT::HotplugOnW: W's inputs, then the switch
+  void StartHotplugOnW();
+  //! a receipt (the FD thread, or main handing over its flag): one W job per collapse (O1)
+  void ReceiveHotplug(bool fromFd);
+  //! W: one hotplug job (retry: P5-9's, on HEAD's predicate; no receipts taken, no echo test)
+  void RunHotplugJob(bool retry);
+  void HotplugJob(SHotplugReply& reply, bool retry);
+  //! main: RES_DESKTOP's entry, for W's Restore target when a reconnect's live mode is not in its
+  //! table (RefreshResolutions keeps the slot then)
+  void PublishMainSlot();
+  std::atomic_bool m_jobQueued{false};
+  std::mutex m_slotMutex;
+  RESOLUTION_INFO m_mainSlot;
+  // W only
+  uint64_t m_wUpTo{0};
+  uint64_t m_wReplies{0};
+  unsigned int m_wLastAct{0}; //!< the hpd_cb_seq of W's last act
+  bool m_wDisconnectedRead{false}; //!< hpd_state source: the last read was disconnected
+  uint64_t m_wDisconnectedAt{0}; //!< the receipts counted just after that read
+  std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
+  bool m_wHas2160{false}; //!< W's last table
+
   bool m_lostAtDisconnect{false};
   std::atomic_bool m_lostOpen{false};
   std::atomic<int64_t> m_disconnectedSinceMs{0};
@@ -201,6 +312,11 @@ private:
   std::chrono::milliseconds m_lostRetryDelay{1000};
   void HotplugEvent();
   void RefreshDisplayCapabilities();
+  //! RefreshDisplayCapabilities' DV rows (5.B3-7b: main's reply handler sets them too)
+  void SetDvVisibility(bool device_dv, bool sink_dv);
+  //! the DV_LED value a sink with dv_cap takes (RefreshDisplayCapabilities' clamp; W decides it
+  //! for its Restore from 5.B3-7b)
+  static int DvLedClamp(int value, int dvCap);
   //! 5.V1-2: W publishes the caps to DisplayState; main waits
   void PublishDisplayCaps();
   static void FDEventCallback(int id, int fd, short revents, void *data);

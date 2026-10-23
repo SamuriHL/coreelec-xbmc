@@ -11,6 +11,7 @@
 #include "AMLDisplay.h"
 #include "OutputWorker.h"
 #include "ServiceBroker.h"
+#include "ThreadRole.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "settings/DisplaySettings.h"
@@ -232,6 +233,9 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> h
     s.has2160 = *has2160;
     return;
   }
+  // 5.B3-7b (H4): W's hotplug job passes its own table's value
+  if (OUTPUT::HotplugOnW())
+    MAINCOUPLING("DisplaySettings FillCaps table");
   s.has2160 = false;
   const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
   for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
