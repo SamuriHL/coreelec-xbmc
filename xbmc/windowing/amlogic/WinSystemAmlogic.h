@@ -235,7 +235,8 @@ protected:
   //! main, MessagePump: the queued replies, unless an apply or a GC set is on main's stack
   virtual void ApplyHotplugReplies() {}
   //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
-  void ApplyHotplugTable(const SHotplugReply& reply);
+  //! (throwInside: the applythrow hook's "table")
+  void ApplyHotplugTable(const SHotplugReply& reply, bool throwInside);
   //! main: a reply's setting visibilities and its DV_LED value
   void ApplyHotplugCaps(const SHotplugReply& reply);
   //! main: the first entry from RES_DESKTOP with this mode string, refresh (0.01 Hz) and flags
@@ -290,10 +291,19 @@ private:
   //! W: one hotplug job (retry: P5-9's, on HEAD's predicate; no receipts taken, no echo test)
   void RunHotplugJob(bool retry);
   void HotplugJob(SHotplugReply& reply, bool retry);
+  //! W: P5-9's timer, armed at a span's opening
+  void ArmHotplugRetry();
+  void PostHotplugRetryTick(uint64_t gen, std::chrono::milliseconds after);
+  void HotplugRetryTick(uint64_t gen);
   //! main: RES_DESKTOP's entry, for W's Restore target when a reconnect's live mode is not in its
   //! table (RefreshResolutions keeps the slot then)
   void PublishMainSlot();
+  //! main: hotplugworker_setafter's settings resolution change, when due
+  void TestSetAfter();
   std::atomic_bool m_jobQueued{false};
+  //! main publishes HEAD's (m_delayDispReset || m_resetPending) && ready at every pump
+  std::atomic_bool m_retryBlocked{false};
+  std::atomic<int64_t> m_setAfterDueMs{0};
   std::mutex m_slotMutex;
   RESOLUTION_INFO m_mainSlot;
   // W only
@@ -304,6 +314,8 @@ private:
   uint64_t m_wDisconnectedAt{0}; //!< the receipts counted just after that read
   std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
   bool m_wHas2160{false}; //!< W's last table
+  uint64_t m_wRetryGen{0};
+  std::chrono::milliseconds m_wRetryDelay{1000};
 
   bool m_lostAtDisconnect{false};
   std::atomic_bool m_lostOpen{false};

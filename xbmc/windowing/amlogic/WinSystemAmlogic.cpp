@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cxxabi.h>
 #include <exception>
+#include <stdexcept>
 #include <typeinfo>
 #include <utility>
 
@@ -215,6 +216,9 @@ bool CWinSystemAmlogic::MessagePump()
 
   if (m_wHotplug)
   {
+    // 5.B3-7b: W's P5-9 timer reads HEAD's reset-pending test from here
+    m_retryBlocked = (m_delayDispReset || m_resetPending) && IsPresentationReady();
+    TestSetAfter();
     // a receipt the FD thread took on HEAD's path before the switch was live: handed to W
     if (m_hotplugPending.exchange(false))
       ReceiveHotplug(false);
@@ -758,6 +762,12 @@ void CWinSystemAmlogic::StartHotplugOnW()
       table.push_back(displaySettings.GetResolutionInfo(i));
     m_wHas2160 = Has2160(table);
   }
+  // the hooks W reads, read here so no hotplug job probes a file
+  OUTPUT::TestHotplugHoldMs();
+  OUTPUT::TestHotplugRaceGapMs();
+  OUTPUT::TestHotplugRetryMs();
+  OUTPUT::TestHotplugSetAfterMs();
+  OUTPUT::TestHotplugApplyThrowAt();
   m_wHotplug = true;
 }
 
@@ -770,6 +780,13 @@ void CWinSystemAmlogic::PublishMainSlot()
 
 void CWinSystemAmlogic::ReceiveHotplug(bool fromFd)
 {
+  // hotplugworker_setafter (test only): a plug-in's receipt is followed by main's own set
+  if (const int afterMs = OUTPUT::TestHotplugSetAfterMs(); fromFd && afterMs >= 0)
+  {
+    HpdRead read;
+    if (aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb()) && read.state == 1)
+      m_setAfterDueMs = SteadyMs() + afterMs;
+  }
   // O1: the receipt before the flag, so a queued job's read covers it
   m_receiptSeq.fetch_add(1);
   if (m_jobQueued.exchange(true))
@@ -782,6 +799,17 @@ void CWinSystemAmlogic::ReceiveHotplug(bool fromFd)
   }
 }
 
+void CWinSystemAmlogic::TestSetAfter()
+{
+  int64_t due = m_setAfterDueMs.load();
+  if (!due || SteadyMs() < due || !m_setAfterDueMs.compare_exchange_strong(due, 0))
+    return;
+  const RESOLUTION res = CDisplaySettings::GetInstance().GetCurrentResolution();
+  CLog::Log(LOGWARNING, "HOTPLUGWORKER: test settings resolution change to {} after a plug-in",
+            static_cast<int>(res));
+  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, res, 1);
+}
+
 void CWinSystemAmlogic::RunHotplugJob(bool retry)
 {
   SHotplugReply reply;
@@ -789,6 +817,11 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry)
   {
     // O1 (r2 N2): the flag cleared before the receipts are read
     m_jobQueued = false;
+    if (const int gapMs = OUTPUT::TestHotplugRaceGapMs(); gapMs > 0)
+    {
+      CLog::Log(LOGINFO, "HOTPLUG job test gap {} ms", gapMs);
+      KODI::TIME::Sleep(std::chrono::milliseconds(gapMs));
+    }
     m_wUpTo = m_receiptSeq.load();
   }
   reply.upTo = m_wUpTo;
@@ -831,6 +864,13 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry)
 void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
 {
   using Kind = SHotplugReply::Kind;
+  // hotplugworker_hold (test only): an edge inside the hold is read by this job, its receipt
+  // posts the next one
+  if (const int holdMs = OUTPUT::TestHotplugHoldMs(); holdMs > 0 && !retry)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG job test hold {} ms", holdMs);
+    KODI::TIME::Sleep(std::chrono::milliseconds(holdMs));
+  }
 
   // step 1: the read, before any claim or park (design §6 Detection)
   HpdRead& read = reply.read;
@@ -911,7 +951,14 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
     if (!connected && m_lostAtDisconnect)
     {
       if (!m_disconnectedSinceMs)
+      {
+        // review #7: a loss inside an open span is a new generation, so a reset armed before it
+        // cannot fire once a later connected read clears the stamp
+        if (m_lostOpen)
+          CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (re-stamp)", m_ledgerSet.load(),
+                    ++m_lostGen);
         m_disconnectedSinceMs = SteadyMs();
+      }
       OpenLostSpan();
     }
     else if (connected)
@@ -921,6 +968,9 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
         OpenLostSpan();
     }
   }
+  // P5-9's timer, outside the resource lock
+  if (!spanWasOpen && m_lostOpen)
+    ArmHotplugRetry();
 
   // the VSVDB describes one display (today's order: before the re-init)
   aml_display_vsvdb_invalidate();
@@ -949,6 +999,8 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
   drmModeConnection connection;
   reply.modes = m_amlDisplay->aml_get_display_modes_count(&connection);
   LogHotplugRead(connection, reply.modes);
+  if (connected && OUTPUT::TestHotplugCapsFail())
+    reply.modes = 1;
 
   // step 5: the caps, all before any commit (H5)
   m_amlDisplay->aml_refresh_display_caps();
@@ -1051,6 +1103,38 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
   // step 8: the unpark at the hold's end, then the reply
 }
 
+void CWinSystemAmlogic::ArmHotplugRetry()
+{
+  const int firstMs = OUTPUT::TestHotplugRetryMs();
+  m_wRetryDelay = std::chrono::milliseconds(firstMs > 0 ? firstMs : 1000);
+  PostHotplugRetryTick(++m_wRetryGen, m_wRetryDelay);
+}
+
+void CWinSystemAmlogic::PostHotplugRetryTick(uint64_t gen, std::chrono::milliseconds after)
+{
+  if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "hotplug retry", after,
+                                              [this, gen] { HotplugRetryTick(gen); }))
+    CLog::Log(LOGINFO, "HOTPLUG retry: W stopped, not retried");
+}
+
+void CWinSystemAmlogic::HotplugRetryTick(uint64_t gen)
+{
+  // HEAD's predicate (WSA MessagePump), from published state only
+  if (gen != m_wRetryGen || !m_lostOpen)
+    return;
+  if (IsHotplugPending() || m_disconnectedSinceMs || m_retryBlocked)
+  {
+    PostHotplugRetryTick(gen, 50ms);
+    return;
+  }
+  CLog::Log(LOGWARNING, "CWinSystemAmlogic: display back but still lost, retrying the mode set");
+  const std::chrono::milliseconds wait = m_wRetryDelay;
+  m_wRetryDelay = std::min(m_wRetryDelay * 2, std::chrono::milliseconds(30000));
+  RunHotplugJob(true);
+  if (gen == m_wRetryGen && m_lostOpen)
+    PostHotplugRetryTick(gen, wait);
+}
+
 void CWinSystemAmlogic::PostHotplugRetry()
 {
   if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "hotplug retry",
@@ -1067,12 +1151,14 @@ int CWinSystemAmlogic::FindResolution(const std::string& strId, float refresh, u
   return -1;
 }
 
-void CWinSystemAmlogic::ApplyHotplugTable(const SHotplugReply& reply)
+void CWinSystemAmlogic::ApplyHotplugTable(const SHotplugReply& reply, bool throwInside)
 {
   // HotplugEvent's rebuild (ClearCustomResolutions, RefreshResolutions, ApplyCalibrations) from
   // W's probe
   CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
   displaySettings.ClearCustomResolutions();
+  if (throwInside)
+    throw std::runtime_error("test throw inside the table step");
   for (size_t i = 0; i < reply.table.size(); ++i)
   {
     RESOLUTION_INFO res = reply.table[i];

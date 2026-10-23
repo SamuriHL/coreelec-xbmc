@@ -45,6 +45,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -1916,6 +1917,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
   {
     if (acts)
     {
+      const bool throwHere = OUTPUT::TestHotplugApplyThrow();
+      const std::string throwAt = throwHere ? OUTPUT::TestHotplugApplyThrowAt() : "";
       step = "not-ready";
       if (notReady)
         SetPresentationReady(false);
@@ -1924,13 +1927,15 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
       step = "table";
       if (reply.hasTable)
       {
-        ApplyHotplugTable(reply);
+        ApplyHotplugTable(reply, throwAt == "table");
         ++m_hotplugTables;
       }
       step = "caps";
       if (reply.hasCaps)
         ApplyHotplugCaps(reply);
       aml_timing_inputs_bump();
+      if (throwAt == "after table")
+        throw std::runtime_error("test throw after the table step");
 
       if (job)
       {
@@ -1954,6 +1959,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             if (!adopted)
               CLog::Log(LOGERROR, "hotplug reply {}: GC's set did not take the Restore",
                         reply.replyId);
+            if (throwAt == "adopt")
+              throw std::runtime_error("test throw after the adopt");
             gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
             break;
           }

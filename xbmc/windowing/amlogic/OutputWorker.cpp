@@ -789,8 +789,8 @@ int TestHotplugHoldMs()
   {
     const int value = std::max(0, HotplugTestValue("hotplugworker_hold", 0));
     if (value > 0)
-      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold of {} ms before each shadow job's HPD read",
-                value);
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold of {} ms before each {} job's HPD read",
+                value, HotplugOnW() ? "hotplug" : "shadow");
     return value;
   }();
   return ms;
@@ -907,22 +907,46 @@ int TestHotplugRaceGapMs()
   return ms;
 }
 
-bool TestHotplugApplyThrow()
+namespace
 {
-  static const std::pair<int, int> range = []
+struct SApplyThrow
+{
+  int n = 0;
+  int times = 0;
+  const char* at = "after table";
+};
+
+const SApplyThrow& ApplyThrow()
+{
+  static const SApplyThrow config = []
   {
-    std::pair<int, int> result{0, 0};
+    SApplyThrow result;
     if (const auto line = ReadTestSwitch("hotplugworker_applythrow"))
     {
-      const auto space = line->find(' ');
-      const int n = std::max(1, std::atoi(line->c_str()));
-      const int times =
-          space == std::string::npos ? 1 : std::max(1, std::atoi(line->c_str() + space + 1));
-      result = {n, times};
-      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test throw in reply apply {} ({} times)", n, times);
+      const std::vector<std::string> words = StringUtils::Split(*line, ' ');
+      result.n = std::max(1, std::atoi(line->c_str()));
+      result.times = words.size() > 1 ? std::max(1, std::atoi(words[1].c_str())) : 1;
+      if (words.size() > 2 && words[2] == "table")
+        result.at = "table";
+      else if (words.size() > 2 && words[2] == "adopt")
+        result.at = "adopt";
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test throw in reply apply {} ({} times, {})", result.n,
+                result.times, result.at);
     }
     return result;
   }();
+  return config;
+}
+} // namespace
+
+const char* TestHotplugApplyThrowAt()
+{
+  return ApplyThrow().at;
+}
+
+bool TestHotplugApplyThrow()
+{
+  const std::pair<int, int> range{ApplyThrow().n, ApplyThrow().times};
   // main only
   static int applies = 0;
   if (range.first <= 0)

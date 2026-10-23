@@ -240,8 +240,9 @@ bool OrderingOn();
 bool HotplugOnW();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
-//! hotplugworker_hold "<ms>": in each B3-6 shadow job W sleeps <ms> between the receipt count
-//! and the HPD read (0: off); B3-7b settles its meaning for the real hotplug job
+//! hotplugworker_hold "<ms>": in each hotplug job (B3-7b), or each B3-6 shadow job, W sleeps <ms>
+//! between the job's receipt count and its HPD read (0: off). An edge inside the hold is read by
+//! this job, and its receipt posts the next one
 int TestHotplugHoldMs();
 //! hotplugworker_holdhpd: at a plug-out event W posts a hold job that spins until hpd_state
 //! reads 1, so the plug-out's read lands in the plug-in's hpd-to-uevent window
@@ -262,9 +263,12 @@ int TestHotplugRaceGapMs();
 //! test and its lock, widening O3's race window for the B3-7a gate (0: off; 1-1000 ms, a
 //! larger value is clamped). Primed at W's start under OrderingOn: no reset probes the file
 int TestHotplugSettleGapMs();
-//! hotplugworker_applythrow "<n> [times]": called once per reply apply, after its table step;
-//! true for the n-th apply and the times-1 after it (times default 1): main throws there
+//! hotplugworker_applythrow "<n> [times] [table|adopt]": called once per reply apply; true for
+//! the n-th apply and the times-1 after it (times default 1): main throws in that apply, after its
+//! table step, or inside it (table), or after the adopt's GC set (adopt)
 bool TestHotplugApplyThrow();
+//! where TestHotplugApplyThrow's apply throws: "after table" (the default), "table" or "adopt"
+const char* TestHotplugApplyThrowAt();
 //! hotplugworker_setafter "<ms>": a plug-in's receipt also posts, <ms> later, a settings
 //! resolution change from main (-1: off)
 int TestHotplugSetAfterMs();
