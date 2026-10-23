@@ -739,7 +739,7 @@ int TestHotplugHoldMs()
   {
     const int value = std::max(0, HotplugTestValue("hotplugworker_hold", 0));
     if (value > 0)
-      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold of {} ms before the next hotplug job",
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test hold of {} ms before each shadow job's HPD read",
                 value);
     return value;
   }();
