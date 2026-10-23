@@ -1072,7 +1072,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     {
       OUTPUT::LatchHotplugWorker();
       OUTPUT::DetectShadowOn();
-      OUTPUT::OrderingOn();
+      // the B3-7a gate hook, read here so the first SETTLE reset makes no file probe
+      if (OUTPUT::OrderingOn())
+        OUTPUT::TestHotplugSettleGapMs();
     }
     catch (const std::exception& e)
     {

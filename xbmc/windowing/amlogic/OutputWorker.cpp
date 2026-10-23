@@ -862,7 +862,14 @@ int TestHotplugSettleGapMs()
 {
   static const int ms = []
   {
-    const int value = std::max(0, HotplugTestValue("hotplugworker_settlegap", 0));
+    int value = std::max(0, HotplugTestValue("hotplugworker_settlegap", 0));
+    // every lane, and main's synchronous Runs, wait out the gap: a long one would turn a set
+    // posted meanwhile into the 5 s ERROR or the 15 s give-up, a different test
+    if (value > 1000)
+    {
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test gap {} ms clamped to 1000 ms", value);
+      value = 1000;
+    }
     if (value > 0)
       CLog::Log(LOGWARNING,
                 "HOTPLUGWORKER: test gap of {} ms between SETTLE's reset test and its lock",

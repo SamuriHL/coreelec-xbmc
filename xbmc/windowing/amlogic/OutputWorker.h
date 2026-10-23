@@ -255,7 +255,8 @@ bool TestHotplugNoHpdCb();
 //! hotplugworker_racegap "<ms>": W sleeps between clearing jobQueued and reading receiptSeq
 int TestHotplugRaceGapMs();
 //! hotplugworker_settlegap "<ms>": under OrderingOn, W sleeps between SETTLE's outside reset
-//! test and its lock, widening O3's race window for the B3-7a gate (0: off)
+//! test and its lock, widening O3's race window for the B3-7a gate (0: off; 1-1000 ms, a
+//! larger value is clamped). Primed at W's start under OrderingOn: no reset probes the file
 int TestHotplugSettleGapMs();
 //! hotplugworker_applythrow "<n> [times]": called once per reply apply, after its table step;
 //! true for the n-th apply and the times-1 after it (times default 1): main throws there
