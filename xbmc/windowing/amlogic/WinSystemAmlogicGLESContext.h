@@ -245,6 +245,9 @@ private:
   };
   static const char* RestoreFormName(RestoreForm form);
   RestoreForm HotplugRestoreForm(const SDriveJob& job) const;
+  //! main: a torn-down reply of a set whose epoch is not C's current one (a W set since) only
+  //! updates main's backups, not-ready, and is logged; true then (O2, under the hotplug on W)
+  bool SupersededOnW(const SDriveJob& job);
   void ApplyHotplugReply(SHotplugReply& reply);
   //! GC's row, read before a table step, on the new table by value (no set); false: not on it
   bool RemapGcRow(const SHotplugReply& reply, const RESOLUTION_INFO& before);

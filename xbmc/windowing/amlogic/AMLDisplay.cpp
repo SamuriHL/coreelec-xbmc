@@ -1897,7 +1897,7 @@ bool CAMLDisplay::aml_mode_to_resolution(const char* mode,
     return false;
 
   // 5.B3-7b (H4): W's hotplug job passes GuiInputs' value
-  if (!nativeGuiIn && OUTPUT::HotplugOnW())
+  if (!nativeGuiIn && OUTPUT::HotplugJobsOnW())
     MAINCOUPLING("CSettings DISABLEGUISCALING");
   const bool nativeGui = nativeGuiIn ? *nativeGuiIn : CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
   std::string fromMode = mode;

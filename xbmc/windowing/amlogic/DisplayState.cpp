@@ -234,7 +234,7 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> h
     return;
   }
   // 5.B3-7b (H4): W's hotplug job passes its own table's value
-  if (OUTPUT::HotplugOnW())
+  if (OUTPUT::HotplugJobsOnW())
     MAINCOUPLING("DisplaySettings FillCaps table");
   s.has2160 = false;
   const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();

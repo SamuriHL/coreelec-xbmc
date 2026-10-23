@@ -216,8 +216,6 @@ bool CWinSystemAmlogic::MessagePump()
 
   if (m_wHotplug)
   {
-    // 5.B3-7b: W's P5-9 timer reads HEAD's reset-pending test from here
-    m_retryBlocked = (m_delayDispReset || m_resetPending) && IsPresentationReady();
     TestSetAfter();
     // a receipt the FD thread took on HEAD's path before the switch was live: handed to W
     if (m_hotplugPending.exchange(false))
@@ -768,7 +766,9 @@ void CWinSystemAmlogic::StartHotplugOnW()
   OUTPUT::TestHotplugRetryMs();
   OUTPUT::TestHotplugSetAfterMs();
   OUTPUT::TestHotplugApplyThrowAt();
+  OUTPUT::PrimeTestHotplugCapsFail();
   m_wHotplug = true;
+  OUTPUT::NoteHotplugJobsOnW();
 }
 
 void CWinSystemAmlogic::PublishMainSlot()
@@ -945,9 +945,12 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
 
   // step 3: the stamp and the Lost fan-out, before the re-init; a re-assert (connected with no
   // span) takes the fan-out unstamped
-  const bool spanWasOpen = m_lostOpen;
+  bool spanWasOpen;
+  bool spanOpened;
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    // read with the resets' span close excluded (O3)
+    spanWasOpen = m_lostOpen;
     if (!connected && m_lostAtDisconnect)
     {
       if (!m_disconnectedSinceMs)
@@ -967,9 +970,10 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
       if (!retry && !m_lostOpen && m_lostAtDisconnect)
         OpenLostSpan();
     }
+    spanOpened = !spanWasOpen && m_lostOpen;
   }
-  // P5-9's timer, outside the resource lock
-  if (!spanWasOpen && m_lostOpen)
+  // P5-9's timer for the span this job opened, outside the resource lock
+  if (spanOpened)
     ArmHotplugRetry();
 
   // the VSVDB describes one display (today's order: before the re-init)
@@ -1119,10 +1123,19 @@ void CWinSystemAmlogic::PostHotplugRetryTick(uint64_t gen, std::chrono::millisec
 
 void CWinSystemAmlogic::HotplugRetryTick(uint64_t gen)
 {
-  // HEAD's predicate (WSA MessagePump), from published state only
+  // HEAD's predicate (WSA MessagePump), on its live terms. HEAD evaluates it only on main, never
+  // between a hotplug's take and its set, nor inside main's own set: so also not while a reply
+  // is queued or being applied, nor while main's request is on W or being applied
   if (gen != m_wRetryGen || !m_lostOpen)
     return;
-  if (IsHotplugPending() || m_disconnectedSinceMs || m_retryBlocked)
+  bool replyQueued;
+  {
+    std::unique_lock lock(m_replyMutex);
+    replyQueued = !m_replies.empty();
+  }
+  if (IsHotplugPending() || m_disconnectedSinceMs ||
+      ((m_delayDispReset || m_resetPending) && IsPresentationReady()) || replyQueued ||
+      m_applyingReply || m_mainRequests > 0)
   {
     PostHotplugRetryTick(gen, 50ms);
     return;

@@ -775,6 +775,21 @@ bool HotplugOnW()
 
 namespace
 {
+std::atomic_bool s_hotplugJobsOnW{false};
+} // namespace
+
+void NoteHotplugJobsOnW()
+{
+  s_hotplugJobsOnW = true;
+}
+
+bool HotplugJobsOnW()
+{
+  return s_hotplugJobsOnW.load();
+}
+
+namespace
+{
 // the first number of a hotplugworker_* file; fallback without the file
 int HotplugTestValue(const char* name, int fallback)
 {
@@ -820,7 +835,9 @@ int TestHotplugRetryMs()
   return ms;
 }
 
-bool TestHotplugCapsFail()
+namespace
+{
+std::atomic_int& CapsFailRemaining()
 {
   static std::atomic_int remaining{[]
   {
@@ -831,6 +848,18 @@ bool TestHotplugCapsFail()
     CLog::Log(LOGWARNING, "HOTPLUGWORKER: test one-mode caps at reconnect {}", n);
     return n;
   }()};
+  return remaining;
+}
+} // namespace
+
+void PrimeTestHotplugCapsFail()
+{
+  CapsFailRemaining();
+}
+
+bool TestHotplugCapsFail()
+{
+  std::atomic_int& remaining = CapsFailRemaining();
   if (remaining.load() <= 0 || --remaining != 0)
     return false;
   CLog::Log(LOGWARNING, "HOTPLUGWORKER: test one-mode caps");

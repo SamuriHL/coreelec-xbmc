@@ -152,7 +152,8 @@ protected:
 
   RenderStereoMode m_stereo_mode;
 
-  bool m_delayDispReset;
+  //! main writes it; 5.B3-7b's P5-9 timer on W reads it
+  std::atomic_bool m_delayDispReset;
   XbmcThreads::EndTime<> m_dispResetTimer;
   //! real_player: the display reset follows the later of the refresh-change
   //! delay and the driven sink's own lock after a mode set
@@ -250,8 +251,10 @@ protected:
   std::atomic<uint64_t> m_appliedReceipt{0};
   std::mutex m_replyMutex;
   std::deque<SHotplugReply> m_replies;
-  //! main: a reply is being applied (scope guarded)
-  bool m_applyingReply{false};
+  //! main: a reply is popped and being applied (scope guarded; P5-9's timer on W reads it)
+  std::atomic_bool m_applyingReply{false};
+  //! main: its own mode set request is on W or being applied (P5-9's timer on W reads it)
+  std::atomic_int m_mainRequests{0};
   //! main: hotplug tables applied (a late reply posted before one maps its resolution by value)
   uint64_t m_hotplugTables{0};
 
@@ -301,8 +304,6 @@ private:
   //! main: hotplugworker_setafter's settings resolution change, when due
   void TestSetAfter();
   std::atomic_bool m_jobQueued{false};
-  //! main publishes HEAD's (m_delayDispReset || m_resetPending) && ready at every pump
-  std::atomic_bool m_retryBlocked{false};
   std::atomic<int64_t> m_setAfterDueMs{0};
   std::mutex m_slotMutex;
   RESOLUTION_INFO m_mainSlot;

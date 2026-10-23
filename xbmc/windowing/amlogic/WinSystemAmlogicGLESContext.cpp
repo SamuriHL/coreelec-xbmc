@@ -890,6 +890,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   // 5.B3-7b (M9): GC's set inside a hotplug reply's adopt takes W's Restore, posting nothing
   if (auto adopt = std::exchange(m_adoptJob, nullptr))
   {
+    if (SupersededOnW(*adopt))
+      return false;
     const auto handlerStart = std::chrono::steady_clock::now();
     const bool created = ApplyDriveReply(*adopt);
     OUTPUT::NoteDriveReply(adopt->kind);
@@ -904,6 +906,14 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
     return true;
   }
+
+  // 5.B3-7b: P5-9's timer on W waits while main's request is on W or being applied
+  struct SMainRequest
+  {
+    explicit SMainRequest(std::atomic_int& count) : m_count(count) { ++m_count; }
+    ~SMainRequest() { --m_count; }
+    std::atomic_int& m_count;
+  } mainRequest(m_mainRequests);
 
   // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
   auto job = std::make_shared<SDriveJob>();
@@ -1007,6 +1017,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     m_bWindowCreated = false;
     OUTPUT::NoteDriveReply(OUTPUT::DriveReply::GAVE_UP);
   }
+  else if (SupersededOnW(*job))
+    OUTPUT::NoteDriveReply(job->kind);
   else
   {
     const auto handlerStart = std::chrono::steady_clock::now();
@@ -1025,6 +1037,27 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     return false;
 
   CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::SupersededOnW(const SDriveJob& job)
+{
+  // O2's epoch rule for main's own replies: a W hotplug job can tear the surface down between
+  // this set's job and its handler; then that job's reply rebuilds, at C's current epoch
+  if (!m_wHotplug || !job.tornDown || job.uiEpoch == m_coordinator->UiEpoch())
+    return false;
+  m_driveApplied = std::max(m_driveApplied, job.id);
+  m_hdrType = job.result.hdrType;
+  m_stereo_mode = job.result.stereo;
+  m_bFullScreen = job.result.fullScreen;
+  m_nativeGUI = job.result.nativeGUI;
+  m_bWindowCreated = false;
+  SetPresentationReady(false);
+  NoteDriveShadowBackups();
+  CLog::Log(LOGERROR,
+            "OUTPUTDRIVE request {} reply {}: its epoch {} is not C's current {} (a W set since), "
+            "main's backups only",
+            job.id, OUTPUT::DriveReplyName(job.kind), job.uiEpoch, m_coordinator->UiEpoch());
   return true;
 }
 
@@ -1863,6 +1896,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
       }
       reply = std::move(m_replies.front());
       m_replies.pop_front();
+      // before the gate opens: P5-9's timer on W sees a reply in hand
+      m_applyingReply = true;
     }
     // the take (HEAD's m_hotplugPending clear): the presentation gate opens here
     if (reply.upTo > m_poppedReceipt)
@@ -1908,9 +1943,9 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
   bool adopted = false;
   struct SApplying
   {
-    explicit SApplying(bool& flag) : m_flag(flag) { m_flag = true; }
+    explicit SApplying(std::atomic_bool& flag) : m_flag(flag) { m_flag = true; }
     ~SApplying() { m_flag = false; }
-    bool& m_flag;
+    std::atomic_bool& m_flag;
   } applying(m_applyingReply);
   CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   try
@@ -1924,15 +1959,16 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
         SetPresentationReady(false);
       // GC's row by value, before the table renumbers it
       const RESOLUTION_INFO before = gfx.GetResInfo();
+      // HotplugEvent's order: the caps (with the DV_LED value W's Restore used), then the table
+      step = "caps";
+      if (reply.hasCaps)
+        ApplyHotplugCaps(reply);
       step = "table";
       if (reply.hasTable)
       {
         ApplyHotplugTable(reply, throwAt == "table");
         ++m_hotplugTables;
       }
-      step = "caps";
-      if (reply.hasCaps)
-        ApplyHotplugCaps(reply);
       aml_timing_inputs_bump();
       if (throwAt == "after table")
         throw std::runtime_error("test throw after the table step");
@@ -1965,8 +2001,12 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             break;
           }
           case RestoreForm::BEHIND:
+            RemapGcRow(reply, before);
+            break;
           case RestoreForm::NOT_TORN_DOWN:
             RemapGcRow(reply, before);
+            // the set failed: its LEDGER outcome, as main's own failed set reports it
+            ReportDriveSet(*job, false, -1, -1, false);
             break;
           case RestoreForm::AHEAD:
             break;
@@ -1982,7 +2022,7 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             break;
           }
         }
-        if (form != RestoreForm::ADOPT)
+        if (form != RestoreForm::ADOPT && form != RestoreForm::NOT_TORN_DOWN)
           CLog::Log(LOGINFO,
                     "OUTPUTDRIVE set request={} ledger={} origin=hotplug reply={} handler=not "
                     "adopted ({}) uiepoch={}: its lost owed into the next reset",

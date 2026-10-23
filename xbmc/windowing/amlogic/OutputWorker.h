@@ -238,6 +238,11 @@ bool OrderingOn();
 //! and main applies its replies: OrderingOn and no hotplugworker_skip "B3-7b"; the switch line
 //! is logged once (read first at W's start)
 bool HotplugOnW();
+//! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
+//! hotplug job takes over; false before (the boot set's seed and caps still read main's table
+//! on W, main waiting)
+void NoteHotplugJobsOnW();
+bool HotplugJobsOnW();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
 //! hotplugworker_hold "<ms>": in each hotplug job (B3-7b), or each B3-6 shadow job, W sleeps <ms>
@@ -252,6 +257,8 @@ int TestHotplugRetryMs();
 //! hotplugworker_capsfail "<n>": called once per reconnect's caps refresh; true at the n-th,
 //! which then reports a one-mode list
 bool TestHotplugCapsFail();
+//! reads hotplugworker_capsfail's file without counting a refresh
+void PrimeTestHotplugCapsFail();
 //! hotplugworker_reinit "<period ms> <seconds>": an injected re-init job on W every period for
 //! that long ({0, 0}: off)
 std::pair<int, int> TestHotplugReinit();
