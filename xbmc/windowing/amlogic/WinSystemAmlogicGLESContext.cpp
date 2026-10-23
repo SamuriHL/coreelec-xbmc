@@ -981,7 +981,11 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                       job->cond.notify_all();
                                       if (late)
                                       {
+                                        // a hotplug job waits for main's apply of it
+                                        // (P13); counted first, so main's clear of the flag
+                                        // sees the count
                                         ++m_lateReplies;
+                                        m_guiInputsStale = true;
                                         std::unique_lock lock(s_lateMutex);
                                         s_late.push_back(job);
                                       }
@@ -1023,11 +1027,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     OUTPUT::NoteDriveReply(OUTPUT::DriveReply::GAVE_UP);
   }
   else if (SupersededOnW(*job))
-  {
     OUTPUT::NoteDriveReply(job->kind);
-    // its LEDGER outcome: the set's lost go to the W set's reset
-    ReportDriveSet(*job, false, waitMs, 0, false);
-  }
   else
   {
     const auto handlerStart = std::chrono::steady_clock::now();
@@ -1723,14 +1723,6 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     std::unique_lock lock(s_lateMutex);
     late.swap(s_late);
   }
-  // uncounted when taken, applied or not, below
-  struct SLateTaken
-  {
-    SLateTaken(std::atomic_int& count, size_t n) : m_count(count), m_n(static_cast<int>(n)) {}
-    ~SLateTaken() { m_count -= m_n; }
-    std::atomic_int& m_count;
-    int m_n;
-  } lateTaken(m_lateReplies, late.size());
   for (const auto& job : late)
   {
     if (job->id != m_drivePosted)
@@ -1789,6 +1781,8 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
                        .count(),
                    true);
   }
+  // uncounted once applied (or skipped), before this pump's GuiInputs publish
+  m_lateReplies -= static_cast<int>(late.size());
   return CWinSystemAmlogic::MessagePump();
 }
 

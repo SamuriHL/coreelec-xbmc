@@ -42,6 +42,8 @@
 #include "settings/lib/SettingsManager.h"
 #include "filesystem/File.h"
 #include "guilib/DispResource.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "utils/AMLUtils.h"
 #include "utils/XTimeUtils.h"
@@ -244,8 +246,12 @@ bool CWinSystemAmlogic::MessagePump()
   DISPLAYSTATE::HandleOutputChanged();
   // 5.B3-3 (hotplugworker only): playback's GuiInputs, published when they change
   DISPLAYSTATE::PublishGuiPlayback();
-  // 5.B3-7b: main's sets are applied and their GuiInputs published
-  if (m_wHotplug && m_mainRequests == 0)
+  // 5.B3-7b: main's sets are applied and their GuiInputs published. A late reply is taken only
+  // at a top-level pump; a nested one (a modal) publishes GC as it stands, as HEAD's nested
+  // HotplugEvent read it, so the hotplug waits at most one pump there
+  if (m_wHotplug && m_mainRequests == 0 &&
+      (m_lateReplies == 0 || (CServiceBroker::GetGUI() &&
+                              CServiceBroker::GetGUI()->GetWindowManager().IsNested())))
     m_guiInputsStale = false;
   DISPLAYSTATE::Tick();
   return false;
