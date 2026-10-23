@@ -402,6 +402,13 @@ void CWinSystemAmlogic::RunDetectShadow(std::chrono::steady_clock::time_point po
                              std::chrono::steady_clock::now() - posted)
                              .count();
     const uint64_t receipts = m_shadowReceipts.load();
+    // hotplugworker_hold (test only): W sleeps between the job's receipt count and its read, so
+    // an edge inside the hold is read without its receipt counted (plan §22 item 17's case)
+    if (const int holdMs = OUTPUT::TestHotplugHoldMs(); holdMs > 0)
+    {
+      CLog::Log(LOGINFO, "HOTPLUG shadow test hold {} ms", holdMs);
+      KODI::TIME::Sleep(std::chrono::milliseconds(holdMs));
+    }
     HpdRead read;
     const bool valid = aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb());
     const int encoderId = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle());
@@ -443,13 +450,6 @@ void CWinSystemAmlogic::RunDetectShadow(std::chrono::steady_clock::time_point po
               "tries={} queue_ms={}",
               cls, aml_hpd_source_name(read.source), state, read.seq, m_shadowLastAct,
               IsLostSpanOpen() ? 1 : 0, encoderId, read.tries, queueMs);
-    // hotplugworker_hold (test only): W sleeps before its next job, after this job's read, so
-    // the next shadow job reads later than the edge that queued it (plan §22 item 17's case)
-    if (const int holdMs = OUTPUT::TestHotplugHoldMs(); holdMs > 0)
-    {
-      CLog::Log(LOGINFO, "HOTPLUG shadow test hold {} ms", holdMs);
-      KODI::TIME::Sleep(std::chrono::milliseconds(holdMs));
-    }
   }
   catch (...)
   {

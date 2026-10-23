@@ -226,7 +226,8 @@ bool HotplugWorkerSkip(const std::string& substep);
 bool DetectShadowOn();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
-//! hotplugworker_hold "<ms>": W sleeps <ms> before its next hotplug job (0: off)
+//! hotplugworker_hold "<ms>": in each B3-6 shadow job W sleeps <ms> between the receipt count
+//! and the HPD read (0: off); B3-7b settles its meaning for the real hotplug job
 int TestHotplugHoldMs();
 //! hotplugworker_holdhpd: at a plug-out event W posts a hold job that spins until hpd_state
 //! reads 1, so the plug-out's read lands in the plug-in's hpd-to-uevent window
