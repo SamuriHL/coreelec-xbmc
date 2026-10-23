@@ -263,7 +263,13 @@ void CWinSystemAmlogic::HotplugEvent()
     LogHotplugRead(DRM_MODE_UNKNOWNCONNECTION, -1);
     // not known disconnected: an open span retries the rebuild, and the time
     // stops counting towards the pause
-    m_disconnectedSinceMs = 0;
+    {
+      // 5.B3-7a (O3): the stamp is kept with the span and the lost generation
+      std::unique_lock<CCriticalSection> lock(m_resourceSection, std::defer_lock);
+      if (OUTPUT::OrderingOn())
+        lock.lock();
+      m_disconnectedSinceMs = 0;
+    }
     PublishDisplayCaps();
     return;
   }
@@ -272,6 +278,11 @@ void CWinSystemAmlogic::HotplugEvent()
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
   LogHotplugRead(connection, mode_count);
 
+  // 5.B3-7a (O3): the stamp and the span's opening under one hold of the lock, so a reset's
+  // re-check sees both or neither
+  std::unique_lock<CCriticalSection> stampLock(m_resourceSection, std::defer_lock);
+  if (OUTPUT::OrderingOn())
+    stampLock.lock();
   if (connection == DRM_MODE_CONNECTED)
     m_disconnectedSinceMs = 0;
   else if (m_lostAtDisconnect)
@@ -282,6 +293,8 @@ void CWinSystemAmlogic::HotplugEvent()
                                   .count();
     OpenLostSpan();
   }
+  if (stampLock.owns_lock())
+    stampLock.unlock();
 
   RefreshDisplayCapabilities();
 
@@ -380,6 +393,22 @@ int ShadowEncoderId(int fd)
 
 void CWinSystemAmlogic::PostDetectShadow()
 {
+  // 5.B3-7a (O4): a receipt after W's stop is dropped, never run inline on the FD thread (Post
+  // runs fn on its caller once W is stopping; Active() then Post was a check-then-act)
+  if (OUTPUT::DetectShadowOn() && OUTPUT::OrderingOn())
+  {
+    m_shadowReceipts.fetch_add(1);
+    if (m_shadowQueued.exchange(true))
+      return;
+    if (!OUTPUT::COutputWorker::Get().PostIfRunning(
+            OUTPUT::Lane::RESTORE, "hotplug shadow",
+            [this, posted = std::chrono::steady_clock::now()] { RunDetectShadow(posted); }))
+    {
+      m_shadowQueued.store(false);
+      CLog::Log(LOGINFO, "HOTPLUG shadow: hotplug after W stop: dropped (main's flag is set)");
+    }
+    return;
+  }
   if (!OUTPUT::DetectShadowOn() || !OUTPUT::COutputWorker::Get().Active())
     return;
   m_shadowReceipts.fetch_add(1);
@@ -513,14 +542,22 @@ void CWinSystemAmlogic::LogHotplugRead(drmModeConnection connection, int modes)
 
 void CWinSystemAmlogic::OpenLostSpan()
 {
-  if (m_lostOpen)
+  // 5.B3-7a (O3): the test inside the lock, so no reset fans out between it and the span
+  const bool ordering = OUTPUT::OrderingOn();
+  if (!ordering && m_lostOpen)
     return;
   std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  if (ordering && m_lostOpen)
+    return;
   m_lostOpen = true;
   m_lostRetryDelay = std::chrono::milliseconds(1000);
   m_lostRetry.Set(m_lostRetryDelay);
   CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
   LedgerBegin("lost span");
+  // 5.B3-7a (O3): the span's fan-out is a new lost generation; a reset armed before it drops
+  if (ordering)
+    CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (lost span)", m_ledgerSet.load(),
+              ++m_lostGen);
   for (IDispResource* resource : m_resources)
   {
     resource->OnLostDisplay();
@@ -614,6 +651,25 @@ void CWinSystemAmlogic::LedgerSetFailed()
 {
   m_ledgerFailed = true;
   CLog::Log(LOGINFO, "LEDGER set={} failed, lost {} owed", m_ledgerSet.load(), m_ledgerLost.load());
+}
+
+bool CWinSystemAmlogic::ResetStillArmedLocked(uint64_t lostGen, const char* reset)
+{
+  // the caller's test ran outside the lock (H6): a span opened, or a set walked, since
+  const bool allowed = DisplayResetAllowed();
+  if (allowed && lostGen == m_lostGen)
+  {
+    CLog::Log(LOGINFO, "LEDGER set={} reset in lost generation {} ({})", m_ledgerSet.load(),
+              lostGen, reset);
+    return true;
+  }
+  // nothing is reset: m_ledgerLost keeps the lost calls, owed into the next reset (union)
+  CLog::Log(LOGINFO,
+            "LEDGER set={} reset dropped: lost generation {} superseded (now {}, {}; {} reset): "
+            "lost {} owed into the next reset",
+            m_ledgerSet.load(), lostGen, m_lostGen,
+            allowed ? "a lost fan-out since" : "the span is stamped", reset, m_ledgerLost.load());
+  return false;
 }
 
 void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *data)
@@ -943,7 +999,10 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
   }
 
-  LostWalk();
+  m_windowLostGen = LostWalk();
+  // 5.B3-7a (O3): an armed poll resets for this set too (today's, at delay 0 as well)
+  if (m_delayDispReset)
+    m_pollLostGen = m_windowLostGen;
 
   // the commit job (5.B1-7): W sets the mode; main keeps the settings reads, the display
   // resources and the GL work
@@ -1013,6 +1072,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     {
       OUTPUT::LatchHotplugWorker();
       OUTPUT::DetectShadowOn();
+      OUTPUT::OrderingOn();
     }
     catch (const std::exception& e)
     {
@@ -1099,11 +1159,17 @@ void CWinSystemAmlogic::StartTestReinit()
                  std::chrono::steady_clock::now() + std::chrono::seconds(seconds), 1);
 }
 
-void CWinSystemAmlogic::LostWalk()
+uint64_t CWinSystemAmlogic::LostWalk()
 {
+  uint64_t lostGen;
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     LedgerBegin("mode set");
+    // 5.B3-7a (O3): this walk's generation; a reset armed for an older one is dropped
+    if (OUTPUT::OrderingOn())
+      CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (mode set)", m_ledgerSet.load(),
+                ++m_lostGen);
+    lostGen = m_lostGen;
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
     {
       (*i)->OnLostDisplay();
@@ -1112,6 +1178,7 @@ void CWinSystemAmlogic::LostWalk()
   }
   OUTPUT::ArmDemuxBlock();
   OUTPUT::TestStopAt("2");
+  return lostGen;
 }
 
 void CWinSystemAmlogic::ArmDelayedReset(int delay, std::chrono::steady_clock::time_point modeSetAt)

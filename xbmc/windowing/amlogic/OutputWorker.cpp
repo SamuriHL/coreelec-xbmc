@@ -221,6 +221,19 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
   m_cond.notify_all();
 }
 
+bool COutputWorker::PostIfRunning(Lane lane,
+                                  const char* name,
+                                  std::function<void()> fn,
+                                  uint64_t generation)
+{
+  std::unique_lock lock(m_mutex);
+  if (!m_running || m_stop)
+    return false;
+  m_lanes[static_cast<size_t>(lane)].push_back({name, std::move(fn), generation, m_nextId++, {}});
+  m_cond.notify_all();
+  return true;
+}
+
 bool COutputWorker::PostAfter(Lane lane,
                               const char* name,
                               std::chrono::milliseconds after,
@@ -599,6 +612,13 @@ void NoteDriveReply(DriveReply reply)
   ++s_replySeq;
 }
 
+uint64_t NextDriveId()
+{
+  // one id space for every poster (O2): main only until B3-7b, so today's request numbers
+  static std::atomic<uint64_t> s_driveIds{0};
+  return ++s_driveIds;
+}
+
 DriveReply LastDriveReply(uint64_t& seq)
 {
   seq = s_replySeq;
@@ -718,6 +738,21 @@ bool DetectShadowOn()
     const bool result = !HotplugWorkerSkip("B3-6");
     if (result)
       CLog::Log(LOGINFO, "HOTPLUGWORKER B3-6: W shadows the hotplug detection (log only)");
+    return result;
+  }();
+  return on;
+}
+
+bool OrderingOn()
+{
+  if (!HotplugWorkerOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-7a");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-7a: resets re-check the lost generation under the "
+                         "resource lock; the FD thread posts only to a running W");
     return result;
   }();
   return on;

@@ -71,6 +71,9 @@ public:
   //! Queues fn on W and returns (inline when W is not active; queued behind the running job
   //! when called on W). fn must capture by value.
   void Post(Lane lane, const char* name, std::function<void()> fn, uint64_t generation = 0);
+  //! 5.B3-7a (O4): as Post, but dropped, and false, when W is not active (stopped, stopping or
+  //! not yet started): never inline on the caller. fn must capture by value.
+  bool PostIfRunning(Lane lane, const char* name, std::function<void()> fn, uint64_t generation = 0);
   //! Queues fn on W once after has passed (W's clock, 5.B2-6). Dropped, and false, when W is
   //! not active; a stop drops the ones not yet due. fn must capture by value.
   bool PostAfter(Lane lane,
@@ -189,6 +192,9 @@ enum class DriveReply
 const char* DriveReplyName(DriveReply reply);
 //! main: the reply of its last request, numbered (the give-up counts as FAILED)
 void NoteDriveReply(DriveReply reply);
+//! 5.B3-7a (O2's one id space, unswitched): the next mode-set request id, from 1; main's
+//! requests take it (today's only poster, so today's sequence)
+uint64_t NextDriveId();
 DriveReply LastDriveReply(uint64_t& seq);
 //! main: a request built inside this scope is the render manager's (origin=rm, r1 M4); startHeld:
 //! the player holds a start for this decision (5.B2-6: a film start, Q6)
@@ -224,6 +230,10 @@ bool HotplugWorkerSkip(const std::string& substep);
 //! 5.B3-6: W's hotplug detection as a log-only shadow: HotplugWorkerOn and no
 //! hotplugworker_skip "B3-6"; the switch line is logged once (read first at W's start)
 bool DetectShadowOn();
+//! 5.B3-7a: the ordering rules (O3: the lost generation re-checked by every reset inside
+//! m_resourceSection; O4: the FD thread's post only to a running W): HotplugWorkerOn and no
+//! hotplugworker_skip "B3-7a"; the switch line is logged once (read first at W's start)
+bool OrderingOn();
 
 // 5.B3-1 test hooks: each special://profile/hotplugworker_* file is read once, default off
 //! hotplugworker_hold "<ms>": in each B3-6 shadow job W sleeps <ms> between the receipt count

@@ -126,6 +126,7 @@ struct SDriveJob
   bool unparked{false}; //!< nor then: the set ran unparked (S1' with the plane off, no cbuf)
   bool lostWalked{false}; //!< the lost walk ran: its LEDGER set is ledgerSet
   uint64_t ledgerSet{0};
+  uint64_t lostGen{0}; //!< 5.B3-7a: the lost generation the walk armed (0 under off)
   int guiLocked{0}; //!< main's m_guiLocked when it posted the request
   bool offRefused{false}; //!< S1''s GUI plane off was refused (the SB3 state)
   uint64_t uiEpoch{0}; //!< the UI surface epoch the job started
@@ -671,7 +672,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   m_guiRepaintFrames = 3;
 
   if (!m_delayDispReset && DisplayResetAllowed())
-    ResetDisplayNow();
+    ResetDisplayNow(m_windowLostGen);
 
   if (GetDRMConnected())
     SetPresentationReady(true);
@@ -683,9 +684,12 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   return true;
 }
 
-void CWinSystemAmlogicGLESContext::ResetDisplayNow()
+void CWinSystemAmlogicGLESContext::ResetDisplayNow(uint64_t lostGen)
 {
   std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  // 5.B3-7a (O3): the caller's test, again inside the lock, with the set's lost generation
+  if (OUTPUT::OrderingOn() && !ResetStillArmedLocked(lostGen, "delay 0"))
+    return;
   // tell any shared resources
   for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
   {
@@ -879,9 +883,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   m_guiDiscarded = 0;
 
   // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
-  static uint64_t s_requests = 0;
   auto job = std::make_shared<SDriveJob>();
-  job->id = ++s_requests;
+  job->id = OUTPUT::NextDriveId();
   job->res = res;
   job->resIndex = OUTPUT::DriveResolution();
   job->fbName = m_framebuffer_name;
@@ -1146,7 +1149,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   const bool lostFirst = LostFirstSwitch();
   const auto lostWalk = [&]
   {
-    LostWalk();
+    job.lostGen = LostWalk();
     job.lostWalked = true;
     job.ledgerSet = m_ledgerSet.load();
     job.lostMs = sinceStart();
@@ -1290,6 +1293,9 @@ bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
   else if (job.armDelay && job.delay > 0)
     ArmDelayedReset(job.delay,
                     job.tornDown ? job.modeSetAt : std::chrono::steady_clock::now());
+  // 5.B3-7a (O3): an armed poll resets for this set's walk too (today's, at delay 0 as well)
+  if (m_delayDispReset && job.lostWalked)
+    m_pollLostGen = job.lostGen;
 
   switch (job.kind)
   {
@@ -1428,7 +1434,7 @@ bool CWinSystemAmlogicGLESContext::RebuildGuiSurface(const SDriveJob& job)
   // at delay 0, after the unpark (5.B2-5b), in today's place after the surface; 5.B2-6: unless
   // W's SETTLE has it (a film start's lock wait)
   if (!job.settleArmed && !m_delayDispReset && DisplayResetAllowed())
-    ResetDisplayNow();
+    ResetDisplayNow(job.lostGen);
 
   if (GetDRMConnected())
     SetPresentationReady(true);
@@ -1511,6 +1517,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   settle.armed = true;
   settle.request = job.id;
   settle.ledgerSet = job.ledgerSet;
+  settle.lostGen = job.lostGen;
   settle.modeSetAt = job.modeSetAt;
   settle.delay = std::chrono::milliseconds(lockWait ? 0 : job.delay * 100);
   settle.lockWait = lockWait;
@@ -1574,6 +1581,20 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
       !IsHotplugPending() && (settle.lockWait || IsPresentationReady()) &&
       DisplayResetAllowed())
   {
+    // 5.B3-7a (O3): the test above, again inside the lock, with the set's lost generation; a
+    // drop ends this SETTLE unreset (owed to the next reset), as a supersede does
+    std::unique_lock<CCriticalSection> lock(m_resourceSection, std::defer_lock);
+    const bool ordering = OUTPUT::OrderingOn();
+    if (ordering)
+    {
+      lock.lock();
+      if (!ResetStillArmedLocked(settle.lostGen, "settle"))
+      {
+        settle.armed = false;
+        m_resetPending = false;
+        return;
+      }
+    }
     settle.armed = false;
     m_resetPending = false;
     if (settle.delay.count() > 0)
@@ -1584,7 +1605,8 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
               settle.ledgerSet, settle.request, since.count(),
               locked ? "sink locked" : "sink never locked", settle.delay.count(),
               settle.lockWait ? 1 : 0);
-    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    if (!ordering)
+      lock.lock();
     for (IDispResource* resource : m_resources)
     {
       resource->OnResetDisplay();
@@ -1747,9 +1769,20 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
       (locked || sinceModeSet > m_resetDelay + 3000ms) && DisplayResetAllowed())
   {
     m_delayDispReset = false;
+    // 5.B3-7a (O3): the test above, again inside the lock, with the armed set's lost generation;
+    // a drop disarms the poll (owed to the next reset)
+    std::unique_lock<CCriticalSection> lock(m_resourceSection, std::defer_lock);
+    const bool ordering = OUTPUT::OrderingOn();
+    if (ordering)
+    {
+      lock.lock();
+      if (!ResetStillArmedLocked(m_pollLostGen, "poll"))
+        return;
+    }
     CLog::Log(LOGINFO, "CWinSystemAmlogic: display reset {} ms after the mode set ({})",
               sinceModeSet.count(), locked ? "delay and sink lock" : "sink never locked");
-    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    if (!ordering)
+      lock.lock();
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
     {

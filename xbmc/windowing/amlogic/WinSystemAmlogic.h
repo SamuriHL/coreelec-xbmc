@@ -116,6 +116,18 @@ protected:
   void LedgerReset(IDispResource* resource, std::chrono::milliseconds delay);
   void LedgerResetDone();
   void LedgerSetFailed();
+  //! 5.B3-7a (O3, OUTPUT::OrderingOn only), m_resourceSection held: true if the reset armed for
+  //! lostGen may fan out (DisplayResetAllowed() and no lost fan-out since); else the reset is
+  //! dropped and logged, and its lost calls stay owed to the next reset (B2-6's union)
+  bool ResetStillArmedLocked(uint64_t lostGen, const char* reset);
+  //! 5.B3-7a (O3): bumped by every lost fan-out (the span's, a set's LostWalk) under
+  //! OUTPUT::OrderingOn; 0 under off. Read and written under m_resourceSection
+  uint64_t m_lostGen{0};
+  //! main: the lost generation WSA CreateNewWindow's walk armed (its delay 0 reset, its poll)
+  uint64_t m_windowLostGen{0};
+  //! main: the lost generation the poll reset (m_delayDispReset) is armed for: the walk of the
+  //! last set it covers (a set at delay 0 leaves an armed poll to reset for it, as today)
+  uint64_t m_pollLostGen{0};
   std::atomic<uint64_t> m_ledgerSet{0};
   std::atomic_int m_ledgerLost{0};
   int m_ledgerReset{0};
@@ -139,8 +151,9 @@ protected:
   //! hotplugworker_reinit "<period ms> <seconds>" (B3-4's gate): an injected re-init on W
   //! (park, aml_init_drmDevice, caps publish) every period, from W's start; hotplugworker only
   void StartTestReinit();
-  //! CreateNewWindow's lost walk; 5.B2-5b runs it on W in main's mode set job, main waiting
-  void LostWalk();
+  //! CreateNewWindow's lost walk; 5.B2-5b runs it on W in main's mode set job, main waiting.
+  //! Returns the lost generation it armed (5.B3-7a; 0 under off)
+  uint64_t LostWalk();
   //! 5.B2-5b: CreateNewWindow's arming of the delayed reset, on main from W's reply (r1 M9),
   //! counted from W's commit
   void ArmDelayedReset(int delay, std::chrono::steady_clock::time_point modeSetAt);

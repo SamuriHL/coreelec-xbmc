@@ -186,8 +186,9 @@ private:
   //! main's OutputChanged handler for a committed set: S1''s release and asserts, the EGL
   //! destroy, the new surface, the delay 0 reset, presentation ready
   bool RebuildGuiSurface(const SDriveJob& job);
-  //! the display reset at delay 0 (CreateNewWindow, and 5.B2-5b's handler)
-  void ResetDisplayNow();
+  //! the display reset at delay 0 (CreateNewWindow, and 5.B2-5b's handler), armed for the set's
+  //! lost generation (5.B3-7a: under OUTPUT::OrderingOn re-checked inside the lock, or dropped)
+  void ResetDisplayNow(uint64_t lostGen);
   // 5.B2-6: SETTLE, the delayed display reset on W's clock (design §4.3, §4.4)
   struct SSettle
   {
@@ -195,6 +196,7 @@ private:
     bool armed{false};
     uint64_t request{0}; //!< the reset waits for main's handler of this request
     uint64_t ledgerSet{0};
+    uint64_t lostGen{0}; //!< 5.B3-7a: the set's lost generation, re-checked at the reset
     std::chrono::steady_clock::time_point modeSetAt{};
     std::chrono::milliseconds delay{0};
     bool lockWait{false}; //!< Q6: a film start at delay 0 waits for the sink lock
