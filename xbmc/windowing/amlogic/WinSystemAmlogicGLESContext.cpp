@@ -1587,11 +1587,16 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     const bool ordering = OUTPUT::OrderingOn();
     if (ordering)
     {
+      // hotplugworker_settlegap (test only): the window between the test and the lock, widened
+      if (const int gapMs = OUTPUT::TestHotplugSettleGapMs(); gapMs > 0)
+      {
+        CLog::Log(LOGINFO, "HOTPLUG settle test gap {} ms", gapMs);
+        KODI::TIME::Sleep(std::chrono::milliseconds(gapMs));
+      }
       lock.lock();
       if (!ResetStillArmedLocked(settle.lostGen, "settle"))
       {
-        settle.armed = false;
-        m_resetPending = false;
+        SettleCancel("lost generation superseded");
         return;
       }
     }

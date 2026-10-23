@@ -278,23 +278,23 @@ void CWinSystemAmlogic::HotplugEvent()
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
   LogHotplugRead(connection, mode_count);
 
-  // 5.B3-7a (O3): the stamp and the span's opening under one hold of the lock, so a reset's
-  // re-check sees both or neither
-  std::unique_lock<CCriticalSection> stampLock(m_resourceSection, std::defer_lock);
-  if (OUTPUT::OrderingOn())
-    stampLock.lock();
-  if (connection == DRM_MODE_CONNECTED)
-    m_disconnectedSinceMs = 0;
-  else if (m_lostAtDisconnect)
   {
-    if (!m_disconnectedSinceMs)
-      m_disconnectedSinceMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now().time_since_epoch())
-                                  .count();
-    OpenLostSpan();
+    // 5.B3-7a (O3): the stamp and the span's opening under one hold of the lock, so a reset's
+    // re-check sees both or neither
+    std::unique_lock<CCriticalSection> lock(m_resourceSection, std::defer_lock);
+    if (OUTPUT::OrderingOn())
+      lock.lock();
+    if (connection == DRM_MODE_CONNECTED)
+      m_disconnectedSinceMs = 0;
+    else if (m_lostAtDisconnect)
+    {
+      if (!m_disconnectedSinceMs)
+        m_disconnectedSinceMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+      OpenLostSpan();
+    }
   }
-  if (stampLock.owns_lock())
-    stampLock.unlock();
 
   RefreshDisplayCapabilities();
 

@@ -858,6 +858,20 @@ bool TestHotplugNoHpdCb()
   return on;
 }
 
+int TestHotplugSettleGapMs()
+{
+  static const int ms = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_settlegap", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING,
+                "HOTPLUGWORKER: test gap of {} ms between SETTLE's reset test and its lock",
+                value);
+    return value;
+  }();
+  return ms;
+}
+
 int TestHotplugRaceGapMs()
 {
   static const int ms = []
