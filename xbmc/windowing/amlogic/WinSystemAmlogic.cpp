@@ -41,6 +41,7 @@
 #include "filesystem/File.h"
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
+#include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
@@ -442,6 +443,13 @@ void CWinSystemAmlogic::RunDetectShadow(std::chrono::steady_clock::time_point po
               "tries={} queue_ms={}",
               cls, aml_hpd_source_name(read.source), state, read.seq, m_shadowLastAct,
               IsLostSpanOpen() ? 1 : 0, encoderId, read.tries, queueMs);
+    // hotplugworker_hold (test only): W sleeps before its next job, after this job's read, so
+    // the next shadow job reads later than the edge that queued it (plan §22 item 17's case)
+    if (const int holdMs = OUTPUT::TestHotplugHoldMs(); holdMs > 0)
+    {
+      CLog::Log(LOGINFO, "HOTPLUG shadow test hold {} ms", holdMs);
+      KODI::TIME::Sleep(std::chrono::milliseconds(holdMs));
+    }
   }
   catch (...)
   {
