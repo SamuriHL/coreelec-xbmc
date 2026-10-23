@@ -750,6 +750,12 @@ bool Has2160(const std::vector<RESOLUTION_INFO>& table)
                      [](const RESOLUTION_INFO& res) { return res.iScreenHeight >= 2160; });
 }
 
+// RES_DESKTOP's entry names a mode of a display (not the disconnected placeholder)
+bool RealSlot(const RESOLUTION_INFO& slot)
+{
+  return !slot.strId.empty() && !StringUtils::EqualsNoCase(slot.strId, "dummy_l");
+}
+
 bool SameMode(const RESOLUTION_INFO& res, const std::string& strId, float refresh, uint32_t flags)
 {
   return StringUtils::EqualsNoCase(res.strId, strId) && std::abs(res.fRefreshRate - refresh) < 0.01f &&
@@ -1052,8 +1058,18 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
     // the probe into a by-value table, with main's DISABLEGUISCALING (H4)
     if (!m_amlDisplay->aml_probe_resolutions(reply.table, gui.nativeGui) || reply.table.empty())
       CLog::Log(LOGWARNING, "{}: ProbeResolutions failed.", __FUNCTION__);
+    RESOLUTION_INFO mainSlot;
+    {
+      std::unique_lock lock(m_slotMutex);
+      mainSlot = m_mainSlot;
+    }
+    // P14: a disconnected read is "dummy_l", never the display's mode; RES_DESKTOP keeps a real
+    // mode until the Restore (a session that has none takes HEAD's rule)
     RESOLUTION_INFO live;
-    if (m_amlDisplay->aml_get_native_resolution(&live, gui.nativeGui))
+    if (!connected && RealSlot(mainSlot))
+      CLog::Log(LOGINFO, "HOTPLUG slot kept {}: the live read is dummy_l (disconnected)",
+                mainSlot.strId);
+    else if (m_amlDisplay->aml_get_native_resolution(&live, gui.nativeGui))
       for (size_t i = 0; i < reply.table.size(); ++i)
       {
         const RESOLUTION_INFO& res = reply.table[i];
@@ -1064,13 +1080,7 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
           reply.liveIndex = static_cast<int>(i);
       }
     reply.hasTable = true;
-    if (reply.liveIndex >= 0)
-      slot = reply.table[reply.liveIndex];
-    else
-    {
-      std::unique_lock lock(m_slotMutex);
-      slot = m_mainSlot;
-    }
+    slot = reply.liveIndex >= 0 ? reply.table[reply.liveIndex] : mainSlot;
     m_wHas2160 = Has2160(reply.table) || slot.iScreenHeight >= 2160;
   }
   DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160);
@@ -1842,6 +1852,17 @@ void CWinSystemAmlogic::RefreshResolutions()
   // get all resolutions supported by connected device
   if (m_amlDisplay->aml_get_native_resolution(&curDisplay))
     resDesktop = curDisplay;
+  // 5.B3-7b (P14): a disconnected read ("dummy_l") leaves a real RES_DESKTOP entry as it is
+  if (m_wHotplug && StringUtils::EqualsNoCase(curDisplay.strId, "dummy_l"))
+  {
+    const RESOLUTION_INFO& slot = CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP);
+    if (RealSlot(slot))
+    {
+      CLog::Log(LOGINFO, "HOTPLUG slot kept {}: the live read is dummy_l (disconnected)",
+                slot.strId);
+      resDesktop = RESOLUTION_INFO();
+    }
+  }
 
   for (auto& res : resolutions)
   {
