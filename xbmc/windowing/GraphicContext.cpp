@@ -433,6 +433,8 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 {
   RESOLUTION lastRes = m_Resolution;
 #if defined(HAS_LIBAMCODEC)
+  // 5.B3-7b (O1): a hotplug reply is not applied by a pump inside this set
+  DISPLAYSTATE::CGcSetScope gcSetScope;
   forceUpdate = true;
   // 5.B2-5b: W parks the coordinator in its own job, and GC follows the reply
   const bool onW = OUTPUT::ModeSetsOnW();

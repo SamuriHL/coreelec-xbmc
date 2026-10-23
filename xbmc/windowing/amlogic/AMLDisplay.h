@@ -127,7 +127,10 @@ public:
   {
     return m_crtcIdLive.load(std::memory_order_acquire);
   }
-  void aml_init_drmDevice();
+  //! hpd (5.B3-7b, W's hotplug job): the connection is W's HPD read, not encoder_id; an unrouted
+  //! connector read connected takes encoders[0] and the first CRTC it can drive, and a dark CRTC
+  //! keeps the last lit snapshot for the exit restore
+  void aml_init_drmDevice(std::optional<bool> hpd = std::nullopt);
   bool aml_drmDevice_vsync();
   std::string aml_get_drmDevice_mode();
   std::string aml_get_drmDevice_modes();
@@ -208,7 +211,7 @@ public:
   }
 private:
   void CleanAndClose();
-  void aml_init_drmDevice_display();
+  void aml_init_drmDevice_display(bool hpdRouting);
   void aml_set_framebuffer_resolution(unsigned int width,
                                       unsigned int height,
                                       std::string framebuffer_name);
@@ -268,7 +271,10 @@ public:
   {
     return m_amlDRMUtils->aml_get_drmDevice_crtc_id_live();
   }
-  void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
+  void aml_init_drmDevice(std::optional<bool> hpd = std::nullopt)
+  {
+    m_amlDRMUtils->aml_init_drmDevice(hpd);
+  }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
   bool aml_crtc_dark() const { return m_amlDRMUtils->aml_get_drmDevice_crtc_dark(); }
@@ -309,7 +315,9 @@ public:
   //! nativeGui: DISABLEGUISCALING as the caller read it (5.B2-5a's W, which reads no CSettings)
   bool aml_get_native_resolution(RESOLUTION_INFO* res,
                                  std::optional<bool> nativeGui = std::nullopt);
-  bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions);
+  //! nativeGui: DISABLEGUISCALING as the caller read it (5.B3-7b's W, which reads no CSettings)
+  bool aml_probe_resolutions(std::vector<RESOLUTION_INFO>& resolutions,
+                             std::optional<bool> nativeGui = std::nullopt);
   int aml_get_drmProperty(std::string name,
                           unsigned int obj_type,
                           void* data = nullptr,

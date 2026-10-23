@@ -21,6 +21,11 @@ namespace OUTPUT
 {
 namespace
 {
+// CScopedValue's override, this thread only
+thread_local bool t_override = false;
+thread_local std::string t_overrideId;
+thread_local int t_overrideValue = 0;
+
 // not DISABLEGUISCALING: CDisplaySettings acts on it inside its own OnSettingChanging, which can
 // run before the mirror's
 const char* const MIRRORED[] = {
@@ -160,8 +165,22 @@ void CSettingsMirror::Store(const std::shared_ptr<const CSetting>& setting)
   m_values[setting->GetId()] = value;
 }
 
+CSettingsMirror::CScopedValue::CScopedValue(const std::string& id, int value)
+{
+  t_override = true;
+  t_overrideId = id;
+  t_overrideValue = value;
+}
+
+CSettingsMirror::CScopedValue::~CScopedValue()
+{
+  t_override = false;
+}
+
 int CSettingsMirror::GetInt(const std::string& id) const
 {
+  if (t_override && t_overrideId == id)
+    return t_overrideValue;
   int value = 0;
   bool mirrored = false;
   bool check = false;

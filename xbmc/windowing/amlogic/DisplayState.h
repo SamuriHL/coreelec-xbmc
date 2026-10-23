@@ -100,7 +100,9 @@ std::shared_ptr<const DisplayState> LinkState();
 
 // W's publishes (or inline on their caller while W is not running)
 void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed);
-void PublishCaps(const CAMLDisplay& display);
+//! has2160: the caller's value (5.B3-7b: W's own table, or main's read of its table); without it
+//! the publish reads CDisplaySettings
+void PublishCaps(const CAMLDisplay& display, std::optional<bool> has2160 = std::nullopt);
 //! res null: no committed mode yet
 void PublishSeed(const CAMLDisplay& display, const RESOLUTION_INFO* res, bool windowed);
 
@@ -129,6 +131,18 @@ bool CommittedTiming(ModeTiming& timing, const char* field = nullptr);
 //! is known
 void GcSetBegins();
 void GcSetEnds(bool switched);
+//! 5.B3-7b (O1): GC's set (SetVideoResolutionInternal) on main's stack, unwound by a throw too; a
+//! hotplug reply is not applied inside one
+class CGcSetScope
+{
+public:
+  CGcSetScope();
+  ~CGcSetScope();
+  CGcSetScope(const CGcSetScope&) = delete;
+  CGcSetScope& operator=(const CGcSetScope&) = delete;
+};
+//! main: the GC sets on its stack
+int GcSetDepth();
 
 // shadows of main's reads (render manager): only when GC's committed mode (strId + refresh) is
 // DisplayState's, else a skip; committed: a skip after a commit is a FAIL

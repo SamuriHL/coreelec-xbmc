@@ -42,6 +42,17 @@ public:
   bool OnSettingChanging(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingsLoaded() override;
 
+  //! 5.B3-7b: this thread's reads of one setting take value until the scope ends (W's Restore
+  //! takes the DV_LED clamp it decided, which main writes only when it applies the reply)
+  class CScopedValue
+  {
+  public:
+    CScopedValue(const std::string& id, int value);
+    ~CScopedValue();
+    CScopedValue(const CScopedValue&) = delete;
+    CScopedValue& operator=(const CScopedValue&) = delete;
+  };
+
 private:
   CSettingsMirror() = default;
   void Store(const std::shared_ptr<const CSetting>& setting);

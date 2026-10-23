@@ -401,9 +401,12 @@ void CAMLDRMUtils::CleanAndClose()
   m_crtcIdLive.store(0, std::memory_order_release);
 }
 
-void CAMLDRMUtils::aml_init_drmDevice()
+void CAMLDRMUtils::aml_init_drmDevice(std::optional<bool> hpd)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
+  // 5.B3-7b (L4): a dark CRTC keeps the last lit snapshot for the exit restore
+  std::unique_ptr<drmModeCrtc, decltype(&free)> origCrtc(
+      hpd ? std::exchange(m_orig_crtc, nullptr) : nullptr, &free);
   CleanAndClose();
 
   // get resources of drmDevice
@@ -426,8 +429,12 @@ void CAMLDRMUtils::aml_init_drmDevice()
     if (m_connector == NULL)
       continue;
 
-    // connector state as always connected but encoder_id == 0 if not connected
-    m_connection = (m_connector->encoder_id ? DRM_MODE_CONNECTED : DRM_MODE_DISCONNECTED);
+    // connector state as always connected but encoder_id == 0 if not connected; 5.B3-7b: W's
+    // HPD read when it has one
+    if (hpd)
+      m_connection = *hpd ? DRM_MODE_CONNECTED : DRM_MODE_DISCONNECTED;
+    else
+      m_connection = (m_connector->encoder_id ? DRM_MODE_CONNECTED : DRM_MODE_DISCONNECTED);
 
     if (m_connector->connector_type == DRM_MODE_CONNECTOR_HDMIA)
       break;
@@ -492,11 +499,13 @@ void CAMLDRMUtils::aml_init_drmDevice()
   }
 
   if (aml_get_drmDevice_connected())
-    aml_init_drmDevice_display();
+    aml_init_drmDevice_display(hpd.has_value());
+  if (hpd && aml_get_drmDevice_connected() && !m_orig_crtc)
+    m_orig_crtc = origCrtc.release();
   m_crtcIdLive.store(m_crtc ? m_crtc->crtc_id : 0, std::memory_order_release);
 }
 
-void CAMLDRMUtils::aml_init_drmDevice_display()
+void CAMLDRMUtils::aml_init_drmDevice_display(bool hpdRouting)
 {
   // get encoder of drmDevice
   CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - connector[{:d}] is connected with {:d} encoder(s)", __FUNCTION__,
@@ -520,6 +529,11 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
       m_encoder = NULL;
     }
   }
+  // 5.B3-7b (design §6): HPD reads connected on a connector the kernel left unrouted; the encoder
+  // and CRTC a mode set routes it to
+  const bool unrouted = hpdRouting && !m_encoder && !m_connector->encoder_id;
+  if (unrouted && m_connector->count_encoders > 0)
+    m_encoder = drmModeGetEncoder(m_fd, m_connector->encoders[0]);
   if (!m_encoder)
   {
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to get encoder of drmDevice", __FUNCTION__);
@@ -537,7 +551,8 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
     if (m_crtc == NULL)
       continue;
 
-    if (m_encoder->possible_crtcs & (1 << i) && m_crtc->crtc_id == m_encoder->crtc_id)
+    if (m_encoder->possible_crtcs & (1 << i) &&
+        (m_crtc->crtc_id == m_encoder->crtc_id || (unrouted && !m_encoder->crtc_id)))
     {
       CLog::Log(LOGDEBUG, "CAMLDRMUtils::{} - using crtc {}", __FUNCTION__, m_crtc->crtc_id);
       break;
@@ -553,6 +568,17 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
     CLog::Log(LOGERROR, "CAMLDRMUtils::{} - failed to get crtc of drmDevice", __FUNCTION__);
     CleanAndClose();
     throw std::runtime_error("failed to get crtc of drmDevice");
+  }
+
+  if (unrouted)
+    CLog::Log(LOGINFO, "CAMLDRMUtils::{} - connector unrouted: encoder {}, crtc {} (HPD connected)",
+              __FUNCTION__, m_encoder->encoder_id, m_crtc->crtc_id);
+
+  // 5.B3-7b (L4): re-snapshotted only from a lit CRTC
+  if (hpdRouting && !m_crtc->mode_valid)
+  {
+    drmSetMaster(m_fd);
+    return;
   }
 
   m_orig_crtc = static_cast<drmModeCrtcPtr>(malloc(sizeof(drmModeCrtc)));
@@ -1996,7 +2022,8 @@ float CAMLDisplay::aml_committed_refresh(const RESOLUTION_INFO& res, bool& held)
              : rate;
 }
 
-bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)
+bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO>& resolutions,
+                                        std::optional<bool> nativeGui)
 {
   std::string valstr, addstr;
 
@@ -2038,7 +2065,7 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
   {
     if (((StringUtils::StartsWith(i->c_str(), "4k2k")) && (aml_support_h264_4k2k() > AML_NO_H264_4K2K)) || !(StringUtils::StartsWith(i->c_str(), "4k2k")))
     {
-      if (aml_mode_to_resolution(i->c_str(), &res))
+      if (aml_mode_to_resolution(i->c_str(), &res, nativeGui))
       {
         // skip 'dummy_l' resolution when HDMI is connected
         if (StringUtils::EqualsNoCase(i->c_str(), "dummy_l") && resolutions.size() > 0)

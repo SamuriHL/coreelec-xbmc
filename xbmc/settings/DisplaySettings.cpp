@@ -642,6 +642,11 @@ RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(RESOLUTION resolution)
 void CDisplaySettings::AddResolutionInfo(const RESOLUTION_INFO &resolution)
 {
   std::unique_lock lock(m_critical);
+  m_resolutions.push_back(AddedResolutionInfo(resolution));
+}
+
+RESOLUTION_INFO CDisplaySettings::AddedResolutionInfo(const RESOLUTION_INFO& resolution)
+{
   RESOLUTION_INFO res(resolution);
 
   if((res.dwFlags & D3DPRESENTFLAG_MODE3DTB) == 0)
@@ -662,7 +667,7 @@ void CDisplaySettings::AddResolutionInfo(const RESOLUTION_INFO &resolution)
       res.dwFlags  |= D3DPRESENTFLAG_MODE3DTB;
     }
   }
-  m_resolutions.push_back(res);
+  return res;
 }
 
 void CDisplaySettings::ApplyCalibrations()

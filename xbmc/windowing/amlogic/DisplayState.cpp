@@ -219,13 +219,19 @@ void FillLink(DisplayState& s, const CAMLDisplay& display)
                                      s.uiScreenH, s.overlayActive);
 }
 
-void FillCaps(DisplayState& s, const CAMLDisplay& display)
+void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> has2160)
 {
   s.hdrCaps = display.GetHDRCaps();
   s.support3d = display.aml_display_support_3d();
   s.hdrPq = aml_display_support_hdr_pq();
   s.hdrHlg = aml_display_support_hdr_hlg();
   s.hdr10Plus = aml_display_support_hdr10plus();
+  s.capsEpoch = ++s_capsEpoch;
+  if (has2160)
+  {
+    s.has2160 = *has2160;
+    return;
+  }
   s.has2160 = false;
   const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
   for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
@@ -236,7 +242,6 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display)
       break;
     }
   }
-  s.capsEpoch = ++s_capsEpoch;
 }
 
 void Store(DisplayState& s, const char* kind)
@@ -258,7 +263,10 @@ void Store(DisplayState& s, const char* kind)
 
 // a failed read (the hdr_cap sysfs read throws) skips this publish and stays on W; the caps
 // readers keep today's read until a caps publish succeeds
-void PublishWithCaps(DisplayState& s, const CAMLDisplay& display, const char* kind)
+void PublishWithCaps(DisplayState& s,
+                     const CAMLDisplay& display,
+                     const char* kind,
+                     std::optional<bool> has2160 = std::nullopt)
 {
   // a write begun after this load stays pending for its own publish
   const uint64_t gen = s_capsGen.load();
@@ -271,7 +279,7 @@ void PublishWithCaps(DisplayState& s, const CAMLDisplay& display, const char* ki
   try
   {
     FillLink(s, display);
-    FillCaps(s, display);
+    FillCaps(s, display, has2160);
     Store(s, kind);
     s_capsFailed = false;
     s_capsDoneGen = gen;
@@ -424,12 +432,12 @@ void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool wi
   s_inSet = false;
 }
 
-void PublishCaps(const CAMLDisplay& display)
+void PublishCaps(const CAMLDisplay& display, std::optional<bool> has2160)
 {
   if (!aml_displaystate_on())
     return;
   DisplayState s = Current();
-  PublishWithCaps(s, display, "caps");
+  PublishWithCaps(s, display, "caps", has2160);
 }
 
 void PublishSeed(const CAMLDisplay& display, const RESOLUTION_INFO* res, bool windowed)
@@ -509,6 +517,26 @@ void GcSetEnds(bool switched)
   if (!switched && s_modePublishes.load() != s_setBeginPublishes)
     s_restored = true;
   s_inSet = false;
+}
+
+namespace
+{
+int s_gcSetDepth = 0; // main
+} // namespace
+
+CGcSetScope::CGcSetScope()
+{
+  ++s_gcSetDepth;
+}
+
+CGcSetScope::~CGcSetScope()
+{
+  --s_gcSetDepth;
+}
+
+int GcSetDepth()
+{
+  return s_gcSetDepth;
 }
 
 void ShadowMainMode(const char* fpsField,
