@@ -761,6 +761,42 @@ bool SameMode(const RESOLUTION_INFO& res, const std::string& strId, float refres
   return StringUtils::EqualsNoCase(res.strId, strId) && std::abs(res.fRefreshRate - refresh) < 0.01f &&
          res.dwFlags == flags;
 }
+
+// 5.B3-8 (§4.7): a mode by its facts: the mode string (any case), the screen size, the refresh
+// within 0.01 Hz and the flags; never iWidth/iHeight (the GUI size follows DISABLEGUISCALING)
+bool SameFacts(const RESOLUTION_INFO& res, const DISPLAYSTATE::ModeFacts& facts)
+{
+  return res.iScreenWidth == facts.screenWidth && res.iScreenHeight == facts.screenHeight &&
+         SameMode(res, facts.strId, facts.refresh, facts.dwFlags);
+}
+
+// the Restore's rows (rows[0] RES_DESKTOP's entry, then the probe's): the first row with these
+// facts, when the probe has them (a slot kept from the old table is no evidence of the new one)
+std::optional<size_t> FactsRow(const std::vector<RESOLUTION_INFO>& rows,
+                               const DISPLAYSTATE::ModeFacts& facts)
+{
+  if (facts.strId.empty() ||
+      std::none_of(rows.begin() + std::min<size_t>(1, rows.size()), rows.end(),
+                   [&facts](const RESOLUTION_INFO& res) { return SameFacts(res, facts); }))
+    return std::nullopt;
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (SameFacts(rows[i], facts))
+      return i;
+  return std::nullopt;
+}
+
+// the connector's PREFERRED mode on the Restore's rows: the probe's first row of that mode
+// string, then FactsRow's first row with its facts
+std::optional<size_t> PreferredRow(const std::vector<RESOLUTION_INFO>& rows,
+                                   const std::string& preferred)
+{
+  if (preferred.empty())
+    return std::nullopt;
+  for (size_t i = 1; i < rows.size(); ++i)
+    if (StringUtils::EqualsNoCase(rows[i].strId, preferred))
+      return FactsRow(rows, DISPLAYSTATE::FactsOf(rows[i]));
+  return std::nullopt;
+}
 } // namespace
 
 void CWinSystemAmlogic::StartHotplugOnW()
@@ -768,6 +804,36 @@ void CWinSystemAmlogic::StartHotplugOnW()
   // main, holding nothing; no W hotplug job exists before m_wHotplug
   LatchRestoreInputs();
   PublishMainSlot();
+  if (OUTPUT::RestoreRow2On())
+  {
+    // 5.B3-8 (§4.7): the session's desktop mode, once; W's desktopMode until the first reconnect
+    std::unique_lock lock(m_slotMutex);
+    m_sessionDesktopMode = DISPLAYSTATE::FactsOf(m_mainSlot);
+    m_wDesktopMode = m_sessionDesktopMode;
+    m_wDesktopModeWhy = "the session's desktop mode";
+    CLog::Log(LOGINFO, "HOTPLUG session desktop mode {}",
+              DISPLAYSTATE::FactsString(m_sessionDesktopMode));
+    // the open choice (§25): off's no-player Restore takes the boot vout mode by its string, so
+    // a session whose live mode at start was another (an unrouted or reduced-EDID boot, a kernel
+    // fallback) returns its own mode at "desktop" where off returns the vout's
+    const std::string vout = m_amlDisplay->aml_get_boot_vout_mode();
+    if (!vout.empty() && !StringUtils::EqualsNoCase(m_sessionDesktopMode.strId, vout))
+    {
+      const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+      std::string voutRow = "not in the table";
+      for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+        if (StringUtils::EqualsNoCase(displaySettings.GetResolutionInfo(i).strId, vout))
+        {
+          voutRow = DISPLAYSTATE::FactsString(
+              DISPLAYSTATE::FactsOf(displaySettings.GetResolutionInfo(i)));
+          break;
+        }
+      CLog::Log(LOGINFO,
+                "HOTPLUG session desktop mode {} is not the boot vout mode {} ({}): a reconnect at "
+                "\"desktop\" returns the session's mode, off the vout's",
+                DISPLAYSTATE::FactsString(m_sessionDesktopMode), vout, voutRow);
+    }
+  }
   {
     const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
     std::vector<RESOLUTION_INFO> table;
@@ -879,7 +945,8 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::Mo
   }
   // ends a caps write the throw left begun (PublishCaps catches its own failure)
   if (reply.kind == SHotplugReply::Kind::THROW)
-    DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160);
+    DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160,
+                              OUTPUT::RestoreRow2On() ? &m_wDesktopMode : nullptr);
   CLog::Log(LOGINFO,
             "HOTPLUG job reply={} upTo={} kind={}{} source={} state={} seq={} last={} span={} "
             "claim=no-op park_ms={} parkRetried={} modes={} table={} restore={}",
@@ -1091,7 +1158,16 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     slot = reply.liveIndex >= 0 ? reply.table[reply.liveIndex] : mainSlot;
     m_wHas2160 = Has2160(reply.table) || slot.iScreenHeight >= 2160;
   }
-  DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160);
+  const bool row2 = OUTPUT::RestoreRow2On();
+  // 5.B3-8: a reconnect's caps step decides desktopMode, on the rows the Restore takes
+  if (row2 && connected && reply.modes > 1)
+  {
+    std::vector<RESOLUTION_INFO> rows{slot};
+    for (const RESOLUTION_INFO& res : reply.table)
+      rows.push_back(CDisplaySettings::AddedResolutionInfo(res));
+    UpdateDesktopMode(rows);
+  }
+  DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160, row2 ? &m_wDesktopMode : nullptr);
 
   // step 6: no commit at a loss (§1 step 4's plug-out commit is gone, fc30 C3)
   if (!connected)
@@ -1110,28 +1186,31 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     return;
   }
 
-  // step 7: the Restore at §6 row 1 (HotplugEvent's target) on W's table: RES_DESKTOP's entry,
-  // then the probe's as CDisplaySettings stores them
+  // step 7: the Restore at §6's target on W's table (row 1, HotplugEvent's, under the skip; row 2
+  // under B3-8): RES_DESKTOP's entry, then the probe's as CDisplaySettings stores them
   std::vector<RESOLUTION_INFO> rows{slot};
   for (const RESOLUTION_INFO& res : reply.table)
     rows.push_back(CDisplaySettings::AddedResolutionInfo(res));
   size_t target = 0;
-  const std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
-  if (!preferred_mode.empty())
+  if (!row2)
   {
-    for (size_t i = 0; i < rows.size(); ++i)
-      if (StringUtils::EqualsNoCase(rows[i].strId, preferred_mode))
-      {
-        target = i;
-        break;
-      }
-    CLog::Log(LOGDEBUG, "CWinSystemAmlogic - HotplugEvent, preferred mode: {}, display mode: {}",
-              preferred_mode, rows[target].strId);
+    const std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
+    if (!preferred_mode.empty())
+    {
+      for (size_t i = 0; i < rows.size(); ++i)
+        if (StringUtils::EqualsNoCase(rows[i].strId, preferred_mode))
+        {
+          target = i;
+          break;
+        }
+      CLog::Log(LOGDEBUG, "CWinSystemAmlogic - HotplugEvent, preferred mode: {}, display mode: {}",
+                preferred_mode, rows[target].strId);
+    }
+    else
+      CLog::Log(LOGWARNING,
+                "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
+                rows[target].strId);
   }
-  else
-    CLog::Log(LOGWARNING,
-              "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
-              rows[target].strId);
   std::optional<size_t> videoRow;
   if (m_wVideoMode)
   {
@@ -1144,6 +1223,39 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
                   rows[i].strId, rows[i].fRefreshRate);
         break;
       }
+  }
+  // 5.B3-8 (§6 row 2): the video's mode is HotplugEvent's record (D5), GC's video row at the
+  // playback's first event (recorded once per playback) and kept until applied, so the committed
+  // mode during playback is off's; with none (no player, no video, or its mode not on the table)
+  // §4.7's no-player target
+  if (row2 && !videoRow)
+  {
+    std::string why;
+    target = NoPlayerTarget(rows, gui, why);
+    if (m_wVideoMode)
+    {
+      // the one playback case where on differs from off: off keeps HotplugEvent's preferred rule,
+      // whose boot vout string the table may lack, leaving RES_DESKTOP's entry (P10's kept slot,
+      // with Y the film's mode)
+      size_t offTarget = 0;
+      const std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
+      for (size_t i = 0; i < rows.size() && !preferred_mode.empty(); ++i)
+        if (StringUtils::EqualsNoCase(rows[i].strId, preferred_mode))
+        {
+          offTarget = i;
+          break;
+        }
+      CLog::Log(LOGINFO,
+                "HOTPLUG restore target {}: playing, the video's mode {} not in the table: row 2's "
+                "target ({}) (off would target the {} {})",
+                DISPLAYSTATE::FactsString(DISPLAYSTATE::FactsOf(rows[target])),
+                DISPLAYSTATE::FactsString(*m_wVideoMode), why,
+                offTarget == 0 ? "slot" : "preferred mode's row",
+                DISPLAYSTATE::FactsString(DISPLAYSTATE::FactsOf(rows[offTarget])));
+    }
+    else
+      CLog::Log(LOGINFO, "HOTPLUG restore target {}: {}",
+                DISPLAYSTATE::FactsString(DISPLAYSTATE::FactsOf(rows[target])), why);
   }
   // the throw recovery: the mode the dropped Restore put on the wire, as main never adopted it
   bool recovered = false;
@@ -1176,6 +1288,89 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     m_wVideoModeReply = reply.videoMode ? reply.replyId : 0;
   }
   // step 8: the unpark at the hold's end, then the reply
+}
+
+void CWinSystemAmlogic::UpdateDesktopMode(const std::vector<RESOLUTION_INFO>& rows)
+{
+  DISPLAYSTATE::ModeFacts session;
+  {
+    std::unique_lock lock(m_slotMutex);
+    session = m_sessionDesktopMode;
+  }
+  // §4.7: the session's desktop mode when the new table has it (an empty one is absent), else
+  // the PREFERRED mode, so a reduced EDID gives 1080p60 and a later full one the session's back
+  if (FactsRow(rows, session))
+  {
+    m_wDesktopMode = session;
+    m_wDesktopModeWhy = "the session's desktop mode";
+  }
+  else if (const auto preferred = PreferredRow(rows, m_amlDisplay->aml_get_drm_preferred_mode()))
+  {
+    m_wDesktopMode = DISPLAYSTATE::FactsOf(rows[*preferred]);
+    m_wDesktopModeWhy = StringUtils::Format("PREFERRED, the session's desktop mode {} is not in "
+                                            "the table",
+                                            DISPLAYSTATE::FactsString(session));
+  }
+  else
+  {
+    // neither: kept, and the target below falls back to today's rule
+    CLog::Log(LOGWARNING, "HOTPLUG desktopMode kept {}: neither the session's desktop mode {} nor "
+                          "a PREFERRED mode is in the table",
+              DISPLAYSTATE::FactsString(m_wDesktopMode), DISPLAYSTATE::FactsString(session));
+    return;
+  }
+  CLog::Log(LOGINFO, "HOTPLUG desktopMode {}: {}", DISPLAYSTATE::FactsString(m_wDesktopMode),
+            m_wDesktopModeWhy);
+}
+
+size_t CWinSystemAmlogic::NoPlayerTarget(const std::vector<RESOLUTION_INFO>& rows,
+                                         const DISPLAYSTATE::GuiInputs& gui,
+                                         std::string& why)
+{
+  // §4.7's no-player target: the GUI resolution's facts, "desktop" as desktopMode; else the
+  // connector's PREFERRED mode (1080p60 on both boxes, R1)
+  std::string missing;
+  if (gui.guiResolution)
+  {
+    if (const auto row = FactsRow(rows, *gui.guiResolution))
+    {
+      why = "the GUI resolution";
+      return *row;
+    }
+    missing = StringUtils::Format("the GUI resolution {} is not in the table",
+                                  DISPLAYSTATE::FactsString(*gui.guiResolution));
+  }
+  else if (const auto row = FactsRow(rows, m_wDesktopMode))
+  {
+    why = StringUtils::Format("desktop, desktopMode ({})", m_wDesktopModeWhy);
+    return *row;
+  }
+  else
+    missing = StringUtils::Format("desktop, desktopMode {} is not in the table",
+                                  DISPLAYSTATE::FactsString(m_wDesktopMode));
+  if (const auto row = PreferredRow(rows, m_amlDisplay->aml_get_drm_preferred_mode()))
+  {
+    why = "PREFERRED, " + missing;
+    return *row;
+  }
+  // no PREFERRED mode on the table (not seen on S6 or G12B): today's rule, the boot vout or the
+  // DRM PREFERRED mode by its string, else RES_DESKTOP's entry
+  size_t target = 0;
+  const std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
+  for (size_t i = 0; i < rows.size() && !preferred_mode.empty(); ++i)
+    if (StringUtils::EqualsNoCase(rows[i].strId, preferred_mode))
+    {
+      target = i;
+      break;
+    }
+  if (rows[target].strId.empty())
+    // r17a H2: an empty target would read "already set" on a dark CRTC and commit nothing
+    CLog::Log(LOGERROR, "HOTPLUG restore target empty: {}, and no PREFERRED mode in the table",
+              missing);
+  else
+    CLog::Log(LOGWARNING, "HOTPLUG restore: no PREFERRED mode in the table, today's target");
+  why = "today's target, " + missing;
+  return target;
 }
 
 void CWinSystemAmlogic::ArmHotplugRetry()
@@ -1679,6 +1874,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
         OUTPUT::TestHotplugSettleGapMs();
       // 5.B3-7b's switch line; the move itself starts at main's first pump after this set
       OUTPUT::HotplugOnW();
+      // 5.B3-8's, read here so no settings thread's GuiResolution publish reads the file
+      OUTPUT::RestoreRow2On();
     }
     catch (const std::exception& e)
     {

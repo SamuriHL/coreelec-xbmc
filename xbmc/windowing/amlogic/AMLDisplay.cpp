@@ -1843,7 +1843,7 @@ bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string
                                                frac_reclock);
 }
 
-std::string CAMLDisplay::aml_get_preferred_mode()
+std::string CAMLDisplay::aml_get_boot_vout_mode()
 {
   std::string mode = "";
 
@@ -1871,6 +1871,13 @@ std::string CAMLDisplay::aml_get_preferred_mode()
       }
     }
   }
+
+  return mode;
+}
+
+std::string CAMLDisplay::aml_get_preferred_mode()
+{
+  std::string mode = aml_get_boot_vout_mode();
 
   if (mode.empty())
     mode = m_amlDRMUtils->aml_get_drmDevice_preferred_mode();

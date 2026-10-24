@@ -44,6 +44,9 @@ struct ModeFacts
   }
   bool operator!=(const ModeFacts& other) const { return !(*this == other); }
 };
+ModeFacts FactsOf(const RESOLUTION_INFO& info);
+//! "<strId> <w>x<h> @ <hz> flags <f>", for the logs
+std::string FactsString(const ModeFacts& facts);
 
 struct DisplayState
 {
@@ -82,7 +85,9 @@ struct DisplayState
   //! m_overlayActive with its own flips, between publishes, so this copy goes stale: B3-4 and
   //! later must not read it (a G-side publisher first)
   bool overlayActive = false;
-  //! W's no-player Restore target (B3-8); empty until then
+  //! W's no-player Restore target for "desktop" (B3-8): the session's desktop mode, or the
+  //! PREFERRED mode on a table without it, or the last one kept when the table has neither; empty
+  //! before W's first caps publish under B3-8
   ModeFacts desktopMode;
   //! set only by 5.E2's deferred Restore; always false in 5.B3
   bool linkUncommitted = false;
@@ -101,8 +106,11 @@ std::shared_ptr<const DisplayState> LinkState();
 // W's publishes (or inline on their caller while W is not running)
 void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed);
 //! has2160: the caller's value (5.B3-7b: W's own table, or main's read of its table); without it
-//! the publish reads CDisplaySettings
-void PublishCaps(const CAMLDisplay& display, std::optional<bool> has2160 = std::nullopt);
+//! the publish reads CDisplaySettings. desktopMode (5.B3-8, W's caps step): stored with these
+//! caps and kept by every later publish; null keeps the published one
+void PublishCaps(const CAMLDisplay& display,
+                 std::optional<bool> has2160 = std::nullopt,
+                 const ModeFacts* desktopMode = nullptr);
 //! res null: no committed mode yet
 void PublishSeed(const CAMLDisplay& display, const RESOLUTION_INFO* res, bool windowed);
 

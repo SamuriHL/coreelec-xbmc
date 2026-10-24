@@ -238,6 +238,11 @@ bool OrderingOn();
 //! and main applies its replies: OrderingOn and no hotplugworker_skip "B3-7b"; the switch line
 //! is logged once (read first at W's start)
 bool HotplugOnW();
+//! 5.B3-8: W's Restore takes §6 row 2's target (the video's mode as recorded, else §4.7's
+//! no-player target: the GUI resolution, desktop as W's desktopMode, else the connector's
+//! PREFERRED mode): HotplugOnW and no hotplugworker_skip "B3-8"; the switch line is logged once
+//! (read first at W's start)
+bool RestoreRow2On();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)

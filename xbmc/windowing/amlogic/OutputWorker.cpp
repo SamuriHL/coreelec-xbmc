@@ -773,6 +773,21 @@ bool HotplugOnW()
   return on;
 }
 
+bool RestoreRow2On()
+{
+  if (!HotplugOnW())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-8");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-8: W's Restore takes row 2's target (the video's "
+                         "mode, else the GUI resolution, desktop as desktopMode, else PREFERRED)");
+    return result;
+  }();
+  return on;
+}
+
 namespace
 {
 std::atomic_bool s_hotplugJobsOnW{false};

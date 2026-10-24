@@ -312,6 +312,14 @@ public:
                                               overlay_active);
   }
   std::string aml_get_preferred_mode();
+  //! the kernel command line's vout mode (aml_get_preferred_mode's first source); empty without one
+  std::string aml_get_boot_vout_mode();
+  //! 5.B3-8: the connector's first DRM_MODE_TYPE_PREFERRED mode only (no boot vout); empty while
+  //! m_connection reads disconnected
+  std::string aml_get_drm_preferred_mode()
+  {
+    return m_amlDRMUtils->aml_get_drmDevice_preferred_mode();
+  }
   //! nativeGui: DISABLEGUISCALING as the caller read it (5.B2-5a's W, which reads no CSettings)
   bool aml_get_native_resolution(RESOLUTION_INFO* res,
                                  std::optional<bool> nativeGui = std::nullopt);

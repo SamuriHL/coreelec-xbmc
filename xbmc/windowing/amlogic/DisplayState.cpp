@@ -436,11 +436,15 @@ void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool wi
   s_inSet = false;
 }
 
-void PublishCaps(const CAMLDisplay& display, std::optional<bool> has2160)
+void PublishCaps(const CAMLDisplay& display,
+                 std::optional<bool> has2160,
+                 const ModeFacts* desktopMode)
 {
   if (!aml_displaystate_on())
     return;
   DisplayState s = Current();
+  if (desktopMode)
+    s.desktopMode = *desktopMode;
   PublishWithCaps(s, display, "caps", has2160);
 }
 
@@ -811,14 +815,6 @@ RenderStereoMode GuiStereoMode(RenderStereoMode today)
   return static_cast<RenderStereoMode>(published);
 }
 
-namespace
-{
-// 5.B3-3's GuiInputs fields. Under it: CDisplaySettings' lock (PublishGuiResolution, so two
-// threads' publishes store in order) and CLog; never a DisplayState or W lock
-std::mutex s_guiInputsMutex;
-GuiInputs s_guiInputs;
-bool s_videoRowHeld = false; //!< D5's hold is on (its line logged once per hold)
-
 std::string FactsString(const ModeFacts& f)
 {
   return StringUtils::Format("{} {}x{} @ {:.3f} flags {:#x}", f.strId, f.screenWidth,
@@ -829,6 +825,15 @@ ModeFacts FactsOf(const RESOLUTION_INFO& info)
 {
   return {info.strId, info.iScreenWidth, info.iScreenHeight, info.fRefreshRate, info.dwFlags};
 }
+
+namespace
+{
+// 5.B3-3's GuiInputs fields. Under it: CDisplaySettings' lock (PublishGuiResolution, so two
+// threads' publishes store in order) and CLog; never a DisplayState or W lock
+std::mutex s_guiInputsMutex;
+GuiInputs s_guiInputs;
+bool s_videoRowHeld = false; //!< D5's hold is on (its line logged once per hold)
+bool s_guiRowHeld = false; //!< B3-8's hold of guiResolution is on (logged once per hold)
 
 std::optional<ModeFacts> CurrentGuiResolution()
 {
@@ -896,6 +901,23 @@ void PublishGuiResolution()
   std::unique_lock lock(s_guiInputsMutex);
   if (!s_guiInputs.published)
     return;
+  // 5.B3-8 (D5's twin): W's no-player Restore reads these facts. A setting above RES_DESKTOP whose
+  // row is not in main's table (a table step cut short by a throw until the retry refills it, or
+  // a shorter table after a reconnect: main does not re-derive its index) names no mode, so the
+  // published facts stand
+  if (OUTPUT::RestoreRow2On())
+  {
+    const RESOLUTION res = CDisplaySettings::GetInstance().GetCurrentResolution();
+    if (res > RES_DESKTOP && !RowInTable(res))
+    {
+      if (!std::exchange(s_guiRowHeld, true))
+        CLog::Log(LOGINFO, "GUIINPUTS guires held at {}: the setting's row {} is not in main's table",
+                  s_guiInputs.guiResolution ? FactsString(*s_guiInputs.guiResolution) : "desktop",
+                  static_cast<int>(res));
+      return;
+    }
+    s_guiRowHeld = false;
+  }
   const auto guiResolution = CurrentGuiResolution();
   if (s_guiInputs.guiResolution == guiResolution)
     return;

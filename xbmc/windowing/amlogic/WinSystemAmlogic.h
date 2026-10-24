@@ -311,6 +311,12 @@ private:
   void HotplugJob(SHotplugReply& reply,
                   bool retry,
                   const std::optional<DISPLAYSTATE::ModeFacts>& recover);
+  //! W, 5.B3-8: desktopMode at a reconnect's caps step, on the Restore's rows (rows[0] the slot)
+  void UpdateDesktopMode(const std::vector<RESOLUTION_INFO>& rows);
+  //! W, 5.B3-8: §4.7's no-player target on the Restore's rows; why: the reason, for the log
+  size_t NoPlayerTarget(const std::vector<RESOLUTION_INFO>& rows,
+                        const DISPLAYSTATE::GuiInputs& gui,
+                        std::string& why);
   //! W: P5-9's timer, armed at a span's opening
   void ArmHotplugRetry();
   void PostHotplugRetryTick(uint64_t gen, std::chrono::milliseconds after);
@@ -324,6 +330,9 @@ private:
   std::atomic<int64_t> m_setAfterDueMs{0};
   std::mutex m_slotMutex;
   RESOLUTION_INFO m_mainSlot;
+  //! 5.B3-8 (§4.7): RES_DESKTOP's mode at the move's start (an unrouted connector's "dummy_l"
+  //! entry included), set once by main before any W hotplug job
+  DISPLAYSTATE::ModeFacts m_sessionDesktopMode;
   // W only
   uint64_t m_wUpTo{0};
   uint64_t m_wReplies{0};
@@ -333,6 +342,11 @@ private:
   std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
   uint64_t m_wVideoModeReply{0}; //!< the last reply whose Restore targets it (0: none)
   bool m_wHas2160{false}; //!< W's last table
+  //! 5.B3-8: "desktop"'s Restore target, re-decided at each reconnect's caps step (published
+  //! with W's caps); the session's desktop mode until the first. This and its reason are also
+  //! written once by main, in StartHotplugOnW, before any W hotplug job
+  DISPLAYSTATE::ModeFacts m_wDesktopMode;
+  std::string m_wDesktopModeWhy; //!< why it is what it is, for the target's log line
   bool m_wDeferred{false}; //!< the queued job waits for main's set (logged once)
   uint64_t m_wRetryGen{0};
   std::chrono::milliseconds m_wRetryDelay{1000};

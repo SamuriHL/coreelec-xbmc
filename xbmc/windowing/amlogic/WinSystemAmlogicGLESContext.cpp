@@ -1994,6 +1994,23 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
       if (job)
       {
         step = RestoreFormName(form);
+        // 5.B3-8's gate (H8): the refresh GC reads after its row is mapped, against the
+        // committed one
+        const auto logFps = [&gfx, &reply, form](int index)
+        {
+          if (!OUTPUT::RestoreRow2On())
+            return;
+          const auto state = DISPLAYSTATE::Get();
+          if (!state)
+            return;
+          const float fps = gfx.GetFPS();
+          CLog::Log(LOGINFO,
+                    "HOTPLUG reply {} {} row {}: GetFPS {:.3f} DisplayState refresh {:.3f} fps "
+                    "{:.3f}{} ({})",
+                    reply.replyId, form == RestoreForm::ADOPT ? "adopted" : RestoreFormName(form),
+                    index, fps, state->refresh, state->fps, state->fracHeld ? " frac-held" : "",
+                    std::abs(fps - state->fps) < 0.01f ? "equal" : "DIFF");
+        };
         // D5: GC left on the old numbering (its mode not in the table) keeps W's video mode
         // recorded, as GuiInputs would then carry another row's facts
         bool gcMapped = true;
@@ -2020,13 +2037,18 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             if (throwAt == "adopt")
               throw std::runtime_error("test throw after the adopt");
             gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+            logFps(index);
             break;
           }
           case RestoreForm::BEHIND:
             gcMapped = RemapGcRow(reply, before);
+            if (gcMapped)
+              logFps(static_cast<int>(gfx.GetVideoResolution()));
             break;
           case RestoreForm::NOT_TORN_DOWN:
             gcMapped = RemapGcRow(reply, before);
+            if (gcMapped)
+              logFps(static_cast<int>(gfx.GetVideoResolution()));
             // the set failed: its LEDGER outcome, as main's own failed set reports it
             ReportDriveSet(*job, false, -1, -1, false);
             break;
