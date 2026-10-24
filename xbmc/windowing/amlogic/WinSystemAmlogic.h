@@ -70,6 +70,9 @@ struct SHotplugReply
   int liveIndex{-1};
   //! the Restore's mode set, run on W; main adopts it or maps by value (O2)
   std::shared_ptr<KODI::WINDOWING::AML::SDriveJob> restoreJob;
+  //! the Restore consumes W's recorded video mode (its row, or the retry's committed row), run
+  //! without a throw
+  bool videoMode{false};
   // W's own facts, for its job line
   HpdRead read;
   int modes{-1};
@@ -251,6 +254,9 @@ protected:
   std::atomic<uint64_t> m_receiptSeq{0};
   std::atomic<uint64_t> m_poppedReceipt{0};
   std::atomic<uint64_t> m_appliedReceipt{0};
+  //! main: the last reply with videoMode that main applied with GC on a row of the new table, or
+  //! dropped with no retry to re-target it; W keeps its video mode until then (D5)
+  std::atomic<uint64_t> m_videoModeApplied{0};
   std::mutex m_replyMutex;
   std::deque<SHotplugReply> m_replies;
   //! main: a reply is popped and being applied (scope guarded; P5-9's timer on W reads it)
@@ -325,6 +331,7 @@ private:
   bool m_wDisconnectedRead{false}; //!< hpd_state source: the last read was disconnected
   uint64_t m_wDisconnectedAt{0}; //!< the receipts counted just after that read
   std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
+  uint64_t m_wVideoModeReply{0}; //!< the last reply whose Restore targets it (0: none)
   bool m_wHas2160{false}; //!< W's last table
   bool m_wDeferred{false}; //!< the queued job waits for main's set (logged once)
   uint64_t m_wRetryGen{0};

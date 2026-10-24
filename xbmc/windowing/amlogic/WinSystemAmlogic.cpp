@@ -911,11 +911,17 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   if (valid && read.source == HpdSource::DRM)
     read.state = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle()) > 0 ? 1 : 0;
 
-  // HotplugEvent's video mode, at every event of a playback
+  // HotplugEvent's video mode, at every event of a playback: recorded once, kept until main has
+  // applied a Restore to it (D5: HEAD resets it at the match, its apply being the same call; a
+  // reply main drops before its adopt leaves it recorded for the retry's Restore)
   const DISPLAYSTATE::GuiInputs gui = DISPLAYSTATE::GetGuiInputs();
-  if (!gui.videoPlaying)
+  if (!gui.videoPlaying || (m_wVideoModeReply && m_videoModeApplied.load() >= m_wVideoModeReply))
+  {
     m_wVideoMode.reset();
-  else if (!m_wVideoMode)
+    m_wVideoModeReply = 0;
+  }
+  // never the facts of no row (GC at RES_INVALID, or its row past main's table, before D5's hold)
+  if (gui.videoPlaying && !m_wVideoMode && !gui.videoResolution.strId.empty())
     m_wVideoMode = gui.videoResolution;
 
   if (!valid)
@@ -1126,27 +1132,31 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     CLog::Log(LOGWARNING,
               "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
               rows[target].strId);
+  std::optional<size_t> videoRow;
   if (m_wVideoMode)
   {
     for (size_t i = 0; i < rows.size(); ++i)
       if (SameMode(rows[i], m_wVideoMode->strId, m_wVideoMode->refresh, m_wVideoMode->dwFlags))
       {
         target = i;
+        videoRow = i;
         CLog::Log(LOGINFO, "CWinSystemAmlogic - HotplugEvent, restoring the video's mode {} @ {:.3f}",
                   rows[i].strId, rows[i].fRefreshRate);
-        // kept until applied: a display may come back with fewer modes first
-        m_wVideoMode.reset();
         break;
       }
   }
   // the throw recovery: the mode the dropped Restore put on the wire, as main never adopted it
+  bool recovered = false;
   if (recover)
   {
     const auto row = std::find_if(rows.begin(), rows.end(), [&recover](const RESOLUTION_INFO& res)
                                   { return SameMode(res, recover->strId, recover->refresh,
                                                     recover->dwFlags); });
     if (row != rows.end())
+    {
       target = static_cast<size_t>(row - rows.begin());
+      recovered = true;
+    }
     CLog::Log(LOGINFO, "HOTPLUG retry target {} @ {:.3f}: {}", rows[target].strId,
               rows[target].fRefreshRate,
               row != rows.end() ? "the dropped Restore's committed mode"
@@ -1154,6 +1164,17 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   }
   RunRestoreOnW(reply, rows[target], reply.dvLed);
   reply.kind = retry ? Kind::RETRY_RESTORE : spanWasOpen ? Kind::RESTORE : Kind::REASSERT;
+  // kept until applied: a display may come back with fewer modes first (a Restore off the
+  // record leaves it HEAD's kept record, reset only by a matched Restore main applies, or a stop),
+  // and main may drop this reply (its ApplyHotplugReply marks it applied). The retry's committed
+  // mode consumes it, as the recovery set does, only when the dropped Restore was the record's
+  // (at FRAC GC's row and the wire's can differ); a dropped Restore off the record keeps it
+  if (m_wVideoMode)
+  {
+    const bool pending = m_wVideoModeReply != 0;
+    reply.videoMode = (videoRow && target == *videoRow) || (recovered && pending);
+    m_wVideoModeReply = reply.videoMode ? reply.replyId : 0;
+  }
   // step 8: the unpark at the hold's end, then the reply
 }
 

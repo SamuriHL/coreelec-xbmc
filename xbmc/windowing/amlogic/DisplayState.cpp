@@ -817,6 +817,7 @@ namespace
 // threads' publishes store in order) and CLog; never a DisplayState or W lock
 std::mutex s_guiInputsMutex;
 GuiInputs s_guiInputs;
+bool s_videoRowHeld = false; //!< D5's hold is on (its line logged once per hold)
 
 std::string FactsString(const ModeFacts& f)
 {
@@ -842,6 +843,16 @@ ModeFacts CurrentVideoResolution()
 {
   return FactsOf(CDisplaySettings::GetInstance().GetResolutionInfo(
       CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution()));
+}
+
+// 5.B3-7b (D5): GC's video row is no row of main's table at RES_INVALID (before GC's first set)
+// and while a hotplug reply's table step is cut short by a throw (ClearCustomResolutions done,
+// the probe's rows not added) until the retry's reply refills it; GetResolutionInfo then returns
+// a default RESOLUTION_INFO, no mode
+bool RowInTable(RESOLUTION res)
+{
+  return res > RES_INVALID &&
+         static_cast<size_t>(res) < CDisplaySettings::GetInstance().ResolutionInfoSize();
 }
 
 bool VideoPlaying()
@@ -908,10 +919,24 @@ void PublishGuiPlayback()
   if (!OUTPUT::HotplugWorkerOn())
     return;
   const bool playing = VideoPlaying();
-  const ModeFacts videoResolution = CurrentVideoResolution();
+  const RESOLUTION videoRow = CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution();
+  ModeFacts videoResolution = FactsOf(CDisplaySettings::GetInstance().GetResolutionInfo(videoRow));
+  // under the move only (W's video mode reads it): GC is still on its row, the table under it is
+  // short, so the row's published facts stand
+  const bool rowInTable = !OUTPUT::HotplugOnW() || RowInTable(videoRow);
   std::unique_lock lock(s_guiInputsMutex);
-  if (!s_guiInputs.published ||
-      (s_guiInputs.videoPlaying == playing && s_guiInputs.videoResolution == videoResolution))
+  if (!s_guiInputs.published)
+    return;
+  if (rowInTable)
+    s_videoRowHeld = false;
+  else if (videoResolution != s_guiInputs.videoResolution)
+  {
+    if (!std::exchange(s_videoRowHeld, true))
+      CLog::Log(LOGINFO, "GUIINPUTS videoResolution held at {}: GC's row {} is not in main's table",
+                FactsString(s_guiInputs.videoResolution), static_cast<int>(videoRow));
+    videoResolution = s_guiInputs.videoResolution;
+  }
+  if (s_guiInputs.videoPlaying == playing && s_guiInputs.videoResolution == videoResolution)
     return;
   s_guiInputs.videoPlaying = playing;
   s_guiInputs.videoResolution = videoResolution;

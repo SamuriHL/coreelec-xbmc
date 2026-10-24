@@ -1987,6 +1987,9 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
       if (job)
       {
         step = RestoreFormName(form);
+        // D5: GC left on the old numbering (its mode not in the table) keeps W's video mode
+        // recorded, as GuiInputs would then carry another row's facts
+        bool gcMapped = true;
         switch (form)
         {
           case RestoreForm::ADOPT:
@@ -1997,6 +2000,7 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             {
               CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table ({} @ {:.3f})",
                         reply.replyId, job->res.strId, job->res.fRefreshRate);
+              gcMapped = false;
               break;
             }
             m_adoptJob = job;
@@ -2012,10 +2016,10 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             break;
           }
           case RestoreForm::BEHIND:
-            RemapGcRow(reply, before);
+            gcMapped = RemapGcRow(reply, before);
             break;
           case RestoreForm::NOT_TORN_DOWN:
-            RemapGcRow(reply, before);
+            gcMapped = RemapGcRow(reply, before);
             // the set failed: its LEDGER outcome, as main's own failed set reports it
             ReportDriveSet(*job, false, -1, -1, false);
             break;
@@ -2028,11 +2032,19 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
             if (index >= 0)
               gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
             else
+            {
               CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table ({} @ {:.3f})",
                         reply.replyId, job->res.strId, job->res.fRefreshRate);
+              gcMapped = false;
+            }
             break;
           }
         }
+        if (reply.videoMode && gcMapped)
+          m_videoModeApplied = reply.replyId;
+        else if (reply.videoMode)
+          CLog::Log(LOGINFO, "HOTPLUG reply {}: the video's mode stays recorded (GC not mapped)",
+                    reply.replyId);
         if (form != RestoreForm::ADOPT && form != RestoreForm::NOT_TORN_DOWN)
           CLog::Log(LOGINFO,
                     "OUTPUTDRIVE set request={} ledger={} origin=hotplug reply={} handler=not "
@@ -2074,6 +2086,14 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
     const auto state = DISPLAYSTATE::Get();
     const int index =
         state ? FindResolution(state->strId, state->refresh, state->dwFlags) : -1;
+    // D5: W's video mode stays recorded only for the retry, whose Restore re-targets it; the
+    // recovery set and the re-map put GC on the committed mode here
+    const bool retries = job && form == RestoreForm::ADOPT && !adopted && index < 0;
+    if (reply.videoMode && !retries)
+      m_videoModeApplied = reply.replyId;
+    else if (reply.videoMode)
+      CLog::Log(LOGINFO, "HOTPLUG reply {}: the video's mode stays recorded for the retry",
+                reply.replyId);
     if (job && form == RestoreForm::ADOPT && !adopted)
     {
       // r5 M1: the wire is unknown to main now: one ordinary set by value, run in full
