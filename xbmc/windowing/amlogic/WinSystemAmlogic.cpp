@@ -1852,15 +1852,38 @@ void CWinSystemAmlogic::RefreshResolutions()
   // get all resolutions supported by connected device
   if (m_amlDisplay->aml_get_native_resolution(&curDisplay))
     resDesktop = curDisplay;
-  // 5.B3-7b (P14): a disconnected read ("dummy_l") leaves a real RES_DESKTOP entry as it is
+  // 5.B3-7b (P14): a disconnected read ("dummy_l") keeps the last real RES_DESKTOP mode, taken
+  // from this probe (its sizes follow DISABLEGUISCALING; a GUI-scaling change cleared the table)
   if (m_wHotplug && StringUtils::EqualsNoCase(curDisplay.strId, "dummy_l"))
   {
-    const RESOLUTION_INFO& slot = CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP);
+    RESOLUTION_INFO slot;
+    {
+      std::unique_lock lock(m_slotMutex);
+      slot = m_mainSlot;
+    }
     if (RealSlot(slot))
     {
-      CLog::Log(LOGINFO, "HOTPLUG slot kept {}: the live read is dummy_l (disconnected)",
-                slot.strId);
-      resDesktop = RESOLUTION_INFO();
+      const auto match = std::find_if(
+          resolutions.begin(), resolutions.end(),
+          [&slot](const RESOLUTION_INFO& res)
+          {
+            return StringUtils::EqualsNoCase(res.strId, slot.strId) &&
+                   res.iScreenWidth == slot.iScreenWidth &&
+                   res.iScreenHeight == slot.iScreenHeight &&
+                   (res.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
+                       (slot.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+                   fabs(res.fRefreshRate - slot.fRefreshRate) < FLT_EPSILON;
+          });
+      if (match != resolutions.end())
+      {
+        CLog::Log(LOGINFO, "HOTPLUG slot kept {}: the live read is dummy_l (disconnected)",
+                  slot.strId);
+        resDesktop = *match;
+      }
+      else
+        CLog::Log(LOGWARNING,
+                  "HOTPLUG slot {} not in the probe: the live read dummy_l takes RES_DESKTOP",
+                  slot.strId);
     }
   }
 
