@@ -279,10 +279,5 @@ const char* TestHotplugApplyThrowAt();
 //! hotplugworker_setafter "<ms>": a plug-in's receipt also posts, <ms> later, a settings
 //! resolution change from main (-1: off)
 int TestHotplugSetAfterMs();
-//! hotplugworker_gatediag "measure|finish|clear" (D6, main's, read at the first skipped present
-//! under the hotplug on W): measure logs per gate span the process's VmSize/RSS and the first
-//! swap's wall and CPU time; finish adds a timed glFinish after each skipped present; clear adds a
-//! full clear after each skipped present's draws, the GUI marked dirty. "" without the file
-const char* TestRenderGateDiag();
 
 } // namespace OUTPUT

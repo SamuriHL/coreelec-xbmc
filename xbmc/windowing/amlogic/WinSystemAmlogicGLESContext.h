@@ -311,52 +311,6 @@ private:
                        SRenderGateProbe::Clock::time_point entry,
                        SRenderGateProbe::Clock::time_point done);
   void RenderGateFlush(const char* why);
-
-  // 5.B3-7b D6 (measure 2; main's, test only): hotplugworker_gatediag, one "RENDERGATE diag" line
-  // per span. Off without the file; under hotplugworker_off / skip "B3-7b" never reached
-  struct SRenderGateDiag
-  {
-    using Clock = std::chrono::steady_clock;
-    struct SStamp
-    {
-      Clock::time_point wall{};
-      int64_t userUs{0}; //!< main's thread CPU (RUSAGE_THREAD)
-      int64_t sysUs{0};
-      int64_t procUserUs{0}; //!< the process's (RUSAGE_SELF): libMali's and kbase's threads too
-      int64_t procSysUs{0};
-    };
-    enum class Mode
-    {
-      OFF,
-      MEASURE, //!< memory and the first swap's CPU only
-      FINISH, //!< also a timed glFinish after each skipped present
-      CLEAR, //!< also a full clear after each skipped present's draws, the GUI marked dirty
-    };
-    Mode mode{Mode::OFF};
-    bool latched{false};
-    bool open{false}; //!< a span, as the probe's
-    bool swapPending{false}; //!< the span ended; its first drawn present is not yet timed
-    Clock::time_point openAt{}; //!< the span's end: the first drawn present is timed within 2 s
-    long vmStartKb{0};
-    long rssStartKb{0};
-    long vmOpenKb{0}; //!< at the span's end, before the first swap
-    long rssOpenKb{0};
-    int skipped{0};
-    int finishes{0};
-    int64_t finishSumUs{0};
-    int64_t finishMaxUs{0};
-    int finishMaxAt{0};
-    int64_t finishLastUs{0};
-    static constexpr int MARKS = 5; //!< the finishes numbered 1, 10, 50, 100, 200
-    int64_t finishAtUs[MARKS]{};
-    int clears{0};
-    int capSkips{0}; //!< finish/clear skipped at R5's lock cap (C holding GUI_LOCK_CAP buffers)
-  } m_gateDiag;
-  void RenderGateDiagSkip();
-  void RenderGateDiagOpen();
-  SRenderGateDiag::SStamp RenderGateDiagStamp() const;
-  //! before: the first drawn present's stamp; else none says why there is none
-  void RenderGateDiagLog(const SRenderGateDiag::SStamp* before, const char* none);
 };
 
 }
