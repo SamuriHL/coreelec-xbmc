@@ -149,6 +149,10 @@ struct SDriveJob
 
 namespace
 {
+// R5: an exhausted Mali surface crashes libMali; past this many GUI buffers locked, the frame
+// stays in the back buffer
+constexpr int GUI_LOCK_CAP = 4;
+
 // W's copy of the set backups (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI,
 // m_bWindowCreated), written from main's after each set that ran the job
 struct ShadowBackups
@@ -2153,7 +2157,23 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (hotplugPending || !IsPresentationReady())
   {
     if (m_wHotplug.load())
+    {
       RenderGateSkip(rendered, hotplugPending);
+      // 5.B3-7b D6: main draws on while W's hotplug holds the gate, and with no swap nothing
+      // submits the frame: every gated frame's draws ran at the first swap after it (S6: ~600 ms
+      // for ~200 GUI frames). Submitted here, each runs as a presented frame's does; the draws
+      // and the video pass are unchanged. Not at R5's cap, as the swap is not
+      if (m_guiLocked < GUI_LOCK_CAP)
+      {
+        glFlush();
+        if (!m_gateFlushLogged)
+        {
+          m_gateFlushLogged = true;
+          CLog::Log(LOGINFO, "RENDERGATE glFlush: the skipped presents' GL work is submitted per "
+                             "frame while the gate is shut");
+        }
+      }
+    }
     KODI::TIME::Sleep(10ms);
     return;
   }
@@ -2236,7 +2256,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (m_renderGate.after >= 0)
     RenderGateAfter(rendered, gateEntry, SRenderGateProbe::Clock::now());
   if (m_wHotplug.load())
+  {
     m_renderGate.begun = false;
+    m_gateFlushLogged = false;
+  }
 
   // The loop paces on the vblank unless the video release's poll or the wait
   // for the GUI frame's commit does.
@@ -2287,9 +2310,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
 bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 {
-  // R5: an exhausted Mali surface crashes libMali; keep this frame in the
-  // back buffer and draw it again
-  constexpr int GUI_LOCK_CAP = 4;
+  // R5: keep this frame in the back buffer and draw it again
   if (m_guiLocked >= GUI_LOCK_CAP)
   {
     // 5.B2-4 gate (P5-38): counted under on

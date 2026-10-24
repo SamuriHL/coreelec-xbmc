@@ -311,6 +311,8 @@ private:
                        SRenderGateProbe::Clock::time_point entry,
                        SRenderGateProbe::Clock::time_point done);
   void RenderGateFlush(const char* why);
+  //! 5.B3-7b D6 (fix): this span's "RENDERGATE glFlush" line is logged (main, under m_wHotplug)
+  bool m_gateFlushLogged{false};
 };
 
 }
