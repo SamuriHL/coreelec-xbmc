@@ -9,6 +9,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +22,16 @@
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 #include "windowing/amlogic/DisplayState.h"
+
+//! 5.B3-9a: the HPD read W's Restore acts on. The dark rule takes an unbound connector as the
+//! kernel's settled state (a resume that failed, or none) only while no callback has run since
+struct SDarkRoute
+{
+  bool cb{false}; //!< the read was 5.KH's hpd_cb pair; else hdmitx's hpd_state
+  unsigned int seq{0};
+  //! hpd_state only: no hotplug receipt since the read's job was posted
+  std::function<bool()> noReceiptSince;
+};
 
 struct drm_fb
 {
@@ -169,8 +180,11 @@ public:
   bool aml_get_drmDevice_connected() const { return m_connection == DRM_MODE_CONNECTED; }
   //! 5.B3-5 (design §6): connected, and no CRTC or one with no mode (disabled): a mode set is
   //! required, the current resolution is empty. Under m_drmSection, confirmed by a fresh
-  //! connector read (still bound)
-  bool aml_get_drmDevice_crtc_dark();
+  //! connector read (still bound). With a route (5.B3-9a), an unbound connector whose HPD read
+  //! is settled is dark too, and *unbound is set
+  bool aml_get_drmDevice_crtc_dark(const SDarkRoute* route = nullptr, bool* unbound = nullptr);
+  //! 5.B3-9a, log only: the connector's binding and the HPD callback seq after a routing commit
+  void aml_log_drmDevice_routed(const SDarkRoute& route, bool committed);
   //! the last mode set kept the live mode (same mode string): no commit, the frac policy unchanged
   bool aml_get_drmDevice_mode_held() const { return m_modeHeld; }
   //! a hotplug set commits even with no display (more than the dummy mode)
@@ -277,7 +291,14 @@ public:
   }
   bool aml_drmDevice_vsync() { return m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }
-  bool aml_crtc_dark() const { return m_amlDRMUtils->aml_get_drmDevice_crtc_dark(); }
+  bool aml_crtc_dark(const SDarkRoute* route = nullptr, bool* unbound = nullptr) const
+  {
+    return m_amlDRMUtils->aml_get_drmDevice_crtc_dark(route, unbound);
+  }
+  void aml_log_routed(const SDarkRoute& route, bool committed) const
+  {
+    m_amlDRMUtils->aml_log_drmDevice_routed(route, committed);
+  }
   bool aml_set_not_connected() const
   {
     return m_amlDRMUtils->aml_get_drmDevice_set_not_connected();

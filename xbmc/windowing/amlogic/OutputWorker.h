@@ -243,6 +243,9 @@ bool HotplugOnW();
 //! PREFERRED mode): HotplugOnW and no hotplugworker_skip "B3-8"; the switch line is logged once
 //! (read first at W's start)
 bool RestoreRow2On();
+//! 5.B3-9a: W's Restore routes an unrouted connector the HPD read has settled (the dark branch)
+//! = HotplugOnW() and no hotplugworker_skip "B3-9a"
+bool DarkRoutingOn();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)

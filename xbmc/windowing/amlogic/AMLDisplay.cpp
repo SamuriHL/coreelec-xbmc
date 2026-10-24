@@ -1291,7 +1291,7 @@ void CAMLDRMUtils::aml_get_drmDevice_ui_plane(uint32_t& plane_id,
   overlay_active = m_overlayActive;
 }
 
-bool CAMLDRMUtils::aml_get_drmDevice_crtc_dark()
+bool CAMLDRMUtils::aml_get_drmDevice_crtc_dark(const SDarkRoute* route, bool* unbound)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   if (!aml_get_drmDevice_connected() || (m_crtc && m_crtc->mode_valid) || !m_connector)
@@ -1303,10 +1303,71 @@ bool CAMLDRMUtils::aml_get_drmDevice_crtc_dark()
   const bool bound = connector && connector->encoder_id;
   if (connector)
     drmModeFreeConnector(connector);
+  if (!bound && route)
+  {
+    // The HPD predicate's dark CRTC is always unbound (no committed state binds a connector to
+    // a disabled CRTC), so a plug-out inside the re-init shows as a moved callback seq instead:
+    // the callback publishes the pair after its resume and before its uevent, under one mutex
+    bool settled = false;
+    std::string now;
+    if (route->cb)
+    {
+      HpdRead read;
+      settled = aml_hpd_read(read) && read.source == HpdSource::CB && read.state == 1 &&
+                read.seq == route->seq;
+      now = read.valid ? StringUtils::Format("seq {} -> {} ({})", route->seq, read.seq,
+                                             aml_hpd_source_name(read.source))
+                       : StringUtils::Format("seq {} -> torn", route->seq);
+    }
+    else
+    {
+      // without 5.KH, hpd_state rises before the resume; only a later event settles it
+      settled = aml_hdmitx_hpd_state() == 1 && route->noReceiptSince &&
+                route->noReceiptSince();
+      now = "hpd_state";
+    }
+    if (settled)
+    {
+      const std::optional<bool> restore = aml_hpd_restore();
+      CLog::Log(LOGINFO,
+                "CAMLDRMUtils::{} - dark CRTC: unbound, settled at {} (hpd_restore {}): routing "
+                "commit on crtc {}",
+                __FUNCTION__, route->cb ? StringUtils::Format("seq {}", route->seq) : now,
+                restore ? (*restore ? "Y" : "N") : "absent", m_crtc ? m_crtc->crtc_id : 0);
+      if (unbound)
+        *unbound = true;
+      return true;
+    }
+    CLog::Log(LOGWARNING,
+              "CAMLDRMUtils::{} - dark CRTC not confirmed: the connector is unbound, {}",
+              __FUNCTION__, now);
+    return false;
+  }
   if (!bound)
     CLog::Log(LOGWARNING, "CAMLDRMUtils::{} - dark CRTC not confirmed: the connector is unbound",
               __FUNCTION__);
   return bound;
+}
+
+void CAMLDRMUtils::aml_log_drmDevice_routed(const SDarkRoute& route, bool committed)
+{
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
+  uint32_t encoder = 0;
+  if (m_connector)
+  {
+    drmModeConnectorPtr connector =
+        drmModeGetConnectorCurrent(m_fd, m_connector->connector_id);
+    if (connector)
+    {
+      encoder = connector->encoder_id;
+      drmModeFreeConnector(connector);
+    }
+  }
+  CLog::Log(LOGINFO, "LINK routed encoder_id={} crtc={} ok={}", encoder,
+            m_crtc ? m_crtc->crtc_id : 0, committed ? 1 : 0);
+  HpdRead read;
+  if (route.cb && aml_hpd_read(read) && read.source == HpdSource::CB && read.seq != route.seq)
+    CLog::Log(LOGWARNING, "LINK routing commit raced callback seq {} -> {}", route.seq, read.seq);
 }
 
 bool CAMLDRMUtils::aml_get_drmDevice_hotplug_commits()

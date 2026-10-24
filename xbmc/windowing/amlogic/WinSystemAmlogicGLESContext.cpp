@@ -133,6 +133,7 @@ struct SDriveJob
   uint64_t lostGen{0}; //!< 5.B3-7a: the lost generation the walk armed (0 under off)
   int guiLocked{0}; //!< main's m_guiLocked when it posted the request
   uint64_t hotplugTables{0}; //!< 5.B3-7b: main's hotplug tables applied when it posted
+  std::optional<SDarkRoute> route; //!< 5.B3-9a: W's Restore only (DarkRoutingOn)
   bool offRefused{false}; //!< S1''s GUI plane off was refused (the SB3 state)
   uint64_t uiEpoch{0}; //!< the UI surface epoch the job started
   Backups result;
@@ -191,12 +192,14 @@ bool DriveShadowOn()
 bool CurrentResolution(CAMLDisplay& display,
                        RESOLUTION_INFO& cur,
                        std::optional<bool> nativeGui,
-                       bool& dark)
+                       bool& dark,
+                       const SDarkRoute* route = nullptr,
+                       bool* unbound = nullptr)
 {
   dark = false;
   if (display.aml_get_native_resolution(&cur, nativeGui))
     return true;
-  if (!display.aml_crtc_dark())
+  if (!display.aml_crtc_dark(route, unbound))
     return false;
   dark = true;
   cur = RESOLUTION_INFO(0, 0);
@@ -1132,7 +1135,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
   bool dark = false;
-  if (!CurrentResolution(*display, current_resolution, job.nativeGUI, dark))
+  bool unbound = false;
+  if (!CurrentResolution(*display, current_resolution, job.nativeGUI, dark,
+                         job.route ? &*job.route : nullptr, &unbound))
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution",
               __FUNCTION__);
@@ -1265,7 +1270,11 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // check if a forced mode switch is required
   bool force_mode_switch = false;
   bool hotplug_mode_switch = false;
-  if (force_mode_switch_by_hotplug)
+  // 5.B3-9a: the routing commit is the link's one bring-up: neither flag, so no UPDATE after it
+  const bool routing = dark && unbound;
+  if (routing)
+    CLog::Log(LOGINFO, "LINK commit kind=routing mode={} frac={}", res.strId, fractional_rate);
+  else if (force_mode_switch_by_hotplug)
   {
     force_mode_switch = true;
     hotplug_mode_switch = true;
@@ -1303,6 +1312,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   const bool committed = display->set_native_resolution(res, job.fbName, job.stereo,
                                                         force_mode_switch, hotplug_mode_switch,
                                                         frac_reclock);
+  if (routing)
+    display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
   const bool notConnected = committed && display->aml_set_not_connected();
   OUTPUT::TestStopAt("4");
@@ -1819,6 +1830,14 @@ void CWinSystemAmlogicGLESContext::RunRestoreOnW(SHotplugReply& reply,
   job->hdrType = backups.hdrType;
   job->nativeGUI = backups.nativeGUI;
   job->hotplug = true;
+  if (OUTPUT::DarkRoutingOn() && reply.read.source != HpdSource::DRM)
+  {
+    SDarkRoute route;
+    route.cb = reply.read.source == HpdSource::CB;
+    route.seq = reply.read.seq;
+    route.noReceiptSince = [this, upTo = reply.upTo] { return m_receiptSeq.load() == upTo; };
+    job->route = std::move(route);
+  }
   job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   job->uiFormat = m_wUiFormat;
   job->lane = OUTPUT::Lane::RESTORE;

@@ -788,6 +788,21 @@ bool RestoreRow2On()
   return on;
 }
 
+bool DarkRoutingOn()
+{
+  if (!HotplugOnW())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-9a");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-9a: W's Restore routes an unrouted connector (the "
+                         "dark branch, no hotplug flags)");
+    return result;
+  }();
+  return on;
+}
+
 namespace
 {
 std::atomic_bool s_hotplugJobsOnW{false};
