@@ -295,8 +295,13 @@ void COutputWorker::Process()
     if (!lane)
     {
       if (!m_timed.empty())
-        CLog::Log(LOGINFO, "OUTPUT: {} timed job(s) dropped at the stop (first: {})",
-                  m_timed.size(), m_timed.front().job.name);
+      {
+        std::vector<std::string> names;
+        for (const TimedJob& timed : m_timed)
+          names.emplace_back(timed.job.name);
+        CLog::Log(LOGINFO, "OUTPUT: {} timed job(s) dropped at the stop ({})", m_timed.size(),
+                  StringUtils::Join(names, ", "));
+      }
       m_timed.clear();
       break;
     }
