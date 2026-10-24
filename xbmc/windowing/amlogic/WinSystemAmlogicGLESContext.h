@@ -262,6 +262,55 @@ private:
   uint32_t m_wUiFormat{0};
   CPresentationCoordinator* m_wCoordinator{nullptr};
   CGraphicsPlaneAML* m_wGraphicsPlane{nullptr};
+
+  // 5.B3-7b D6 (log only; main's, no atomics): a presentation-gate span under the hotplug on W
+  // (the "RENDERGATE span" line) and the first drawn frames after it ("RENDERGATE after").
+  // Under hotplugworker_off / skip "B3-7b" m_wHotplug stays false and none of it runs.
+  struct SRenderGateProbe
+  {
+    using Clock = std::chrono::steady_clock;
+    bool open{false}; //!< a span: the first skipped present until the first that passes
+    bool hotplug{false}; //!< the span began on IsHotplugPending (else on !IsPresentationReady)
+    Clock::time_point start{};
+    Clock::time_point lastSkip{};
+    int64_t maxGapUs{0}; //!< the longest time between two skipped presents
+    int drawn{0}; //!< skipped presents whose frame drew (hasRendered, after a BeginRender)
+    int unbegun{0}; //!< skipped rendered presents with no BeginRender (ClearOverlayPlane's)
+    int skipped{0};
+    Clock::time_point applyAt{}; //!< main's last hotplug reply apply (MessagePump)
+    uint64_t applyReply{0};
+    Clock::time_point beginAt{}; //!< this frame's BeginRender, while tracking
+    bool begun{false}; //!< a BeginRender since the last present (under m_wHotplug)
+    Clock::time_point openedAt{}; //!< the span's end
+    // the drawn presents from the span end: [0] is the present that opens the gate when it drew
+    // (the span line says), else the first drawn after it (-1: none tracked)
+    static constexpr int AFTER = 3;
+    int after{-1};
+    int undrawn{0}; //!< presents without a drawn frame among them
+    int64_t atMs[AFTER]{}; //!< the present's entry, from the apply (from the span end without one)
+    bool begunAt[AFTER]{}; //!< the present had a BeginRender
+    int64_t drawUs[AFTER]{}; //!< BeginRender to the present's entry (-1: no BeginRender)
+    int64_t swapUs[AFTER]{}; //!< TrySwapBuffers (-1: no swap, e.g. GUI_LOCK_CAP)
+    int64_t lockUs[AFTER]{}; //!< SubmitGuiFrame's LockFront (-1: none)
+    int64_t buildUs[AFTER]{}; //!< its BuildFlipRequest (-1: no buffer)
+    const char* submit[AFTER]{}; //!< ok, refused (SM4), lock-cap, no-buffer, no-request, legacy
+    int64_t waitUs[AFTER]{}; //!< SubmitGuiFrame's WaitTaken (-1: none)
+    bool taken[AFTER]{}; //!< WaitTaken saw C take it within its 50 ms
+    int64_t presentUs[AFTER]{}; //!< the present section of PresentRender
+    int64_t curSwapUs{-1};
+    int64_t curWaitUs{-1};
+    int64_t curLockUs{-1};
+    int64_t curBuildUs{-1};
+    const char* curSubmit{"-"};
+    bool curTaken{false};
+    bool Tracking() const { return open || after >= 0; }
+  } m_renderGate;
+  void RenderGateSkip(bool rendered, bool hotplugPending);
+  void RenderGateOpen(bool rendered, SRenderGateProbe::Clock::time_point now);
+  void RenderGateAfter(bool rendered,
+                       SRenderGateProbe::Clock::time_point entry,
+                       SRenderGateProbe::Clock::time_point done);
+  void RenderGateFlush(const char* why);
 };
 
 }

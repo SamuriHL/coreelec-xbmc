@@ -1914,6 +1914,9 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
     if (reply.upTo > m_poppedReceipt)
       m_poppedReceipt = reply.upTo;
     ApplyHotplugReply(reply);
+    // D6 (log only): the apply the next "RENDERGATE span" line measures from
+    m_renderGate.applyAt = SRenderGateProbe::Clock::now();
+    m_renderGate.applyReply = reply.replyId;
   }
 }
 
@@ -2146,10 +2149,27 @@ void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
 
 void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 {
-  if (IsHotplugPending() || !IsPresentationReady())
+  const bool hotplugPending = IsHotplugPending();
+  if (hotplugPending || !IsPresentationReady())
   {
+    if (m_wHotplug.load())
+      RenderGateSkip(rendered, hotplugPending);
     KODI::TIME::Sleep(10ms);
     return;
+  }
+
+  SRenderGateProbe::Clock::time_point gateEntry{};
+  if (m_renderGate.Tracking())
+  {
+    gateEntry = SRenderGateProbe::Clock::now();
+    if (m_renderGate.open)
+      RenderGateOpen(rendered, gateEntry);
+    m_renderGate.curSwapUs = -1;
+    m_renderGate.curWaitUs = -1;
+    m_renderGate.curLockUs = -1;
+    m_renderGate.curBuildUs = -1;
+    m_renderGate.curTaken = false;
+    m_renderGate.curSubmit = m_coordinator ? "-" : "legacy";
   }
 
   if (m_guiRepaintFrames > 0)
@@ -2185,7 +2205,13 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
     // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
     // there is probably nothing we can do about it
+    const auto swapAt = m_renderGate.Tracking() ? SRenderGateProbe::Clock::now()
+                                                : SRenderGateProbe::Clock::time_point{};
     m_pGLContext->TrySwapBuffers();
+    if (m_renderGate.Tracking())
+      m_renderGate.curSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   SRenderGateProbe::Clock::now() - swapAt)
+                                   .count();
 
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
     if (m_eglFence)
@@ -2207,6 +2233,11 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
         m_guiRepaintFrames--;
     }
   }
+  if (m_renderGate.after >= 0)
+    RenderGateAfter(rendered, gateEntry, SRenderGateProbe::Clock::now());
+  if (m_wHotplug.load())
+    m_renderGate.begun = false;
+
   // The loop paces on the vblank unless the video release's poll or the wait
   // for the GUI frame's commit does.
   if (!paced && (m_coordinator || !rendered) && (!videoLayer || aml_video_presenter_active()))
@@ -2266,6 +2297,8 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
         (++m_guiLockCapStops <= 3 || m_guiLockCapStops % 100 == 0))
       CLog::Log(LOGINFO, "UIEPOCH GUI_LOCK_CAP stop {}", m_guiLockCapStops);
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+    if (m_renderGate.Tracking())
+      m_renderGate.curSubmit = "lock-cap";
     return false;
   }
 
@@ -2277,7 +2310,13 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 
   // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
   // there is probably nothing we can do about it
+  const auto swapAt = m_renderGate.Tracking() ? SRenderGateProbe::Clock::now()
+                                              : SRenderGateProbe::Clock::time_point{};
   m_pGLContext->TrySwapBuffers();
+  if (m_renderGate.Tracking())
+    m_renderGate.curSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 SRenderGateProbe::Clock::now() - swapAt)
+                                 .count();
 
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
   if (m_eglFence)
@@ -2285,7 +2324,11 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 #endif
 
   uint32_t fbId = 0;
+  const auto lockAt = m_renderGate.Tracking() ? SRenderGateProbe::Clock::now()
+                                              : SRenderGateProbe::Clock::time_point{};
   gbm_bo* bo = m_amlGBMUtils->LockFront(m_amlDisplay->aml_get_Device_handle(), fbId);
+  const auto buildAt = m_renderGate.Tracking() ? SRenderGateProbe::Clock::now()
+                                               : SRenderGateProbe::Clock::time_point{};
   drmModeAtomicReqPtr req = nullptr;
   if (bo)
   {
@@ -2294,6 +2337,16 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
       req = m_amlDisplay->BuildFlipRequest(*state, fbId);
     else
       req = m_amlDisplay->BuildFlipRequest(fbId);
+  }
+  if (m_renderGate.Tracking())
+  {
+    const auto builtAt = SRenderGateProbe::Clock::now();
+    m_renderGate.curLockUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(buildAt - lockAt).count();
+    if (bo)
+      m_renderGate.curBuildUs =
+          std::chrono::duration_cast<std::chrono::microseconds>(builtAt - buildAt).count();
+    m_renderGate.curSubmit = !bo ? "no-buffer" : !req ? "no-request" : "ok";
   }
   if (!req)
   {
@@ -2311,6 +2364,8 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
     // 5.B2-4 (SM4): refused, a buffer of a surface C no longer takes
     if (m_amlGBMUtils->Release(bo, m_surfaceEpoch))
       m_guiLocked--;
+    if (m_renderGate.Tracking())
+      m_renderGate.curSubmit = "refused";
     return false;
   }
   if (m_guiRepaintFrames > 0)
@@ -2325,8 +2380,121 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   // At most one frame ahead: this one is committed once the previous flip
   // lands, as the render thread's own flip used to wait for it. Rendering the
   // next frame overlaps that flip.
-  m_coordinator->WaitTaken(seq, 50ms);
+  const auto waitAt = m_renderGate.Tracking() ? SRenderGateProbe::Clock::now()
+                                              : SRenderGateProbe::Clock::time_point{};
+  const bool taken = m_coordinator->WaitTaken(seq, 50ms);
+  if (m_renderGate.Tracking())
+  {
+    m_renderGate.curWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 SRenderGateProbe::Clock::now() - waitAt)
+                                 .count();
+    m_renderGate.curTaken = taken;
+  }
   return true;
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateSkip(bool rendered, bool hotplugPending)
+{
+  using namespace std::chrono;
+  SRenderGateProbe& g = m_renderGate;
+  const auto now = SRenderGateProbe::Clock::now();
+  if (!g.open)
+  {
+    if (g.after >= 0)
+      RenderGateFlush("a new span");
+    g.open = true;
+    g.hotplug = hotplugPending;
+    g.start = now;
+    g.maxGapUs = 0;
+    g.drawn = 0;
+    g.unbegun = 0;
+    g.skipped = 0;
+  }
+  else
+    g.maxGapUs =
+        std::max<int64_t>(g.maxGapUs, duration_cast<microseconds>(now - g.lastSkip).count());
+  g.lastSkip = now;
+  g.skipped++;
+  if (rendered && g.begun)
+    g.drawn++;
+  else if (rendered)
+    g.unbegun++;
+  g.begun = false;
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateOpen(bool rendered,
+                                                  SRenderGateProbe::Clock::time_point now)
+{
+  using namespace std::chrono;
+  SRenderGateProbe& g = m_renderGate;
+  g.open = false;
+  g.openedAt = now;
+  const auto ms = [](auto d) { return duration_cast<milliseconds>(d).count(); };
+  const bool applied = g.applyAt > g.start;
+  const bool begun = g.begun;
+  CLog::Log(LOGINFO,
+            "RENDERGATE span {} ms ({}): {} frames drawn, {} presents skipped ({} drawn without a "
+            "BeginRender), max gap {} ms; open {} ms after reply {}'s apply, its BeginRender +{} "
+            "ms, present {} ms after it ({})",
+            ms(now - g.start), g.hotplug ? "hotplug" : "not-ready", g.drawn, g.skipped, g.unbegun,
+            g.maxGapUs / 1000, applied ? std::to_string(ms(now - g.applyAt)) : "-",
+            applied ? std::to_string(g.applyReply) : "-",
+            applied && begun ? std::to_string(ms(g.beginAt - g.applyAt)) : "-",
+            begun ? std::to_string(ms(now - g.beginAt)) : "-",
+            !rendered ? "undrawn"
+            : begun   ? "drawn"
+                      : "drawn without a BeginRender");
+  g.after = 0;
+  g.undrawn = 0;
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateAfter(bool rendered,
+                                                   SRenderGateProbe::Clock::time_point entry,
+                                                   SRenderGateProbe::Clock::time_point done)
+{
+  using namespace std::chrono;
+  SRenderGateProbe& g = m_renderGate;
+  const auto from = g.applyAt > g.start ? g.applyAt : g.openedAt;
+  if (!rendered)
+  {
+    g.undrawn++;
+    if (entry - g.openedAt > 2s)
+      RenderGateFlush("2 s");
+    return;
+  }
+  const int i = g.after;
+  g.atMs[i] = duration_cast<milliseconds>(entry - from).count();
+  g.begunAt[i] = g.begun;
+  g.drawUs[i] = g.begun ? duration_cast<microseconds>(entry - g.beginAt).count() : -1;
+  g.swapUs[i] = g.curSwapUs;
+  g.lockUs[i] = g.curLockUs;
+  g.buildUs[i] = g.curBuildUs;
+  g.submit[i] = g.curSubmit;
+  g.waitUs[i] = g.curWaitUs;
+  g.taken[i] = g.curTaken;
+  g.presentUs[i] = duration_cast<microseconds>(done - entry).count();
+  if (++g.after == SRenderGateProbe::AFTER)
+    RenderGateFlush("done");
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateFlush(const char* why)
+{
+  SRenderGateProbe& g = m_renderGate;
+  std::string frames;
+  const auto us = [](int64_t v)
+  { return v < 0 ? std::string("-") : fmt::format("{:.1f}", v / 1000.0); };
+  for (int i = 0; i < g.after; i++)
+    frames += fmt::format(
+        " | +{} ms: draw {}{} swap {} lock {} build {} submit {} wait {}{} present {}", g.atMs[i],
+        us(g.drawUs[i]), g.begunAt[i] ? "" : " (no BeginRender)", us(g.swapUs[i]), us(g.lockUs[i]),
+        us(g.buildUs[i]), g.submit[i], us(g.waitUs[i]),
+        g.waitUs[i] < 0 ? ""
+        : g.taken[i]    ? " taken"
+                        : " timeout",
+        us(g.presentUs[i]));
+  CLog::Log(LOGINFO, "RENDERGATE after the span ({}, from {}): {} drawn presents, {} undrawn{}",
+            why, g.applyAt > g.start ? "the apply" : "the open", g.after, g.undrawn, frames);
+  g.after = -1;
 }
 
 void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()
@@ -2506,6 +2674,11 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
 {
   if (!CRenderSystemGLES::BeginRender())
     return false;
+
+  if (m_wHotplug.load())
+    m_renderGate.begun = true;
+  if (m_renderGate.Tracking())
+    m_renderGate.beginAt = SRenderGateProbe::Clock::now();
 
   // The HDR overlay FBO holds content only for the frame whose video pass drew
   // it (EndHdrOverlayRender sets this again). Without the reset, a window with
