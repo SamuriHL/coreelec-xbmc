@@ -1001,4 +1001,20 @@ int TestHotplugSetAfterMs()
   return ms;
 }
 
+const char* TestRenderGateDiag()
+{
+  static const char* const mode = []() -> const char*
+  {
+    const auto line = ReadTestSwitch("hotplugworker_gatediag");
+    if (!line)
+      return "";
+    std::string word = *line;
+    StringUtils::Trim(word);
+    const char* result = word == "finish" ? "finish" : word == "clear" ? "clear" : "measure";
+    CLog::Log(LOGWARNING, "HOTPLUGWORKER: test render gate diag '{}'", result);
+    return result;
+  }();
+  return mode;
+}
+
 } // namespace OUTPUT

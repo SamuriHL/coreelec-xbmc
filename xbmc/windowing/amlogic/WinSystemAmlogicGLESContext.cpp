@@ -43,9 +43,14 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
+
+#include <sys/resource.h>
+#include <unistd.h>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -149,6 +154,10 @@ struct SDriveJob
 
 namespace
 {
+// R5: an exhausted Mali surface crashes libMali; past this many GUI buffers locked, the frame
+// stays in the back buffer
+constexpr int GUI_LOCK_CAP = 4;
+
 // W's copy of the set backups (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI,
 // m_bWindowCreated), written from main's after each set that ran the job
 struct ShadowBackups
@@ -2153,7 +2162,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (hotplugPending || !IsPresentationReady())
   {
     if (m_wHotplug.load())
+    {
       RenderGateSkip(rendered, hotplugPending);
+      RenderGateDiagSkip();
+    }
     KODI::TIME::Sleep(10ms);
     return;
   }
@@ -2170,6 +2182,22 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     m_renderGate.curBuildUs = -1;
     m_renderGate.curTaken = false;
     m_renderGate.curSubmit = m_coordinator ? "-" : "legacy";
+  }
+
+  // D6 (measure 2, test only): the span's end, and its first drawn present (within 2 s) timed,
+  // the probe's lines outside the window
+  SRenderGateDiag::SStamp diagBefore{};
+  bool diagSwap = false;
+  if (m_wHotplug.load() && m_gateDiag.mode != SRenderGateDiag::Mode::OFF)
+  {
+    if (m_gateDiag.open)
+      RenderGateDiagOpen();
+    if (m_gateDiag.swapPending &&
+        SRenderGateDiag::Clock::now() - m_gateDiag.openAt > std::chrono::seconds(2))
+      RenderGateDiagLog(nullptr, "no drawn present within 2 s");
+    diagSwap = m_gateDiag.swapPending && rendered;
+    if (diagSwap)
+      diagBefore = RenderGateDiagStamp();
   }
 
   if (m_guiRepaintFrames > 0)
@@ -2233,6 +2261,8 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
         m_guiRepaintFrames--;
     }
   }
+  if (diagSwap)
+    RenderGateDiagLog(&diagBefore, nullptr);
   if (m_renderGate.after >= 0)
     RenderGateAfter(rendered, gateEntry, SRenderGateProbe::Clock::now());
   if (m_wHotplug.load())
@@ -2287,9 +2317,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
 bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 {
-  // R5: an exhausted Mali surface crashes libMali; keep this frame in the
-  // back buffer and draw it again
-  constexpr int GUI_LOCK_CAP = 4;
+  // R5: keep this frame in the back buffer and draw it again
   if (m_guiLocked >= GUI_LOCK_CAP)
   {
     // 5.B2-4 gate (P5-38): counted under on
@@ -2495,6 +2523,169 @@ void CWinSystemAmlogicGLESContext::RenderGateFlush(const char* why)
   CLog::Log(LOGINFO, "RENDERGATE after the span ({}, from {}): {} drawn presents, {} undrawn{}",
             why, g.applyAt > g.start ? "the apply" : "the open", g.after, g.undrawn, frames);
   g.after = -1;
+}
+
+namespace
+{
+// /proc/self/statm's size and resident set, in kB (-1: unreadable)
+std::pair<long, long> ProcessMemoryKb()
+{
+  long size = -1;
+  long resident = -1;
+  if (FILE* f = std::fopen("/proc/self/statm", "r"))
+  {
+    if (std::fscanf(f, "%ld %ld", &size, &resident) != 2)
+      size = resident = -1;
+    std::fclose(f);
+  }
+  const long pageKb = sysconf(_SC_PAGESIZE) / 1024;
+  return {size < 0 ? -1 : size * pageKb, resident < 0 ? -1 : resident * pageKb};
+}
+} // namespace
+
+void CWinSystemAmlogicGLESContext::RenderGateDiagSkip()
+{
+  using namespace std::chrono;
+  using Mode = SRenderGateDiag::Mode;
+  SRenderGateDiag& d = m_gateDiag;
+  if (!d.latched)
+  {
+    d.latched = true;
+    const std::string mode = OUTPUT::TestRenderGateDiag();
+    d.mode = mode == "finish"    ? Mode::FINISH
+             : mode == "clear"   ? Mode::CLEAR
+             : mode == "measure" ? Mode::MEASURE
+                                 : Mode::OFF;
+  }
+  if (d.mode == Mode::OFF)
+    return;
+  if (!d.open)
+  {
+    if (d.swapPending)
+      RenderGateDiagLog(nullptr, "no drawn present before the next span");
+    d.open = true;
+    std::tie(d.vmStartKb, d.rssStartKb) = ProcessMemoryKb();
+    d.skipped = 0;
+    d.finishes = 0;
+    d.finishSumUs = 0;
+    d.finishMaxUs = 0;
+    d.finishMaxAt = 0;
+    d.finishLastUs = 0;
+    std::fill(std::begin(d.finishAtUs), std::end(d.finishAtUs), -1);
+    d.clears = 0;
+    d.capSkips = 0;
+  }
+  d.skipped++;
+  // R5: at the lock cap a forced job may find no free surface buffer (the libMali crash); the
+  // returned buffers are not released while the gate is shut
+  if (d.mode != Mode::MEASURE && m_coordinator && m_guiLocked >= GUI_LOCK_CAP)
+  {
+    d.capSkips++;
+    return;
+  }
+  if (d.mode == Mode::FINISH)
+  {
+    // each skipped present's work run to the end here: its time is what that frame queued
+    const auto at = SRenderGateDiag::Clock::now();
+    glFinish();
+    const int64_t us =
+        duration_cast<microseconds>(SRenderGateDiag::Clock::now() - at).count();
+    d.finishes++;
+    d.finishSumUs += us;
+    if (us > d.finishMaxUs)
+    {
+      d.finishMaxUs = us;
+      d.finishMaxAt = d.finishes;
+    }
+    d.finishLastUs = us;
+    static constexpr int marks[SRenderGateDiag::MARKS] = {1, 10, 50, 100, 200};
+    for (int i = 0; i < SRenderGateDiag::MARKS; i++)
+      if (d.finishes == marks[i])
+        d.finishAtUs[i] = us;
+  }
+  else if (d.mode == Mode::CLEAR)
+  {
+    // the gated back buffer is never shown; the dirty mark has the next frame redraw it whole, so
+    // the first shown frame does not build on the cleared buffer
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+    d.clears++;
+  }
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateDiagOpen()
+{
+  SRenderGateDiag& d = m_gateDiag;
+  d.open = false;
+  std::tie(d.vmOpenKb, d.rssOpenKb) = ProcessMemoryKb();
+  d.swapPending = true;
+  d.openAt = SRenderGateDiag::Clock::now();
+}
+
+CWinSystemAmlogicGLESContext::SRenderGateDiag::SStamp CWinSystemAmlogicGLESContext::
+    RenderGateDiagStamp() const
+{
+  SRenderGateDiag::SStamp stamp;
+  stamp.wall = SRenderGateDiag::Clock::now();
+  const auto us = [](const timeval& t) { return t.tv_sec * INT64_C(1000000) + t.tv_usec; };
+  rusage usage{};
+  if (getrusage(RUSAGE_THREAD, &usage) == 0)
+  {
+    stamp.userUs = us(usage.ru_utime);
+    stamp.sysUs = us(usage.ru_stime);
+  }
+  // the process: libMali's and the kernel's work on other threads
+  if (getrusage(RUSAGE_SELF, &usage) == 0)
+  {
+    stamp.procUserUs = us(usage.ru_utime);
+    stamp.procSysUs = us(usage.ru_stime);
+  }
+  return stamp;
+}
+
+void CWinSystemAmlogicGLESContext::RenderGateDiagLog(const SRenderGateDiag::SStamp* before,
+                                                     const char* none)
+{
+  using namespace std::chrono;
+  using Mode = SRenderGateDiag::Mode;
+  SRenderGateDiag& d = m_gateDiag;
+  d.swapPending = false;
+  const auto ms = [](int64_t us)
+  { return us < 0 ? std::string("-") : fmt::format("{:.1f}", us / 1000.0); };
+  std::string present = none ? none : "-";
+  if (before)
+  {
+    const SRenderGateDiag::SStamp now = RenderGateDiagStamp();
+    const auto [vmAfter, rssAfter] = ProcessMemoryKb();
+    present = fmt::format(
+        "the first drawn present {} ms (main's CPU user {} sys {} ms, the process's user {} sys "
+        "{} ms), then VmSize {} RSS {} kB",
+        ms(duration_cast<microseconds>(now.wall - before->wall).count()),
+        ms(now.userUs - before->userUs), ms(now.sysUs - before->sysUs),
+        ms(now.procUserUs - before->procUserUs), ms(now.procSysUs - before->procSysUs), vmAfter,
+        rssAfter);
+  }
+  std::string extra;
+  if (d.mode != Mode::MEASURE)
+    extra = fmt::format("; {} skipped at R5's lock cap", d.capSkips);
+  if (d.mode == Mode::FINISH)
+    extra += fmt::format("; glFinish n {} sum {} max {} (#{}) last {} ms | #1 {} #10 {} #50 {} "
+                         "#100 {} #200 {}",
+                         d.finishes, ms(d.finishSumUs), ms(d.finishMaxUs), d.finishMaxAt,
+                         ms(d.finishLastUs), ms(d.finishAtUs[0]), ms(d.finishAtUs[1]),
+                         ms(d.finishAtUs[2]), ms(d.finishAtUs[3]), ms(d.finishAtUs[4]));
+  else if (d.mode == Mode::CLEAR)
+    extra += fmt::format("; {} full clears", d.clears);
+  CLog::Log(LOGINFO,
+            "RENDERGATE diag {}: {} skipped presents, VmSize {} -> {} kB RSS {} -> {} kB over the "
+            "span; {}{}",
+            d.mode == Mode::FINISH  ? "finish"
+            : d.mode == Mode::CLEAR ? "clear"
+                                    : "measure",
+            d.skipped, d.vmStartKb, d.vmOpenKb, d.rssStartKb, d.rssOpenKb, present, extra);
 }
 
 void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()
