@@ -149,6 +149,10 @@ struct SDriveJob
 
 namespace
 {
+// R5: an exhausted Mali surface crashes libMali; past this many GUI buffers locked, the frame
+// stays in the back buffer
+constexpr int GUI_LOCK_CAP = 4;
+
 // W's copy of the set backups (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI,
 // m_bWindowCreated), written from main's after each set that ran the job
 struct ShadowBackups
@@ -2153,7 +2157,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (hotplugPending || !IsPresentationReady())
   {
     if (m_wHotplug.load())
+    {
       RenderGateSkip(rendered, hotplugPending);
+      FinishGatedFrame(rendered);
+    }
     KODI::TIME::Sleep(10ms);
     return;
   }
@@ -2236,7 +2243,12 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (m_renderGate.after >= 0)
     RenderGateAfter(rendered, gateEntry, SRenderGateProbe::Clock::now());
   if (m_wHotplug.load())
+  {
     m_renderGate.begun = false;
+    // after the present: the line stays out of the probe's timed window
+    if (m_gateFinish.open)
+      LogGatedFinishes();
+  }
 
   // The loop paces on the vblank unless the video release's poll or the wait
   // for the GUI frame's commit does.
@@ -2287,9 +2299,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
 bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
 {
-  // R5: an exhausted Mali surface crashes libMali; keep this frame in the
-  // back buffer and draw it again
-  constexpr int GUI_LOCK_CAP = 4;
+  // R5: keep this frame in the back buffer and draw it again
   if (m_guiLocked >= GUI_LOCK_CAP)
   {
     // 5.B2-4 gate (P5-38): counted under on
@@ -2495,6 +2505,44 @@ void CWinSystemAmlogicGLESContext::RenderGateFlush(const char* why)
   CLog::Log(LOGINFO, "RENDERGATE after the span ({}, from {}): {} drawn presents, {} undrawn{}",
             why, g.applyAt > g.start ? "the apply" : "the open", g.after, g.undrawn, frames);
   g.after = -1;
+}
+
+void CWinSystemAmlogicGLESContext::FinishGatedFrame(bool rendered)
+{
+  using namespace std::chrono;
+  SGateFinish& f = m_gateFinish;
+  if (!f.open)
+    f = SGateFinish{true};
+  if (!rendered)
+    return;
+  // On the S6's Mali driver each frame drawn into the unswapped back buffer is its own GPU job
+  // (~3 ms of GUI) that only a swap or a finish runs, not a flush or a clear: left queued while
+  // the gate holds the swap, they all ran inside the first swap after it (~600 ms for ~200
+  // frames) and their memory stayed held (+45-60 MB). Run here, each costs main its own GPU time
+  // on top of the gate's 10 ms sleep. Not at R5's cap: a job forced with no free surface buffer
+  // is the libMali crash, and the returned buffers are not released while the gate is shut
+  if (m_coordinator && m_guiLocked >= GUI_LOCK_CAP)
+  {
+    f.capSkips++;
+    return;
+  }
+  const auto at = steady_clock::now();
+  glFinish();
+  const int64_t us = duration_cast<microseconds>(steady_clock::now() - at).count();
+  f.finishes++;
+  f.sumUs += us;
+  f.maxUs = std::max(f.maxUs, us);
+}
+
+void CWinSystemAmlogicGLESContext::LogGatedFinishes()
+{
+  const SGateFinish& f = m_gateFinish;
+  if (f.finishes > 0 || f.capSkips > 0)
+    CLog::Log(LOGINFO,
+              "RENDERGATE finish: {} gated frames finished, {} skipped at R5's lock cap, sum "
+              "{:.1f} ms, max {:.1f} ms",
+              f.finishes, f.capSkips, f.sumUs / 1000.0, f.maxUs / 1000.0);
+  m_gateFinish = SGateFinish{};
 }
 
 void CWinSystemAmlogicGLESContext::ReleaseReturnedGuiBuffers()

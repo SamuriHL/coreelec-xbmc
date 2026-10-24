@@ -311,6 +311,20 @@ private:
                        SRenderGateProbe::Clock::time_point entry,
                        SRenderGateProbe::Clock::time_point done);
   void RenderGateFlush(const char* why);
+
+  // 5.B3-7b D6, main's: the gated frames finished in the current span (under m_wHotplug only)
+  struct SGateFinish
+  {
+    bool open{false}; //!< a skipped present since the last that passed
+    int finishes{0};
+    int capSkips{0}; //!< drawn frames left queued at R5's lock cap
+    int64_t sumUs{0};
+    int64_t maxUs{0};
+  } m_gateFinish;
+  //! at each skipped present: finishes the frame's GPU job when it drew
+  void FinishGatedFrame(bool rendered);
+  //! at the span's end: one "RENDERGATE finish" line
+  void LogGatedFinishes();
 };
 
 }
