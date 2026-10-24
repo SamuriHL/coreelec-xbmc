@@ -2088,7 +2088,14 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
         CLog::Log(LOGERROR, "hotplug reply {}: committed mode not in main's table, recovery by "
                             "the retry",
                   reply.replyId);
-        PostHotplugRetry();
+        // DisplayState's committed mode: the dropped Restore's, so the retry re-commits it
+        PostHotplugRetry(state ? DISPLAYSTATE::ModeFacts{state->strId, state->screenWidth,
+                                                         state->screenHeight, state->refresh,
+                                                         state->dwFlags}
+                               : DISPLAYSTATE::ModeFacts{job->res.strId, job->res.iScreenWidth,
+                                                         job->res.iScreenHeight,
+                                                         job->res.fRefreshRate,
+                                                         job->res.dwFlags});
       }
     }
     else if (adopted && index >= 0)

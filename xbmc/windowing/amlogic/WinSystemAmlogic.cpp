@@ -825,7 +825,7 @@ void CWinSystemAmlogic::TestSetAfter()
   CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, res, 1);
 }
 
-void CWinSystemAmlogic::RunHotplugJob(bool retry)
+void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::ModeFacts> recover)
 {
   SHotplugReply reply;
   // HEAD's order: no hotplug between main's set and main's apply of it, nor before its GuiInputs
@@ -865,7 +865,7 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry)
   }
   try
   {
-    HotplugJob(reply, retry);
+    HotplugJob(reply, retry, recover);
   }
   catch (const std::exception& e)
   {
@@ -892,7 +892,9 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry)
   m_replies.push_back(std::move(reply));
 }
 
-void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
+void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
+                                   bool retry,
+                                   const std::optional<DISPLAYSTATE::ModeFacts>& recover)
 {
   using Kind = SHotplugReply::Kind;
   // hotplugworker_hold (test only): an edge inside the hold is read by this job, its receipt
@@ -1137,6 +1139,19 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply, bool retry)
         break;
       }
   }
+  // the throw recovery: the mode the dropped Restore put on the wire, as main never adopted it
+  if (recover)
+  {
+    const auto row = std::find_if(rows.begin(), rows.end(), [&recover](const RESOLUTION_INFO& res)
+                                  { return SameMode(res, recover->strId, recover->refresh,
+                                                    recover->dwFlags); });
+    if (row != rows.end())
+      target = static_cast<size_t>(row - rows.begin());
+    CLog::Log(LOGINFO, "HOTPLUG retry target {} @ {:.3f}: {}", rows[target].strId,
+              rows[target].fRefreshRate,
+              row != rows.end() ? "the dropped Restore's committed mode"
+                                : "the committed mode is not in the table, today's target");
+  }
   RunRestoreOnW(reply, rows[target], reply.dvLed);
   reply.kind = retry ? Kind::RETRY_RESTORE : spanWasOpen ? Kind::RESTORE : Kind::REASSERT;
   // step 8: the unpark at the hold's end, then the reply
@@ -1183,10 +1198,11 @@ void CWinSystemAmlogic::HotplugRetryTick(uint64_t gen)
     PostHotplugRetryTick(gen, wait);
 }
 
-void CWinSystemAmlogic::PostHotplugRetry()
+void CWinSystemAmlogic::PostHotplugRetry(const DISPLAYSTATE::ModeFacts& committed)
 {
   if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "hotplug retry",
-                                                  [this] { RunHotplugJob(true); }))
+                                                  [this, committed]
+                                                  { RunHotplugJob(true, committed); }))
     CLog::Log(LOGINFO, "HOTPLUG retry: W stopped, not retried");
 }
 

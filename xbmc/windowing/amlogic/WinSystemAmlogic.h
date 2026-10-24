@@ -244,7 +244,9 @@ protected:
   //! (HotplugEvent's restore match); -1 when none
   static int FindResolution(const std::string& strId, float refresh, uint32_t flags);
   //! main: one W retry job now, whatever the span (the recovery of a dropped Restore)
-  void PostHotplugRetry();
+  //! committed: the mode the dropped Restore committed (DisplayState's), which the retry
+  //! re-commits when W's table has it (row 1 otherwise)
+  void PostHotplugRetry(const DISPLAYSTATE::ModeFacts& committed);
   std::atomic_bool m_wHotplug{false};
   std::atomic<uint64_t> m_receiptSeq{0};
   std::atomic<uint64_t> m_poppedReceipt{0};
@@ -298,8 +300,11 @@ private:
   //! a receipt (the FD thread, or main handing over its flag): one W job per collapse (O1)
   void ReceiveHotplug(bool fromFd);
   //! W: one hotplug job (retry: P5-9's, on HEAD's predicate; no receipts taken, no echo test)
-  void RunHotplugJob(bool retry);
-  void HotplugJob(SHotplugReply& reply, bool retry);
+  //! recover: a dropped Restore's committed mode, the retry's target (the throw recovery only)
+  void RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::ModeFacts> recover = std::nullopt);
+  void HotplugJob(SHotplugReply& reply,
+                  bool retry,
+                  const std::optional<DISPLAYSTATE::ModeFacts>& recover);
   //! W: P5-9's timer, armed at a span's opening
   void ArmHotplugRetry();
   void PostHotplugRetryTick(uint64_t gen, std::chrono::milliseconds after);
