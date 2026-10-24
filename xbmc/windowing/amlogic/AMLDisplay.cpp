@@ -45,6 +45,23 @@ std::string ModeRate(const drmModeModeInfo& mode, bool fractional)
   return StringUtils::Format("{:.3f}", fractional ? rate / 1.001 : rate);
 }
 
+// the kernel command line's last key=value for key (empty without one)
+std::string BootCmdlineValue(const std::string& key)
+{
+  CSysfsPath cmdline{"/proc/cmdline"};
+  if (!cmdline.Exists())
+    return "";
+  const std::vector<std::string> items =
+      StringUtils::Split(cmdline.Get<std::string>().value_or(""), " ");
+  for (auto item = items.rbegin(); item != items.rend(); ++item)
+  {
+    const std::vector<std::string> pair = StringUtils::Split(*item, "=");
+    if (pair.size() == 2 && StringUtils::EqualsNoCase(pair.front(), key))
+      return pair.back();
+  }
+  return "";
+}
+
 // dvwireback_off: the DV wire is tracked from the core's state at each mode set, as before
 bool DvWireBackOff()
 {
@@ -1873,6 +1890,12 @@ std::string CAMLDisplay::aml_get_boot_vout_mode()
   }
 
   return mode;
+}
+
+int CAMLDisplay::aml_get_boot_frac_rate_policy()
+{
+  const std::string value = BootCmdlineValue("frac_rate_policy");
+  return value == "1" ? 1 : value == "0" ? 0 : -1;
 }
 
 std::string CAMLDisplay::aml_get_preferred_mode()

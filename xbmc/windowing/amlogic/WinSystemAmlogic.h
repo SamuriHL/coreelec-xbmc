@@ -331,8 +331,13 @@ private:
   std::mutex m_slotMutex;
   RESOLUTION_INFO m_mainSlot;
   //! 5.B3-8 (§4.7): RES_DESKTOP's mode at the move's start (an unrouted connector's "dummy_l"
-  //! entry included), set once by main before any W hotplug job
+  //! entry included), set by main before any W hotplug job; W replaces it once with the boot
+  //! vout mode's row (m_wSessionVout)
   DISPLAYSTATE::ModeFacts m_sessionDesktopMode;
+  //! 5.B3-8: the boot vout mode and its frac_rate_policy while the session's desktop mode is
+  //! another, until a reconnect's table has it; guarded by m_slotMutex
+  std::string m_wSessionVout;
+  int m_wSessionVoutFrac{-1};
   // W only
   uint64_t m_wUpTo{0};
   uint64_t m_wReplies{0};

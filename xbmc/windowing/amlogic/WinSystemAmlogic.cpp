@@ -797,6 +797,20 @@ std::optional<size_t> PreferredRow(const std::vector<RESOLUTION_INFO>& rows,
       return FactsRow(rows, DISPLAYSTATE::FactsOf(rows[i]));
   return std::nullopt;
 }
+
+// the boot vout mode on the Restore's rows: the probe's row of that string at resolution.ini's
+// frac (the 1000/1001 row at 1), else PreferredRow's first row of the string, as off's
+std::optional<size_t> VoutRow(const std::vector<RESOLUTION_INFO>& rows,
+                              const std::string& vout,
+                              int frac)
+{
+  if (!vout.empty() && frac >= 0)
+    for (size_t i = 1; i < rows.size(); ++i)
+      if (StringUtils::EqualsNoCase(rows[i].strId, vout) &&
+          (rows[i].fRefreshRate != std::floor(rows[i].fRefreshRate)) == (frac == 1))
+        return FactsRow(rows, DISPLAYSTATE::FactsOf(rows[i]));
+  return PreferredRow(rows, vout);
+}
 } // namespace
 
 void CWinSystemAmlogic::StartHotplugOnW()
@@ -813,12 +827,15 @@ void CWinSystemAmlogic::StartHotplugOnW()
     m_wDesktopModeWhy = "the session's desktop mode";
     CLog::Log(LOGINFO, "HOTPLUG session desktop mode {}",
               DISPLAYSTATE::FactsString(m_sessionDesktopMode));
-    // the open choice (§25): off's no-player Restore takes the boot vout mode by its string, so
-    // a session whose live mode at start was another (an unrouted or reduced-EDID boot, a kernel
-    // fallback) returns its own mode at "desktop" where off returns the vout's
+    // a session whose live mode at start was not the boot vout mode (resolution.ini's; an
+    // unrouted or reduced-EDID boot, a kernel fallback) takes the vout's at the first reconnect
+    // whose table has it, at the boot frac_rate_policy (VoutRow)
     const std::string vout = m_amlDisplay->aml_get_boot_vout_mode();
+    m_wSessionVout.clear();
     if (!vout.empty() && !StringUtils::EqualsNoCase(m_sessionDesktopMode.strId, vout))
     {
+      m_wSessionVout = vout;
+      m_wSessionVoutFrac = m_amlDisplay->aml_get_boot_frac_rate_policy();
       const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
       std::string voutRow = "not in the table";
       for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
@@ -829,8 +846,8 @@ void CWinSystemAmlogic::StartHotplugOnW()
           break;
         }
       CLog::Log(LOGINFO,
-                "HOTPLUG session desktop mode {} is not the boot vout mode {} ({}): a reconnect at "
-                "\"desktop\" returns the session's mode, off the vout's",
+                "HOTPLUG session desktop mode {} is not the boot vout mode {} ({}): the first "
+                "reconnect whose table has the vout mode takes it",
                 DISPLAYSTATE::FactsString(m_sessionDesktopMode), vout, voutRow);
     }
   }
@@ -1295,6 +1312,16 @@ void CWinSystemAmlogic::UpdateDesktopMode(const std::vector<RESOLUTION_INFO>& ro
   DISPLAYSTATE::ModeFacts session;
   {
     std::unique_lock lock(m_slotMutex);
+    if (const auto vout = VoutRow(rows, m_wSessionVout, m_wSessionVoutFrac))
+    {
+      m_sessionDesktopMode = DISPLAYSTATE::FactsOf(rows[*vout]);
+      CLog::Log(LOGINFO,
+                "HOTPLUG session desktop mode {}: the boot vout mode {} (frac_rate_policy {}), in "
+                "this table",
+                DISPLAYSTATE::FactsString(m_sessionDesktopMode), m_wSessionVout,
+                m_wSessionVoutFrac);
+      m_wSessionVout.clear();
+    }
     session = m_sessionDesktopMode;
   }
   // §4.7: the session's desktop mode when the new table has it (an empty one is absent), else
