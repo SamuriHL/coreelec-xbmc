@@ -1904,6 +1904,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       // 5.B3-8's, read here so no settings thread's GuiResolution publish reads the file
       OUTPUT::RestoreRow2On();
       OUTPUT::DarkRoutingOn();
+      OUTPUT::LinkRequestOn();
     }
     catch (const std::exception& e)
     {

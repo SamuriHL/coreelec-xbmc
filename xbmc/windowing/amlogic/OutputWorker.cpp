@@ -808,6 +808,21 @@ bool DarkRoutingOn()
   return on;
 }
 
+bool LinkRequestOn()
+{
+  if (!DarkRoutingOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-9b");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-9b: W's Restore makes one re-train (no UPDATE after "
+                         "its mode commit)");
+    return result;
+  }();
+  return on;
+}
+
 namespace
 {
 std::atomic_bool s_hotplugJobsOnW{false};

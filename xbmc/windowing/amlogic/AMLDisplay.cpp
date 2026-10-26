@@ -753,7 +753,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_modes(void)
 // set mode of drmDevice
 bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
   const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-  bool hotplug_mode_switch, bool frac_reclock)
+  bool hotplug_mode_switch, bool frac_reclock, bool restore_commit)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
@@ -842,11 +842,23 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   {
     // apply_dv_wire_format() re-trains the link itself when the DV tunnel format is
     // missing, so skip the plain UPDATE then rather than re-train twice.
-    // The FRAC commit was the re-train.
-    if (_force_mode_switch && !m_fracCommitted && !fracOnWire && !aml_dv_wire_format_mismatch())
+    // The FRAC commit was the re-train. So was a Restore's own mode commit: its mode set
+    // re-decides the attr, as the UPDATE's would.
+    const bool restoreModeCommit = restore_commit && !m_modeHeld;
+    if (restoreModeCommit)
+      CLog::Log(LOGINFO, "LINK commit kind=mode mode={} frac={}", mode, fractional_rate);
+    if (_force_mode_switch && !m_fracCommitted && !fracOnWire && !aml_dv_wire_format_mismatch() &&
+        !restoreModeCommit)
+    {
       set_drmProp(m_connector->connector_id, "UPDATE", DRM_MODE_OBJECT_CONNECTOR, 1, NULL);
+      if (restore_commit)
+        CLog::Log(LOGINFO, "LINK commit kind=update mode={}", mode);
+    }
 
-    if (!apply_dv_wire_format(fracOnWire, fractional_rate) && fracOnWire)
+    const bool wireCommit = apply_dv_wire_format(fracOnWire, fractional_rate);
+    if (wireCommit && restore_commit)
+      CLog::Log(LOGINFO, "LINK commit kind=wire mode={}", mode);
+    if (!wireCommit && fracOnWire)
       ret = aml_set_drmDevice_active(mode, fractional_rate, stereo_mode, true, true);
     // Either tunnel format counts: the leaving path has to hand the wire back
     // whether we pinned it to 8-bit (TV-led) or to 12-bit YUV422 (player-led).
@@ -1831,7 +1843,7 @@ void CAMLDisplay::aml_refresh_display_caps()
 
 bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
   const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch,
-  bool frac_reclock)
+  bool frac_reclock, bool restore_commit)
 {
   bool result = false;
 
@@ -1839,7 +1851,7 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string 
   {
     handle_display_stereo_mode(stereo_mode);
     result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch,
-                                    frac_reclock);
+                                    frac_reclock, restore_commit);
     if (stereo_mode != RenderStereoMode::OFF)
       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/phy", 1);
   }
@@ -1849,7 +1861,7 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string 
         stereo_mode == RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
     result = set_display_resolution(res, framebuffer_name, force_mode_switch, hotplug_mode_switch,
-                                    frac_reclock);
+                                    frac_reclock, restore_commit);
     if (stereo_mode != RenderStereoMode::HARDWAREBASED &&
         stereo_mode != RenderStereoMode::OFF)
       handle_display_stereo_mode(stereo_mode);
@@ -1894,7 +1906,7 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 }
 
 bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-  bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock)
+  bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock, bool restore_commit)
 {
   std::string mode = res.strId.c_str();
   std::vector<std::string> _mode = StringUtils::Split(mode, ' ');
@@ -1918,7 +1930,7 @@ bool CAMLDisplay::set_display_resolution(const RESOLUTION_INFO &res, std::string
 
   return m_amlDRMUtils->aml_set_drmDevice_mode(res, mode, m_stereo_mode, framebuffer_name,
                                                force_mode_switch, hotplug_mode_switch,
-                                               frac_reclock);
+                                               frac_reclock, restore_commit);
 }
 
 std::string CAMLDisplay::aml_get_boot_vout_mode()

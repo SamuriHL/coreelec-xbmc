@@ -149,7 +149,7 @@ public:
   //! live mode string
   bool aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::string mode,
     const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
-    bool hotplug_mode_switch, bool frac_reclock = false);
+    bool hotplug_mode_switch, bool frac_reclock = false, bool restore_commit = false);
   int aml_get_drmProperty(std::string name,
                           unsigned int obj_type,
                           void* data = nullptr,
@@ -307,12 +307,14 @@ public:
   //! 5.V1-2: the refresh the display runs after a successful set of res; held: the set kept the
   //! live mode, whose frac policy may differ from res's
   float aml_committed_refresh(const RESOLUTION_INFO& res, bool& held) const;
+  //! restore_commit: W's Restore (5.B3-9b): its mode commit is the link's one re-train
   bool set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
     const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch,
-    bool frac_reclock = false);
+    bool frac_reclock = false, bool restore_commit = false);
   void handle_display_stereo_mode(const RenderStereoMode stereo_mode);
   bool set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-    bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock = false);
+    bool force_mode_switch, bool hotplug_mode_switch, bool frac_reclock = false,
+    bool restore_commit = false);
   int aml_get_display_modes_count(drmModeConnection *connection) const
     { return m_amlDRMUtils->aml_get_drmDevice_modes_count(connection); }
   void aml_get_display_link(uint32_t& encoder_id,

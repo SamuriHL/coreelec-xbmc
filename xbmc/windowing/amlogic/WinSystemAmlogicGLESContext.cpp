@@ -1309,9 +1309,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (!lostFirst)
     lostWalk();
 
-  const bool committed = display->set_native_resolution(res, job.fbName, job.stereo,
-                                                        force_mode_switch, hotplug_mode_switch,
-                                                        frac_reclock);
+  const bool committed = display->set_native_resolution(
+      res, job.fbName, job.stereo, force_mode_switch, hotplug_mode_switch, frac_reclock,
+      job.hotplug && !routing && OUTPUT::LinkRequestOn());
   if (routing)
     display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
