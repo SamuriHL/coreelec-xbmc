@@ -257,6 +257,15 @@ bool RefusalConfirmLive();
 //! 5.B3-9c: a reconnect that has no live mode gives a placeholder RES_DESKTOP ("dummy_l")
 //! desktopMode's row = RefusalConfirmOn() and no hotplugworker_skip "B3-9c"
 bool DesktopSlotOn();
+//! 5.B3-10c: W writes hpd_restore N at its start (a plug-in stays dark for W's Restore), Y at
+//! exit = DesktopSlotOn(), HpdNoRestoreOn() and no hotplugworker_skip "B3-10b" or "B3-10c"
+bool HpdNoRestoreWriteOn();
+//! W, at its start under HpdNoRestoreWriteOn: N, unless the exit has begun
+void WriteHpdNoRestore();
+//! W, at every hotplug event: ERROR once when the N it wrote reads otherwise (M8)
+void CheckHpdNoRestore();
+//! main, before W's stop: Y if W wrote N; no N write after it
+void ExitHpdNoRestore();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)

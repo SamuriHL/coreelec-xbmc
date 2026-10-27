@@ -461,6 +461,8 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
   WIRECLASS::CWireClassProbe::Get().Stop();
+  // 5.B3-10c: before W's stop, which drops later receipts (a plug-in after it must relight itself)
+  OUTPUT::ExitHpdNoRestore();
   // the shutdown writes below run inline on main
   OUTPUT::COutputWorker::Get().Stop();
 

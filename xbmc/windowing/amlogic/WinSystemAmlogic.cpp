@@ -867,6 +867,11 @@ void CWinSystemAmlogic::StartHotplugOnW()
   OUTPUT::PrimeTestHotplugCapsFail();
   m_wHotplug = true;
   OUTPUT::NoteHotplugJobsOnW();
+  // 5.B3-10c: queued ahead of the receipts main hands over
+  if (OUTPUT::HpdNoRestoreWriteOn() &&
+      !OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "hpd restore N",
+                                                  [] { OUTPUT::WriteHpdNoRestore(); }))
+    CLog::Log(LOGINFO, "hpdRestore N: W not running, not written");
 }
 
 void CWinSystemAmlogic::PublishMainSlot()
@@ -992,6 +997,7 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   // step 1: the read, before any claim or park (design §6 Detection)
   HpdRead& read = reply.read;
   const bool valid = aml_hpd_read(read, !OUTPUT::TestHotplugNoHpdCb());
+  OUTPUT::CheckHpdNoRestore();
   if (valid && read.source == HpdSource::DRM)
     read.state = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle()) > 0 ? 1 : 0;
 
@@ -1916,6 +1922,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::LinkRequestOn();
       OUTPUT::RefusalConfirmOn();
       OUTPUT::DesktopSlotOn();
+      OUTPUT::HpdNoRestoreWriteOn();
       OUTPUT::TestGraphicsRefuseAt();
     }
     catch (const std::exception& e)

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <unistd.h>
@@ -847,6 +848,77 @@ bool DesktopSlotOn()
     return result;
   }();
   return on;
+}
+
+namespace
+{
+std::mutex s_hpdWriteMutex;
+bool s_hpdNWritten{false};
+bool s_hpdExit{false};
+bool s_hpdRevertLogged{false};
+
+const char* HpdRestoreText(std::optional<bool> value)
+{
+  return value ? (*value ? "Y" : "N") : "unreadable";
+}
+} // namespace
+
+bool HpdNoRestoreWriteOn()
+{
+  if (!DesktopSlotOn() || !HpdNoRestoreOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-10b") && !HotplugWorkerSkip("B3-10c");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-10c: W writes hpd_restore N at its start (a plug-in "
+                         "stays dark for W's Restore), Y at exit");
+    return result;
+  }();
+  return on;
+}
+
+void WriteHpdNoRestore()
+{
+  std::unique_lock lock(s_hpdWriteMutex);
+  if (s_hpdExit)
+    return;
+  aml_set_hpd_restore(false);
+  const std::optional<bool> after = aml_hpd_restore();
+  if (after && !*after)
+  {
+    s_hpdNWritten = true;
+    CLog::Log(LOGINFO, "hpdRestore N (W's start)");
+  }
+  else
+    CLog::Log(LOGERROR, "hpdRestore not N after W's write (reads {})", HpdRestoreText(after));
+}
+
+void CheckHpdNoRestore()
+{
+  std::unique_lock lock(s_hpdWriteMutex);
+  if (!s_hpdNWritten || s_hpdExit || s_hpdRevertLogged)
+    return;
+  const std::optional<bool> value = aml_hpd_restore();
+  if (value && !*value)
+    return;
+  s_hpdRevertLogged = true;
+  CLog::Log(LOGERROR, "hpdRestore reverted under W (reads {})", HpdRestoreText(value));
+}
+
+void ExitHpdNoRestore()
+{
+  std::unique_lock lock(s_hpdWriteMutex);
+  s_hpdExit = true;
+  if (!s_hpdNWritten)
+    return;
+  aml_set_hpd_restore(true);
+  const std::optional<bool> after = aml_hpd_restore();
+  if (after && *after)
+    CLog::Log(LOGINFO, "hpdRestore Y (exit)");
+  else
+    CLog::Log(LOGERROR, "hpdRestore not Y after the exit's write (reads {})",
+              HpdRestoreText(after));
 }
 
 bool LinkRequestOn()
