@@ -808,6 +808,32 @@ bool DarkRoutingOn()
   return on;
 }
 
+namespace
+{
+std::atomic_bool s_refusalConfirm{false};
+} // namespace
+
+bool RefusalConfirmOn()
+{
+  if (!LinkRequestOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-10a");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-10a: C latches a graphics refusal only when its "
+                         "retries after GUI-only commits are refused three times");
+    s_refusalConfirm.store(result, std::memory_order_release);
+    return result;
+  }();
+  return on;
+}
+
+bool RefusalConfirmLive()
+{
+  return s_refusalConfirm.load(std::memory_order_acquire);
+}
+
 bool LinkRequestOn()
 {
   if (!DarkRoutingOn())
@@ -859,6 +885,18 @@ int TestHotplugHoldMs()
     return value;
   }();
   return ms;
+}
+
+int TestGraphicsRefuseAt()
+{
+  static const int n = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_gfxrefuse", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test graphics refusal from graphics submit {}", value);
+    return value;
+  }();
+  return n;
 }
 
 bool TestHotplugHoldHpd()

@@ -249,6 +249,11 @@ bool DarkRoutingOn();
 //! 5.B3-9b: W's Restore sends no forced UPDATE after its own mode commit on a lit link
 //! = DarkRoutingOn() and no hotplugworker_skip "B3-9b"
 bool LinkRequestOn();
+//! 5.B3-10a: C latches a graphics refusal only when its retries, each after a GUI-only commit
+//! that succeeded, are refused three times = LinkRequestOn() and no hotplugworker_skip
+//! "B3-10a". RefusalConfirmLive is its latched value for C, false until the latch block reads it
+bool RefusalConfirmOn();
+bool RefusalConfirmLive();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)
@@ -260,6 +265,9 @@ bool HotplugJobsOnW();
 //! between the job's receipt count and its HPD read (0: off). An edge inside the hold is read by
 //! this job, and its receipt posts the next one
 int TestHotplugHoldMs();
+//! hotplugworker_gfxrefuse "<n>": G's graphics submits from its nth on (counted from G's start,
+//! its boot submit included) carry FB_ID 0, which the kernel refuses on a lit CRTC; 0 = off
+int TestGraphicsRefuseAt();
 //! hotplugworker_holdhpd: at a plug-out event W posts a hold job that spins until hpd_state
 //! reads 1, so the plug-out's read lands in the plug-in's hpd-to-uevent window
 bool TestHotplugHoldHpd();

@@ -161,6 +161,8 @@ public:
                            bool parked);
   //! the driver refused a commit carrying the graphics plane
   bool GraphicsRefused() const { return m_graphicsRejected; }
+  //! 5.B3-10a: moves when C wants a fresh graphics frame for a suspect plane's retry
+  uint64_t GraphicsResubmit() const { return m_gfxResubmit.load(); }
 
 protected:
   void Process() override;
@@ -347,6 +349,14 @@ private:
   bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
   //! a commit carrying it failed: left out from then on
   std::atomic<bool> m_graphicsRejected{false};
+  // 5.B3-10a, under m_uiMutex: a refusal on a dark CRTC must not latch. A refused plane is held
+  // out until a GUI-only commit succeeds, then retried with a fresh frame; the third refused
+  // retry latches
+  bool m_gfxSuspect = false;
+  bool m_gfxRetryArmed = false;
+  int m_gfxRetriesRefused = 0;
+  int m_gfxSuspectLogs = 0;
+  std::atomic<uint64_t> m_gfxResubmit{0};
 
   // 5.B2-4, under m_uiMutex: the UI surface epoch (0: off, or before the first set)
   // and C's cleared buffer
@@ -387,6 +397,7 @@ private:
     int commitHist[4] = {}; //!< ioctl time: <1 ms, <5 ms, <20 ms, >=20 ms
     double flipSum = 0.0, flipMax = 0.0; //!< us from commit to flip event
     int gfxSubmits = 0, gfxReplaced = 0, gfxCommits = 0; //!< graphics plane
+    int gfxSuspect = 0; //!< 5.B3-10a: refusals held as suspect
     //! graphics flips by frames from their video frame: <-1, -1, 0, +1, >+1
     int gfxPlacement[5] = {};
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference

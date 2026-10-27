@@ -134,6 +134,8 @@ private:
   uint32_t m_lastFb = 0; //!< the fb last submitted
   bool m_lastVisible = false;
   unsigned int m_epoch = 0;
+  uint64_t m_resubmit = 0; //!< C's last graphics resubmit request taken
+  int m_submits = 0; //!< for hotplugworker_gfxrefuse
   int m_gholdMs = 0; //!< test: displaystate_ghold
   int64_t m_gholdNs = 0;
 };

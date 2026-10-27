@@ -399,7 +399,9 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
 
   gbm_bo* bo = gbm_surface_lock_front_buffer(m_gbmSurface);
   const uint32_t fb = bo ? FbFromBo(bo) : 0;
-  drmModeAtomicReqPtr req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT)
+  const int refuseAt = OUTPUT::TestGraphicsRefuseAt();
+  const bool refused = refuseAt > 0 && fb && (m_submits >= refuseAt || ++m_submits >= refuseAt);
+  drmModeAtomicReqPtr req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT, refused)
                                : nullptr;
   if (!req)
   {
@@ -715,6 +717,10 @@ void CGraphicsPlaneAML::Process()
     const unsigned int epoch = aml_presenter_epoch();
     if (epoch != m_epoch && (m_testPattern || SubmitGeometry()))
       m_epoch = epoch;
+    // 5.B3-10a: C retries a suspect graphics plane with a fresh frame (a static one sends none)
+    const uint64_t resubmit = m_coordinator->GraphicsResubmit();
+    if (resubmit != m_resubmit && (m_testPattern || SubmitGeometry()))
+      m_resubmit = resubmit;
     if (m_testPattern)
     {
       if (!SubmitFrame(true, MonotonicNs()))

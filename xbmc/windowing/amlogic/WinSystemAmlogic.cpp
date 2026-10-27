@@ -1905,6 +1905,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::RestoreRow2On();
       OUTPUT::DarkRoutingOn();
       OUTPUT::LinkRequestOn();
+      OUTPUT::RefusalConfirmOn();
+      OUTPUT::TestGraphicsRefuseAt();
     }
     catch (const std::exception& e)
     {

@@ -212,7 +212,9 @@ public:
   //! the graphics plane showing fb_id (a src_w x src_h buffer) over the whole
   //! screen, under the GUI plane (GUI flips keep that order until it is
   //! switched off)
-  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h);
+  //! refused: FB_ID 0 with the CRTC set (a test refusal, hotplugworker_gfxrefuse)
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h,
+                                          bool refused = false);
   //! the graphics plane off; a commit that only disables a plane is refused,
   //! so it carries the GUI plane's current fb (0: none)
   drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id);
@@ -385,9 +387,10 @@ public:
     return m_amlDRMUtils->BuildUiPlaneOffRequestLocked();
   }
   bool HasOverlayPlane() { return m_amlDRMUtils->HasOverlayPlane(); }
-  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h)
+  drmModeAtomicReqPtr BuildOverlayRequest(uint32_t fb_id, int src_w, int src_h,
+                                          bool refused = false)
   {
-    return m_amlDRMUtils->BuildOverlayRequest(fb_id, src_w, src_h);
+    return m_amlDRMUtils->BuildOverlayRequest(fb_id, src_w, src_h, refused);
   }
   drmModeAtomicReqPtr BuildOverlayOffRequest(uint32_t primary_fb_id)
   {

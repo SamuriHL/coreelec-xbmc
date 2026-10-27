@@ -1191,7 +1191,7 @@ void CPresentationCoordinator::CommitUi()
       if (plane == PLANE_GRAPHICS)
       {
         // a plane the driver refused would take every GUI frame down with it
-        if (m_graphicsRejected)
+        if (m_graphicsRejected || (m_gfxSuspect && !m_gfxRetryArmed))
         {
           Drop(plane, ready);
           continue;
@@ -1303,6 +1303,20 @@ void CPresentationCoordinator::CommitWorker()
         m_report.gfxCommits++;
         m_graphicsOn = true;
       }
+      // the commit's success proves the CRTC lit
+      if (m_gfxSuspect && commit.has[PLANE_GRAPHICS])
+      {
+        m_gfxSuspect = false;
+        m_gfxRetryArmed = false;
+        m_gfxRetriesRefused = 0;
+        CLog::Log(LOGINFO, "CPresentationCoordinator - the graphics plane was accepted again "
+                           "after a suspect refusal");
+      }
+      else if (m_gfxSuspect && !m_gfxRetryArmed)
+      {
+        m_gfxRetryArmed = true;
+        m_gfxResubmit++;
+      }
     }
     // a failed commit is never shown: its buffers go back to their producers,
     // unless their surface is gone
@@ -1329,6 +1343,29 @@ void CPresentationCoordinator::CommitWorker()
       // the graphics plane is not blamed for it
       if (commit.cOwned)
         CLog::Log(LOGERROR, "CBUF refused: {}", strerror(err));
+      else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected && OUTPUT::RefusalConfirmLive())
+      {
+        m_report.gfxSuspect++;
+        // a graphics commit while suspect is a retry after a GUI-only success
+        if (m_gfxSuspect)
+          m_gfxRetriesRefused++;
+        m_gfxSuspect = true;
+        m_gfxRetryArmed = false;
+        if (m_gfxRetriesRefused >= 3)
+        {
+          m_graphicsRejected = true;
+          CLog::Log(LOGERROR,
+                    "CPresentationCoordinator - the graphics plane was refused ({}), committing "
+                    "the GUI plane alone from now on (confirmed: {} retries after GUI-only "
+                    "commits)",
+                    strerror(err), m_gfxRetriesRefused);
+        }
+        else if (m_gfxSuspectLogs++ < 3)
+          CLog::Log(LOGWARNING,
+                    "CPresentationCoordinator - the graphics plane was refused ({}): suspect, "
+                    "held until a GUI-only commit succeeds (retries refused {})",
+                    strerror(err), m_gfxRetriesRefused);
+      }
       else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
       {
         m_graphicsRejected = true;
@@ -1659,6 +1696,8 @@ void CPresentationCoordinator::LogReport()
             r.uiFlips ? r.flipSum / r.uiFlips : 0.0, r.flipMax, r.gfxSubmits, r.gfxReplaced,
             r.gfxCommits, r.gfxPlacement[0], r.gfxPlacement[1], r.gfxPlacement[2],
             r.gfxPlacement[3], r.gfxPlacement[4]);
+  if (r.gfxSuspect)
+    CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;
