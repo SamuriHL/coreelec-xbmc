@@ -198,6 +198,7 @@ protected:
   //! the set may re-clock a 1000/1001 rate difference at the live mode string
   bool m_frac_reclock{false};
   bool m_outputWorkerStarted{false};
+  bool m_initDummyRead{false}; //!< RefreshResolutions read "dummy_l" before W's start
   //! 5.B2-4's switch (surface epoch, C's cleared UI buffer): OUTPUT::OutputDriveOn() and no
   //! outputdrive_skip "B2-4", read once; read only after the boot set
   static bool SurfaceEpochOn();
@@ -207,6 +208,12 @@ protected:
   //! 5.B2-5c's switch: under 5.B2-5b, the lost walk right after the park; no outputdrive_skip
   //! "B2-5c" and no outputdrive_order "today" (both: B2-5b's order). Read once, at W's start
   static bool LostFirstSwitch();
+  //! 5.B3-10b's switch: ModeSetsOnWSwitch()'s conditions, no hotplugworker_off and no
+  //! hotplugworker_skip of a B3 step; read once, at a dark start only (before W's start)
+  static bool BootSlotOn(bool coordinator);
+  //! 5.B3-10b: an init read of "dummy_l" (a dark link) gives RES_DESKTOP the boot vout mode's
+  //! row, before CreateGUI writes resolution.ini from it
+  void KeepBootSlot(bool coordinator);
   //! hotplugworker_reinit "<period ms> <seconds>" (B3-4's gate): an injected re-init on W
   //! (park, aml_init_drmDevice, caps publish) every period, from W's start; hotplugworker only
   void StartTestReinit();

@@ -2060,6 +2060,48 @@ bool CWinSystemAmlogic::ModeSetsOnWSwitch()
   return on;
 }
 
+bool CWinSystemAmlogic::BootSlotOn(bool coordinator)
+{
+  // ModeSetsOnWSwitch()'s inputs, read without latching OutputDriveOn() or the display state
+  // before the boot set
+  static const bool on = [coordinator]
+  {
+    if (!coordinator || !aml_presentation_validated() || OUTPUT::COutputWorker::SwitchedOff() ||
+        XFILE::CFile::Exists("special://profile/displaystate_off") ||
+        XFILE::CFile::Exists("special://profile/outputdrive_off") ||
+        XFILE::CFile::Exists("special://profile/hotplugworker_off"))
+      return false;
+    for (const char* step : {"B2-3", "B2-4", "B2-5b"})
+      if (OUTPUT::OutputDriveSkip(step))
+        return false;
+    for (const char* step :
+         {"B3-6", "B3-7a", "B3-7b", "B3-8", "B3-9a", "B3-9b", "B3-10a", "B3-9c", "B3-10b"})
+      if (OUTPUT::HotplugWorkerSkip(step))
+        return false;
+    CLog::Log(LOGINFO, "HOTPLUGWORKER B3-10b: a dark start keeps the boot vout mode in RES_DESKTOP");
+    return true;
+  }();
+  return on;
+}
+
+void CWinSystemAmlogic::KeepBootSlot(bool coordinator)
+{
+  if (!m_initDummyRead || !BootSlotOn(coordinator))
+    return;
+  // the calibrated table, {RES_DESKTOP} + the probe's rows, as W's rows
+  CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  std::vector<RESOLUTION_INFO> rows;
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+    rows.push_back(displaySettings.GetResolutionInfo(i));
+  const auto row = VoutRow(rows, m_amlDisplay->aml_get_boot_vout_mode(),
+                           m_amlDisplay->aml_get_boot_frac_rate_policy());
+  if (!row || *row == 0)
+    return;
+  CLog::Log(LOGINFO, "HOTPLUG RES_DESKTOP takes the boot vout mode {}: the init read dummy_l",
+            DISPLAYSTATE::FactsString(DISPLAYSTATE::FactsOf(rows[*row])));
+  displaySettings.GetResolutionInfo(RES_DESKTOP) = rows[*row];
+}
+
 bool CWinSystemAmlogic::LostFirstSwitch()
 {
   static const bool on = []
@@ -2127,6 +2169,8 @@ void CWinSystemAmlogic::RefreshResolutions()
   // get all resolutions supported by connected device
   if (m_amlDisplay->aml_get_native_resolution(&curDisplay))
     resDesktop = curDisplay;
+  if (!m_outputWorkerStarted)
+    m_initDummyRead = StringUtils::EqualsNoCase(curDisplay.strId, "dummy_l");
   // 5.B3-7b (P14): a disconnected read ("dummy_l") keeps the last real RES_DESKTOP mode, taken
   // from this probe (its sizes follow DISABLEGUISCALING; a GUI-scaling change cleared the table)
   if (m_wHotplug && StringUtils::EqualsNoCase(curDisplay.strId, "dummy_l"))
