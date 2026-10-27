@@ -1183,6 +1183,15 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     for (const RESOLUTION_INFO& res : reply.table)
       rows.push_back(CDisplaySettings::AddedResolutionInfo(res));
     UpdateDesktopMode(rows);
+    // a session that started disconnected keeps the placeholder in RES_DESKTOP when the
+    // reconnect's link is unrouted (no live mode), and a later desktop set would commit it
+    if (reply.liveIndex < 0 && !RealSlot(slot) && OUTPUT::DesktopSlotOn())
+      if (const auto row = FactsRow(rows, m_wDesktopMode); row && *row > 0 && RealSlot(rows[*row]))
+      {
+        reply.liveIndex = static_cast<int>(*row - 1);
+        CLog::Log(LOGINFO, "HOTPLUG RES_DESKTOP takes desktopMode {}: it held '{}', no live mode",
+                  DISPLAYSTATE::FactsString(m_wDesktopMode), slot.strId);
+      }
   }
   DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160, row2 ? &m_wDesktopMode : nullptr);
 
@@ -1906,6 +1915,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::DarkRoutingOn();
       OUTPUT::LinkRequestOn();
       OUTPUT::RefusalConfirmOn();
+      OUTPUT::DesktopSlotOn();
       OUTPUT::TestGraphicsRefuseAt();
     }
     catch (const std::exception& e)

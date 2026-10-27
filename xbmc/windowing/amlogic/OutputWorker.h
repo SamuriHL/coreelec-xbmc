@@ -254,6 +254,9 @@ bool LinkRequestOn();
 //! "B3-10a". RefusalConfirmLive is its latched value for C, false until the latch block reads it
 bool RefusalConfirmOn();
 bool RefusalConfirmLive();
+//! 5.B3-9c: a reconnect that has no live mode gives a placeholder RES_DESKTOP ("dummy_l")
+//! desktopMode's row = RefusalConfirmOn() and no hotplugworker_skip "B3-9c"
+bool DesktopSlotOn();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)

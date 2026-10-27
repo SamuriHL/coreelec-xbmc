@@ -834,6 +834,21 @@ bool RefusalConfirmLive()
   return s_refusalConfirm.load(std::memory_order_acquire);
 }
 
+bool DesktopSlotOn()
+{
+  if (!RefusalConfirmOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-9c");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-9c: a placeholder RES_DESKTOP takes desktopMode at a "
+                         "reconnect with no live mode");
+    return result;
+  }();
+  return on;
+}
+
 bool LinkRequestOn()
 {
   if (!DarkRoutingOn())
