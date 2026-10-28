@@ -243,7 +243,7 @@ private:
   //! tells the timekeeper the timing a mode set gives the display
   static void PostModeNotice(const drmModeModeInfo& mode, bool fractional);
   void set_drmProp(unsigned int id, std::string name,
-    unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
+    unsigned int obj_type, uint64_t value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
   void LogUiPlaneBeforeCommit();
   int m_fd{-1};
