@@ -266,6 +266,10 @@ void WriteHpdNoRestore();
 void CheckHpdNoRestore();
 //! main, before W's stop: Y if W wrote N; no N write after it
 void ExitHpdNoRestore();
+//! 5.B3-10d: W records the video's mode only in a hotplug job that acts on its edge (no echo,
+//! invalid read, wait or disconnected retry) = HpdNoRestoreWriteOn() and no hotplugworker_skip
+//! "B3-10d"
+bool VideoRecordOnActOn();
 //! the win system notes it once, at main's first pump after W's start under HotplugOnW, when W's
 //! hotplug job takes over; false before (the boot set's seed and caps still read main's table
 //! on W, main waiting)

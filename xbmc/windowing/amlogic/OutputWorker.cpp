@@ -878,6 +878,21 @@ bool HpdNoRestoreWriteOn()
   return on;
 }
 
+bool VideoRecordOnActOn()
+{
+  if (!HpdNoRestoreWriteOn())
+    return false;
+  static const bool on = []
+  {
+    const bool result = !HotplugWorkerSkip("B3-10d");
+    if (result)
+      CLog::Log(LOGINFO, "HOTPLUGWORKER B3-10d: W records the video's mode only in a job that "
+                         "acts on its edge");
+    return result;
+  }();
+  return on;
+}
+
 void WriteHpdNoRestore()
 {
   std::unique_lock lock(s_hpdWriteMutex);

@@ -1001,18 +1001,27 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   if (valid && read.source == HpdSource::DRM)
     read.state = ShadowEncoderId(m_amlDisplay->aml_get_Device_handle()) > 0 ? 1 : 0;
 
-  // HotplugEvent's video mode, at every event of a playback: recorded once, kept until main has
-  // applied a Restore to it (D5: HEAD resets it at the match, its apply being the same call; a
-  // reply main drops before its adopt leaves it recorded for the retry's Restore)
+  // HotplugEvent's video mode, at every event of a playback (B3-10d: every job that acts on its
+  // edge): recorded once, kept until main has applied a Restore to it (D5: HEAD resets it at the
+  // match, its apply being the same call; a reply main drops before its adopt leaves it recorded
+  // for the retry's Restore)
   const DISPLAYSTATE::GuiInputs gui = DISPLAYSTATE::GetGuiInputs();
-  if (!gui.videoPlaying || (m_wVideoModeReply && m_videoModeApplied.load() >= m_wVideoModeReply))
+  const auto recordVideoMode = [&]
   {
-    m_wVideoMode.reset();
-    m_wVideoModeReply = 0;
-  }
-  // never the facts of no row (GC at RES_INVALID, or its row past main's table, before D5's hold)
-  if (gui.videoPlaying && !m_wVideoMode && !gui.videoResolution.strId.empty())
-    m_wVideoMode = gui.videoResolution;
+    if (!gui.videoPlaying || (m_wVideoModeReply && m_videoModeApplied.load() >= m_wVideoModeReply))
+    {
+      m_wVideoMode.reset();
+      m_wVideoModeReply = 0;
+    }
+    // never the facts of no row (GC at RES_INVALID, or its row past main's table, before D5's hold)
+    if (gui.videoPlaying && !m_wVideoMode && !gui.videoResolution.strId.empty())
+      m_wVideoMode = gui.videoResolution;
+  };
+  // 5.B3-10d: a job that does not act would re-record the mode main has just left (a film's
+  // own switch still pending) and keep it past the playback's end
+  const bool recordOnAct = OUTPUT::VideoRecordOnActOn();
+  if (!recordOnAct)
+    recordVideoMode();
 
   if (!valid)
   {
@@ -1050,6 +1059,8 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     reply.kind = Kind::RETRY_NOOP;
     return;
   }
+  if (recordOnAct)
+    recordVideoMode();
   m_wLastAct = read.seq;
   if (read.source == HpdSource::HPD_STATE)
   {
@@ -1923,6 +1934,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::RefusalConfirmOn();
       OUTPUT::DesktopSlotOn();
       OUTPUT::HpdNoRestoreWriteOn();
+      OUTPUT::VideoRecordOnActOn();
       OUTPUT::TestGraphicsRefuseAt();
     }
     catch (const std::exception& e)
