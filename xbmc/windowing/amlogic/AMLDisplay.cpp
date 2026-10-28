@@ -802,7 +802,7 @@ bool CAMLDRMUtils::aml_output_wire_stale()
 }
 
 void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
-  unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req)
+  unsigned int obj_type, uint64_t value, drmModeAtomicReqPtr req)
 {
   unsigned int i;
   int res;
