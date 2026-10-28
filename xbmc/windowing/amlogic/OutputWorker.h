@@ -284,8 +284,8 @@ int TestHotplugHoldMs();
 //! hotplugworker_gfxrefuse "<n>": G's graphics submits from its nth on (counted from G's start,
 //! its boot submit included) carry FB_ID 0, which the kernel refuses on a lit CRTC; 0 = off
 int TestGraphicsRefuseAt();
-//! hotplugworker_holdhpd: at a plug-out event W posts a hold job that spins until hpd_state
-//! reads 1, so the plug-out's read lands in the plug-in's hpd-to-uevent window
+//! hotplugworker_holdhpd: a hotplug job that starts while hpd_state reads 0 spins (1 ms, at most
+//! 30 s) until it reads 1, so the plug-out's read lands in the plug-in's hpd-to-callback window
 bool TestHotplugHoldHpd();
 //! hotplugworker_retry "<ms>": the P5-9 timer's first, shortest period (0: today's)
 int TestHotplugRetryMs();

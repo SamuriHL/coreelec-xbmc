@@ -860,6 +860,7 @@ void CWinSystemAmlogic::StartHotplugOnW()
   }
   // the hooks W reads, read here so no hotplug job probes a file
   OUTPUT::TestHotplugHoldMs();
+  OUTPUT::TestHotplugHoldHpd();
   OUTPUT::TestHotplugRaceGapMs();
   OUTPUT::TestHotplugRetryMs();
   OUTPUT::TestHotplugSetAfterMs();
@@ -992,6 +993,17 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   {
     CLog::Log(LOGINFO, "HOTPLUG job test hold {} ms", holdMs);
     KODI::TIME::Sleep(std::chrono::milliseconds(holdMs));
+  }
+  // hotplugworker_holdhpd (test only): a job that starts at a plug-out reads inside the plug-in's
+  // hpd-to-callback window, or after its callback (B3-11's callback-window gate)
+  if (OUTPUT::TestHotplugHoldHpd() && !retry && aml_hdmitx_hpd_state() == 0)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG job test hold until hpd_state reads 1");
+    const auto end = std::chrono::steady_clock::now() + 30s;
+    int state = 0;
+    while ((state = aml_hdmitx_hpd_state()) != 1 && std::chrono::steady_clock::now() < end)
+      KODI::TIME::Sleep(1ms);
+    CLog::Log(LOGINFO, "HOTPLUG job test hold released: hpd_state {}", state);
   }
 
   // step 1: the read, before any claim or park (design §6 Detection)
