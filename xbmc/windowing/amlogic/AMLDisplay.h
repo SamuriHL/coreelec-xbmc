@@ -128,7 +128,7 @@ private:
   void apply_dv_wire_format();
   bool leaving_dv_wire() const;
   void set_drmProp(unsigned int id, std::string name,
-    unsigned int obj_type, unsigned int value, drmModeAtomicReqPtr req);
+    unsigned int obj_type, uint64_t value, drmModeAtomicReqPtr req);
   bool SupportsFormat(drmModePlane *plane, uint32_t format);
   int m_fd{-1};
   // The link may carry a DV tunnel format: TV-led (RGB/444 8-bit) or
