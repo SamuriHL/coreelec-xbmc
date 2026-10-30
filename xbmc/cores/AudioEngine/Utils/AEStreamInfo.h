@@ -67,6 +67,10 @@ public:
   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
 
   void SetCoreOnly(bool value) { m_coreOnly = value; }
+  //! the codec the container names (STREAM_TYPE_AC3 for AC-3 and E-AC-3, any
+  //! DTS type for DTS): detection looks for its sync words only, since after a
+  //! seek the data starts mid-frame and holds other codecs' sync words
+  void SetExpectedType(CAEStreamInfo::DataType type) { m_expected = type; }
   // Rewrite the bitstream's dialogue normalisation to 0 dB gain (receiver-side
   // attenuation off), recomputing the affected CRCs.
   void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
@@ -86,6 +90,8 @@ public:
   void Reset();
 
 private:
+  //! DetectType found a frame: the expected codec's search starts again
+  unsigned int Detected(unsigned int skipped);
   uint8_t m_buffer[MAX_IEC61937_PACKET];
   unsigned int m_bufferSize = 0;
   unsigned int m_skipBytes = 0;
@@ -94,6 +100,9 @@ private:
 
   CAEStreamInfo m_info;
   bool m_coreOnly = false;
+  CAEStreamInfo::DataType m_expected = CAEStreamInfo::STREAM_TYPE_NULL;
+  //! skipped looking for the expected codec; past a limit any codec is taken
+  unsigned int m_expectSkipped = 0;
   unsigned int m_needBytes = 0;
   ParseFunc m_syncFunc;
   bool m_hasSync = false;

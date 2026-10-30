@@ -20,6 +20,7 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -112,6 +113,19 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   UpdateDialNormSettings();
   m_isEAC3JOC = hints.codec == AV_CODEC_ID_EAC3 && hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
   m_parser.SetCoreOnly(false);
+  // the demuxer's codec: a seek's first bytes are not taken for another one
+  // (validated SoCs only; elsewhere the parser keeps trying every codec)
+  CAEStreamInfo::DataType expected = CAEStreamInfo::STREAM_TYPE_NULL;
+  if (const int soc = aml_get_cpufamily_id(); soc == AML_S6 || soc == AML_G12B)
+  {
+    if (hints.codec == AV_CODEC_ID_TRUEHD)
+      expected = CAEStreamInfo::STREAM_TYPE_TRUEHD;
+    else if (hints.codec == AV_CODEC_ID_AC3 || hints.codec == AV_CODEC_ID_EAC3)
+      expected = CAEStreamInfo::STREAM_TYPE_AC3;
+    else if (hints.codec == AV_CODEC_ID_DTS)
+      expected = CAEStreamInfo::STREAM_TYPE_DTSHD;
+  }
+  m_parser.SetExpectedType(expected);
   switch (m_format.m_streamInfo.m_type)
   {
     case CAEStreamInfo::STREAM_TYPE_AC3:
