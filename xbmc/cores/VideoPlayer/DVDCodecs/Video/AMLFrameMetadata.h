@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <iterator>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -101,9 +100,6 @@ struct AMLFrameMetadata
   }
 };
 
-// immutable once built, so frames, the store and label caches share one copy
-using AMLFrameMetadataPtr = std::shared_ptr<const AMLFrameMetadata>;
-
 // A stream switch opens the successor codec before the predecessor is closed,
 // so clearing is gated on an ownership token instead of happening blindly.
 class CAMLFrameMetadataStore
@@ -133,15 +129,14 @@ public:
     }
   }
 
-  // frames released before a stop or a stream switch can still be presented, hence the token
-  void Publish(uint32_t token, AMLFrameMetadataPtr meta)
+  void Publish(uint32_t token, const AMLFrameMetadata& meta)
   {
     std::lock_guard lock(m_lock);
-    if (token != 0 && m_owner == token)
-      m_meta = std::move(meta);
+    if (token != 0 && m_owner == token && !(m_meta == meta))
+      m_meta = meta;
   }
 
-  AMLFrameMetadataPtr Get() const
+  AMLFrameMetadata Get() const
   {
     std::lock_guard lock(m_lock);
     return m_meta;
@@ -151,24 +146,24 @@ private:
   CAMLFrameMetadataStore() = default;
 
   mutable std::mutex m_lock;
-  AMLFrameMetadataPtr m_meta;
+  AMLFrameMetadata m_meta;
   uint32_t m_owner{0};
   uint32_t m_nextToken{0};
 };
 
-// Maps decoded pictures back to their packets: committed per packet pts at
-// decode, consumed by the pts of each picture the decoder outputs. All methods
-// run on the VideoPlayerVideo thread.
+// Orders metadata by presentation: committed per pts at decode, released when
+// the drain target reaches their pts. All methods run on the VideoPlayerVideo
+// thread.
 class CAMLFrameMetadataSequencer
 {
 public:
-  void Commit(double pts, AMLFrameMetadataPtr meta)
+  void Commit(double pts, const AMLFrameMetadata& meta)
   {
     // a pts far below the newest queued entry means the feed jumped backwards
     // without a flush, and the stranded entries would otherwise win eviction
     if (!m_queue.empty() && pts + BACKWARD_JUMP < m_queue.rbegin()->first)
       m_queue.clear();
-    m_queue[pts] = std::move(meta);
+    m_queue[pts] = meta;
     if (m_queue.size() > MAX_DEPTH)
       Compact();
     // the oldest entries are the next to be consumed, so overflow drops newest
@@ -177,17 +172,19 @@ public:
   }
 
   // newest entry at or before pts, consuming everything up to it. A miss keeps
-  // the queue and meta intact, so the picture carries the values before it.
-  bool Consume(double pts, AMLFrameMetadataPtr& meta)
+  // the queue intact so the caller can hold the last published values.
+  bool Consume(double pts, AMLFrameMetadata& meta)
   {
     auto it = m_queue.upper_bound(pts + PTS_TOLERANCE);
     if (it == m_queue.begin())
       return false;
     --it;
-    meta = std::move(it->second);
+    meta = it->second;
     m_queue.erase(m_queue.begin(), std::next(it));
     return true;
   }
+
+  bool Empty() const { return m_queue.empty(); }
 
   void Reset() { m_queue.clear(); }
 
@@ -214,28 +211,21 @@ private:
   static constexpr size_t MAX_DEPTH = 512;
   static constexpr size_t REORDER_MARGIN = 64;
 
-  std::map<double, AMLFrameMetadataPtr> m_queue;
+  std::map<double, AMLFrameMetadata> m_queue;
 };
 
 // one store snapshot per render pass so a consumer cannot mix payloads from
-// different video frames, and thread_local avoids a shared cache lock. The
-// JSON is only rebuilt when a new value was published.
+// different video frames, and thread_local avoids a shared cache lock
 inline const std::string& AMLGetCachedSideData()
 {
   thread_local std::string cached;
-  thread_local AMLFrameMetadataPtr cachedMeta;
   thread_local unsigned int cachedFrameTime = 0;
   thread_local bool cachedOnce = false;
 
   const unsigned int frameTime = CTimeUtils::GetFrameTime();
   if (!cachedOnce || frameTime != cachedFrameTime)
   {
-    AMLFrameMetadataPtr meta = CAMLFrameMetadataStore::GetInstance().Get();
-    if (meta != cachedMeta)
-    {
-      cached = meta ? meta->ComposeSideData() : std::string();
-      cachedMeta = std::move(meta);
-    }
+    cached = CAMLFrameMetadataStore::GetInstance().Get().ComposeSideData();
     cachedFrameTime = frameTime;
     cachedOnce = true;
   }
