@@ -10,12 +10,6 @@
 
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 
-#include <atomic>
-#include <memory>
-#include <mutex>
-
-class CAMLCodec;
-
 class CRendererAML : public CBaseRenderer
 {
 public:
@@ -40,11 +34,6 @@ public:
 
   // Player functions
   virtual bool IsGuiLayer() override { return false; };
-  virtual bool StartVsyncPresent() override;
-  virtual void StopVsyncPresent() override;
-  virtual bool WaitVsync() override;
-  virtual bool PresentFrame(int index) override;
-  virtual void WakeVsyncPresent() override;
 
   // Feature support
   virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
@@ -52,7 +41,6 @@ public:
 
 private:
   void Reset();
-  std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect);
 
   static const int m_numRenderBuffers = NUM_BUFFERS;
 
@@ -66,11 +54,4 @@ private:
   uint64_t m_prevVPts;
   uint64_t m_hdrGuiOwner{0};
   bool m_bConfigured;
-
-  std::atomic<bool> m_vsyncPresent{false};
-  //! Vsync thread only: whether its last wake was a real vsync (what the GUI may pace on)
-  bool m_lastWakeVsync{false};
-  //! Codec of the frame last queued from the vsync thread, for the render loop to apply geometry
-  std::mutex m_pendingGeometryLock;
-  std::shared_ptr<CAMLCodec> m_pendingGeometry;
 };
