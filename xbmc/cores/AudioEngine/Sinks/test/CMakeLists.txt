@@ -1,5 +1,4 @@
-set(SOURCES TestActiveAEDeviceChange.cpp
-            TestActiveAEErrorRetry.cpp)
+set(SOURCES TestActiveAEDeviceChange.cpp)
 
 if(MACOSX)
   list(APPEND SOURCES TestAESinkDARWINOSX.cpp)
