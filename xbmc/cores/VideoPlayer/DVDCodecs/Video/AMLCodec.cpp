@@ -2298,9 +2298,11 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
         AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC,
                                         AMDV_OUTPUT_MODE_IPT_TUNNEL);
     }
-
-    AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 0);
-    am_private->gcodec.dv_enable = 1;
+    else
+    {
+      AmlDisplay->aml_set_drmProperty("enable_hdr10plus", DRM_MODE_OBJECT_CRTC, 0);
+      am_private->gcodec.dv_enable = 1;
+    }
 
     if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
     {
