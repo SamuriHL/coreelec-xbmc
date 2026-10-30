@@ -73,7 +73,6 @@ protected:
 private:
   std::unique_ptr<CEGLContextUtils> m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
-  uint64_t m_presentStepSeen{0};
   bool m_modeSwitchFallback{false};
 
   bool m_guiCompositing{false};
