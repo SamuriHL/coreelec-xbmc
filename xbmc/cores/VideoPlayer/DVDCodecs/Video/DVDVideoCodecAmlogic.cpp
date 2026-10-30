@@ -177,7 +177,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     {
       zeroLevel5 = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
                        CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE) == DOVI_L5_ZERO;
-      if (zeroLevel5)
+      // the HEVC path flags it where the converter zeroes the RPU
+      if (zeroLevel5 && m_hints.codec == AV_CODEC_ID_AV1)
         m_streamMeta.flags.push_back("l5-zeroed");
     }
   }
@@ -408,6 +409,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           const auto dvsettings = CServiceBroker::GetSettingsComponent()->GetSettings();
           const int l5mode = dvsettings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
           m_bitstream->SetDoviL5Mode(l5mode);
+          // keep upstream's side-data flag meaningful under our 3-mode setting
+          if (l5mode == DOVI_L5_ZERO)
+            m_streamMeta.flags.push_back("l5-zeroed");
           m_bitstream->SetDoviL5OsdUnmask(
               dvsettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_OSD_UNMASK));
           const bool realDV = (m_hints.dovi.dv_profile == 5 || m_hints.dovi.dv_profile == 7 ||
