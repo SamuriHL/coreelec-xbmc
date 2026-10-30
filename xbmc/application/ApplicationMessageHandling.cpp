@@ -232,6 +232,8 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
 
     case TMSG_SWITCHTOFULLSCREEN:
     {
+      if (CWinSystemBase* winSystem = CServiceBroker::GetWinSystem(); winSystem)
+        winSystem->ApplyRenderLoopPosts();
       if (CGUIComponent* gui = CServiceBroker::GetGUI(); gui)
         gui->GetWindowManager().SwitchToFullScreen(true);
       break;

@@ -993,6 +993,25 @@ GuiInputs GetGuiInputs()
   return inputs;
 }
 
+namespace
+{
+// GC's initial m_bFullScreenRoot
+std::atomic<bool> s_fullScreenRoot{true};
+std::atomic<bool> s_fullScreenRootPublished{false};
+} // namespace
+
+void PublishFullScreenRoot(bool root)
+{
+  const bool old = s_fullScreenRoot.exchange(root);
+  if (!s_fullScreenRootPublished.exchange(true) || old != root)
+    CLog::Log(LOGINFO, "VCONFIGURE fullscreen root published {}", root);
+}
+
+bool FullScreenRoot()
+{
+  return s_fullScreenRoot.load();
+}
+
 void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH)
 {
   if (!OUTPUT::HotplugWorkerOn() || !Active())

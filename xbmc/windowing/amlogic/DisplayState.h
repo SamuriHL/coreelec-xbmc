@@ -248,6 +248,10 @@ void PublishGuiPlayback();
 //! the published inputs (W's hotplug job, from B3-7b); published false before the start publish
 GuiInputs GetGuiInputs();
 
+//! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
+void PublishFullScreenRoot(bool root);
+bool FullScreenRoot();
+
 // 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
 // the GUI/OSD encoding at its next render pass
 //! the switch: ModeSetsOnW and no outputdrive_skip "B2-8", latched at its first read after W runs

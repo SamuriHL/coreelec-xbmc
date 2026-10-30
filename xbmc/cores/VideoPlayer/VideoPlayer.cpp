@@ -60,6 +60,7 @@
 #include "utils/FontUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/PresentationTimeline.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -7423,6 +7424,19 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       if (res && m_playerOptions.fullscreen &&
           !CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
       {
+#if defined(HAS_LIBAMCODEC)
+        // 5.V2-6: main sets it before its next FrameMove, which owns the geometry
+        if (m_renderLoopHandle)
+        {
+          if (!m_renderLoopHandle->fullScreenPending.exchange(true))
+          {
+            CServiceBroker::GetWinSystem()->PostFullScreenVideo(m_renderLoopHandle);
+            CLog::Log(LOGINFO, "VCONFIGURE fullscreen notice posted gen={}",
+                      m_renderLoopHandle->gen);
+          }
+          break;
+        }
+#endif
         auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
         gfx.SetFullScreenVideo(true);
         const CRect view = gfx.GetViewWindow();
@@ -7637,8 +7651,13 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
   if (hint.stereo_mode.empty())
   {
-    CGUIComponent *gui = CServiceBroker::GetGUI();
-    if (gui != nullptr)
+#if defined(HAS_LIBAMCODEC)
+    // 5.V2-6: P does not reach into the GUI
+    if (m_renderLoopHandle)
+      hint.stereo_mode = CStereoscopicsManager::DetectStereoModeByPath(m_item.GetDynPath());
+    else
+#endif
+    if (CGUIComponent* gui = CServiceBroker::GetGUI(); gui != nullptr)
     {
       const CStereoscopicsManager &stereoscopicsManager = gui->GetStereoscopicsManager();
       hint.stereo_mode = stereoscopicsManager.DetectStereoModeByString(m_item.GetDynPath());
@@ -7648,10 +7667,18 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if (hint.flags & AV_DISPOSITION_ATTACHED_PIC)
     return false;
 
+  const auto fullScreenRoot = [this]
+  {
+#if defined(HAS_LIBAMCODEC)
+    // 5.V2-6: published by GC's writes, read without the GUI
+    if (m_renderLoopHandle)
+      return DISPLAYSTATE::FullScreenRoot();
+#endif
+    return CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot();
+  };
   // set desired refresh rate
   if (m_CurrentVideo.id < 0 && !m_restartingStreamPlayer && m_playerOptions.fullscreen &&
-      CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot() && hint.fpsrate != 0 &&
-      hint.fpsscale != 0)
+      fullScreenRoot() && hint.fpsrate != 0 && hint.fpsscale != 0)
   {
     if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
     {
@@ -7659,6 +7686,11 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
                                                    (double)DVD_TIME_BASE * hint.fpsscale /
                                                    (hint.fpsrate * (hint.interlaced ? 2 : 1)));
 
+#if defined(HAS_LIBAMCODEC)
+      if (m_renderLoopHandle)
+        CLog::Log(LOGINFO, "VCONFIGURE refresh-rate trigger raised by the open gen={}",
+                  m_renderLoopHandle->gen);
+#endif
       m_renderManager.TriggerUpdateResolution(framerate, hint.width, hint.height, hint.stereo_mode);
     }
   }

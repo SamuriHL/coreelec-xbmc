@@ -45,6 +45,8 @@ public:
 
   RenderStereoMode GetStereoMode(void) const;
   std::string DetectStereoModeByString(const std::string& needle) const;
+  //! reads only the advanced settings: callable without the GUI
+  static std::string DetectStereoModeByPath(const std::string& needle);
   std::string GetLabelForStereoMode(const RenderStereoMode mode) const;
 
   void SetStereoMode(const RenderStereoMode mode);

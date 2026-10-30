@@ -20,6 +20,7 @@
 #include "utils/DisplayInfo.h"
 #include "utils/HDRCapabilities.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -68,6 +69,7 @@ struct RenderLoopHandle
   IRenderLoop* client = nullptr;
   unsigned int gen = 0;
   bool dead = false;
+  std::atomic<bool> fullScreenPending{false}; //!< 5.V2-6: a fullscreen notice not yet taken
   std::chrono::milliseconds testRegisterDelay{0}; //!< test: main applies the register this late
 };
 
@@ -216,6 +218,11 @@ public:
   void UnregisterRenderLoop(IRenderLoop *client);
   void PostRegisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
   void PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
+  //! 5.V2-6: main sets fullscreen video for this handle's file, if it is still registered
+  void PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle);
+  //! main: the posts in order; also run before the fullscreen window activates, so a notice
+  //! posted while main was busy lands first, as P's own set did
+  void ApplyRenderLoopPosts();
   void DriveRenderLoop();
 
   // winsystem events
@@ -418,7 +425,12 @@ protected:
   std::vector<IRenderLoop*> m_renderLoopClients;
   struct RenderLoopPost
   {
-    bool registers;
+    enum class Kind
+    {
+      REGISTER,
+      UNREGISTER,
+      FULLSCREEN,
+    } kind;
     std::shared_ptr<RenderLoopHandle> handle;
     std::chrono::steady_clock::time_point applyAt;
   };

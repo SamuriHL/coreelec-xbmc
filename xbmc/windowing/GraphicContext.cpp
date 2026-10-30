@@ -464,11 +464,17 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   {
     CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = true;
     m_bFullScreenRoot = true;
+#if defined(HAS_LIBAMCODEC)
+    DISPLAYSTATE::PublishFullScreenRoot(true);
+#endif
   }
   else
   {
     CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = false;
     m_bFullScreenRoot = false;
+#if defined(HAS_LIBAMCODEC)
+    DISPLAYSTATE::PublishFullScreenRoot(false);
+#endif
   }
 
   MAINCOUPLING_ACCESSOR("gfx lock");
@@ -571,11 +577,17 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
   {
     CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = true;
     m_bFullScreenRoot = true;
+#if defined(HAS_LIBAMCODEC)
+    DISPLAYSTATE::PublishFullScreenRoot(true);
+#endif
   }
   else
   {
     CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = false;
     m_bFullScreenRoot = false;
+#if defined(HAS_LIBAMCODEC)
+    DISPLAYSTATE::PublishFullScreenRoot(false);
+#endif
   }
 
   MAINCOUPLING_ACCESSOR("gfx lock");

@@ -22,6 +22,7 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -302,21 +303,26 @@ void CWinSystemBase::UnregisterRenderLoop(IRenderLoop *client)
 void CWinSystemBase::PostRegisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle)
 {
   std::unique_lock lock(m_renderLoopPostSection);
-  m_renderLoopPosts.push_back(
-      {true, handle, std::chrono::steady_clock::now() + handle->testRegisterDelay});
+  m_renderLoopPosts.push_back({RenderLoopPost::Kind::REGISTER, handle,
+                               std::chrono::steady_clock::now() + handle->testRegisterDelay});
 }
 
 void CWinSystemBase::PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle)
 {
   std::unique_lock lock(m_renderLoopPostSection);
-  m_renderLoopPosts.push_back({false, handle, {}});
+  m_renderLoopPosts.push_back({RenderLoopPost::Kind::UNREGISTER, handle, {}});
 }
 
-void CWinSystemBase::DriveRenderLoop()
+void CWinSystemBase::PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle)
 {
-  MessagePump();
+  std::unique_lock lock(m_renderLoopPostSection);
+  m_renderLoopPosts.push_back({RenderLoopPost::Kind::FULLSCREEN, handle, {}});
+}
 
+void CWinSystemBase::ApplyRenderLoopPosts()
+{
   std::vector<std::shared_ptr<RenderLoopHandle>> handles;
+  std::vector<std::shared_ptr<RenderLoopHandle>> fullScreen;
   {
     std::unique_lock lock(m_renderLoopSection);
     {
@@ -324,9 +330,16 @@ void CWinSystemBase::DriveRenderLoop()
       const auto now = std::chrono::steady_clock::now();
       // in posting order: a register held back holds the posts after it
       auto post = m_renderLoopPosts.begin();
-      for (; post != m_renderLoopPosts.end() && (!post->registers || post->applyAt <= now); ++post)
+      for (; post != m_renderLoopPosts.end() &&
+             (post->kind != RenderLoopPost::Kind::REGISTER || post->applyAt <= now);
+           ++post)
       {
-        if (!post->registers)
+        if (post->kind == RenderLoopPost::Kind::FULLSCREEN)
+        {
+          fullScreen.push_back(post->handle);
+          continue;
+        }
+        if (post->kind == RenderLoopPost::Kind::UNREGISTER)
         {
           std::erase(m_renderLoopHandles, post->handle);
           CLog::Log(LOGINFO, "RENDERLOOP unregister applied gen={}", post->handle->gen);
@@ -347,6 +360,48 @@ void CWinSystemBase::DriveRenderLoop()
       }
       m_renderLoopPosts.erase(m_renderLoopPosts.begin(), post);
     }
+    handles = m_renderLoopHandles;
+  }
+
+  // outside the render-loop locks: the set runs the GUI's resolution change. A notice whose file
+  // has unregistered or died is not this session's
+  for (const auto& handle : fullScreen)
+  {
+    bool live = std::ranges::find(handles, handle) != handles.end();
+    if (live)
+    {
+      std::unique_lock lock(handle->section);
+      live = !handle->dead;
+    }
+    handle->fullScreenPending = false;
+    if (!live)
+    {
+      CLog::Log(LOGWARNING, "VCONFIGURE fullscreen notice refused gen={} (file not registered)",
+                handle->gen);
+      continue;
+    }
+    auto& gfx = GetGfxContext();
+    // as P's own check before its set: a window activated while main was busy has set it
+    if (gfx.IsFullScreenVideo())
+    {
+      CLog::Log(LOGINFO, "VCONFIGURE fullscreen notice gen={}: already set", handle->gen);
+      continue;
+    }
+    gfx.SetFullScreenVideo(true);
+    const CRect view = gfx.GetViewWindow();
+    CLog::Log(LOGINFO, "VCONFIGURE fullscreen notice applied gen={}, viewport {:.0f}x{:.0f}",
+              handle->gen, view.Width(), view.Height());
+  }
+}
+
+void CWinSystemBase::DriveRenderLoop()
+{
+  MessagePump();
+  ApplyRenderLoopPosts();
+
+  std::vector<std::shared_ptr<RenderLoopHandle>> handles;
+  {
+    std::unique_lock lock(m_renderLoopSection);
     handles = m_renderLoopHandles;
 
     for (auto i = m_renderLoopClients.begin(); i != m_renderLoopClients.end(); ++i)

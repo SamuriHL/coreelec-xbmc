@@ -160,6 +160,11 @@ RenderStereoMode CStereoscopicsManager::GetNextSupportedStereoMode(
 
 std::string CStereoscopicsManager::DetectStereoModeByString(const std::string &needle) const
 {
+  return DetectStereoModeByPath(needle);
+}
+
+std::string CStereoscopicsManager::DetectStereoModeByPath(const std::string& needle)
+{
   std::string stereoMode;
   const std::string& searchString(needle);
   CRegExp re(true);
