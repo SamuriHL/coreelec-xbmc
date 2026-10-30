@@ -60,7 +60,6 @@ public:
   void EndGuiComposite() override;
   void CompositeGui() override;
   bool IsHdrComposite() const override { return m_guiCompositing; }
-  bool GuiWillRender() const override { return m_guiWillRender; }
 
   EGLDisplay GetEGLDisplay() const;
   EGLSurface GetEGLSurface() const;

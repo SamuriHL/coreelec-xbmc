@@ -521,7 +521,9 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
   //! @todo The preserved sRGB FBO is currently not leveraged: D2P reuses the
   //! post-PQ GUI plane back buffer directly via display HW, and single-plane
   //! never reaches !guiWillRender (the dirty-driven skip is gated on
-  //! IsRenderingVideoLayer).
+  //! IsRenderingVideoLayer). Future single-plane "gate, don't move" work
+  //! lets the GUI walk skip while CompositeGui still runs each video frame,
+  //! re-using this cached sRGB FBO as the composite source.
   if (!guiWillRender)
     return true;
 
@@ -566,11 +568,8 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
 
 void CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
-  // an unpresented frame gets no draws
-  if (!m_guiWillRender)
-    return;
-
-  m_guiFbo.EndRender();
+  if (m_guiWillRender)
+    m_guiFbo.EndRender();
 
   // Clear the backbuffer before video renders. In the FBO compositing path,
   // video renders in the RenderEx pass with clear=false, so DrawBlackBars is
@@ -591,7 +590,9 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
 
   // Only update m_guiFboClean when GUI render fired this frame; otherwise the
   // FBO is in the same state as the previous frame and the flag stays as-is.
-  // m_guiFboClean means "FBO is empty/clean" (no composite work needed).
+  // m_guiFboClean meaning depends on context:
+  //   single-plane: "FBO is empty/clean" (no composite work needed)
+  //   D2P:          "FBO is empty/clean AND back buffer cache is invalid"
   if (m_guiWillRender)
   {
     const bool guiEmpty = (GetGUIElementCount() == 0);
@@ -599,7 +600,7 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
     if (guiEmpty)
       return;
   }
-  else
+  else if (m_guiFboClean)
   {
     return;
   }
