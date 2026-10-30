@@ -78,7 +78,6 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hLutTF = glGetUniformLocation(ProgramHandle(), "u_lutTF");
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
-  m_hHlgWhite = glGetUniformLocation(ProgramHandle(), "u_hlgWhite");
   glUseProgram(ProgramHandle());
   glUniform1i(m_hSamp, 0);
   glUniform1i(m_hLutDegamma, 1);
@@ -92,7 +91,6 @@ bool CGuiCompositeShaderGLES::OnEnabled()
     glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
 
   glUniform1f(m_hOotfGamma, m_ootfGamma);
-  glUniform1f(m_hHlgWhite, m_hlgWhite);
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, m_lutDegammaTexId);
@@ -216,7 +214,6 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
 
   GLuint tf = 0;
   float ootfGamma = 0.0f;
-  float hlgWhite = 0.0f;
 
   if (colorTransfer == AVCOL_TRC_SMPTE2084)
   {
@@ -236,9 +233,7 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
     // HLG: no TF LUT needed, shader computes OETF + inverse OOTF directly.
     // BT.2100: gamma = 1.2 + 0.42 * log10(Lw/1000). For 1000-nit ref: 1.2.
     ootfGamma = 1.2f;
-    hlgWhite = m_sdrPeak * 10000.0f / 1000.0f;
-    CLog::Log(LOGDEBUG, "CGuiCompositeShaderGLES::CreateLUTs - HLG mode (gamma {}, {:.0f} nits)",
-              ootfGamma, m_sdrPeak * 10000.0f);
+    CLog::Log(LOGDEBUG, "CGuiCompositeShaderGLES::CreateLUTs - HLG mode (gamma {})", ootfGamma);
   }
   else
   {
@@ -256,6 +251,5 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
   m_lutDegammaTexId = degamma;
   m_lutTFTexId = tf;
   m_ootfGamma = ootfGamma;
-  m_hlgWhite = hlgWhite;
   return true;
 }
