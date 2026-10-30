@@ -284,13 +284,15 @@ bool V22On()
 #endif
 }
 
-// 5.V2-4: V configures an Amlogic picture's renderer (with B2-3's committed timing)
+// 5.V2-4: V configures an Amlogic picture's renderer (with B2-3's committed timing); 5.V2-4b:
+// the video side composes its timing. One unit: either skip turns both off
 bool V24On()
 {
 #if defined(HAS_LIBAMCODEC)
   if (!aml_vconfigure_on())
     return false;
-  static const bool on = DISPLAYSTATE::CommitTimingOn() && !aml_vconfigure_skip("V2-4");
+  static const bool on = DISPLAYSTATE::CommitTimingOn() && !aml_vconfigure_skip("V2-4") &&
+                         !aml_vconfigure_skip("V2-4b");
   return on;
 #else
   return false;
@@ -639,6 +641,8 @@ bool CRenderManager::Configure()
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
   CMainHold hold("Configure", false);
+  // 5.V2-4b: a renderer configured here keeps main's stored timing
+  m_composing = false;
 #if defined(HAS_LIBAMCODEC)
   const int64_t startNs = SteadyNs();
   const char* oldKind = RendererKind(m_pRenderer.get());
@@ -858,6 +862,8 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       m_clockSync.Reset();
       m_dvdClock.ResetVsyncAdjust();
       m_presentVblanks = renderer->PresentVblanks();
+      WriteTimingFacts(picture.hdrType, m_presentVblanks);
+      m_composing = true;
       TimingInputsWritten();
       ++m_rgen;
       m_renderState = STATE_CONFIGURED;
@@ -1291,6 +1297,7 @@ void CRenderManager::PreInit()
   if (!aml_presentation_validated())
     m_debugRenderer.Initialize();
 
+  m_composing = V24On();
   UpdateLatencyTweak("preinit");
 
   m_QueueSize   = 2;
@@ -2055,8 +2062,12 @@ void CRenderManager::UpdateLatencyTweak(const char* site, RESOLUTION target)
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, height));
 
-  m_latencyTweakMs = m_latencyTweak;
-  TimingInputsWritten();
+  // 5.V2-4b: composing, main's value is the shadow's only
+  if (!m_composing)
+  {
+    m_latencyTweakMs = m_latencyTweak;
+    TimingInputsWritten();
+  }
 
   CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}, HDR used: {}",
     m_latencyTweak, refresh, height, isHDRUsed);
@@ -2073,6 +2084,38 @@ void CRenderManager::SetLatencyTweakToAudio(bool toAudio)
 {
   m_tweakToAudio = toAudio;
   TimingInputsWritten();
+}
+
+double CRenderManager::GetLatencyTweak() const
+{
+#if defined(HAS_LIBAMCODEC)
+  // 5.V2-4b: each reader composes it from the published inputs
+  if (m_composing)
+    return ComposeNow().tweakMs;
+#endif
+  return m_latencyTweakMs;
+}
+
+bool CRenderManager::ComposesTiming()
+{
+  return V24On();
+}
+
+void CRenderManager::WriteTimingFacts(StreamHdrType hdrType, int vblanks)
+{
+  const uint64_t gen = (m_timingFacts.load() >> 32) + 1;
+  m_timingFacts = gen << 32 | static_cast<uint64_t>(static_cast<uint16_t>(hdrType)) << 16 |
+                  static_cast<uint16_t>(vblanks + 1);
+}
+
+CRenderManager::STimingFacts CRenderManager::ReadTimingFacts() const
+{
+  const uint64_t word = m_timingFacts.load();
+  STimingFacts facts;
+  facts.hdrType = static_cast<StreamHdrType>((word >> 16) & 0xffff);
+  facts.vblanks = static_cast<int>(word & 0xffff) - 1;
+  facts.gen = static_cast<uint32_t>(word >> 32);
+  return facts;
 }
 
 void CRenderManager::PublishDisplayTiming(const char* site)
@@ -2096,10 +2139,14 @@ void CRenderManager::PublishDisplayTiming(const char* site)
                                : static_cast<double>(gfx.GetDisplayLatency());
     const bool toAudio = m_tweakToAudio;
     const double latencyMs = (toAudio ? 0.0 : m_latencyTweak) + display;
-    m_timingFps = fps;
-    m_timingLatencyMs = latencyMs;
-    WriteTimingSnapshot(fps, latencyMs, inputsGen, commitCount);
-    m_timingEpoch = epoch;
+    // 5.V2-4b: composing, the coordinator stores the timing; main's is the shadow's only
+    if (!m_composing)
+    {
+      m_timingFps = fps;
+      m_timingLatencyMs = latencyMs;
+      WriteTimingSnapshot(fps, latencyMs, inputsGen, commitCount);
+      m_timingEpoch = epoch;
+    }
     DISPLAYSTATE::ShadowMainMode("fps@publish", "height@publish", gfx.GetResInfo(), gcFps);
     SComposedTiming today;
     today.height = -1;
@@ -2195,6 +2242,13 @@ CRenderManager::SComposedTiming CRenderManager::ComposeTiming(
   t.latencyMs =
       (tweakToAudio ? 0.0 : t.tweakMs) + presentVblanks * 1000.0 / static_cast<double>(t.fps);
   return t;
+}
+
+CRenderManager::SComposedTiming CRenderManager::ComposeNow() const
+{
+  const STimingFacts facts = ReadTimingFacts();
+  const auto state = DISPLAYSTATE::Get();
+  return ComposeTiming(state.get(), facts.hdrType, facts.vblanks, m_tweakToAudio);
 }
 #endif
 
@@ -3421,7 +3475,13 @@ bool CRenderManager::GetResumePts(double& pts, double& maxStep)
   else
     return false;
   // paused, frames up to a vsync past the clock on screen are released
-  const double vsync = DVD_TIME_BASE / static_cast<double>(m_timingFps.load());
+  float timingFps = m_timingFps.load();
+#if defined(HAS_LIBAMCODEC)
+  // 5.V2-4b: the last committed mode's
+  if (m_composing)
+    timingFps = ComposeNow().fps;
+#endif
+  const double vsync = DVD_TIME_BASE / static_cast<double>(timingFps);
   maxStep = m_displayLatency + vsync + frametime + DVD_MSEC_TO_TIME(5);
   return pts != DVD_NOPTS_VALUE;
 }
@@ -3785,8 +3845,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     SFpsMismatch fpsEnded;
     SFpsMismatch fpsBegun;
     std::string firstPresent; //!< 5.V2-4: the file's first picture released
+    std::string composed; //!< 5.V2-4b: a new composition
     ~RefusedLog()
     {
+      if (!composed.empty())
+        CLog::Log(LOGINFO, "VTIMING composed by the coordinator: {}", composed);
       if (!firstPresent.empty())
         CLog::Log(LOGINFO, "VCONFIGURE first present {}", firstPresent);
       if (aheadEnded.ticks)
@@ -3822,8 +3885,44 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   }
   STickTiming aheadTiming;
   const STickTiming* timing = nullptr;
+  bool composed = false;
+#if defined(HAS_LIBAMCODEC)
+  // 5.V2-4b: the coordinator is the timing's only writer: composed from the published inputs at
+  // every tick, never refused for main
+  if (m_composing)
+  {
+    composed = true;
+    SCoordinatorTiming now;
+    const STimingFacts facts = ReadTimingFacts();
+    const auto state = DISPLAYSTATE::Get();
+    now.toAudio = m_tweakToAudio;
+    now.timing = ComposeTiming(state.get(), facts.hdrType, facts.vblanks, now.toAudio);
+    now.stateEpoch = state ? state->epoch : 0;
+    now.factsGen = facts.gen;
+    m_timingFps = now.timing.fps;
+    m_timingLatencyMs = now.timing.latencyMs;
+    m_timingEpoch = tick.epoch;
+    if (m_ahead.ticks)
+    {
+      refusedLog.endNs = SteadyNs();
+      refusedLog.aheadEnded = m_ahead;
+      refusedLog.aheadEnd = "superseded";
+      m_ahead.ticks = 0;
+    }
+    if (now != m_composedLast)
+    {
+      m_composedLast = now;
+      refusedLog.composed = StringUtils::Format(
+          "epoch {} tweak {:.3f} fps {:.3f} latency {:.3f} (refresh {:.3f} height {} hdr {}) | "
+          "state epoch {} hdrType {} vblanks {} facts {} toAudio {}",
+          tick.epoch, now.timing.tweakMs, now.timing.fps, now.timing.latencyMs,
+          now.timing.refresh, now.timing.height, now.timing.hdrUsed, now.stateEpoch,
+          static_cast<int>(facts.hdrType), facts.vblanks, facts.gen, now.toAudio);
+    }
+  }
+#endif
   // the display timing of this display epoch has not been published yet
-  if (m_timingEpoch != tick.epoch)
+  if (!composed && m_timingEpoch != tick.epoch)
   {
     refusedLog.endNs = SteadyNs();
 #if defined(HAS_LIBAMCODEC)
@@ -3872,7 +3971,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     }
   }
 #if defined(HAS_LIBAMCODEC)
-  else if (m_ahead.ticks)
+  else if (!composed && m_ahead.ticks)
   {
     // main's publish for this epoch: with no write in between, the values the ticks used
     STickTiming published;

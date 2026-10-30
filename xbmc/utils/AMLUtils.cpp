@@ -2836,8 +2836,6 @@ void aml_displaystate_init()
                      vconfigure = true;
                    }
                    s_vconfigureSkip = OUTPUT::ReadSkipList("vconfigure_skip", "VCONFIGURE");
-                   // V2-4 ships with V2-4b only: held off until it lands
-                   s_vconfigureSkip.push_back("V2-4");
                    s_vconfigureOn = vconfigure;
                    s_vconfigureLatched.store(true, std::memory_order_release);
                    CLog::Log(LOGINFO, "VCONFIGURE {} ({})", vconfigure ? "on" : "off", reason);

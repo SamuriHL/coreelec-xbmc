@@ -6865,8 +6865,16 @@ float CVideoPlayer::GetAVDelay()
 void CVideoPlayer::ApplyAudioOffset()
 {
   // a slow display shows the picture late: the sound waits for it
-  const double want =
-      m_requestedAudioOffset - DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak());
+  const double requested = m_requestedAudioOffset;
+  const double tweak = m_renderManager.GetLatencyTweak();
+  const double want = requested - DVD_MSEC_TO_TIME(tweak);
+  // 5.V2-4b: what a landing took
+  const auto logLanding = [&](const char* site)
+  {
+    CLog::Log(LOGINFO,
+              "VTIMING landing {}: audio offset {:+.3f} ms (requested {:+.3f} ms, tweak {:.3f} ms)",
+              site, want * 1000.0 / DVD_TIME_BASE, requested * 1000.0 / DVD_TIME_BASE, tweak);
+  };
   if (want == m_landedAudioOffset)
     return;
   // a display reset landed it already
@@ -6891,6 +6899,7 @@ void CVideoPlayer::ApplyAudioOffset()
     m_landedAudioOffset = want;
     CLog::Log(LOGINFO, "VideoPlayer: audio offset {:+.0f} ms, for the next start",
               want * 1000.0 / DVD_TIME_BASE);
+    logLanding("next-start");
     return;
   }
   // a stall or a scheduled lead: after its landing
@@ -6902,6 +6911,7 @@ void CVideoPlayer::ApplyAudioOffset()
   m_VideoPlayerAudio->SendMessage(
       std::make_shared<CDVDMsgDouble>(CDVDMsg::PLAYER_AUDIO_RELAND, want), 1);
   m_landedAudioOffset = want;
+  logLanding("mid-play");
 }
 
 void CVideoPlayer::SetSubTitleDelay(float fValue)
@@ -9748,8 +9758,17 @@ void CVideoPlayer::OnResetDisplay()
   double startClock = 0.0;
   // a mode change sets the display latency tweak: this landing lands it
   if (m_audioOffsetToAudio)
-    m_clock.SetAudioOffset(m_requestedAudioOffset -
-                           DVD_MSEC_TO_TIME(m_renderManager.GetLatencyTweak()));
+  {
+    const double requested = m_requestedAudioOffset;
+    const double tweak = m_renderManager.GetLatencyTweak();
+    const double landed = requested - DVD_MSEC_TO_TIME(tweak);
+    m_clock.SetAudioOffset(landed);
+    // 5.V2-4b: what the reset landed
+    CLog::Log(LOGINFO,
+              "VTIMING landing reset: audio offset {:+.3f} ms (requested {:+.3f} ms, tweak {:.3f} "
+              "ms)",
+              landed * 1000.0 / DVD_TIME_BASE, requested * 1000.0 / DVD_TIME_BASE, tweak);
+  }
   int64_t discRunNs = 0;
   // 5.B2-5c: the clock held at the park, the frames out were released up to the lost mode's
   // latency and vsync past it; the new mode's can be shorter. Only up to the frame out then

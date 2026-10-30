@@ -234,7 +234,7 @@ public:
   //! audio offset), not the picture
   void SetLatencyTweakToAudio(bool toAudio);
   //! the display latency tweak in ms
-  double GetLatencyTweak() const { return m_latencyTweakMs; }
+  double GetLatencyTweak() const;
 
   void SetVideoSettings(const CVideoSettings& settings);
 
@@ -293,6 +293,7 @@ protected:
   //! 5.B2-8 (D11): main's OutputChanged request, re-encoded with no new picture
   void ReencodeOnOutputChange();
 
+public:
   //! 5.V2-1: a timing as composed from its inputs
   struct SComposedTiming
   {
@@ -311,6 +312,35 @@ protected:
                                        StreamHdrType hdrType,
                                        int vblanks,
                                        bool tweakToAudio);
+  //! 5.V2-4b: the video side composes the display timing (V's configured renderers)
+  static bool ComposesTiming();
+
+protected:
+  //! 5.V2-4b: V's picture facts for the timing, from one swap, as one word
+  struct STimingFacts
+  {
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    int vblanks = -1; //!< no renderer: the composition takes the Amlogic one's
+    uint32_t gen = 0;
+  };
+  std::atomic<uint64_t> m_timingFacts{0};
+  //! under m_statelock
+  void WriteTimingFacts(StreamHdrType hdrType, int vblanks);
+  STimingFacts ReadTimingFacts() const;
+  //! 5.V2-4b: the timing is composed (a renderer V configured, or none yet), never stored by
+  //! main; false after a configure on main's pass, which keeps HEAD's stored values
+  std::atomic_bool m_composing{false};
+  //! the composition of the published inputs now
+  SComposedTiming ComposeNow() const;
+  //! coordinator: what its last composition line logged
+  struct SCoordinatorTiming
+  {
+    SComposedTiming timing;
+    uint64_t stateEpoch = 0;
+    uint32_t factsGen = 0;
+    bool toAudio = false;
+    bool operator==(const SCoordinatorTiming&) const = default;
+  } m_composedLast;
   //! main: VTIMING shadow, the composition against main's values (latency: compare it too;
   //! toAudio: the placement main read); log only
   void ShadowTiming(const char* site, const SComposedTiming& today, bool latency, bool toAudio);

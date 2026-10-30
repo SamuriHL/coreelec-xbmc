@@ -16,6 +16,7 @@
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
 #include "AMLCodec.h"
+#include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
@@ -1269,6 +1270,18 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 double CDVDVideoCodecAmlogic::RenderDisplayLatency()
 {
   const auto winSystem = CServiceBroker::GetWinSystem();
+  const double videoDelay =
+      static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
+  // 5.V2-4b: the coordinator's composition, from the mode on the link (no GC read); the tweak
+  // always counts here
+  if (CRenderManager::ComposesTiming())
+  {
+    const auto state = DISPLAYSTATE::Get();
+    const CRenderManager::SComposedTiming timing = CRenderManager::ComposeTiming(
+        state.get(), m_hints.hdrType, AML_VD1_PRESENT_VBLANKS, false);
+    return DVD_MSEC_TO_TIME(timing.latencyMs - videoDelay -
+                            static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
+  }
   CGraphicContext& gfx = winSystem->GetGfxContext();
 
   const bool hdrDisplay = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
@@ -1282,8 +1295,6 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const auto advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   double latencyTweak =
       static_cast<double>(advancedSettings->GetLatencyTweak(refresh, isHDRUsed, height));
-  const double videoDelay =
-      static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
 
   const float fps = gfx.GetFPS();
   double display =
@@ -1347,10 +1358,21 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
       const double nowUs = static_cast<double>(now.tv_sec) * 1e6 + now.tv_nsec / 1e3;
       target += std::max(0.0, nowUs + RenderDisplayLatency() - startNs / 1e3);
     }
-    float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+    float fps;
     DISPLAYSTATE::ModeTiming committed;
-    if (DISPLAYSTATE::CommitTimingOn() && DISPLAYSTATE::CommittedTiming(committed, "fps@dvca-meta"))
-      fps = committed.fps;
+    // 5.V2-4b: the last committed mode's (no GC read)
+    if (CRenderManager::ComposesTiming())
+    {
+      const auto state = DISPLAYSTATE::Get();
+      fps = state ? state->fps : 60.0f;
+    }
+    else
+    {
+      fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+      if (DISPLAYSTATE::CommitTimingOn() &&
+          DISPLAYSTATE::CommittedTiming(committed, "fps@dvca-meta"))
+        fps = committed.fps;
+    }
     if (fps > 0.0f)
       target += DVD_TIME_BASE / 2.0 / static_cast<double>(fps);
   }
