@@ -239,8 +239,7 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
   if(amli && amli->m_amlCodec)
   {
     uint64_t pts = amli->m_omxPts;
-    // a new decoder can start at the pts the previous one ended on
-    if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec)
+    if (pts != m_prevVPts)
     {
       const bool dropFrame =
           m_prevVPts == DVD_NOPTS_VALUE && amli->m_amlCodec->IsRealtimeStream();
@@ -255,7 +254,6 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
       }
       if (setVideoRect)
         amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
-      m_prevCodec = amli->m_amlCodec;
       std::shared_ptr<CAMLCodec> codec = std::move(amli->m_amlCodec); //Mark frame as processed
       m_prevVPts = pts;
       return codec;
