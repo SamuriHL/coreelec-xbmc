@@ -272,6 +272,16 @@ public:
 };
 #endif
 
+// 5.V2-2: UnInit and Flush on main run their GL outside the RM locks
+bool V22On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_vconfigure_on() && !aml_vconfigure_skip("V2-2");
+#else
+  return false;
+#endif
+}
+
 // Disc-session mode hold: keep the incumbent display RESOLUTION (no HDMI
 // re-clock for a menu's resolution - strict sinks re-train on every re-clock),
 // but adopt the CONTENT'S refresh rate. Holding the GUI's 60Hz over a disc's
@@ -370,7 +380,7 @@ CRenderManager::~CRenderManager()
   // without it, as the renderer's own destructor used to.
   if (m_pRenderer)
     m_pRenderer->EndRenderSession();
-  delete m_pRenderer;
+  m_pRenderer.reset();
 }
 
 void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
@@ -550,7 +560,7 @@ bool CRenderManager::Configure()
   CMainHold hold("Configure", false);
 #if defined(HAS_LIBAMCODEC)
   const int64_t startNs = SteadyNs();
-  const char* oldKind = RendererKind(m_pRenderer);
+  const char* oldKind = RendererKind(m_pRenderer.get());
   // 5.V2-1 (N2): whether V's path would take it
   const auto logConfigure = [&](bool result)
   {
@@ -565,7 +575,7 @@ bool CRenderManager::Configure()
       path = "not a presenter-mode renderer";
     CLog::Log(
         LOGINFO, "VCONFIGURE main pass player={} file={} renderer {}->{} {} in {:.1f} ms ({})",
-        m_playerGen, m_fileGen.load(), oldKind, RendererKind(m_pRenderer),
+        m_playerGen, m_fileGen.load(), oldKind, RendererKind(m_pRenderer.get()),
         result ? "configured" : "failed", static_cast<double>(SteadyNs() - startNs) / 1e6, path);
   };
 #else
@@ -580,13 +590,12 @@ bool CRenderManager::Configure()
     // of kind - e.g. a software-decoded segment falling back to the GLES
     // renderer - must release it first, or the new renderer would paint into
     // a regime it knows nothing about.
-    CBaseRenderer* old = m_pRenderer;
-    m_pRenderer = nullptr;
+    std::shared_ptr<CBaseRenderer> old = std::move(m_pRenderer);
     CreateRenderer();
     if (!m_pRenderer || typeid(*m_pRenderer) != typeid(*old))
       old->EndRenderSession();
     CLog::Log(LOGDEBUG, "{} - deleting renderer", __FUNCTION__);
-    delete old;
+    old.reset();
   }
 
   if (!m_pRenderer)
@@ -717,6 +726,7 @@ void CRenderManager::FrameMove()
   TestStall("stop");
   TestStall("nextfile");
   bool firstFrame = false;
+  std::shared_ptr<CBaseRenderer> renderer;
 #if defined(HAS_LIBAMCODEC)
   ReencodeOnOutputChange();
 #endif
@@ -770,6 +780,17 @@ void CRenderManager::FrameMove()
 
     if (!m_presenterMode)
       CheckEnableClockSync();
+
+    // the pass's reference, after Configure() deleted the old renderer
+    if (lock.owns_lock())
+      renderer = m_pRenderer;
+    else
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      lock.lock();
+      CMainHold refHold("FrameMove configuring");
+      renderer = m_pRenderer;
+    }
   }
   TestStall("firstpic");
   int source;
@@ -836,7 +857,7 @@ void CRenderManager::FrameMove()
     source = m_presentsource;
   }
 
-  m_playerPort->UpdateGuiRender(IsGuiLayer() || !m_pRenderer->VideoBypassesFramebuffer() ||
+  m_playerPort->UpdateGuiRender(IsGuiLayer() || !renderer->VideoBypassesFramebuffer() ||
                                 firstFrame);
 
   // Run libass for the current PTS and cache the output for ConvertLibass
@@ -866,6 +887,8 @@ void CRenderManager::BeginFile()
     m_testStallArmed = 1;
   else if (VStallAt("afterpublish"))
     m_testStallArmed = 2;
+  else if (VStallAt("stop"))
+    m_testStallArmed = 0;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -893,7 +916,13 @@ void CRenderManager::BeginFile()
 
 void CRenderManager::ArmTestStall(const char* event)
 {
-  if (VStallAt(event))
+  if (!VStallAt(event))
+    return;
+  // a stop already stalled in UnInit is not armed again
+  int idle = 0;
+  if (std::strcmp(event, "stop") == 0)
+    m_testStallArmed.compare_exchange_strong(idle, 2);
+  else
     m_testStallArmed = 2;
 }
 
@@ -902,7 +931,8 @@ void CRenderManager::TestStall(const char* event, bool immediate)
   if (!VStallAt(event))
     return;
   int armed = 2;
-  if (!immediate && !m_testStallArmed.compare_exchange_strong(armed, 0))
+  if (!immediate &&
+      !m_testStallArmed.compare_exchange_strong(armed, std::strcmp(event, "stop") == 0 ? 3 : 0))
     return;
 #if defined(HAS_LIBAMCODEC)
   const SVStall& stall = VStall();
@@ -983,6 +1013,12 @@ void CRenderManager::PreInit()
 
 void CRenderManager::UnInit()
 {
+  // test (vconfigure_mainstall): the stop stalls main once, here or at its first pass after
+  // the player's exit, whichever comes first
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread() && VStallAt("stop") &&
+      m_testStallArmed.exchange(3) != 3)
+    TestStall("stop", true);
+
   // no renderer, no phase: audio must not wait for one
   m_dvdClock.ClearVsyncAdjust(true);
   if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
@@ -998,39 +1034,82 @@ void CRenderManager::UnInit()
   // before the renderer goes: the coordinator releases frames through it
   StopCoordinator();
 
-  MAINCOUPLING_ACCESSOR("RM m_statelock");
-  std::unique_lock lock(m_statelock);
-  CMainHold hold("UnInit", false);
-  m_presenterMode = false;
-#if defined(HAS_LIBAMCODEC)
-  if (m_rmRetry)
+  // the GL teardown (and the overlays' settings save)
+  const auto teardown =
+      [this](std::shared_ptr<CBaseRenderer>& renderer,
+             std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit>& captureBlit)
   {
-    m_rmRetry = false;
-    m_resolutionInFlight = false;
-    CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry abandoned (uninit)");
-  }
+    m_overlays.UnInit();
+    // UnInit empties the overlay render buffers but, unlike Flush(), does not
+    // repaint - so a subtitle/menu on screen at stop lingers on the cached Amlogic
+    // OSD front buffer until an unrelated redraw. Force one repaint (process thread
+    // only, like Flush()) so the emptied overlay plane is re-composited at stop.
+    if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+      OVERLAY::MarkDirty();
+    m_debugRenderer.Dispose();
+    m_debugRendererTried = false;
+
+    captureBlit.reset();
+    if (renderer)
+      renderer->EndRenderSession();
+  };
+
+  // 5.V2-2: the locks cover the state only; the teardown runs after their release
+  const bool v22 = V22On();
+  std::shared_ptr<CBaseRenderer> renderer;
+  std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> captureBlit;
+  StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    // V uses the renderer under m_presentlock
+    std::unique_lock<CCriticalSection> lock2(m_presentlock, std::defer_lock);
+    if (v22)
+      lock2.lock();
+    CMainHold hold("UnInit", v22);
+    m_presenterMode = false;
+#if defined(HAS_LIBAMCODEC)
+    if (m_rmRetry)
+    {
+      m_rmRetry = false;
+      m_resolutionInFlight = false;
+      CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry abandoned (uninit)");
+    }
 #endif
 
-  m_overlays.UnInit();
-  // UnInit empties the overlay render buffers but, unlike Flush(), does not
-  // repaint - so a subtitle/menu on screen at stop lingers on the cached Amlogic
-  // OSD front buffer until an unrelated redraw. Force one repaint (process thread
-  // only, like Flush()) so the emptied overlay plane is re-composited at stop.
-  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
-    OVERLAY::MarkDirty();
-  m_debugRenderer.Dispose();
-  m_debugRendererTried = false;
+    if (v22)
+    {
+      renderer = std::move(m_pRenderer);
+      captureBlit = std::move(m_captureBlit);
+      m_presentVblanks = -1;
+      TimingInputsWritten();
+    }
+    else
+    {
+      teardown(m_pRenderer, m_captureBlit);
+      DeleteRenderer();
+    }
 
-  m_captureBlit.reset();
-  if (m_pRenderer)
-    m_pRenderer->EndRenderSession();
-  DeleteRenderer();
+    m_renderState = STATE_UNCONFIGURED;
+    m_picture.Reset();
+    m_pictureHdrType = m_picture.hdrType;
+    m_bRenderGUI = false;
+    if (!v22)
+    {
+      CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
+      m_initEvent.Set();
+      return;
+    }
+    hdrType = m_picture.hdrType;
+  }
 
-  m_renderState = STATE_UNCONFIGURED;
-  m_picture.Reset();
-  m_pictureHdrType = m_picture.hdrType;
-  m_bRenderGUI = false;
-  CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
+  teardown(renderer, captureBlit);
+  if (renderer)
+  {
+    CLog::Log(LOGDEBUG, "{} - deleting renderer", __FUNCTION__);
+    renderer.reset();
+  }
+  CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
 
   m_initEvent.Set();
 }
@@ -1050,14 +1129,8 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 #endif
     TestStall("flush");
 
-    MAINCOUPLING_ACCESSOR("RM m_statelock");
-    std::unique_lock lock(m_statelock);
-    MAINCOUPLING_ACCESSOR("RM m_presentlock");
-    std::unique_lock lock2(m_presentlock);
-    std::unique_lock lock3(m_datalock);
-    CMainHold hold("Flush", false);
-
-    if (m_pRenderer)
+    // the GL part (texture caches)
+    const auto flushOverlays = [this]
     {
       m_overlays.Flush();
       m_debugRenderer.Flush();
@@ -1070,8 +1143,43 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       // the render/process thread (IsProcessThread guard above), the only
       // thread allowed to touch the dirty-region tracker.
       OVERLAY::MarkDirty();
+    };
 
-      if (!m_pRenderer->Flush(saveBuffers))
+    // 5.V2-2: the GL (and the renderer's own flush) runs on the pass's reference, with no RM
+    // lock; the locks cover the queue and the start picture only
+    const bool v22 = V22On();
+    bool kept = false;
+    if (v22)
+    {
+      std::shared_ptr<CBaseRenderer> renderer;
+      {
+        MAINCOUPLING_ACCESSOR("RM m_statelock");
+        std::unique_lock lock(m_statelock);
+        CMainHold hold("Flush");
+        renderer = m_pRenderer;
+      }
+      if (!renderer)
+        return true;
+      flushOverlays();
+      kept = renderer->Flush(saveBuffers);
+    }
+
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
+    std::unique_lock lock2(m_presentlock);
+    std::unique_lock lock3(m_datalock);
+    CMainHold hold("Flush", v22);
+
+    if (m_pRenderer)
+    {
+      if (!v22)
+      {
+        flushOverlays();
+        kept = m_pRenderer->Flush(saveBuffers);
+      }
+
+      if (!kept)
       {
         m_queued.clear();
         m_discard.clear();
@@ -1127,12 +1235,12 @@ void CRenderManager::CreateRenderer()
       if (id == "default")
         continue;
 
-      m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer(id, buffer);
+      m_pRenderer.reset(VIDEOPLAYER::CRendererFactory::CreateRenderer(id, buffer));
       if (m_pRenderer)
         break;
     }
     if (!m_pRenderer)
-      m_pRenderer = VIDEOPLAYER::CRendererFactory::CreateRenderer("default", buffer);
+      m_pRenderer.reset(VIDEOPLAYER::CRendererFactory::CreateRenderer("default", buffer));
     m_presentVblanks = m_pRenderer ? m_pRenderer->PresentVblanks() : -1;
     TimingInputsWritten();
   }
@@ -1144,14 +1252,13 @@ void CRenderManager::DeleteRenderer()
   {
     CLog::Log(LOGDEBUG, "{} - deleting renderer", __FUNCTION__);
 
-    delete m_pRenderer;
-    m_pRenderer = NULL;
+    m_pRenderer.reset();
     m_presentVblanks = -1;
     TimingInputsWritten();
   }
 }
 
-void CRenderManager::ServiceVideoCaptures()
+void CRenderManager::ServiceVideoCaptures(CBaseRenderer& renderer)
 {
   using namespace KODI::RENDERING::CAPTURE;
 
@@ -1165,12 +1272,12 @@ void CRenderManager::ServiceVideoCaptures()
 
   // the renderer does not draw video into the framebuffer, so the copy-back
   // below would capture the GUI (if any) instead of the video; fail the request
-  if (m_pRenderer->VideoBypassesFramebuffer())
+  if (renderer.VideoBypassesFramebuffer())
   {
     for (const auto& request : requests)
     {
       CaptureResult result;
-      if (m_pRenderer->CaptureVideoFrame(request->spec, result))
+      if (renderer.CaptureVideoFrame(request->spec, result))
         captureService->Complete(request, std::move(result));
       else
         captureService->Fail(request);
@@ -1181,7 +1288,7 @@ void CRenderManager::ServiceVideoCaptures()
   CRect src;
   CRect dst;
   CRect view;
-  m_pRenderer->GetVideoRect(src, dst, view);
+  renderer.GetVideoRect(src, dst, view);
 
   // zoom modes push destRect past the output; the copy is clamped to the
   // visible region, so native-size targets must be sized from it too
@@ -1330,6 +1437,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     source = m_presenterMode && m_presentsource != -1 ? m_renderSource : m_presentsource;
   }
 
+  std::shared_ptr<CBaseRenderer> renderer;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -1342,34 +1450,35 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       RenderWithoutPicture(gui, configured);
       return;
     }
+    renderer = m_pRenderer;
   }
 
-  if (!gui && m_pRenderer->IsGuiLayer())
+  if (!gui && renderer->IsGuiLayer())
     return;
 
   bool presented = false;
-  if (!gui || m_pRenderer->IsGuiLayer())
+  if (!gui || renderer->IsGuiLayer())
   {
     SPresent& m = m_Queue[source];
 
     if( m.presentmethod == PRESENT_METHOD_BOB )
-      PresentFields(clear, flags, alpha);
+      PresentFields(*renderer, clear, flags, alpha);
     else if( m.presentmethod == PRESENT_METHOD_BLEND )
-      PresentBlend(clear, flags, alpha);
+      PresentBlend(*renderer, clear, flags, alpha);
     else
-      PresentSingle(clear, flags, alpha);
+      PresentSingle(*renderer, clear, flags, alpha);
 
     presented = true;
   }
 
   // the just-presented region is video-only: OSD, GUI and subtitles come later
   if (presented)
-    ServiceVideoCaptures();
+    ServiceVideoCaptures(*renderer);
 
   if (presented && !gui)
   {
     CRect src, dst, view;
-    m_pRenderer->GetVideoRect(src, dst, view);
+    renderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
 
     // Off-screen when the platform composites them (see BeginHdrOverlayRender),
@@ -1396,11 +1505,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   // still renders the debug overlay into the FBO.
   if (gui || (m_renderDebug && !CServiceBroker::GetWinSystem()->IsHdrComposite()))
   {
-    if (!m_pRenderer->IsGuiLayer())
-      m_pRenderer->Update();
+    if (!renderer->IsGuiLayer())
+      renderer->Update();
 
     CRect src, dst, view;
-    m_pRenderer->GetVideoRect(src, dst, view);
+    renderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
     const bool withheld = GraphicsWithheld();
     if (!withheld)
@@ -1421,7 +1530,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       }
       if (m_renderDebugVideo)
       {
-        DEBUG_INFO_VIDEO video = m_pRenderer->GetDebugInfo(source);
+        DEBUG_INFO_VIDEO video = renderer->GetDebugInfo(source);
         DEBUG_INFO_RENDER render = CServiceBroker::GetWinSystem()->GetDebugInfo();
 
         m_debugRenderer.SetInfo(video, render);
@@ -1530,53 +1639,53 @@ bool CRenderManager::IsGuiLayer()
 }
 
 /* simple present method */
-void CRenderManager::PresentSingle(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentSingle(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
   const SPresent& m = m_Queue[m_presentsource];
 
   if (m.presentfield == FS_BOT)
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT, alpha);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT, alpha);
   else if (m.presentfield == FS_TOP)
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP, alpha);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP, alpha);
   else
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags, alpha);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags, alpha);
 }
 
 /* new simpler method of handling interlaced material, *
  * we just render the two fields right after each other */
-void CRenderManager::PresentFields(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentFields(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
   const SPresent& m = m_Queue[m_presentsource];
 
   if(m_presentstep == PRESENT_FRAME)
   {
     if( m.presentfield == FS_BOT)
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
+      renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
     else
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
+      renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
   }
   else
   {
     if( m.presentfield == FS_TOP)
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
+      renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
     else
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
+      renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
   }
 }
 
-void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentBlend(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
   const SPresent& m = m_Queue[m_presentsource];
 
   if( m.presentfield == FS_BOT )
   {
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_TOP, alpha / 2);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_TOP, alpha / 2);
   }
   else
   {
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_BOT, alpha / 2);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_NOOSD, alpha);
+    renderer.RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_BOT, alpha / 2);
   }
 }
 
@@ -2044,8 +2153,15 @@ void CRenderManager::UpdateResolution()
             DISPLAYSTATE::LogCounters();
           }
 #endif
-          if (m_pRenderer)
-            m_pRenderer->Update();
+          std::shared_ptr<CBaseRenderer> renderer;
+          {
+            MAINCOUPLING_ACCESSOR("RM m_statelock");
+            std::unique_lock lock(m_statelock);
+            CMainHold hold("UpdateResolution");
+            renderer = m_pRenderer;
+          }
+          if (renderer)
+            renderer->Update();
         }
         else if (fracArmed)
         {

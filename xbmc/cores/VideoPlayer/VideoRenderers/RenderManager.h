@@ -245,9 +245,9 @@ protected:
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
   bool GraphicsWithheld();
 
-  void PresentSingle(bool clear, DWORD flags, DWORD alpha);
-  void PresentFields(bool clear, DWORD flags, DWORD alpha);
-  void PresentBlend(bool clear, DWORD flags, DWORD alpha);
+  void PresentSingle(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);
+  void PresentFields(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);
+  void PresentBlend(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);
 
   //! a coordinator tick's display timing, when it presents ahead of main's publish (5.V1-4)
   struct STickTiming
@@ -275,7 +275,7 @@ protected:
   void DeleteRenderer();
 
   //! Video-only tap: serve VIDEO capture requests from the just-presented frame.
-  void ServiceVideoCaptures();
+  void ServiceVideoCaptures(CBaseRenderer& renderer);
 
   //! the tweak for the current mode, or for the mode about to be set; site names it in the
   //! VTIMING shadow
@@ -334,7 +334,7 @@ protected:
 
   //! test (vconfigure_mainstall): main stalls here when the hook's event is armed (or immediate)
   void TestStall(const char* event, bool immediate = false);
-  //! the hook's event: 1 waiting for the file's first picture, 2 armed
+  //! the hook's event: 1 waiting for the file's first picture, 2 armed, 3 the file's stop stalled
   std::atomic<int> m_testStallArmed{0};
   //! test (vconfigure_forceswap): V's next picture reconfigures
   std::atomic<bool> m_testForceSwap{false};
@@ -349,7 +349,8 @@ protected:
   void StartCoordinator();
   void StopCoordinator();
 
-  CBaseRenderer *m_pRenderer = nullptr;
+  //! main's unlocked users take a copy under m_statelock
+  std::shared_ptr<CBaseRenderer> m_pRenderer;
   //! Owns the video tap's private FBO; render-thread only, reset in UnInit
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> m_captureBlit;
   OVERLAY::CRenderer m_overlays;
