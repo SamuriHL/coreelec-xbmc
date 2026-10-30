@@ -163,9 +163,9 @@ public:
    */
   std::optional<ClipTime> GetClipTime(uint64_t readPos) const;
 
-  //! hand the clip start held at a join to the demuxer opened after it
+  //! hand the clip start held at a non-seamless join to the demuxer opened by its reset
   void ReleaseClipStart() { m_clipStartHeld = false; }
-  bool IsClipStartHeld() const { return !m_navmode && m_clipStartHeld && !m_clipStart.empty(); }
+  bool IsClipStartHeld() const { return m_clipStartHeld && !m_clipStart.empty(); }
 
   void OverlayCallback(const BD_OVERLAY * const);
 #ifdef HAVE_LIBBLURAY_BDJ
@@ -259,8 +259,6 @@ protected:
     void SetupPlayerSettings();
     void FreeTitleInfo();
     void FreeClipInfo();
-    void HoldClipStart(const uint8_t* buf, int size);
-    void DropClipStartOnJump();
 
     /*!
      * \brief Read the clip information of a play item of the playlist being played.
@@ -315,5 +313,4 @@ protected:
     std::vector<uint8_t> m_clipStart;
     size_t m_clipStartOffset{0};
     bool m_clipStartHeld{false};
-    uint64_t m_clipStartEnd{0};
 };
