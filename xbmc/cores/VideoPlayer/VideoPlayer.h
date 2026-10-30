@@ -117,6 +117,7 @@ class CDemuxStreamAudio;
 class CStreamInfo;
 class CDVDDemuxCC;
 class CVideoPlayer;
+struct RenderLoopHandle;
 
 #define DVDSTATE_NORMAL           0x00000001 // normal dvd state
 #define DVDSTATE_STILL            0x00000002 // currently displaying a still frame
@@ -763,6 +764,10 @@ protected:
   std::unique_ptr<CDVDDemuxCC> m_pCCDemuxer;
 
   CRenderManager m_renderManager;
+  //! 5.V2-5: this Process run's posted render-loop registration (vconfigure on)
+  std::shared_ptr<RenderLoopHandle> m_renderLoopHandle;
+  unsigned int m_renderLoopGen = 0;
+  std::atomic<bool> m_renderLoopDead{false};
 
   struct SDVDInfo
   {

@@ -19,6 +19,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "utils/StringUtils.h"
+#include "utils/log.h"
 #include "windowing/GraphicContext.h"
 
 #include <memory>
@@ -298,14 +299,65 @@ void CWinSystemBase::UnregisterRenderLoop(IRenderLoop *client)
     m_renderLoopClients.erase(i);
 }
 
+void CWinSystemBase::PostRegisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle)
+{
+  std::unique_lock lock(m_renderLoopPostSection);
+  m_renderLoopPosts.push_back(
+      {true, handle, std::chrono::steady_clock::now() + handle->testRegisterDelay});
+}
+
+void CWinSystemBase::PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle)
+{
+  std::unique_lock lock(m_renderLoopPostSection);
+  m_renderLoopPosts.push_back({false, handle, {}});
+}
+
 void CWinSystemBase::DriveRenderLoop()
 {
   MessagePump();
 
+  std::vector<std::shared_ptr<RenderLoopHandle>> handles;
   {
     std::unique_lock lock(m_renderLoopSection);
+    {
+      std::unique_lock postLock(m_renderLoopPostSection);
+      const auto now = std::chrono::steady_clock::now();
+      // in posting order: a register held back holds the posts after it
+      auto post = m_renderLoopPosts.begin();
+      for (; post != m_renderLoopPosts.end() && (!post->registers || post->applyAt <= now); ++post)
+      {
+        if (!post->registers)
+        {
+          std::erase(m_renderLoopHandles, post->handle);
+          CLog::Log(LOGINFO, "RENDERLOOP unregister applied gen={}", post->handle->gen);
+          continue;
+        }
+        bool dead;
+        {
+          std::unique_lock handleLock(post->handle->section);
+          dead = post->handle->dead;
+        }
+        if (dead)
+          CLog::Log(LOGWARNING, "RENDERLOOP stale register refused gen={}", post->handle->gen);
+        else
+        {
+          m_renderLoopHandles.push_back(post->handle);
+          CLog::Log(LOGINFO, "RENDERLOOP register applied gen={}", post->handle->gen);
+        }
+      }
+      m_renderLoopPosts.erase(m_renderLoopPosts.begin(), post);
+    }
+    handles = m_renderLoopHandles;
+
     for (auto i = m_renderLoopClients.begin(); i != m_renderLoopClients.end(); ++i)
       (*i)->FrameMove();
+  }
+
+  for (const auto& handle : handles)
+  {
+    std::unique_lock lock(handle->section);
+    if (!handle->dead)
+      handle->client->FrameMove();
   }
 }
 

@@ -16,9 +16,11 @@
 #include "cores/VideoPlayer/VideoRenderers/DebugInfo.h"
 #include "guilib/DirtyRegion.h"
 #include "guilib/DispResource.h"
+#include "threads/CriticalSection.h"
 #include "utils/DisplayInfo.h"
 #include "utils/HDRCapabilities.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,6 +58,18 @@ class CGraphicContext;
 class CRenderSystemBase;
 class IRenderLoop;
 class CVideoReferenceClock;
+
+// 5.V2-5: a render-loop client registered and unregistered by posts, so its owner never waits on
+// main: main calls its FrameMove outside m_renderLoopSection, under the handle's own lock, until
+// the owner marks it dead
+struct RenderLoopHandle
+{
+  CCriticalSection section;
+  IRenderLoop* client = nullptr;
+  unsigned int gen = 0;
+  bool dead = false;
+  std::chrono::milliseconds testRegisterDelay{0}; //!< test: main applies the register this late
+};
 
 struct VideoPicture;
 
@@ -200,6 +214,8 @@ public:
   // render loop
   void RegisterRenderLoop(IRenderLoop *client);
   void UnregisterRenderLoop(IRenderLoop *client);
+  void PostRegisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
+  void PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
   void DriveRenderLoop();
 
   // winsystem events
@@ -400,6 +416,15 @@ protected:
   std::unique_ptr<KODI::WINDOWING::COSScreenSaverManager> m_screenSaverManager;
   CCriticalSection m_renderLoopSection;
   std::vector<IRenderLoop*> m_renderLoopClients;
+  struct RenderLoopPost
+  {
+    bool registers;
+    std::shared_ptr<RenderLoopHandle> handle;
+    std::chrono::steady_clock::time_point applyAt;
+  };
+  CCriticalSection m_renderLoopPostSection;
+  std::vector<RenderLoopPost> m_renderLoopPosts;
+  std::vector<std::shared_ptr<RenderLoopHandle>> m_renderLoopHandles;
 
   std::unique_ptr<IWinEvents> m_winEvents;
   std::unique_ptr<CGraphicContext> m_gfxContext;

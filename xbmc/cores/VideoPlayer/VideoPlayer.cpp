@@ -84,6 +84,7 @@
 #include <mutex>
 #include <ranges>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 using namespace KODI;
@@ -106,6 +107,63 @@ bool IsKnownLanguage(const CLanguageTag& language)
 {
   return !language.IsUndetermined();
 }
+
+#if defined(HAS_LIBAMCODEC)
+// test (vconfigure_regdelay "<ms>"): main applies the player's posted register <ms> late
+std::chrono::milliseconds TestRegisterDelay()
+{
+  static const int ms = []
+  {
+    const auto line = OUTPUT::ReadTestSwitch("vconfigure_regdelay");
+    const int value = line ? std::atoi(line->c_str()) : 0;
+    if (value > 0)
+      CLog::Log(LOGWARNING, "VCONFIGURE test: the render-loop register applied {} ms late", value);
+    return value;
+  }();
+  return std::chrono::milliseconds(ms);
+}
+
+// test (vconfigure_legacyclient): a legacy render-loop client unregistered off main while main
+// is inside its FrameMove must return only after that call (RetroPlayer's contract)
+void TestLegacyRenderLoopClient()
+{
+  static std::once_flag once;
+  std::call_once(once,
+                 []
+                 {
+                   if (!OUTPUT::ReadTestSwitch("vconfigure_legacyclient"))
+                     return;
+                   struct CClient : IRenderLoop
+                   {
+                     std::atomic<int> state{0}; // 1 inside its first FrameMove, 2 returned
+                     void FrameMove() override
+                     {
+                       if (state != 0)
+                         return;
+                       state = 1;
+                       std::this_thread::sleep_for(500ms);
+                       state = 2;
+                     }
+                   };
+                   auto client = std::make_shared<CClient>();
+                   CServiceBroker::GetWinSystem()->RegisterRenderLoop(client.get());
+                   std::thread(
+                       [client]
+                       {
+                         for (int i = 0; i < 2000 && client->state == 0; ++i)
+                           std::this_thread::sleep_for(5ms);
+                         const bool inside = client->state == 1;
+                         CServiceBroker::GetWinSystem()->UnregisterRenderLoop(client.get());
+                         CLog::Log(LOGWARNING,
+                                   "VCONFIGURE test: legacy client unregistered off main {}",
+                                   !inside             ? "without a FrameMove in progress"
+                                   : client->state == 2 ? "after its FrameMove returned"
+                                                        : "BEFORE its FrameMove returned");
+                       })
+                       .detach();
+                 });
+}
+#endif
 
 // How long one stream player may sit at the sync handshake with a full queue
 // while its partner never arrives, before the wait is treated as a deadlock
@@ -856,6 +914,18 @@ CVideoPlayer::~CVideoPlayer()
     system->Unregister(this);
 
   CloseFile();
+  if (m_renderLoopHandle)
+  {
+    // waits at most for main's call of this player's own FrameMove
+    const auto start = std::chrono::steady_clock::now();
+    std::unique_lock lock(m_renderLoopHandle->section);
+    m_renderLoopHandle->dead = true;
+    m_renderLoopDead = true;
+    CLog::Log(LOGINFO, "RENDERLOOP handle dead gen={} (waited {} ms)", m_renderLoopHandle->gen,
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count());
+  }
   DestroyPlayers();
   ReleaseAudioSessionHold();
 
@@ -3160,7 +3230,21 @@ void CVideoPlayer::Process()
   // thread, not directly when initializing the player to keep GUI responsible.
   m_item.SetMimeTypeForInternetFile();
 
-  CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
+#if defined(HAS_LIBAMCODEC)
+  TestLegacyRenderLoopClient();
+  // 5.V2-5: posted, never waiting on main's render loop
+  if (aml_vconfigure_on())
+  {
+    m_renderLoopHandle = std::make_shared<RenderLoopHandle>();
+    m_renderLoopHandle->client = this;
+    m_renderLoopHandle->gen = ++m_renderLoopGen;
+    m_renderLoopHandle->testRegisterDelay = TestRegisterDelay();
+    CServiceBroker::GetWinSystem()->PostRegisterRenderLoop(m_renderLoopHandle);
+    CLog::Log(LOGINFO, "RENDERLOOP register posted gen={}", m_renderLoopGen);
+  }
+  else
+#endif
+    CServiceBroker::GetWinSystem()->RegisterRenderLoop(this);
 
   Prepare();
 
@@ -5628,7 +5712,13 @@ void CVideoPlayer::OnExit()
   // would leak into the next playback session.
   m_overlayContainer.Clear();
 
-  CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
+  if (m_renderLoopHandle)
+  {
+    CServiceBroker::GetWinSystem()->PostUnregisterRenderLoop(m_renderLoopHandle);
+    CLog::Log(LOGINFO, "RENDERLOOP unregister posted gen={}", m_renderLoopHandle->gen);
+  }
+  else
+    CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 
   IPlayerCallback *cb = &m_callback;
   CVideoSettings vs = m_processInfo->GetVideoSettings();
@@ -9510,6 +9600,8 @@ void CVideoPlayer::SetVideoSettings(CVideoSettings& settings)
 
 void CVideoPlayer::FrameMove()
 {
+  if (m_renderLoopDead)
+    CLog::Log(LOGERROR, "RENDERLOOP FrameMove on a dead player");
   m_renderManager.FrameMove();
 }
 
