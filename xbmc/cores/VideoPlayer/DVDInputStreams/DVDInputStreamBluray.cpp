@@ -29,10 +29,8 @@
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
 
-#include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -441,9 +439,6 @@ void CDVDInputStreamBluray::Close()
   m_bd = nullptr;
   m_pstream.reset();
   m_rootPath.clear();
-  m_readPos = 0;
-  m_clipSpans.clear();
-  m_hasMVCExtension = false;
 
 #if defined(HAS_UDFREAD)
   // Released last, as the files opened from the volume are closed above
@@ -618,7 +613,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
     {
       m_clip = &m_titleInfo->clips[m_event.param];
       UpdateClipInfo(m_event.param);
-      OpenClipSpan();
     }
     uint64_t clip_start, clip_in, bytepos;
     ret = bd_get_clip_infos(m_bd, m_event.param, &clip_start, &clip_in, &bytepos, nullptr);
@@ -803,8 +797,6 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       // A unit libbluray skips as broken is reported and read as nothing, which the demuxer would
       // take for the end of the title
     } while (result == 0 && m_readErrors > readErrors);
-    if (result > 0)
-      m_readPos += result;
   }
   return result;
 }
@@ -1071,7 +1063,6 @@ bool CDVDInputStreamBluray::PosTime(int ms)
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
-  OpenClipSpan();
 
   if (m_bMVCPlayback)
   {
@@ -1120,7 +1111,6 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
-  OpenClipSpan();
 
   if (m_bMVCPlayback)
   {
@@ -1278,31 +1268,6 @@ bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
     return is_first_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count);
 
   return false;
-}
-
-std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTime(
-    uint64_t readPos) const
-{
-  if (m_hasMVCExtension)
-    return {};
-
-  const auto it = std::ranges::upper_bound(m_clipSpans, readPos, {}, &ClipSpan::readPos);
-  if (it == m_clipSpans.begin())
-    return {};
-
-  return std::prev(it)->time;
-}
-
-// the bytes of the next Read come from m_clip, or carry no clip time without one
-void CDVDInputStreamBluray::OpenClipSpan()
-{
-  if (m_navmode)
-    return;
-
-  ClipSpan span{m_readPos};
-  if (m_clip)
-    span.time = ClipTime{m_clip->in_time, m_clip->start_time};
-  m_clipSpans.push_back(span);
 }
 
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
@@ -1480,7 +1445,6 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
           CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - Enabling BD3D MVC demuxing");
           CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - MVC_Base_view_R_flag: {}", m_titleInfo->mvc_base_view_r_flag);
           m_bMVCPlayback = true;
-          m_hasMVCExtension = true;
           m_nMVCSubPathIndex = i;
           m_bFlipEyes = m_titleInfo->mvc_base_view_r_flag != 0;
           break;
