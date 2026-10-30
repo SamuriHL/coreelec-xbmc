@@ -22,7 +22,7 @@ public:
   void SetProjection(const GLfloat* proj) { m_proj = proj; }
 
   // GUI reference white, in PQ-normalized units (nits / 10000). Takes effect on
-  // the next CreateLUTs, which bakes it into the PQ LUT or the HLG white scale.
+  // the next CreateLUTs, which bakes it into the PQ LUT.
   void SetSdrPeak(float peak) { m_sdrPeak = peak; }
 
   // Convert a legacy PQ-signal-domain GUI peak (as CWinSystemAmlogic::
@@ -53,7 +53,6 @@ private:
   GLuint m_lutDegammaTexId{0};
   GLuint m_lutTFTexId{0};
   float m_ootfGamma{0.0f};
-  float m_hlgWhite{0.0f};
 
   GLint m_hPos{-1};
   GLint m_hTex{-1};
@@ -62,5 +61,4 @@ private:
   GLint m_hLutTF{-1};
   GLint m_hProj{-1};
   GLint m_hOotfGamma{-1};
-  GLint m_hHlgWhite{-1};
 };
