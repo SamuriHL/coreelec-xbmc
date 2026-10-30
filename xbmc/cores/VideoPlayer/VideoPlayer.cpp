@@ -2537,9 +2537,13 @@ void CVideoPlayer::Process()
 
     if (!pPacket)
     {
-      // when paused, demuxer could be be returning empty
+      // when paused, demuxer could be returning empty (at the end of the
+      // input): pace the retry so the paused player does not spin a core
       if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
+      {
+        CThread::Sleep(10ms);
         continue;
+      }
 
       // check for a still frame state
       if (std::shared_ptr<CDVDInputStream::IMenus> pStream = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
