@@ -179,6 +179,7 @@ void CRendererAML::ApplyGeometry()
 {
   SetViewMode(m_videoSettings.m_ViewMode);
   ManageRenderArea();
+  m_geometryApplied = true;
 }
 
 void CRendererAML::StoreGuiEncoding(const VideoPicture& picture,
@@ -405,6 +406,12 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+  // 5.V2-4: main must apply a swapped-in renderer's geometry before it draws it
+  if (!m_geometryApplied && !m_geometryErrorLogged)
+  {
+    m_geometryErrorLogged = true;
+    CLog::Log(LOGERROR, "VCONFIGURE drawn before its duties: SetVideoRect before SetViewMode");
+  }
   ManageRenderArea();
 
   if (m_offThreadPresent)

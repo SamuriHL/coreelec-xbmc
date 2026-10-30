@@ -201,6 +201,9 @@ void Shadow3d(bool today);
 CHDRCapabilities HdrCaps(const CHDRCapabilities& today);
 //! CWinSystemAmlogic::IsHDRDisplay's rule
 bool HdrDisplay(bool today);
+//! 5.V2-4: the same rule on the last published caps, for the video side (a pending or failed
+//! caps read keeps them; none published: false). Compares nothing
+bool PublishedHdrDisplay();
 bool Dv(bool today);
 bool Support3d(bool today);
 bool HdrPq(bool today);

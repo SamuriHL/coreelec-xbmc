@@ -271,6 +271,13 @@ protected:
   bool IsGuiLayer();
 
   bool Configure();
+#if defined(HAS_LIBAMCODEC)
+  //! 5.V2-4: V builds and configures an Amlogic picture's renderer and swaps it in
+  bool ConfigureOnV(const VideoPicture& picture, float fps, unsigned int orientation, int buffers);
+  //! 5.V2-4, main at FrameMove's top: retires renderers and applies a V swap's main duties;
+  //! true when it did (the first frame after a configure)
+  bool ApplyConfigureDuties();
+#endif
   void CreateRenderer();
   void DeleteRenderer();
 
@@ -351,6 +358,21 @@ protected:
 
   //! main's unlocked users take a copy under m_statelock
   std::shared_ptr<CBaseRenderer> m_pRenderer;
+  //! 5.V2-4 (m_statelock): renderers of another kind V swapped out, deleted on main (GL)
+  std::vector<std::shared_ptr<CBaseRenderer>> m_retire;
+  //! 5.V2-4 (m_statelock): bumped by each V swap; main draws a renderer only once it applied the
+  //! swap's duties (m_appliedRgen, main only)
+  unsigned int m_rgen = 0;
+  unsigned int m_appliedRgen = 0;
+  //! 5.V2-4 (m_statelock): V builds a renderer; the coordinator presents nothing meanwhile
+  bool m_vConfiguring = false;
+  //! 5.V2-4: UnInit ran (written under m_statelock and m_presentlock); V's swap is refused
+  std::atomic_bool m_closed{false};
+  unsigned int m_mainPassLogged = 0; //!< V: the file whose main pass was logged
+  unsigned int m_pinRefusedLogged = 0; //!< main: the rgen whose refused draw was logged
+  unsigned int m_firstPresentFile = 0; //!< coordinator: the file whose first present was logged
+  //! main: a draw refused for a swap whose duties main has not applied, once per swap
+  void LogPinRefused(const char* where);
   //! Owns the video tap's private FBO; render-thread only, reset in UnInit
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> m_captureBlit;
   OVERLAY::CRenderer m_overlays;
@@ -513,7 +535,7 @@ protected:
   CPresentationCoordinator* m_coordinator = nullptr; // the win system's; AML builds only
   bool m_coordinatorDelivers = false; //!< its vblank events arrive
   //! the coordinator releases the video frames; set in Configure() under all locks
-  bool m_presenterMode = false;
+  std::atomic_bool m_presenterMode{false};
   //! the source the render thread snapshotted in FrameMove; not freed until
   //! the next FrameMove
   int m_renderSource = -1;

@@ -729,6 +729,16 @@ bool HdrDisplay(bool today)
          c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
 }
 
+bool PublishedHdrDisplay()
+{
+  const auto state = s_state.load();
+  if (!state)
+    return false;
+  const CHDRCapabilities& c = state->hdrCaps;
+  return c.SupportsHDR10() || c.SupportsHDR10Plus() || c.SupportsHLG() ||
+         c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+}
+
 bool Dv(bool today)
 {
   if (!Active())

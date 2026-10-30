@@ -117,6 +117,8 @@ private:
   bool m_bConfigured;
 
   bool m_offThreadPresent{false};
+  bool m_geometryApplied{false}; //!< main: ApplyGeometry ran
+  bool m_geometryErrorLogged{false};
   // the codec of the last frame the coordinator released, for the render
   // thread's SetVideoRect
   std::mutex m_rectMutex;

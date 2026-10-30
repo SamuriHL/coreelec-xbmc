@@ -31,6 +31,7 @@
 #if defined(HAS_LIBAMCODEC)
 #include "HwDecRender/PresentationCoordinator.h"
 #include "HwDecRender/RendererAML.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
@@ -283,6 +284,19 @@ bool V22On()
 #endif
 }
 
+// 5.V2-4: V configures an Amlogic picture's renderer (with B2-3's committed timing)
+bool V24On()
+{
+#if defined(HAS_LIBAMCODEC)
+  if (!aml_vconfigure_on())
+    return false;
+  static const bool on = DISPLAYSTATE::CommitTimingOn() && !aml_vconfigure_skip("V2-4");
+  return on;
+#else
+  return false;
+#endif
+}
+
 #if defined(HAS_LIBAMCODEC)
 // 5.V2-3: B2-8's re-encode runs the GUI encoding outside the RM locks
 bool V23On()
@@ -514,10 +528,49 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_forceNext = false;
         return false;
       }
+      // 5.V2-4: a stop ends the wait (set only on V's path)
+      if (m_closed)
+      {
+        m_forceNext = false;
+        return false;
+      }
       m_presentevent.wait(lock, endtime.GetTimeLeft());
     }
     m_forceNext = false;
   }
+
+#if defined(HAS_LIBAMCODEC)
+  if (V24On())
+  {
+    const char* why = nullptr;
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      std::unique_lock lock(m_statelock);
+      if (m_closed)
+        why = "closed";
+      else if (!dynamic_cast<CAMLVideoBuffer*>(picture.videoBuffer))
+        why = "not an Amlogic picture";
+      else if (!m_coordinator || !m_coordinatorDelivers)
+        why = "no presentation coordinator";
+      else
+        m_vConfiguring = true;
+    }
+    if (!why)
+      return ConfigureOnV(picture, fps, orientation, buffers);
+    if (std::strcmp(why, "closed") == 0)
+    {
+      CLog::Log(LOGINFO, "VCONFIGURE refused player={} file={} (stopped)", m_playerGen,
+                m_fileGen.load());
+      return false;
+    }
+    if (m_mainPassLogged != m_fileGen)
+    {
+      m_mainPassLogged = m_fileGen;
+      CLog::Log(LOGINFO, "VCONFIGURE main pass ({}) player={} file={}", why, m_playerGen,
+                m_fileGen.load());
+    }
+  }
+#endif
 
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -714,6 +767,190 @@ bool CRenderManager::Configure()
   return result;
 }
 
+#if defined(HAS_LIBAMCODEC)
+bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
+                                  float fps,
+                                  unsigned int orientation,
+                                  int buffers)
+{
+  const int64_t startNs = SteadyNs();
+  // GL-free: the video half and the queue size, with no RM lock; geometry and the GUI encoding
+  // are main's duties
+  auto renderer = std::make_shared<CRendererAML>();
+  renderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+  renderer->ConfigureVideo(picture, fps, orientation, DISPLAYSTATE::PublishedHdrDisplay());
+  CRenderInfo info = renderer->GetRenderInfo();
+  const int renderbuffers = info.max_buffer_size;
+  int queueSize = buffers > 0 ? std::min(buffers, renderbuffers) : renderbuffers;
+  if (queueSize < 2)
+  {
+    queueSize = 2;
+    CLog::Log(LOGWARNING, "CRenderManager::Configure - queue size too small ({}, {}, {})",
+              queueSize, renderbuffers, buffers);
+  }
+  renderer->SetBufferSize(queueSize);
+  renderer->Update();
+  const int64_t builtNs = SteadyNs();
+
+  std::shared_ptr<CBaseRenderer> old;
+  const char* oldKind;
+  bool swapped = false;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
+    std::unique_lock lock2(m_presentlock);
+    std::unique_lock lock3(m_datalock);
+    oldKind = RendererKind(m_pRenderer.get());
+    m_vConfiguring = false;
+    if (!m_closed)
+    {
+      swapped = true;
+      renderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+      old = std::move(m_pRenderer);
+      // the old renderer's decoder buffers go now (a main pass may hold it a while); one of
+      // another kind (the GLES placeholder) is deleted on main
+      if (auto* aml = dynamic_cast<CRendererAML*>(old.get()))
+        aml->Flush(false);
+      else if (old)
+        m_retire.push_back(std::move(old));
+      m_pRenderer = renderer;
+
+      m_picture.SetParams(picture);
+      m_pictureHdrType = picture.hdrType;
+      m_fps = fps;
+      m_pictureDuration = 0.0;
+      m_orientation = orientation;
+      m_NumberBuffers = buffers;
+      PromoteReclockArm();
+
+      m_QueueSize = queueSize;
+      const bool presenterMode =
+          m_coordinator && m_coordinatorDelivers && renderer->SupportsOffThreadPresent();
+      if (presenterMode != m_presenterMode)
+        CLog::Log(LOGINFO, "CRenderManager::Configure - video frames released by the {}",
+                  presenterMode ? "presentation coordinator" : "render thread");
+      m_presenterMode = presenterMode;
+      renderer->SetOffThreadPresent(presenterMode);
+      aml_set_video_presenter_active(presenterMode);
+
+      m_playerPort->UpdateRenderInfo(info);
+      m_playerPort->UpdateGuiRender(true);
+      m_playerPort->UpdateVideoRender(renderer->VideoBypassesFramebuffer());
+
+      m_queued.clear();
+      m_discard.clear();
+      m_free.clear();
+      m_presentsource = -1;
+      m_renderSource = -1;
+      m_presentsourcePast = -1;
+      for (int i = 0; i < m_QueueSize; i++)
+        m_free.push_back(i);
+      NotifyWorker();
+
+      m_bRenderGUI = true;
+      m_videostarted = std::chrono::steady_clock::now();
+      m_bTriggerUpdateResolution = true;
+      m_presentstep = PRESENT_IDLE;
+      m_presentpts = DVD_NOPTS_VALUE;
+      m_lateframes = -1;
+      m_presentevent.notifyAll();
+      m_clockSync.Reset();
+      m_dvdClock.ResetVsyncAdjust();
+      m_presentVblanks = renderer->PresentVblanks();
+      TimingInputsWritten();
+      ++m_rgen;
+      m_renderState = STATE_CONFIGURED;
+      m_stateEvent.Set();
+    }
+  }
+  const int64_t swappedNs = SteadyNs();
+  if (!swapped)
+  {
+    CLog::Log(LOGINFO, "VCONFIGURE refused player={} file={} (stopped while building)",
+              m_playerGen, m_fileGen.load());
+    return false;
+  }
+  old.reset();
+  m_playerPort->VideoParamsChange();
+  CLog::Log(LOGINFO,
+            "VCONFIGURE V's path player={} file={} renderer {}->{} encoding {} built in {:.1f} ms "
+            "swap {:.3f} ms",
+            m_playerGen, m_fileGen.load(), oldKind, RendererKind(renderer.get()),
+            renderer->GuiEncodingName(), static_cast<double>(builtNs - startNs) / 1e6,
+            static_cast<double>(swappedNs - builtNs) / 1e6);
+  return true;
+}
+
+bool CRenderManager::ApplyConfigureDuties()
+{
+  std::vector<std::shared_ptr<CBaseRenderer>> retire;
+  std::shared_ptr<CBaseRenderer> renderer;
+  VideoPicture picture;
+  unsigned int rgen = 0;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    CMainHold hold("FrameMove duties");
+    retire.swap(m_retire);
+    if (m_rgen != m_appliedRgen && m_renderState == STATE_CONFIGURED)
+    {
+      renderer = m_pRenderer;
+      picture.SetParams(m_picture);
+      rgen = m_rgen;
+    }
+  }
+  for (auto& old : retire)
+  {
+    // as Configure() on a change of kind
+    old->EndRenderSession();
+    CLog::Log(LOGINFO, "VCONFIGURE retired renderer {} on main player={} file={}",
+              RendererKind(old.get()), m_playerGen, m_fileGen.load());
+    old.reset();
+  }
+  if (!renderer)
+    return false;
+
+  // what Configure() does on main for a new renderer, with no RM lock
+  m_renderedDebugOverlay = false;
+  m_renderDebug = false;
+  m_overlays.Reset();
+  m_overlays.SetStereoMode(picture.stereoMode);
+  if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get()))
+  {
+    const int64_t startNs = SteadyNs();
+    aml->ApplyGeometry();
+    const bool isHdrDisplay =
+        DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
+    const unsigned int dvOutputMode = aml_dv_get_output_mode();
+    aml->StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+    aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+    LogGuiEncoding("configure", 0, aml->GuiEncodingName(), m_playerGen, m_fileGen.load(),
+                   startNs, "V's swap, no RM lock");
+  }
+  m_appliedRgen = rgen;
+  UpdateLatencyTweak("configure");
+  FrameWait(50ms);
+  return true;
+}
+#endif
+
+void CRenderManager::LogPinRefused(const char* where)
+{
+  unsigned int rgen;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    rgen = m_rgen;
+  }
+  if (rgen == m_pinRefusedLogged)
+    return;
+  m_pinRefusedLogged = rgen;
+  CLog::Log(LOGINFO,
+            "VCONFIGURE {} player={} file={} rgen {} applied {}: RenderWithoutPicture this pass",
+            where, m_playerGen, m_fileGen.load(), rgen, m_appliedRgen);
+}
+
 bool CRenderManager::IsConfigured() const
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -761,8 +998,11 @@ void CRenderManager::FrameMove()
   TestStall("nextfile");
   bool firstFrame = false;
   std::shared_ptr<CBaseRenderer> renderer;
+  bool applied = true;
 #if defined(HAS_LIBAMCODEC)
   ReencodeOnOutputChange();
+  if (V24On())
+    firstFrame = ApplyConfigureDuties();
 #endif
 
   {
@@ -817,13 +1057,17 @@ void CRenderManager::FrameMove()
 
     // the pass's reference, after Configure() deleted the old renderer
     if (lock.owns_lock())
+    {
       renderer = m_pRenderer;
+      applied = m_rgen == m_appliedRgen;
+    }
     else
     {
       MAINCOUPLING_ACCESSOR("RM m_statelock");
       lock.lock();
       CMainHold refHold("FrameMove configuring");
       renderer = m_pRenderer;
+      applied = m_rgen == m_appliedRgen;
     }
   }
   TestStall("firstpic");
@@ -834,9 +1078,12 @@ void CRenderManager::FrameMove()
     std::unique_lock lock2(m_presentlock);
     CMainHold hold("FrameMove pin");
     m_bRenderGUI = true;
-    source = m_presentsource;
+    // 5.V2-4: a renderer V swapped in after this pass's duties is drawn from the next pass
+    source = applied ? m_presentsource : -1;
     m_renderSource = source;
   }
+  if (!applied)
+    LogPinRefused("pin skipped");
   else
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
@@ -916,6 +1163,7 @@ void CRenderManager::BeginFile()
   m_sessionModeDecided = false;
   m_startHeld = false;
   m_startGate = false;
+  m_closed = false;
   ++m_fileGen;
   if (VStallAt("firstpic"))
     m_testStallArmed = 1;
@@ -1023,6 +1271,15 @@ void CRenderManager::PreInit()
 
   if (!m_pRenderer)
   {
+    // 5.V2-4: V uses the renderer under m_presentlock and m_datalock
+    std::unique_lock<CCriticalSection> lock2(m_presentlock, std::defer_lock);
+    std::unique_lock<CCriticalSection> lock3(m_datalock, std::defer_lock);
+    if (V24On())
+    {
+      MAINCOUPLING_ACCESSOR("RM m_presentlock");
+      lock2.lock();
+      lock3.lock();
+    }
     CreateRenderer();
   }
 
@@ -1090,18 +1347,27 @@ void CRenderManager::UnInit()
 
   // 5.V2-2: the locks cover the state only; the teardown runs after their release
   const bool v22 = V22On();
+  const bool v24 = V24On();
   std::shared_ptr<CBaseRenderer> renderer;
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> captureBlit;
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  std::vector<std::shared_ptr<CBaseRenderer>> retire;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     // V uses the renderer under m_presentlock
     std::unique_lock<CCriticalSection> lock2(m_presentlock, std::defer_lock);
-    if (v22)
+    if (v22 || v24)
       lock2.lock();
     CMainHold hold("UnInit", v22);
     m_presenterMode = false;
+    if (v24)
+    {
+      // V's configure: its wait ends, its swap is refused
+      m_closed = true;
+      m_presentevent.notifyAll();
+      retire.swap(m_retire);
+    }
 #if defined(HAS_LIBAMCODEC)
     if (m_rmRetry)
     {
@@ -1143,6 +1409,11 @@ void CRenderManager::UnInit()
     CLog::Log(LOGDEBUG, "{} - deleting renderer", __FUNCTION__);
     renderer.reset();
   }
+  for (auto& old : retire)
+  {
+    old->EndRenderSession();
+    old.reset();
+  }
   CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
 
   m_initEvent.Set();
@@ -1150,7 +1421,15 @@ void CRenderManager::UnInit()
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers)
 {
-  if (!m_pRenderer)
+  // 5.V2-4: V writes the renderer under the RM locks
+  if (V24On())
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    if (!m_pRenderer)
+      return true;
+  }
+  else if (!m_pRenderer)
     return true;
 
   if (CServiceBroker::GetAppMessenger()->IsProcessThread())
@@ -1182,10 +1461,11 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     // 5.V2-2: the GL (and the renderer's own flush) runs on the pass's reference, with no RM
     // lock; the locks cover the queue and the start picture only
     const bool v22 = V22On();
+    const bool v24 = V24On();
     bool kept = false;
+    std::shared_ptr<CBaseRenderer> renderer;
     if (v22)
     {
-      std::shared_ptr<CBaseRenderer> renderer;
       {
         MAINCOUPLING_ACCESSOR("RM m_statelock");
         std::unique_lock lock(m_statelock);
@@ -1195,7 +1475,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       if (!renderer)
         return true;
       flushOverlays();
-      kept = renderer->Flush(saveBuffers);
+      // 5.V2-4 (P5-88): one that drops its buffers would race V's AddVideoPicture: locked
+      if (saveBuffers || !v24)
+        kept = renderer->Flush(saveBuffers);
     }
 
     MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -1211,6 +1493,14 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       {
         flushOverlays();
         kept = m_pRenderer->Flush(saveBuffers);
+      }
+      else if (v24 && !saveBuffers)
+        kept = m_pRenderer->Flush(saveBuffers);
+      // 5.V2-4 (P5-88): V swapped in another renderer meanwhile; its swap reset the queue
+      else if (v24 && m_pRenderer != renderer)
+      {
+        kept = true;
+        CLog::Log(LOGINFO, "VCONFIGURE flush: the renderer changed meanwhile, queue kept");
       }
 
       if (!kept)
@@ -1350,10 +1640,19 @@ void CRenderManager::ServiceVideoCaptures(CBaseRenderer& renderer)
       // mastering metadata verbatim: the source peak an SDR tonemap needs.
       // NOTE: m_picture, not m_pConfigPicture, which Configure() has already
       // reset by the time this frame reaches CONFIGURED.
+      // 5.V2-4: V writes m_picture under m_statelock
+      std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+      if (V24On())
+      {
+        MAINCOUPLING_ACCESSOR("RM m_statelock");
+        lock.lock();
+      }
       result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
       result.displayMetadata = m_picture.displayMetadata;
       result.hasLightMetadata = m_picture.hasLightMetadata;
       result.lightMetadata = m_picture.lightMetadata;
+      if (lock.owns_lock())
+        lock.unlock();
       result.content = CaptureContent::VIDEO; // this tap delivers video-only
       captureService->Complete(request, std::move(result));
     }
@@ -1476,11 +1775,14 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     CMainHold hold("Render state");
-    if (source == -1 || (m_renderState != STATE_CONFIGURED))
+    if (source == -1 || (m_renderState != STATE_CONFIGURED) || m_rgen != m_appliedRgen)
     {
       const bool configured = m_renderState == STATE_CONFIGURED;
+      const bool unapplied = source != -1 && configured && m_rgen != m_appliedRgen;
       hold.End();
       lock.unlock();
+      if (unapplied)
+        LogPinRefused("Render refused");
       RenderWithoutPicture(gui, configured);
       return;
     }
@@ -1748,7 +2050,7 @@ void CRenderManager::UpdateLatencyTweak(const char* site, RESOLUTION target)
     isHDREnabled = DISPLAYSTATE::HdrDisplay(isHDREnabled);
   }
 #endif
-  const bool isHDRUsed = isHDREnabled && (m_picture.hdrType != StreamHdrType::HDR_TYPE_NONE);
+  const bool isHDRUsed = isHDREnabled && (m_pictureHdrType != StreamHdrType::HDR_TYPE_NONE);
   m_latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, height));
@@ -2022,7 +2324,18 @@ void CRenderManager::UpdateResolution()
 #endif
     if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
     {
-      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_videostarted);
+      std::chrono::time_point<std::chrono::steady_clock> started;
+      {
+        // 5.V2-4: V's swap writes it under m_statelock
+        std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+        if (V24On())
+        {
+          MAINCOUPLING_ACCESSOR("RM m_statelock");
+          lock.lock();
+        }
+        started = m_videostarted;
+      }
+      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started);
 
       int wait = m_amdv_wait_delay.load();
       if (wait == -1)
@@ -3096,7 +3409,7 @@ bool CRenderManager::GetResumePts(double& pts, double& maxStep)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
-  if (m_renderState != STATE_CONFIGURED || m_fps <= 0.0f)
+  if (m_renderState != STATE_CONFIGURED || m_vConfiguring || m_fps <= 0.0f)
     return false;
   const double frametime = DVD_TIME_BASE / static_cast<double>(m_fps);
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
@@ -3201,6 +3514,13 @@ void CRenderManager::StopCoordinator()
 #if defined(HAS_LIBAMCODEC)
   if (m_coordinator)
     m_coordinator->DetachVideo(this);
+  // 5.V2-4: V tests both under m_statelock
+  std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+  if (V24On())
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    lock.lock();
+  }
   m_coordinator = nullptr;
   m_coordinatorDelivers = false;
   if (m_presenterMode)
@@ -3464,8 +3784,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     STickTiming aheadPublished{}; //!< set on a DIFF
     SFpsMismatch fpsEnded;
     SFpsMismatch fpsBegun;
+    std::string firstPresent; //!< 5.V2-4: the file's first picture released
     ~RefusedLog()
     {
+      if (!firstPresent.empty())
+        CLog::Log(LOGINFO, "VCONFIGURE first present {}", firstPresent);
       if (aheadEnded.ticks)
         LogAheadTicks(aheadEnded, endNs, aheadEnd);
       if (aheadPublished.fps)
@@ -3484,7 +3807,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   diagLock = diagClock::now();
-  if (m_renderState != STATE_CONFIGURED || !m_presenterMode || !m_pRenderer)
+  if (m_renderState != STATE_CONFIGURED || m_vConfiguring || !m_presenterMode || !m_pRenderer)
     return;
   result.configured = true;
   result.displayLost = m_displayLost;
@@ -3651,7 +3974,16 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   }
 
   if (result.newFrame)
+  {
     m_pRenderer->PresentFrame(m_presentsource);
+    if (V24On() && m_firstPresentFile != m_fileGen)
+    {
+      m_firstPresentFile = m_fileGen;
+      refusedLog.firstPresent =
+          StringUtils::Format("player={} file={} pts {:.3f} s epoch {} rgen {}", m_playerGen,
+                              m_firstPresentFile, result.pts / DVD_TIME_BASE, tick.epoch, m_rgen);
+    }
+  }
   diagFrame = diagClock::now();
 
   ShadowReference(result, forced && result.newFrame, timing);
