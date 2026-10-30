@@ -25,6 +25,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/TimeUtils.h"
+#include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
@@ -90,6 +91,20 @@ void CRenderer::Release(std::vector<SElement>& list)
   list.clear();
 }
 
+std::vector<CRenderer::SElement>* CRenderer::BufferFor(int idx)
+{
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return nullptr;
+  return m_framed ? &m_frameList : &m_buffers[idx];
+}
+
+const std::vector<CRenderer::SElement>* CRenderer::BufferFor(int idx) const
+{
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return nullptr;
+  return m_framed ? &m_frameList : &m_buffers[idx];
+}
+
 void CRenderer::UnInit()
 {
   if (m_saveSubtitlePosition)
@@ -109,6 +124,8 @@ void CRenderer::Flush()
 
   for(std::vector<SElement>& buffer : m_buffers)
     Release(buffer);
+  Release(m_frameList);
+  m_frameSerial = 0;
   Release(m_presentLatest);
   m_presentLatestGroup.reset();
 
@@ -169,6 +186,13 @@ void CRenderer::ReleaseUnused()
       if (found)
         break;
     }
+    for (auto& dvdoverlay : m_frameList)
+    {
+      if (found)
+        break;
+      if (dvdoverlay.overlay_dvd && dvdoverlay.overlay_dvd->m_textureid == it->first)
+        found = true;
+    }
     for (auto& dvdoverlay : m_presentLatest)
     {
       if (found)
@@ -202,8 +226,7 @@ void CRenderer::Render(int idx, float depth)
   // idx < 0: no picture presented yet (a disc screen with no playlist, or the
   // gap before a new video's first frame) - only the presentation-time
   // composition applies
-  std::vector<SElement>* const buffer =
-      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  std::vector<SElement>* const buffer = BufferFor(idx);
   for (std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
     if (!list)
@@ -255,8 +278,7 @@ void CRenderer::RenderHDROverlays(int idx)
   // idx < 0: no picture presented yet (a disc screen with no playlist, or the
   // gap before a new video's first frame) - only the presentation-time
   // composition applies
-  std::vector<SElement>* const buffer =
-      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  std::vector<SElement>* const buffer = BufferFor(idx);
   for (std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
     if (!list)
@@ -296,8 +318,7 @@ bool CRenderer::HasHDROverlays(int idx) const
 
   MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
-  const std::vector<SElement>* const buffer =
-      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  const std::vector<SElement>* const buffer = BufferFor(idx);
 
   for (const std::vector<SElement>* list : {buffer, &m_presentLatest})
   {
@@ -316,8 +337,7 @@ bool CRenderer::CollectHDROverlays(int idx, std::vector<std::shared_ptr<CDVDOver
 {
   MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
-  const std::vector<SElement>* const buffer =
-      (idx >= 0 && idx < NUM_BUFFERS) ? &m_buffers[idx] : nullptr;
+  const std::vector<SElement>* const buffer = BufferFor(idx);
 
   bool untimed = false;
   for (const std::vector<SElement>* list : {buffer, &m_presentLatest})
@@ -436,10 +456,11 @@ bool CRenderer::HasVisibleOverlay(int idx) const
   if (!m_presentLatest.empty())
     return true;
 
-  if (idx < 0 || idx >= NUM_BUFFERS)
+  const std::vector<SElement>* const buffer = BufferFor(idx);
+  if (!buffer)
     return false;
 
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : *buffer)
   {
     if (!e.overlay_dvd)
       continue;
@@ -602,7 +623,10 @@ void CRenderer::CreateSubtitlesStyle()
   m_overlayStyle->lineSpacing = settings->GetLineSpacing();
 }
 
-void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
+void CRenderer::PrepareOverlays(int idx,
+                                unsigned int segmentGen,
+                                const FrameOverlays* frame,
+                                uint64_t serial)
 {
   // Query the container BEFORE taking m_section. This ordering is LOAD-BEARING:
   // ProcessOverlays holds the container lock then takes m_section (via AddOverlay),
@@ -641,6 +665,30 @@ void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
     std::this_thread::sleep_for(std::chrono::milliseconds(m_testStallMs.exchange(0)));
   const bool hasBuffer = idx >= 0 && idx < NUM_BUFFERS;
 
+  const bool framed = hasBuffer && frame;
+  if (framed != m_framed)
+  {
+    m_framed = framed;
+    CLog::Log(LOGINFO, "VCONFIGURE overlays travel with the frame: {}", framed ? "on" : "off");
+  }
+  if (!framed)
+  {
+    Release(m_frameList);
+    m_frameSerial = 0;
+  }
+  else if (serial != m_frameSerial)
+  {
+    m_frameSerial = serial;
+    Release(m_frameList);
+    for (const SFrameOverlay& o : *frame)
+    {
+      SElement e;
+      e.pts = o.pts;
+      e.overlay_dvd = o.overlay;
+      m_frameList.push_back(e);
+    }
+  }
+
   // The container holds no drawable overlay (menu closed / all subtitles ended),
   // but this buffer was never refreshed because no new picture arrived (a stall:
   // menu->playback black gap, or stop). Drop the now-stale image/SPU entries so
@@ -650,7 +698,7 @@ void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
   // (TEXT/SSA) overlay is left untouched.
   if (containerEmpty && hasBuffer)
   {
-    std::vector<SElement>& buf = m_buffers[idx];
+    std::vector<SElement>& buf = *BufferFor(idx);
     buf.erase(std::remove_if(buf.begin(), buf.end(),
                              [](const SElement& e) {
                                return e.overlay_dvd &&
@@ -691,7 +739,7 @@ void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
   UpdateSubtitleStyleAndPosition(resolution);
 
   int nImageSpu = 0;
-  for (auto& e : m_buffers[idx])
+  for (auto& e : *BufferFor(idx))
   {
     // Clear last frame's cached output; libass may have invalidated the
     // pointer on its next ass_render_frame call.

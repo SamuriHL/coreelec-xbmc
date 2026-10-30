@@ -125,7 +125,8 @@ protected:
   void WorkerDuties();
   void WorkerDrainStep(double& frametime, double& pts);
   void WorkerCancelStart();
-  void ProcessOverlays(const VideoPicture* pSource, double pts);
+  //! frame (5.V2-7): collect the picture's overlays there instead of adding them
+  void ProcessOverlays(const VideoPicture* pSource, double pts, OVERLAY::FrameOverlays* frame);
   void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
 
   void ResetFrameRateCalc();

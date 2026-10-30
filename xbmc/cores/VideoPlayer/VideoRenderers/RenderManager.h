@@ -154,11 +154,16 @@ public:
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
   // forceGen >= 0 (a stream worker): force the picture without waiting; the tick
   // that takes it clears the force, marks the generation taken and wakes the worker
+  // overlays (5.V2-7): the picture's own, stored with it (taken)
   bool AddVideoPicture(const VideoPicture& picture,
                        volatile std::atomic_bool& bStop,
                        EINTERLACEMETHOD deintMethod,
                        bool wait,
-                       int forceGen = -1);
+                       int forceGen = -1,
+                       OVERLAY::FrameOverlays* overlays = nullptr);
+  //! 5.V2-7 (MC-41): with the presenter, a picture carries its overlays to AddVideoPicture
+  //! instead of AddOverlay, and the buffer calls leave the overlay lock alone
+  bool OverlaysTravel() const;
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
   void ShowVideo(bool enable);
   void SetDisplayLost(bool lost) { m_displayLost = lost; }
@@ -209,10 +214,11 @@ public:
   void CancelForce(int gen);
   // non-blocking WaitForBuffer: the level, or -1 with no free buffer (retryIn
   // set while the GUI is not rendering: the discard waits for the clock)
-  int TryGetBuffer(std::chrono::milliseconds& retryIn);
+  int TryGetBuffer(std::chrono::milliseconds& retryIn, bool releaseOverlays = true);
 
   int WaitForBuffer(volatile std::atomic_bool& bStop,
-                    std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
+                    std::chrono::milliseconds timeout = std::chrono::milliseconds(100),
+                    bool releaseOverlays = true);
 
   /**
    * Can be called by player for lateness detection. This is done best by
@@ -373,6 +379,9 @@ protected:
   void TestStall(const char* event, bool immediate = false);
   //! the hook's event: 1 waiting for the file's first picture, 2 armed, 3 the file's stop stalled
   std::atomic<int> m_testStallArmed{0};
+  //! pictures queued (V, under m_presentlock) and the count at BeginFile (P), for the test stalls
+  std::atomic<unsigned int> m_picturesAdded{0};
+  std::atomic<unsigned int> m_filePicturesFrom{0};
   //! test (vconfigure_forceswap): V's next picture reconfigures
   std::atomic<bool> m_testForceSwap{false};
   //! 5.V2-1: generations for the logs, of the player (this manager) and of its file
@@ -427,6 +436,7 @@ protected:
   std::atomic_bool m_rmRetry{false};
   std::atomic_bool m_startHeld{false};
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
+  bool m_overlayVisible = false; //!< render thread: at the last GUI pass
   //! from a start the clock had yet to make until its display phase is measured:
   //! no early release (it would put a frame up ahead of the start)
   bool m_startGate = false;
@@ -476,7 +486,13 @@ protected:
     unsigned int   segmentGen; //!< disc segment generation of the picture (6.1)
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
+    bool framedOverlays; //!< 5.V2-7: overlays below are the picture's
+    uint64_t overlaySerial;
+    OVERLAY::FrameOverlays overlays;
   } m_Queue[NUM_BUFFERS]{};
+  //! 5.V2-7, under m_presentlock: the last serial given; a flush drops overlays up to the floor
+  uint64_t m_overlaySerial = 0;
+  uint64_t m_overlayFloor = 0;
 
   std::deque<int> m_free;
   std::deque<int> m_queued;

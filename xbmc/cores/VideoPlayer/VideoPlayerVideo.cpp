@@ -1405,7 +1405,9 @@ void CVideoPlayerVideo::Flush(bool sync)
   m_bAbortOutput = true;
 }
 
-void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource,
+                                        double pts,
+                                        OVERLAY::FrameOverlays* frame)
 {
   // match at mid-frame so a start rounded just past the frame pts binds to it
   const double matchPts = pts + pSource->iDuration / 2;
@@ -1487,7 +1489,10 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
     for(it = overlays.begin(); it != overlays.end(); ++it)
     {
       double pts2 = (*it)->bForced ? pts : pts - m_iSubtitleDelay;
-      m_renderManager.AddOverlay(*it, pts2);
+      if (frame)
+        frame->push_back({*it, pts2});
+      else
+        m_renderManager.AddOverlay(*it, pts2);
     }
   }
 }
@@ -1610,18 +1615,19 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (m_speed > DVD_PLAYSPEED_NORMAL)
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
+  const bool framed = m_renderManager.OverlaysTravel();
   int buffer;
   if (m_worker)
   {
     // no wait: a freed buffer wakes the worker, and with the GUI not
     // rendering the discard is retried at the clock
     std::chrono::milliseconds retryIn{0};
-    buffer = m_renderManager.TryGetBuffer(retryIn);
+    buffer = m_renderManager.TryGetBuffer(retryIn, !framed);
     if (buffer < 0 && retryIn > 0ms)
       m_outputRetryAt = std::chrono::steady_clock::now() + retryIn;
   }
   else
-    buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+    buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime, !framed);
   if (!retry || buffer >= 0)
     CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
           __FUNCTION__, timeToDisplay.count(), pPicture->pts / DVD_TIME_BASE, static_cast<double>(iPlayingClock) / DVD_TIME_BASE, buffer);
@@ -1651,7 +1657,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     return OUTPUT_AGAIN;
   }
 
-  ProcessOverlays(pPicture, pPicture->pts);
+  OVERLAY::FrameOverlays overlays;
+  ProcessOverlays(pPicture, pPicture->pts, framed ? &overlays : nullptr);
 
   EINTERLACEMETHOD deintMethod = EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE;
   deintMethod = m_processInfo.GetVideoSettings().m_InterlaceMethod;
@@ -1664,7 +1671,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     // the start picture is forced without waiting; a tick that takes it
     // releases PLAYER_STARTED (WorkerDuties)
     const int gen = ++m_forceGenCounter;
-    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false, gen);
+    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false,
+                                                   gen, framed ? &overlays : nullptr);
     if (pictureAdded)
     {
       m_startPendingGen = gen;
@@ -1672,7 +1680,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     }
   }
   else
-    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
+    pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod,
+                                                   (m_syncState == ESyncState::SYNC_STARTING), -1,
+                                                   framed ? &overlays : nullptr);
   if (!pictureAdded)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);

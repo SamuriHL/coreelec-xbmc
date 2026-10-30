@@ -17,6 +17,7 @@
 #include "utils/Observer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <vector>
@@ -49,6 +50,14 @@ namespace OVERLAY {
    *  needed (debug OSD).
    */
   void MarkDirty();
+
+  //! an overlay of a queued frame (5.V2-7, MC-41: it travels with the frame)
+  struct SFrameOverlay
+  {
+    std::shared_ptr<CDVDOverlay> overlay;
+    double pts;
+  };
+  using FrameOverlays = std::vector<SFrameOverlay>;
 
   class COverlay
   {
@@ -140,10 +149,16 @@ namespace OVERLAY {
      *  re-entering libass. Calls MarkDirty internally when libass reports
      *  a visible or changed subtitle.
      */
-    //! segmentGen: disc segment generation of the picture at idx (0: none)
-    void PrepareOverlays(int idx, unsigned int segmentGen = 0);
+    //! segmentGen: disc segment generation of the picture at idx (0: none).
+    //! frame (5.V2-7): the picture's own overlays, which every reader then uses for any idx >= 0
+    //! in place of the indexed buffer; the list is rebuilt from it when serial changes
+    void PrepareOverlays(int idx,
+                         unsigned int segmentGen = 0,
+                         const FrameOverlays* frame = nullptr,
+                         uint64_t serial = 0);
     //! test (vconfigure_mainstall overlay): the next PrepareOverlays sleeps ms inside m_section
     void ArmTestStall(int ms) { m_testStallMs = ms; }
+    bool TestStallArmed() const { return m_testStallMs.load(std::memory_order_relaxed) > 0; }
 
     /*!
      * \brief Release resources
@@ -228,6 +243,8 @@ namespace OVERLAY {
     void CreateSubtitlesStyle();
 
     void Release(std::vector<SElement>& list);
+    std::vector<SElement>* BufferFor(int idx);
+    const std::vector<SElement>* BufferFor(int idx) const;
     void ReleaseCache();
     // drop converted textures when their destination regime changes
     void ReleaseCacheOnRegimeChange();
@@ -260,6 +277,10 @@ namespace OVERLAY {
     mutable CCriticalSection m_section;
     std::atomic<int> m_testStallMs{0};
     std::vector<SElement> m_buffers[NUM_BUFFERS];
+    //! 5.V2-7: the presented frame's overlays, main only (m_framed: in use)
+    std::vector<SElement> m_frameList;
+    uint64_t m_frameSerial{0};
+    bool m_framed{false};
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     // PQ destination (HDR composite / PQ GUI) the cached textures were

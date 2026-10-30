@@ -145,7 +145,8 @@ const SVStall& VStall()
   {
     static constexpr const char* forms[] = {"sleep", "overlay", "statelock"};
     static constexpr const char* events[] = {"start", "firstpic", "flush",        "outputchanged",
-                                             "stop",  "nextfile", "afterpublish", "after-set"};
+                                             "stop",  "nextfile", "afterpublish", "after-set",
+                                             "playing"};
     SVStall result;
     const auto line = OUTPUT::ReadTestSwitch("vconfigure_mainstall");
     if (!line)
@@ -294,6 +295,16 @@ bool V24On()
   static const bool on = DISPLAYSTATE::CommitTimingOn() && !aml_vconfigure_skip("V2-4") &&
                          !aml_vconfigure_skip("V2-4b");
   return on;
+#else
+  return false;
+#endif
+}
+
+// 5.V2-7 (MC-41): the overlays travel with the frame
+bool V27On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_vconfigure_on() && !aml_vconfigure_skip("V2-7");
 #else
   return false;
 #endif
@@ -1002,6 +1013,7 @@ void CRenderManager::FrameMove()
   TestStall("start");
   TestStall("stop");
   TestStall("nextfile");
+  TestStall("playing");
   bool firstFrame = false;
   std::shared_ptr<CBaseRenderer> renderer;
   bool applied = true;
@@ -1134,7 +1146,8 @@ void CRenderManager::FrameMove()
       if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
       {
         m_pRenderer->ReleaseBuffer(*it);
-        m_overlays.Release(*it);
+        if (!m_Queue[*it].framedOverlays)
+          m_overlays.Release(*it);
         m_free.push_back(*it);
         it = m_discard.erase(it);
         NotifyWorker();
@@ -1155,17 +1168,42 @@ void CRenderManager::FrameMove()
   // to use during the render pass. PrepareOverlays MarkDirty's on libass
   // changes and on PGS/DVB/SPU arrival/disappearance.
   unsigned int segmentGen = 0;
-  if (source >= 0 && source < NUM_BUFFERS)
+  bool framed = false;
+  uint64_t serial = 0;
+  OVERLAY::FrameOverlays overlays;
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
-    segmentGen = m_Queue[source].segmentGen;
+    // 5.V2-7: the overlays of the frame Render draws, copied with it
+    if (m_presenterMode && m_renderSource >= 0 && m_Queue[m_renderSource].framedOverlays)
+    {
+      source = m_renderSource;
+      framed = true;
+      serial = m_Queue[source].overlaySerial;
+      if (serial > m_overlayFloor)
+        overlays = m_Queue[source].overlays;
+    }
+    if (source >= 0 && source < NUM_BUFFERS)
+      segmentGen = m_Queue[source].segmentGen;
   }
-  m_overlays.PrepareOverlays(source, segmentGen);
+  // test (vconfigure_mainstall overlay playing): what V queued while main held the overlay lock
+  const bool stallArmed = m_overlays.TestStallArmed();
+  const unsigned int added = m_picturesAdded;
+  const auto stallStart = std::chrono::steady_clock::now();
+  m_overlays.PrepareOverlays(source, segmentGen, framed ? &overlays : nullptr, serial);
+  if (stallArmed)
+    CLog::Log(LOGWARNING,
+              "VCONFIGURE test stall overlay ended: {} pictures added in {} ms, framed {}",
+              m_picturesAdded - added,
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - stallStart)
+                  .count(),
+              framed);
 }
 
 void CRenderManager::BeginFile()
 {
+  m_filePicturesFrom = m_picturesAdded.load();
   // a new file: any phase still pending belongs to the last one, and so does
   // its output mode decision (a running player opening the next file skips
   // PreInit; left set, a start from the GUI skipped its hold for the mode)
@@ -1485,6 +1523,11 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       }
       if (!renderer)
         return true;
+      {
+        MAINCOUPLING_ACCESSOR("RM m_presentlock");
+        std::unique_lock lock(m_presentlock);
+        m_overlayFloor = m_overlaySerial;
+      }
       flushOverlays();
       // 5.V2-4 (P5-88): one that drops its buffers would race V's AddVideoPicture: locked
       if (saveBuffers || !v24)
@@ -1497,6 +1540,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     std::unique_lock lock2(m_presentlock);
     std::unique_lock lock3(m_datalock);
     CMainHold hold("Flush", v22);
+    // 5.V2-7: the flushed overlays stay gone from the pictures already queued, as from the buffers
+    // (again here: a picture V queued during the overlay flush is as stale)
+    m_overlayFloor = m_overlaySerial;
 
     if (m_pRenderer)
     {
@@ -1866,7 +1912,15 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // frame - per-frame accurate (forced subs + in-window regular subs only, NOT
     // mere track enablement), so the DV L5 path un-masks the letterbox bars only
     // while text is really on screen. See CBitstreamConverter::processDoviRpu.
-    aml_dv_set_subtitles_visible(!withheld && m_overlays.HasVisibleOverlay(source));
+    const bool visible = !withheld && m_overlays.HasVisibleOverlay(source);
+    aml_dv_set_subtitles_visible(visible);
+    // each change, at the drawn picture's pts
+    if (visible != m_overlayVisible)
+    {
+      m_overlayVisible = visible;
+      CLog::Log(LOGINFO, "OUTDIAG overlay visible {} pts {:.3f}", visible,
+                source >= 0 ? m_Queue[source].pts / DVD_TIME_BASE : -1.0);
+    }
 
     if (m_renderDebug)
     {
@@ -2684,8 +2738,11 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
                                      volatile std::atomic_bool& bStop,
                                      EINTERLACEMETHOD deintMethod,
                                      bool wait,
-                                     int forceGen)
+                                     int forceGen,
+                                     OVERLAY::FrameOverlays* overlays)
 {
+  // the slot's previous overlays are freed after the lock
+  OVERLAY::FrameOverlays dropped;
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
 
@@ -2758,6 +2815,14 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
   m.presentfield = displayField;
   m.presentmethod = presentmethod;
   m.pts = picture.pts;
+  // test: 240 pictures (about 10 s) into a file, the "playing" stall
+  if (++m_picturesAdded - m_filePicturesFrom == 240)
+    ArmTestStall("playing");
+  m.framedOverlays = overlays != nullptr;
+  m.overlaySerial = overlays ? ++m_overlaySerial : 0;
+  dropped.swap(m.overlays);
+  if (overlays)
+    m.overlays = std::move(*overlays);
   m_queued.push_back(m_free.front());
   m_free.pop_front();
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
@@ -2810,6 +2875,11 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
   }
   std::unique_lock lock(m_datalock);
   m_overlays.AddOverlay(std::move(o), pts, idx);
+}
+
+bool CRenderManager::OverlaysTravel() const
+{
+  return V27On() && m_presenterMode;
 }
 
 bool CRenderManager::Supports(ERENDERFEATURE feature) const
@@ -2865,7 +2935,7 @@ void CRenderManager::CancelForce(int gen)
   }
 }
 
-int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn)
+int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn, bool releaseOverlays)
 {
   retryIn = 0ms;
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
@@ -2907,12 +2977,14 @@ int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn)
   const int index = m_free.front();
   lock.unlock();
 
-  m_overlays.Release(index);
+  if (releaseOverlays)
+    m_overlays.Release(index);
   return level;
 }
 
 int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
-                                  std::chrono::milliseconds timeout)
+                                  std::chrono::milliseconds timeout,
+                                  bool releaseOverlays)
 {
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
@@ -2960,7 +3032,8 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   lock.unlock();
 
   // make sure overlay buffer is released, this won't happen on AddOverlay
-  m_overlays.Release(index);
+  if (releaseOverlays)
+    m_overlays.Release(index);
 
   // return buffer level
   return level;
