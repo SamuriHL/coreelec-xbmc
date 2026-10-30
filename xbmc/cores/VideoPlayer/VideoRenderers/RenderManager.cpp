@@ -1106,10 +1106,14 @@ void CRenderManager::FrameMove()
     }
 
     const bool forced = m_forceNext;
-    if (m_presentstep == PRESENT_READY)
+    // 5.V2-4: with the presenter the coordinator selects the frame at the vblank and takes the
+    // worker's start picture; main's selection queried the vblank and waited out W's mode
+    // commit holding m_presentlock
+    const bool mainPresents = !(V24On() && m_presenterMode);
+    if (m_presentstep == PRESENT_READY && mainPresents)
       PrepareNextRender(-1);
     // without the presenter the render thread takes the worker's start picture
-    if (forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
+    if (mainPresents && forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
     {
       m_forceNext = false;
       m_forceDoneGen = m_forceGen;
