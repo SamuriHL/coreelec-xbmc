@@ -30,6 +30,7 @@
 #include "threads/SingleLock.h"
 #if defined(HAS_LIBAMCODEC)
 #include "HwDecRender/PresentationCoordinator.h"
+#include "HwDecRender/RendererAML.h"
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
@@ -281,6 +282,33 @@ bool V22On()
   return false;
 #endif
 }
+
+#if defined(HAS_LIBAMCODEC)
+// 5.V2-3: B2-8's re-encode runs the GUI encoding outside the RM locks
+bool V23On()
+{
+  return aml_vconfigure_on() && !aml_vconfigure_skip("V2-3");
+}
+
+//! 5.V2-3: one line per main pass of the GUI encoding (time: the main pass line's, for configure)
+void LogGuiEncoding(const char* trigger,
+                    uint64_t epoch,
+                    const char* encoding,
+                    unsigned int playerGen,
+                    unsigned int fileGen,
+                    int64_t startNs,
+                    const char* locks)
+{
+  CLog::Log(LOGINFO,
+            "VCONFIGURE ApplyGuiEncoding on main trigger {} epoch {} player={} file={} "
+            "encoding {}{} ({})",
+            trigger, epoch, playerGen, fileGen, encoding,
+            startNs ? StringUtils::Format(" in {:.1f} ms",
+                                          static_cast<double>(SteadyNs() - startNs) / 1e6)
+                    : "",
+            locks);
+}
+#endif
 
 // Disc-session mode hold: keep the incumbent display RESOLUTION (no HDMI
 // re-clock for a menu's resolution - strict sinks re-train on every re-clock),
@@ -573,10 +601,16 @@ bool CRenderManager::Configure()
       path = "failed";
     else if (!m_presenterMode)
       path = "not a presenter-mode renderer";
-    CLog::Log(
-        LOGINFO, "VCONFIGURE main pass player={} file={} renderer {}->{} {} in {:.1f} ms ({})",
-        m_playerGen, m_fileGen.load(), oldKind, RendererKind(m_pRenderer.get()),
-        result ? "configured" : "failed", static_cast<double>(SteadyNs() - startNs) / 1e6, path);
+    const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get());
+    CLog::Log(LOGINFO,
+              "VCONFIGURE main pass player={} file={} renderer {}->{} {} encoding {} in {:.1f} ms "
+              "({})",
+              m_playerGen, m_fileGen.load(), oldKind, RendererKind(m_pRenderer.get()),
+              result ? "configured" : "failed", result && aml ? aml->GuiEncodingName() : "none",
+              static_cast<double>(SteadyNs() - startNs) / 1e6, path);
+    if (result && aml)
+      LogGuiEncoding("configure", 0, aml->GuiEncodingName(), m_playerGen, m_fileGen.load(), 0,
+                     "in CRendererAML::Configure, under the RM locks");
   };
 #else
   const auto logConfigure = [](bool) {};
@@ -3276,6 +3310,49 @@ void CRenderManager::ReencodeOnOutputChange()
   TestStall("outputchanged", true);
   const char* outcome;
   bool reencoded = false;
+  const int64_t startNs = SteadyNs();
+  const char* encoding = nullptr;
+  const char* locks = "no RM lock";
+  if (V23On())
+  {
+    // the sink read (sysfs) before the lock; ConfigChanged and the new class under m_statelock,
+    // as V blocked for the whole re-encode at HEAD; the GL and sysfs with no RM lock (a V
+    // reconfigure meanwhile is applied by this pass's Configure)
+    const bool isHdrDisplay =
+        DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
+    unsigned int dvOutputMode = 0;
+    std::shared_ptr<CBaseRenderer> renderer;
+    CRendererAML* aml = nullptr;
+    VideoPicture picture;
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      std::unique_lock lock(m_statelock);
+      CMainHold hold("B2-8 re-encode");
+      if (m_renderState == STATE_CONFIGURED)
+        renderer = m_pRenderer;
+      aml = dynamic_cast<CRendererAML*>(renderer.get());
+      if (!renderer)
+        outcome = "not configured, the next picture configures";
+      else if (!aml)
+        outcome = "not an Amlogic renderer, no GUI encoding";
+      else if (!aml->ConfigChanged(m_picture))
+        outcome = "encoding current";
+      else
+      {
+        picture.SetParams(m_picture);
+        dvOutputMode = aml_dv_get_output_mode();
+        aml->StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+        reencoded = true;
+        outcome = "ApplyGuiEncoding, no new picture, no RM lock";
+      }
+    }
+    if (reencoded)
+    {
+      aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+      encoding = aml->GuiEncodingName();
+    }
+  }
+  else
   {
     // the configured picture's params, under the locks Configure() takes: a paused film or a
     // still has no next picture to run ConfigChanged
@@ -3292,10 +3369,16 @@ void CRenderManager::ReencodeOnOutputChange()
       outcome = "CRendererAML::Configure, no new picture";
     else
       outcome = "CRendererAML::Configure failed";
+    if (const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get()); aml && reencoded)
+      encoding = aml->GuiEncodingName();
+    locks = "in CRendererAML::Configure, under the RM locks";
   }
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 re-encode epoch={}: {}", epoch, outcome);
   if (!reencoded)
     return;
+  if (encoding)
+    LogGuiEncoding("OutputChanged", epoch, encoding, m_playerGen, m_fileGen.load(), startNs,
+                   locks);
   // a static GUI is not redrawn on its own, so the plane would keep pixels encoded for the old
   // declaration; the overlay cache rebuilds for the new regime at that render
   OVERLAY::MarkDirty();

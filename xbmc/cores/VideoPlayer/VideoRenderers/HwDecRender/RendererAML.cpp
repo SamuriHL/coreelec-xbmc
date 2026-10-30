@@ -138,10 +138,27 @@ bool CRendererAML::ConfigChanged(const VideoPicture& picture)
   if (dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_session())
     return false;
 
-  return ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay) != m_guiEncoding;
+  const SGuiState state = m_guiState;
+  return ResolveGuiEncoding(picture, dv_output_mode, state.isHdrDisplay) != state.encoding;
 }
 
 bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned int orientation)
+{
+  // one read of the DV mode and the sink for both halves
+  const unsigned int dv_output_mode(aml_dv_get_output_mode());
+  const bool isHdrDisplay =
+      DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
+  ConfigureVideo(picture, fps, orientation, isHdrDisplay, dv_output_mode);
+  ApplyGeometry();
+  ApplyGuiEncoding(picture, dv_output_mode, isHdrDisplay);
+  return true;
+}
+
+void CRendererAML::ConfigureVideo(const VideoPicture& picture,
+                                  float fps,
+                                  unsigned int orientation,
+                                  bool isHdrDisplay,
+                                  unsigned int dvOutputMode)
 {
   m_sourceWidth = picture.iWidth;
   m_sourceHeight = picture.iHeight;
@@ -154,9 +171,41 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
 
   // Calculate the input frame aspect ratio.
   CalculateFrameAspectRatio(picture.iDisplayWidth, picture.iDisplayHeight);
+  StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+  m_bConfigured = true;
+}
+
+void CRendererAML::ApplyGeometry()
+{
   SetViewMode(m_videoSettings.m_ViewMode);
   ManageRenderArea();
+}
 
+void CRendererAML::StoreGuiEncoding(const VideoPicture& picture,
+                                    unsigned int dvOutputMode,
+                                    bool isHdrDisplay)
+{
+  m_guiState = SGuiState{ResolveGuiEncoding(picture, dvOutputMode, isHdrDisplay), isHdrDisplay};
+}
+
+const char* CRendererAML::GuiEncodingName() const
+{
+  switch (m_guiState.load().encoding)
+  {
+    case GuiEncoding::Srgb:
+      return "srgb";
+    case GuiEncoding::Scalar:
+      return "scalar";
+    case GuiEncoding::Composite:
+      return "composite";
+  }
+  return "unknown";
+}
+
+void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
+                                    unsigned int dv_output_mode,
+                                    bool isHdrDisplay)
+{
   // Configure the GUI/OSD encoding to match the ACTUAL video-plane output the
   // sink receives this stream, not the source hdrType. CAMLCodec::OpenDecoder
   // resolved and published the output mode (after VS10 tunnel resolution and
@@ -166,11 +215,9 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // could otherwise produce - HDR10 output on a non-DV display whose source
   // wasn't tagged PQ (OSD left sRGB, dim/desaturated), and a DV source forced to
   // SDR on an HDR display (OSD PQ-encoded then tone-mapped a second time).
-  const unsigned int dv_output_mode(aml_dv_get_output_mode());
-  m_isHdrDisplay = DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
-  m_guiEncoding = ResolveGuiEncoding(picture, dv_output_mode, m_isHdrDisplay);
-  const bool core_is_pq(m_guiEncoding == GuiEncoding::Composite);
-  const bool gui_is_pq(m_guiEncoding != GuiEncoding::Srgb);
+  const GuiEncoding encoding = ResolveGuiEncoding(picture, dv_output_mode, isHdrDisplay);
+  const bool core_is_pq(encoding == GuiEncoding::Composite);
+  const bool gui_is_pq(encoding != GuiEncoding::Srgb);
   const bool native_output(dv_output_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS);
 
   // WHO OWNS the OSD plane's sRGB -> BT.2020 PQ encode decides what Kodi may do,
@@ -262,10 +309,6 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   // against a UB820. So the scalar path is only ever safe under FORMAT_HDR8.
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
              gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
-
-  m_bConfigured = true;
-
-  return true;
 }
 
 CRenderInfo CRendererAML::GetRenderInfo()

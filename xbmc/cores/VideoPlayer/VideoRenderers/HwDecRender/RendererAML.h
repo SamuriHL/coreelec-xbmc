@@ -11,6 +11,7 @@
 #include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -32,6 +33,20 @@ public:
   virtual bool Configure(const VideoPicture &picture, float fps, unsigned int orientation) override;
   virtual bool IsConfigured() override { return m_bConfigured; };
   bool ConfigChanged(const VideoPicture& picture) override;
+  // 5.V2-3: Configure is these three, in this order
+  //! the video half, safe off main: sizes, flags, frame ratio, the required GUI encoding
+  void ConfigureVideo(const VideoPicture& picture,
+                      float fps,
+                      unsigned int orientation,
+                      bool isHdrDisplay,
+                      unsigned int dvOutputMode = aml_dv_get_output_mode());
+  //! view mode and render area (main)
+  void ApplyGeometry();
+  //! the required class for these inputs, stored for ConfigChanged (pure: no sysfs, no GL)
+  void StoreGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
+  //! the GUI encoding (main: GL, sysfs) for the inputs StoreGuiEncoding stored
+  void ApplyGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
+  const char* GuiEncodingName() const;
   virtual CRenderInfo GetRenderInfo() override;
   virtual void UnInit() override {};
   virtual void Update() override {};
@@ -73,7 +88,6 @@ private:
   static const char* const OSD_PQ_PASSTHROUGH;
   static bool OsdPqPassthroughAvailable();
 
-  GuiEncoding m_guiEncoding{GuiEncoding::Srgb};
   // Sink HDR capability, sampled in Configure. CWinSystemAmlogic::IsHDRDisplay()
   // is NOT a cached accessor - it stats and reads two amhdmitx sysfs nodes and
   // mutates m_hdr_caps - so it must never be called from ConfigChanged, which
@@ -81,7 +95,14 @@ private:
   // CRenderManager's state lock. Caching it also keeps ConfigChanged and
   // Configure deciding from identical inputs, which is what stops them
   // disagreeing and reconfiguring in a loop.
-  bool m_isHdrDisplay{false};
+  // One atomic with the class (5.V2-3): main's re-encode writes both with no RM
+  // lock, and ConfigChanged must never pair a class with the other sink state.
+  struct SGuiState
+  {
+    GuiEncoding encoding{GuiEncoding::Srgb};
+    bool isHdrDisplay{false};
+  };
+  std::atomic<SGuiState> m_guiState{SGuiState{}};
 
   static const int m_numRenderBuffers = NUM_BUFFERS;
 
