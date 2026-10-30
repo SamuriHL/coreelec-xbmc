@@ -18,6 +18,13 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "video/VideoFileItemClassify.h"
+#if defined(HAS_LIBAMCODEC)
+#include "utils/log.h"
+#include "windowing/amlogic/OutputWorker.h"
+
+#include <cstdlib>
+#include <thread>
+#endif
 
 #include <mutex>
 
@@ -50,6 +57,30 @@ void CApplicationPlayer::ClosePlayer()
 
 void CApplicationPlayer::ResetPlayer()
 {
+#if defined(HAS_LIBAMCODEC)
+  // test (vconfigure_holdplayer "<ms>"): a test thread drops its reference <ms> after main's, so
+  // the player is destroyed off main
+  static const int holdMs = []
+  {
+    const auto line = OUTPUT::ReadTestSwitch("vconfigure_holdplayer");
+    const int ms = line ? std::atoi(line->c_str()) : 0;
+    if (ms > 0)
+      CLog::Log(LOGWARNING, "VCONFIGURE test: the player held {} ms off main at its reset", ms);
+    return ms;
+  }();
+  if (holdMs > 0)
+  {
+    if (std::shared_ptr<IPlayer> held = GetInternal())
+      std::thread(
+          [held = std::move(held)]() mutable
+          {
+            std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+            CLog::Log(LOGWARNING, "VCONFIGURE test: the player's last reference dropped off main");
+            held.reset();
+          })
+          .detach();
+  }
+#endif
   // we need to do this directly on the member
   std::unique_lock lock(m_playerLock);
   m_pPlayer.reset();

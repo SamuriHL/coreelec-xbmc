@@ -202,7 +202,12 @@ private:
     bool lockWait{false}; //!< Q6: a film start at delay 0 waits for the sink lock
     int lockedReads{0};
     bool unreadableLogged{false};
+    //! 5.V2-1: since when the reset is due but waits on main's flags, and which ones held it
+    std::chrono::steady_clock::time_point waitsMainSince{};
+    unsigned int waitsMain{0};
   };
+  //! W: the "SETTLE ... waits main" line of a wait that ends here
+  void SettleWaitsMainEnds();
   //! W only
   SSettle m_settle;
   //! main: the request whose handler reached the reset (its new surface is up)

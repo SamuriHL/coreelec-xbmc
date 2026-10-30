@@ -437,6 +437,11 @@ unsigned int aml_presenter_epoch();
 // main's last publish. displaystate_off (or outputworker_off): no bump, today's wait.
 void aml_displaystate_init(); // at W's start
 bool aml_displaystate_on();
+// 5.V2's switch (vconfigure), latched with display state: display state on, a validated SoC and
+// no special://profile/vconfigure_off. Off before the latch.
+bool aml_vconfigure_on();
+//! vconfigure_skip "<substep>[,<substep>]": true for a listed 5.V2 sub-step (bisect only)
+bool aml_vconfigure_skip(const std::string& substep);
 void aml_timing_inputs_bump();
 uint64_t aml_timing_inputs_gen();
 

@@ -134,6 +134,12 @@ void NoteWrite(const std::string& target);
 void StartAccounting();
 void StopAccounting();
 
+//! the first line of special://profile/<name>, or nullopt without the file
+std::optional<std::string> ReadTestSwitch(const char* name);
+//! a "<substep>[,<substep>]" bisect file (outputdrive_skip, hotplugworker_skip, vconfigure_skip),
+//! logged by tag
+std::vector<std::string> ReadSkipList(const char* name, const char* tag);
+
 // 5.B2-1 test hooks: each special://profile/outputdrive_* file is read once, default off. The
 // steps are design §4.2's ("1" park .. "8" display reset), at today's inline points.
 //! outputdrive_stopat "<step> [ms]": posts a playback stop at that step, then waits <ms> there

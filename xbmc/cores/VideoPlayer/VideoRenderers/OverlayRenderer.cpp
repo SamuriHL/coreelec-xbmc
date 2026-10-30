@@ -35,7 +35,9 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 using namespace KODI;
@@ -635,6 +637,8 @@ void CRenderer::PrepareOverlays(int idx, unsigned int segmentGen)
 
   MAINCOUPLING_ACCESSOR("overlay m_section");
   std::unique_lock lock(m_section);
+  if (m_testStallMs.load(std::memory_order_relaxed) > 0)
+    std::this_thread::sleep_for(std::chrono::milliseconds(m_testStallMs.exchange(0)));
   const bool hasBuffer = idx >= 0 && idx < NUM_BUFFERS;
 
   // The container holds no drawable overlay (menu closed / all subtitles ended),

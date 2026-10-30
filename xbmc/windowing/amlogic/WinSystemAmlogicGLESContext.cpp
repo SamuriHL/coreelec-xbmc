@@ -1540,6 +1540,7 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
   SSettle& settle = m_settle;
   if (!settle.armed)
     return;
+  SettleWaitsMainEnds();
   CLog::Log(LOGINFO,
             "LEDGER settle set={} superseded by request {} before its reset ({} ms after its "
             "commit): lost {} owed into the next set (union)",
@@ -1553,9 +1554,24 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
   m_resetPending = false;
 }
 
+void CWinSystemAmlogicGLESContext::SettleWaitsMainEnds()
+{
+  SSettle& settle = m_settle;
+  if (!settle.waitsMain)
+    return;
+  CLog::Log(LOGINFO, "SETTLE set={} waits main: handled={} ready={} hotplugPending={} {} ms",
+            settle.ledgerSet, (settle.waitsMain & 1) ? 1 : 0, (settle.waitsMain & 2) ? 1 : 0,
+            (settle.waitsMain & 4) ? 1 : 0,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - settle.waitsMainSince)
+                .count());
+  settle.waitsMain = 0;
+}
+
 void CWinSystemAmlogicGLESContext::SettleCancel(const char* why)
 {
   SSettle& settle = m_settle;
+  SettleWaitsMainEnds();
   CLog::Log(LOGINFO, "SETTLE set={} request={} dropped: {}", settle.ledgerSet, settle.request,
             why);
   settle.armed = false;
@@ -1602,6 +1618,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
     return;
 
   SSettle& settle = m_settle;
+  SettleWaitsMainEnds();
   const uint64_t gen = ++settle.gen;
   settle.armed = true;
   settle.request = job.id;
@@ -1666,9 +1683,18 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
 
   // once the set's handler has run; then as main's poll at delay > 0 (presentation ready, no
   // hotplug pending), as the handler's reset at delay 0
-  if (since >= settle.delay && (locked || since > cap) && m_settleHandled == settle.request &&
-      !IsHotplugPending() && (settle.lockWait || IsPresentationReady()) &&
-      DisplayResetAllowed())
+  const bool due = since >= settle.delay && (locked || since > cap);
+  const unsigned int waitsMain = !due ? 0
+                                      : (m_settleHandled != settle.request ? 1 : 0) |
+                                            (!settle.lockWait && !IsPresentationReady() ? 2 : 0) |
+                                            (IsHotplugPending() ? 4 : 0);
+  if (waitsMain)
+  {
+    if (!settle.waitsMain)
+      settle.waitsMainSince = std::chrono::steady_clock::now();
+    settle.waitsMain |= waitsMain;
+  }
+  if (due && !waitsMain && DisplayResetAllowed())
   {
     // 5.B3-7a (O3): the test above, again inside the lock, with the set's lost generation; a
     // drop ends this SETTLE unreset (owed to the next reset), as a supersede does
@@ -1689,6 +1715,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
         return;
       }
     }
+    SettleWaitsMainEnds();
     settle.armed = false;
     m_resetPending = false;
     if (settle.delay.count() > 0)

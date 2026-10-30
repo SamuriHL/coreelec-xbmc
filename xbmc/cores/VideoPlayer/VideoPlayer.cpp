@@ -1110,6 +1110,15 @@ bool CVideoPlayer::OpenInputStream()
   }
 
   m_displayResumeOnGrid = m_scheduledStart && !m_pInputStream->IsRealtime();
+#if defined(HAS_LIBAMCODEC)
+  // test (vconfigure_tweakvideo): the tweak and the offset on the video, as for a realtime input
+  static const bool tweakVideo = XFILE::CFile::Exists("special://profile/vconfigure_tweakvideo");
+  if (tweakVideo && m_displayResumeOnGrid)
+  {
+    m_displayResumeOnGrid = false;
+    CLog::Log(LOGWARNING, "VCONFIGURE test: the tweak on the video, as for a realtime input");
+  }
+#endif
   // the audio offset moves the sound, landed with every start (P4-20)
   m_audioOffsetToAudio = m_displayResumeOnGrid.load();
   {
@@ -5563,6 +5572,7 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
+  m_renderManager.ArmTestStall("stop");
 
   ClearPendingElPackets();
 
@@ -5719,6 +5729,7 @@ void CVideoPlayer::HandleMessages()
       });
 
       FlushBuffers(DVD_NOPTS_VALUE, true, true);
+      m_renderManager.ArmTestStall("nextfile");
       m_renderManager.Flush(false, false);
       m_renderManager.BeginFile();
       m_pDemuxer.reset();

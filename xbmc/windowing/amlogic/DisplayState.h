@@ -135,6 +135,9 @@ struct ModeTiming
 //! the last publish's mode, one lock-free word (the coordinator reads it); false before the
 //! first publish of a mode and while disconnected, with R10's log line when a field is named
 bool CommittedTiming(ModeTiming& timing, const char* field = nullptr);
+//! W's commit published and GC went back to its old row without a new set (5.V2-1's VTIMING
+//! shadow logs it)
+bool Restored();
 //! CGraphicContext::SetVideoResolutionInternal: before m_Resolution changes, and once switched
 //! is known
 void GcSetBegins();

@@ -2805,6 +2805,9 @@ namespace
 {
 std::atomic<bool> s_displayStateOn{false};
 std::atomic<uint64_t> s_timingInputsGen{0};
+std::vector<std::string> s_vconfigureSkip; // written once, before s_vconfigureLatched
+std::atomic<bool> s_vconfigureLatched{false};
+std::atomic<bool> s_vconfigureOn{false};
 } // namespace
 
 void aml_displaystate_init()
@@ -2817,12 +2820,44 @@ void aml_displaystate_init()
                                     XFILE::CFile::Exists("special://profile/displaystate_off");
                    s_displayStateOn = !off;
                    CLog::Log(LOGINFO, "OUTPUT: display state {}", off ? "off" : "on");
+
+                   // never OutputDriveOn() here: it calls this init
+                   bool vconfigure = false;
+                   const char* reason;
+                   if (off)
+                     reason = "display state off";
+                   else if (!aml_presentation_validated())
+                     reason = "not a validated SoC";
+                   else if (XFILE::CFile::Exists("special://profile/vconfigure_off"))
+                     reason = "vconfigure_off";
+                   else
+                   {
+                     reason = "display state, validated SoC";
+                     vconfigure = true;
+                   }
+                   s_vconfigureSkip = OUTPUT::ReadSkipList("vconfigure_skip", "VCONFIGURE");
+                   s_vconfigureOn = vconfigure;
+                   s_vconfigureLatched.store(true, std::memory_order_release);
+                   CLog::Log(LOGINFO, "VCONFIGURE {} ({})", vconfigure ? "on" : "off", reason);
                  });
 }
 
 bool aml_displaystate_on()
 {
   return s_displayStateOn.load(std::memory_order_relaxed);
+}
+
+bool aml_vconfigure_on()
+{
+  return s_vconfigureLatched.load(std::memory_order_acquire) &&
+         s_vconfigureOn.load(std::memory_order_relaxed);
+}
+
+bool aml_vconfigure_skip(const std::string& substep)
+{
+  return s_vconfigureLatched.load(std::memory_order_acquire) && !substep.empty() &&
+         std::find(s_vconfigureSkip.begin(), s_vconfigureSkip.end(), substep) !=
+             s_vconfigureSkip.end();
 }
 
 void aml_timing_inputs_bump()

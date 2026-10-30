@@ -509,6 +509,11 @@ bool CommittedTiming(ModeTiming& timing, const char* field)
   return true;
 }
 
+bool Restored()
+{
+  return s_restored.load();
+}
+
 void GcSetBegins()
 {
   if (!aml_displaystate_on())

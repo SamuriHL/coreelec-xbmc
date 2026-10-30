@@ -63,6 +63,7 @@ static inline void aml_set_frac_reclock_request(bool) {}
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
@@ -125,6 +126,125 @@ void TimingInputsWritten()
 {
   aml_timing_inputs_bump();
 }
+
+// test: special://profile/vconfigure_mainstall holds "<form> <event> <ms>"; main stalls once per
+// arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock) or
+// statelock (holding m_statelock)
+struct SVStall
+{
+  std::string form;
+  std::string event;
+  int ms = 0;
+};
+
+const SVStall& VStall()
+{
+  static const SVStall stall = []
+  {
+    static constexpr const char* forms[] = {"sleep", "overlay", "statelock"};
+    static constexpr const char* events[] = {"start", "firstpic", "flush",        "outputchanged",
+                                             "stop",  "nextfile", "afterpublish", "after-set"};
+    SVStall result;
+    const auto line = OUTPUT::ReadTestSwitch("vconfigure_mainstall");
+    if (!line)
+      return result;
+    const std::vector<std::string> fields = StringUtils::Split(*line, ' ');
+    if (fields.size() == 3 &&
+        std::find_if(std::begin(forms), std::end(forms),
+                     [&](const char* f) { return fields[0] == f; }) != std::end(forms) &&
+        std::find_if(std::begin(events), std::end(events),
+                     [&](const char* e) { return fields[1] == e; }) != std::end(events))
+      result = {fields[0], fields[1], std::atoi(fields[2].c_str())};
+    if (result.ms > 0)
+      CLog::Log(LOGWARNING, "VCONFIGURE test stall {} of {} ms on main at \"{}\"", result.form,
+                result.ms, result.event);
+    else
+      CLog::Log(LOGWARNING, "VCONFIGURE test stall \"{}\" not known, ignored", *line);
+    return result;
+  }();
+  return stall;
+}
+
+bool VStallAt(const char* event)
+{
+  const SVStall& stall = VStall();
+  return stall.ms > 0 && stall.event == event;
+}
+
+// test: special://profile/vconfigure_forceswap: V's next picture after main entered the
+// afterpublish stall reconfigures as if its params changed
+bool TestForceSwap()
+{
+  static const bool on = []
+  {
+    const bool result = XFILE::CFile::Exists("special://profile/vconfigure_forceswap");
+    if (result)
+      CLog::Log(LOGWARNING, "VCONFIGURE test: a forced reconfigure in the afterpublish stall");
+    return result;
+  }();
+  return on;
+}
+
+// RMHOLD (5.V2): main's hold of m_statelock or m_presentlock, timed from the take to the release;
+// only a thread's outermost hold is timed. A long hold is an ERROR only under vconfigure at a site
+// whose work has moved off main (moved false: a long site its sub-step has yet to move)
+thread_local int t_holdDepth = 0;
+thread_local bool t_holdInjected = false;
+
+class CMainHold
+{
+public:
+  explicit CMainHold(const char* site, bool moved = true) : m_site(site), m_moved(moved)
+  {
+    if (OUTPUT::ThreadRole() != OUTPUT::ROLE_MAIN)
+      return;
+    m_counted = true;
+    if (t_holdDepth++ == 0)
+      m_startNs = SteadyNs();
+  }
+  ~CMainHold() { End(); }
+  CMainHold(const CMainHold&) = delete;
+  CMainHold& operator=(const CMainHold&) = delete;
+
+  //! at the release, where it comes before the end of the scope
+  void End()
+  {
+    if (!m_counted)
+      return;
+    m_counted = false;
+    if (--t_holdDepth > 0)
+      return;
+    const double ms = static_cast<double>(SteadyNs() - m_startNs) / 1e6;
+    const bool injected = std::exchange(t_holdInjected, false);
+    if (ms <= 5.0)
+      return;
+    const char* tag = "";
+    if (injected)
+      tag = " (test stall)";
+    else if (!aml_vconfigure_on())
+      tag = " (off path)";
+    else if (!m_moved)
+      tag = " (not moved)";
+    CLog::Log(*tag ? LOGINFO : LOGERROR, "RMHOLD {} held {:.1f} ms on main{}", m_site, ms, tag);
+  }
+
+private:
+  const char* m_site;
+  bool m_moved;
+  bool m_counted = false;
+  int64_t m_startNs = 0;
+};
+
+const char* RendererKind(const CBaseRenderer* renderer)
+{
+  if (!renderer)
+    return "none";
+  // the mangled name: skip the length prefix
+  const char* name = typeid(*renderer).name();
+  while (*name >= '0' && *name <= '9')
+    ++name;
+  return name;
+}
 #else
 void TestMainStall(const char*)
 {
@@ -133,6 +253,23 @@ void TestMainStall(const char*)
 void TimingInputsWritten()
 {
 }
+
+bool VStallAt(const char*)
+{
+  return false;
+}
+
+bool TestForceSwap()
+{
+  return false;
+}
+
+class CMainHold
+{
+public:
+  explicit CMainHold(const char*, bool = true) {}
+  void End() {}
+};
 #endif
 
 // Disc-session mode hold: keep the incumbent display RESOLUTION (no HDMI
@@ -221,6 +358,9 @@ CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
 #if defined(HAS_LIBAMCODEC)
   m_commitTiming = DISPLAYSTATE::CommitTimingOn();
 #endif
+  // the test hooks' files are read here, never under an RM lock
+  VStallAt("");
+  TestForceSwap();
 }
 
 CRenderManager::~CRenderManager()
@@ -289,7 +429,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       return true;
 
     if (m_pRenderer != nullptr && m_picture.IsSameParams(picture) && m_orientation == orientation &&
-        m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture))
+        m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture) &&
+        !(TestForceSwap() && m_testForceSwap.exchange(false)))
     {
       if (m_fps != fps)
       {
@@ -344,6 +485,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     m_picture.SetParams(picture);
+    m_pictureHdrType = picture.hdrType;
     m_fps = fps;
     m_pictureDuration = 0.0;
     m_orientation = orientation;
@@ -405,6 +547,30 @@ bool CRenderManager::Configure()
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
+  CMainHold hold("Configure", false);
+#if defined(HAS_LIBAMCODEC)
+  const int64_t startNs = SteadyNs();
+  const char* oldKind = RendererKind(m_pRenderer);
+  // 5.V2-1 (N2): whether V's path would take it
+  const auto logConfigure = [&](bool result)
+  {
+    const char* path = "V's path would take it";
+    if (!aml_vconfigure_on())
+      path = "vconfigure off";
+    else if (!m_commitTiming)
+      path = "B2-3 timing off";
+    else if (!result)
+      path = "failed";
+    else if (!m_presenterMode)
+      path = "not a presenter-mode renderer";
+    CLog::Log(
+        LOGINFO, "VCONFIGURE main pass player={} file={} renderer {}->{} {} in {:.1f} ms ({})",
+        m_playerGen, m_fileGen.load(), oldKind, RendererKind(m_pRenderer),
+        result ? "configured" : "failed", static_cast<double>(SteadyNs() - startNs) / 1e6, path);
+  };
+#else
+  const auto logConfigure = [](bool) {};
+#endif
 
   if (m_pRenderer)
   {
@@ -427,7 +593,10 @@ bool CRenderManager::Configure()
   {
     CreateRenderer();
     if (!m_pRenderer)
+    {
+      logConfigure(false);
       return false;
+    }
   }
 
   m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
@@ -498,6 +667,7 @@ bool CRenderManager::Configure()
 
   m_stateEvent.Set();
   m_playerPort->VideoParamsChange();
+  logConfigure(result);
   return result;
 }
 
@@ -543,6 +713,9 @@ bool CRenderManager::IsPresenting()
 void CRenderManager::FrameMove()
 {
   TestMainStall("framemove");
+  TestStall("start");
+  TestStall("stop");
+  TestStall("nextfile");
   bool firstFrame = false;
 #if defined(HAS_LIBAMCODEC)
   ReencodeOnOutputChange();
@@ -551,8 +724,10 @@ void CRenderManager::FrameMove()
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    CMainHold hold("FrameMove state");
     if (m_renderState == STATE_UNCONFIGURED)
     {
+      hold.End();
       lock.unlock();
       // No video configured. A disc can still show a screen with no playlist
       // (BD-J); keep its presentation-time composition current for Render().
@@ -565,6 +740,7 @@ void CRenderManager::FrameMove()
 
   UpdateResolution();
   PublishDisplayTiming();
+  TestStall("afterpublish");
 
   // A GUI pass while graphics were withheld left the plane without them, and
   // an unchanged composition never dirties the GUI again (TNG's language page
@@ -577,15 +753,17 @@ void CRenderManager::FrameMove()
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    CMainHold hold("FrameMove configuring");
 
     if (m_renderState == STATE_UNCONFIGURED)
       return;
     else if (m_renderState == STATE_CONFIGURING)
     {
+      hold.End();
       lock.unlock();
       if (!Configure())
         return;
-      UpdateLatencyTweak();
+      UpdateLatencyTweak("configure");
       firstFrame = true;
       FrameWait(50ms);
     }
@@ -593,11 +771,13 @@ void CRenderManager::FrameMove()
     if (!m_presenterMode)
       CheckEnableClockSync();
   }
+  TestStall("firstpic");
   int source;
   if (m_presenterMode)
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
+    CMainHold hold("FrameMove pin");
     m_bRenderGUI = true;
     source = m_presentsource;
     m_renderSource = source;
@@ -606,6 +786,7 @@ void CRenderManager::FrameMove()
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
+    CMainHold hold("FrameMove present");
 
     if (m_queued.empty())
     {
@@ -680,9 +861,15 @@ void CRenderManager::BeginFile()
   m_sessionModeDecided = false;
   m_startHeld = false;
   m_startGate = false;
+  ++m_fileGen;
+  if (VStallAt("firstpic"))
+    m_testStallArmed = 1;
+  else if (VStallAt("afterpublish"))
+    m_testStallArmed = 2;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    CMainHold hold("BeginFile");
     if (m_reclockPending || m_reclockArmed)
       CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm dropped (new file)");
     m_reclockPending = false;
@@ -702,6 +889,46 @@ void CRenderManager::BeginFile()
   // file in one player waited nothing, or never once an SDR file came first
   if (aml_codec_speed_fix())
     m_amdv_wait_delay = -1;
+}
+
+void CRenderManager::ArmTestStall(const char* event)
+{
+  if (VStallAt(event))
+    m_testStallArmed = 2;
+}
+
+void CRenderManager::TestStall(const char* event, bool immediate)
+{
+  if (!VStallAt(event))
+    return;
+  int armed = 2;
+  if (!immediate && !m_testStallArmed.compare_exchange_strong(armed, 0))
+    return;
+#if defined(HAS_LIBAMCODEC)
+  const SVStall& stall = VStall();
+  CLog::Log(LOGWARNING, "VCONFIGURE test stall {} {} ms on main at \"{}\" player={} file={}",
+            stall.form, stall.ms, event, m_playerGen, m_fileGen.load());
+  if (stall.form == "overlay")
+  {
+    m_overlays.ArmTestStall(stall.ms);
+    return;
+  }
+  if (std::strcmp(event, "afterpublish") == 0 && TestForceSwap())
+  {
+    m_testForceSwap = true;
+    CLog::Log(LOGWARNING, "VCONFIGURE test: V's next picture reconfigures");
+  }
+  if (stall.form == "statelock")
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    CMainHold hold("test stall");
+    t_holdInjected = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+    return;
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+#endif
 }
 
 void CRenderManager::PreInit()
@@ -728,6 +955,7 @@ void CRenderManager::PreInit()
 
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  CMainHold hold("PreInit");
 
   if (!m_pRenderer)
   {
@@ -742,12 +970,13 @@ void CRenderManager::PreInit()
   if (!aml_presentation_validated())
     m_debugRenderer.Initialize();
 
-  UpdateLatencyTweak();
+  UpdateLatencyTweak("preinit");
 
   m_QueueSize   = 2;
   m_QueueSkip   = 0;
   m_presentstep = PRESENT_IDLE;
   m_bRenderGUI = true;
+  ArmTestStall("start");
 
   m_initEvent.Set();
 }
@@ -771,6 +1000,7 @@ void CRenderManager::UnInit()
 
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  CMainHold hold("UnInit", false);
   m_presenterMode = false;
 #if defined(HAS_LIBAMCODEC)
   if (m_rmRetry)
@@ -798,6 +1028,7 @@ void CRenderManager::UnInit()
 
   m_renderState = STATE_UNCONFIGURED;
   m_picture.Reset();
+  m_pictureHdrType = m_picture.hdrType;
   m_bRenderGUI = false;
   CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
 
@@ -817,12 +1048,14 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 #ifndef TARGET_WINDOWS
     CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
 #endif
+    TestStall("flush");
 
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     std::unique_lock lock3(m_datalock);
+    CMainHold hold("Flush", false);
 
     if (m_pRenderer)
     {
@@ -864,6 +1097,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
   else
   {
     m_flushEvent.Reset();
+    ArmTestStall("flush");
     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH);
     if (wait)
     {
@@ -991,6 +1225,7 @@ void CRenderManager::SetViewMode(int iViewMode)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  CMainHold hold("SetViewMode");
   if (m_pRenderer)
     m_pRenderer->SetViewMode(iViewMode);
   m_playerPort->VideoParamsChange();
@@ -1098,9 +1333,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    CMainHold hold("Render state");
     if (source == -1 || (m_renderState != STATE_CONFIGURED))
     {
       const bool configured = m_renderState == STATE_CONFIGURED;
+      hold.End();
       lock.unlock();
       RenderWithoutPicture(gui, configured);
       return;
@@ -1225,6 +1462,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
+    CMainHold hold("Render step");
 
     if (m_presentstep == PRESENT_FRAME)
     {
@@ -1257,6 +1495,7 @@ bool CRenderManager::IsGuiLayer()
     {
       MAINCOUPLING_ACCESSOR("RM m_statelock");
       std::unique_lock lock(m_statelock);
+      CMainHold hold("IsGuiLayer");
 
       if (!m_pRenderer)
         return false;
@@ -1274,6 +1513,7 @@ bool CRenderManager::IsGuiLayer()
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
+    CMainHold hold("IsGuiLayer");
 
     if (!m_pRenderer)
       return false;
@@ -1340,7 +1580,7 @@ void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
   }
 }
 
-void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
+void CRenderManager::UpdateLatencyTweak(const char* site, RESOLUTION target)
 {
   const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   const RESOLUTION_INFO res = target != RES_INVALID ? gfx.GetResInfo(target) : gfx.GetResInfo();
@@ -1375,7 +1615,13 @@ void CRenderManager::UpdateLatencyTweak(RESOLUTION target)
 
   CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}, HDR used: {}",
     m_latencyTweak, refresh, height, isHDRUsed);
-  PublishDisplayTiming();
+  SComposedTiming today;
+  today.refresh = refresh;
+  today.height = height;
+  today.hdrUsed = isHDRUsed;
+  today.tweakMs = m_latencyTweak;
+  ShadowTiming(site, today, false, m_tweakToAudio);
+  PublishDisplayTiming(site);
 }
 
 void CRenderManager::SetLatencyTweakToAudio(bool toAudio)
@@ -1384,7 +1630,7 @@ void CRenderManager::SetLatencyTweakToAudio(bool toAudio)
   TimingInputsWritten();
 }
 
-void CRenderManager::PublishDisplayTiming()
+void CRenderManager::PublishDisplayTiming(const char* site)
 {
 #if defined(HAS_LIBAMCODEC)
   if (aml_displaystate_on())
@@ -1403,12 +1649,19 @@ void CRenderManager::PublishDisplayTiming()
     const double display = vblanks >= 0 && fps > 0.0f
                                ? vblanks * 1000.0 / static_cast<double>(fps)
                                : static_cast<double>(gfx.GetDisplayLatency());
-    const double latencyMs = (m_tweakToAudio ? 0.0 : m_latencyTweak) + display;
+    const bool toAudio = m_tweakToAudio;
+    const double latencyMs = (toAudio ? 0.0 : m_latencyTweak) + display;
     m_timingFps = fps;
     m_timingLatencyMs = latencyMs;
     WriteTimingSnapshot(fps, latencyMs, inputsGen, commitCount);
     m_timingEpoch = epoch;
     DISPLAYSTATE::ShadowMainMode("fps@publish", "height@publish", gfx.GetResInfo(), gcFps);
+    SComposedTiming today;
+    today.height = -1;
+    today.tweakMs = m_latencyTweak;
+    today.fps = fps;
+    today.latencyMs = latencyMs;
+    ShadowTiming(site, today, true, toAudio);
     return;
   }
 #endif
@@ -1472,7 +1725,103 @@ bool CRenderManager::ComposeCommitTiming(STickTiming& timing, uint64_t& inputsGe
   timing.latencyMs = vblanks * 1000.0 / static_cast<double>(committed.fps);
   return true;
 }
+
+CRenderManager::SComposedTiming CRenderManager::ComposeTiming(
+    const DISPLAYSTATE::DisplayState* state, StreamHdrType hdrType, int vblanks, bool tweakToAudio)
+{
+  SComposedTiming t;
+  bool hdrDisplay = false;
+  if (state)
+  {
+    // a seed with no mode keeps 60 fps and height 0
+    t.fps = state->fps;
+    t.refresh = state->windowed ? 0.0f : (state->fracHeld ? state->requestedFps : state->fps);
+    t.height = state->screenHeight;
+    const CHDRCapabilities& c = state->hdrCaps;
+    hdrDisplay = c.SupportsHDR10() || c.SupportsHDR10Plus() || c.SupportsHLG() ||
+                 c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+  }
+  t.hdrUsed = hdrDisplay && hdrType != StreamHdrType::HDR_TYPE_NONE;
+  t.tweakMs = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+          t.refresh, t.hdrUsed, t.height));
+  // before a configured renderer: the AML renderer's
+  const int presentVblanks = vblanks >= 0 ? vblanks : AML_VD1_PRESENT_VBLANKS;
+  t.latencyMs =
+      (tweakToAudio ? 0.0 : t.tweakMs) + presentVblanks * 1000.0 / static_cast<double>(t.fps);
+  return t;
+}
 #endif
+
+void CRenderManager::ShadowTiming(const char* site,
+                                  const SComposedTiming& today,
+                                  bool latency,
+                                  bool toAudio)
+{
+#if defined(HAS_LIBAMCODEC)
+  if (!aml_displaystate_on())
+    return;
+  const auto state = DISPLAYSTATE::Get();
+  SShadowKey key;
+  key.site = site;
+  key.today = today;
+  key.stateEpoch = state ? state->epoch : 0;
+  key.restored = DISPLAYSTATE::Restored();
+  key.hdrType = m_pictureHdrType;
+  key.vblanks = m_presentVblanks;
+  key.toAudio = toAudio;
+  key.video = ComposeTiming(state.get(), key.hdrType, key.vblanks, key.toAudio);
+  const SComposedTiming& video = key.video;
+  const auto same = [](double a, double b) { return std::abs(a - b) < 0.001; };
+  bool equal = same(video.tweakMs, today.tweakMs);
+  // main's latency without a renderer's vblanks is GC's display latency: not compared
+  if (latency)
+    equal = equal && video.fps == today.fps &&
+            (key.vblanks < 0 || same(video.latencyMs, today.latencyMs));
+  // pre-set: main composes the target mode, the published state is still the current one
+  const bool target = std::strcmp(site, "pre-set") == 0;
+  auto count = std::find_if(m_vtimingCounts.begin(), m_vtimingCounts.end(),
+                            [&](const SShadowCount& c) { return std::strcmp(c.site, site) == 0; });
+  if (count == m_vtimingCounts.end())
+    count = m_vtimingCounts.insert(m_vtimingCounts.end(), SShadowCount{site});
+  ++(target ? count->target : (equal ? count->match : count->diff));
+  if (key == m_vtimingLast)
+    return;
+  m_vtimingLast = key;
+
+  std::string values =
+      StringUtils::Format("tweak {:.3f} main {:.3f}", video.tweakMs, today.tweakMs);
+  if (latency)
+  {
+    values += StringUtils::Format(" fps {:.3f} main {:.3f} latency {:.3f} main ", video.fps,
+                                  today.fps, video.latencyMs);
+    values += key.vblanks < 0 ? "n/a" : StringUtils::Format("{:.3f}", today.latencyMs);
+  }
+  // an UpdateLatencyTweak site: main's table inputs
+  if (today.height >= 0)
+    values += StringUtils::Format(" refresh {:.3f} main {:.3f} height {} main {} hdr {} main {}",
+                                  video.refresh, today.refresh, video.height, today.height,
+                                  video.hdrUsed, today.hdrUsed);
+  std::string inputs = "none published";
+  if (state)
+  {
+    const CHDRCapabilities& c = state->hdrCaps;
+    inputs = StringUtils::Format(
+        "epoch {} mode {} fps {:.3f} requested {:.3f} height {} frac-held {} windowed {} "
+        "connected {} hdr-caps {}",
+        state->epoch, state->strId, state->fps, state->requestedFps, state->screenHeight,
+        state->fracHeld, state->windowed, state->connected,
+        c.SupportsHDR10() || c.SupportsHDR10Plus() || c.SupportsHLG() ||
+            c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE);
+  }
+  CLog::Log(LOGINFO,
+            "VTIMING shadow {} {} {} | {} restored {} hdrType {} vblanks {} toAudio {} | {} match "
+            "{} diff {} target {}",
+            site, target ? "TARGET" : (equal ? "MATCH" : "DIFF"), values, inputs, key.restored,
+            static_cast<int>(key.hdrType), key.vblanks, key.toAudio, site, count->match,
+            count->diff, count->target);
+#endif
+}
 
 bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& decisions) const
 {
@@ -1569,6 +1918,7 @@ void CRenderManager::UpdateResolution()
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
+          CMainHold hold("UpdateResolution");
           fps = m_fps;
           width = m_picture.iWidth;
           height = m_picture.iHeight;
@@ -1652,7 +2002,7 @@ void CRenderManager::UpdateResolution()
           // the tweak before the mode set: with no refresh-change delay the
           // display reset lands the audio inside it, and lands the new tweak
           if (m_tweakToAudio)
-            UpdateLatencyTweak(res);
+            UpdateLatencyTweak("pre-set", res);
 #if defined(HAS_LIBAMCODEC)
           const uint64_t commits = DISPLAYSTATE::CommitCount();
           uint64_t replySeq = 0;
@@ -1683,7 +2033,8 @@ void CRenderManager::UpdateResolution()
           }
 #endif
           TestMainStall("after-set");
-          UpdateLatencyTweak();
+          TestStall("after-set", true);
+          UpdateLatencyTweak("after-set");
 #if defined(HAS_LIBAMCODEC)
           if (aml_displaystate_on())
           {
@@ -1701,6 +2052,7 @@ void CRenderManager::UpdateResolution()
           // the set waits for the user's stereo choice, which triggers again
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
+          CMainHold hold("UpdateResolution");
           m_reclockArmed = true;
           m_reclockArmedAt = std::chrono::steady_clock::now();
           CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm kept for the stereo choice");
@@ -1712,6 +2064,7 @@ void CRenderManager::UpdateResolution()
           // one step for IsResolutionUpdatePending's locked read (5.B2-2)
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
+          CMainHold hold("UpdateResolution");
           // 5.B2-5b (r2 N5): a failed set is not a decision. The trigger is raised again once,
           // with the in-flight flag kept, so the held start waits for the retry's reply (or
           // the 12 s cap); the retry's result counts, whatever it is
@@ -1825,6 +2178,11 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
     if (!m_pRenderer)
       return false;
 
+    if (VStallAt("firstpic"))
+    {
+      int waiting = 1;
+      m_testStallArmed.compare_exchange_strong(waiting, 2);
+    }
     m_pRenderer->AddVideoPicture(picture, index);
     // the shortest since the rate was set: a repeated (telecined) picture
     // lasts longer than the spacing
@@ -2799,6 +3157,7 @@ void CRenderManager::ReencodeOnOutputChange()
   const uint64_t epoch = DISPLAYSTATE::TakeReencodeRequest();
   if (!epoch)
     return;
+  TestStall("outputchanged", true);
   const char* outcome;
   bool reencoded = false;
   {
@@ -2808,6 +3167,7 @@ void CRenderManager::ReencodeOnOutputChange()
     std::unique_lock lock(m_statelock);
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
+    CMainHold hold("B2-8 re-encode", false);
     if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
       outcome = "not configured, the next picture configures";
     else if (!m_pRenderer->ConfigChanged(m_picture))

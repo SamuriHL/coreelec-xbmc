@@ -142,6 +142,8 @@ namespace OVERLAY {
      */
     //! segmentGen: disc segment generation of the picture at idx (0: none)
     void PrepareOverlays(int idx, unsigned int segmentGen = 0);
+    //! test (vconfigure_mainstall overlay): the next PrepareOverlays sleeps ms inside m_section
+    void ArmTestStall(int ms) { m_testStallMs = ms; }
 
     /*!
      * \brief Release resources
@@ -256,6 +258,7 @@ namespace OVERLAY {
     };
 
     mutable CCriticalSection m_section;
+    std::atomic<int> m_testStallMs{0};
     std::vector<SElement> m_buffers[NUM_BUFFERS];
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;

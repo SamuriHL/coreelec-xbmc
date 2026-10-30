@@ -27,6 +27,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "PlatformDefs.h"
 
@@ -50,6 +52,10 @@ class CLinuxRenderer;
 class CLinuxRendererGL;
 class CLinuxRendererGLES;
 class CRenderManager;
+namespace DISPLAYSTATE
+{
+struct DisplayState;
+}
 
 class IRenderMsg
 {
@@ -122,6 +128,8 @@ public:
   void PreInit();
   //! a new file in the same session: resets what belongs to the last one
   void BeginFile();
+  //! test (vconfigure_mainstall): the player arms its "stop" or "nextfile" event
+  void ArmTestStall(const char* event);
   void UnInit();
   bool Flush(bool wait, bool saveBuffers);
   bool IsConfigured() const;
@@ -269,13 +277,71 @@ protected:
   //! Video-only tap: serve VIDEO capture requests from the just-presented frame.
   void ServiceVideoCaptures();
 
-  //! the tweak for the current mode, or for the mode about to be set
-  void UpdateLatencyTweak(RESOLUTION target = RES_INVALID);
+  //! the tweak for the current mode, or for the mode about to be set; site names it in the
+  //! VTIMING shadow
+  void UpdateLatencyTweak(const char* site, RESOLUTION target = RES_INVALID);
   void CheckEnableClockSync(const STickTiming* timing = nullptr);
   //! render thread: the display timing PrepareNextRender uses, for either thread
-  void PublishDisplayTiming();
+  void PublishDisplayTiming(const char* site = "pass");
   //! 5.B2-8 (D11): main's OutputChanged request, re-encoded with no new picture
   void ReencodeOnOutputChange();
+
+  //! 5.V2-1: a timing as composed from its inputs
+  struct SComposedTiming
+  {
+    float refresh = 60.0f; //!< the latency table's refresh (0 windowed)
+    int height = 0;
+    bool hdrUsed = false;
+    double tweakMs = 0.0;
+    float fps = 60.0f;
+    double latencyMs = 0.0;
+    bool operator==(const SComposedTiming&) const = default;
+  };
+  //! UpdateLatencyTweak's B2-3 branch and PublishDisplayTiming's latency, from the video side's
+  //! inputs only: W's published state, V's picture facts, P's tweak placement and the
+  //! AdvancedSettings table (state null: none published)
+  static SComposedTiming ComposeTiming(const DISPLAYSTATE::DisplayState* state,
+                                       StreamHdrType hdrType,
+                                       int vblanks,
+                                       bool tweakToAudio);
+  //! main: VTIMING shadow, the composition against main's values (latency: compare it too;
+  //! toAudio: the placement main read); log only
+  void ShadowTiming(const char* site, const SComposedTiming& today, bool latency, bool toAudio);
+  //! main: what the last shadow line logged
+  struct SShadowKey
+  {
+    const char* site = nullptr;
+    SComposedTiming video;
+    SComposedTiming today;
+    uint64_t stateEpoch = 0;
+    bool restored = false;
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    int vblanks = 0;
+    bool toAudio = false;
+    bool operator==(const SShadowKey&) const = default;
+  } m_vtimingLast;
+  //! main: per site; target counts pre-set, where main composes the mode about to be set
+  struct SShadowCount
+  {
+    const char* site = nullptr;
+    uint64_t match = 0;
+    uint64_t diff = 0;
+    uint64_t target = 0;
+  };
+  std::vector<SShadowCount> m_vtimingCounts;
+  //! V's picture fact for the shadow: m_picture.hdrType, stored with it
+  std::atomic<StreamHdrType> m_pictureHdrType{StreamHdrType::HDR_TYPE_NONE};
+
+  //! test (vconfigure_mainstall): main stalls here when the hook's event is armed (or immediate)
+  void TestStall(const char* event, bool immediate = false);
+  //! the hook's event: 1 waiting for the file's first picture, 2 armed
+  std::atomic<int> m_testStallArmed{0};
+  //! test (vconfigure_forceswap): V's next picture reconfigures
+  std::atomic<bool> m_testForceSwap{false};
+  //! 5.V2-1: generations for the logs, of the player (this manager) and of its file
+  inline static std::atomic<unsigned int> s_playerGens{0};
+  const unsigned int m_playerGen{++s_playerGens};
+  std::atomic<unsigned int> m_fileGen{0};
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);

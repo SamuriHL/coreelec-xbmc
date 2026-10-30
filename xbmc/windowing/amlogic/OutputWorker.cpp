@@ -333,9 +333,6 @@ void COutputWorker::Process()
   }
 }
 
-namespace
-{
-// the first line of special://profile/<name>, or nullopt without the file
 std::optional<std::string> ReadTestSwitch(const char* name)
 {
   const std::string path = std::string("special://profile/") + name;
@@ -348,6 +345,8 @@ std::optional<std::string> ReadTestSwitch(const char* name)
   return line.substr(0, line.find('\n'));
 }
 
+namespace
+{
 std::atomic_bool s_demuxBlockArmed{false};
 } // namespace
 
@@ -475,9 +474,6 @@ bool TestOrderToday()
   return today;
 }
 
-namespace
-{
-// a "<substep>[,<substep>]" bisect file (outputdrive_skip, hotplugworker_skip), logged by tag
 std::vector<std::string> ReadSkipList(const char* name, const char* tag)
 {
   std::vector<std::string> list;
@@ -497,7 +493,6 @@ std::vector<std::string> ReadSkipList(const char* name, const char* tag)
   }
   return list;
 }
-} // namespace
 
 bool OutputDriveSkip(const std::string& substep)
 {
