@@ -388,7 +388,7 @@ public:
 
   void FrameMove() override;
   void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
-  void FlushRenderer() override;
+  void FlushRenderer(bool overlaysOnly = false) override;
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) override;
   float GetRenderAspectRatio() const override;
   void GetRects(CRect& source, CRect& dest, CRect& view) const override;

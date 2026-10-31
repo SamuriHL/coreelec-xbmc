@@ -301,6 +301,16 @@ bool V24On()
 }
 
 // 5.V2-7 (MC-41): the overlays travel with the frame
+// 5.V2-8 (MC-32): P's flush at a file change posts only the overlay flush to main
+bool V28On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_vconfigure_on() && !aml_vconfigure_skip("V2-8");
+#else
+  return false;
+#endif
+}
+
 bool V27On()
 {
 #if defined(HAS_LIBAMCODEC)
@@ -1468,7 +1478,7 @@ void CRenderManager::UnInit()
   m_initEvent.Set();
 }
 
-bool CRenderManager::Flush(bool wait, bool saveBuffers)
+bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
 {
   // 5.V2-4: V writes the renderer under the RM locks
   if (V24On())
@@ -1506,6 +1516,21 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       // thread allowed to touch the dirty-region tracker.
       OVERLAY::MarkDirty();
     };
+
+    // 5.V2-8: the presenter's queue and start picture are V's (V cancels its own start force in
+    // stream order); a late clear here would cancel the next file's, and a late floor hide its
+    // first overlays: the floor is the one P took at the post
+    if (overlaysOnly)
+    {
+      {
+        MAINCOUPLING_ACCESSOR("RM m_presentlock");
+        std::unique_lock lock(m_presentlock);
+        m_overlayFloor = std::max(m_overlayFloor, m_flushFloor);
+      }
+      flushOverlays();
+      m_flushEvent.Set();
+      return true;
+    }
 
     // 5.V2-2: the GL (and the renderer's own flush) runs on the pass's reference, with no RM
     // lock; the locks cover the queue and the start picture only
@@ -1575,6 +1600,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       // a worker's start picture is gone with the queue
       if (m_forceGen >= 0)
       {
+        CLog::Log(LOGINFO, "OUTDIAG flush cleared the start picture gen {}", m_forceGen);
         m_forceNext = false;
         m_forceGen = -1;
       }
@@ -1587,7 +1613,18 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
   {
     m_flushEvent.Reset();
     ArmTestStall("flush");
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH);
+    if (V28On() && m_presenterMode)
+    {
+      {
+        MAINCOUPLING_ACCESSOR("RM m_presentlock");
+        std::unique_lock lock(m_presentlock);
+        m_flushFloor = m_overlaySerial;
+      }
+      CLog::Log(LOGINFO, "VCONFIGURE flush: overlays only, the start picture kept");
+      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH, 1);
+    }
+    else
+      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH);
     if (wait)
     {
       if (!m_flushEvent.Wait(1000ms))
@@ -4126,6 +4163,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   // a worker's start picture: released where a waiting AddVideoPicture would be
   if (forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
   {
+    CLog::Log(LOGINFO, "OUTDIAG start picture released gen {} pts {:.3f}", m_forceGen,
+              m_presentsource >= 0 ? m_Queue[m_presentsource].pts / DVD_TIME_BASE : -1.0);
     m_forceNext = false;
     m_forceDoneGen = m_forceGen;
     m_forceGen = -1;

@@ -919,11 +919,11 @@ void CApplicationPlayer::Render(bool clear, uint32_t alpha, bool gui)
     player->Render(clear, alpha, gui);
 }
 
-void CApplicationPlayer::FlushRenderer()
+void CApplicationPlayer::FlushRenderer(bool overlaysOnly)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
   if (player)
-    player->FlushRenderer();
+    player->FlushRenderer(overlaysOnly);
 }
 
 void CApplicationPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)

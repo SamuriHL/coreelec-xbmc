@@ -9642,9 +9642,9 @@ void CVideoPlayer::Render(bool clear, uint32_t alpha, bool gui)
   m_renderManager.Render(clear, 0, alpha, gui);
 }
 
-void CVideoPlayer::FlushRenderer()
+void CVideoPlayer::FlushRenderer(bool overlaysOnly)
 {
-  m_renderManager.Flush(true, true);
+  m_renderManager.Flush(true, true, overlaysOnly);
 }
 
 void CVideoPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)

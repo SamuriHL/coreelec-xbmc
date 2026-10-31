@@ -134,7 +134,7 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
       break;
 
     case TMSG_RENDERER_FLUSH:
-      appPlayer->FlushRenderer();
+      appPlayer->FlushRenderer(pMsg->param1 == 1);
       break;
 
     case TMSG_HIBERNATE:

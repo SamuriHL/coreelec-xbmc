@@ -131,7 +131,7 @@ public:
   //! test (vconfigure_mainstall): the player arms its "stop" or "nextfile" event
   void ArmTestStall(const char* event);
   void UnInit();
-  bool Flush(bool wait, bool saveBuffers);
+  bool Flush(bool wait, bool saveBuffers, bool overlaysOnly = false);
   bool IsConfigured() const;
   void ToggleDebug();
   void ToggleDebugVideo();
@@ -493,6 +493,7 @@ protected:
   //! 5.V2-7, under m_presentlock: the last serial given; a flush drops overlays up to the floor
   uint64_t m_overlaySerial = 0;
   uint64_t m_overlayFloor = 0;
+  uint64_t m_flushFloor = 0; // 5.V2-8: the serial at P's overlays-only post
 
   std::deque<int> m_free;
   std::deque<int> m_queued;
