@@ -200,6 +200,7 @@ private:
     std::chrono::steady_clock::time_point modeSetAt{};
     std::chrono::milliseconds delay{0};
     bool lockWait{false}; //!< Q6: a film start at delay 0 waits for the sink lock
+    bool atOnce{false}; //!< 5.V2-10 (Q13): delay 0 outside a film start: no lock wait, no floor
     int lockedReads{0};
     bool unreadableLogged{false};
     //! 5.V2-1: since when the reset is due but waits on main's flags, and which ones held it
@@ -210,6 +211,8 @@ private:
   void SettleWaitsMainEnds();
   //! W only
   SSettle m_settle;
+  //! W, 5.V2-10: the request W's set job committed (DONE) or found no display for (NOT_COMMITTED)
+  uint64_t m_settleCommitted{0};
   //! main: the request whose handler reached the reset (its new surface is up)
   std::atomic<uint64_t> m_settleHandled{0};
   //! main: the request whose handler failed (its SETTLE is dropped, Q9)

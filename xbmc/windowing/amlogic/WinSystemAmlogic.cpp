@@ -1465,7 +1465,9 @@ void CWinSystemAmlogic::HotplugRetryTick(uint64_t gen)
     replyQueued = !m_replies.empty();
   }
   if (IsHotplugPending() || m_disconnectedSinceMs ||
-      ((m_delayDispReset || m_resetPending) && IsPresentationReady()) || replyQueued ||
+      (OUTPUT::SettleGatesOnW() ? m_resetPending.load()
+                                : (m_delayDispReset || m_resetPending) && IsPresentationReady()) ||
+      replyQueued ||
       m_applyingReply || m_mainRequests > 0 || m_guiInputsStale || m_lateReplies > 0)
   {
     PostHotplugRetryTick(gen, 50ms);

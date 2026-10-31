@@ -1101,7 +1101,13 @@ void CWinSystemAmlogicGLESContext::ReportDriveSet(
       LedgerSetFailed();
     // 5.B2-6, Q9: W committed but main's handler failed (no GUI surface): the set stays paused,
     // its SETTLE is dropped (W's FAILED reply logged this ERROR on W already)
-    if (!created && job.kind != OUTPUT::DriveReply::FAILED && OUTPUT::SettleOnW())
+    if (!created && job.kind != OUTPUT::DriveReply::FAILED && OUTPUT::SettleGatesOnW())
+      // 5.V2-10 (Q14): W's SETTLE resumes them; C's cleared buffer stays up until main recovers
+      CLog::Log(LOGERROR,
+                "LEDGER set={} lost {} (request {}): GUI surface failed after a committed set: "
+                "video resumed, GUI not ready",
+                job.ledgerSet, m_ledgerLost.load(), job.id);
+    else if (!created && job.kind != OUTPUT::DriveReply::FAILED && OUTPUT::SettleOnW())
       SettleHandlerFailed(job);
     CLog::Log(LOGINFO, "OUTPUTDRIVE set={} {} guiLocked {} discarded {}", job.ledgerSet,
               created ? "ok" : "failed", job.guiLocked, m_guiDiscarded);
@@ -1390,6 +1396,12 @@ bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
       return true;
     case OUTPUT::DriveReply::DONE:
     case OUTPUT::DriveReply::NOT_COMMITTED:
+      if (const int ms = OUTPUT::TestHandlerStallMs(); ms > 0)
+      {
+        CLog::Log(LOGWARNING, "VCONFIGURE test stall {} ms before the handler of request {}", ms,
+                  job.id);
+        KODI::TIME::Sleep(std::chrono::milliseconds(ms));
+      }
       // R4-L2: not-committed ran the reclaim too, so it rebuilds
       return RebuildGuiSurface(job);
     default:
@@ -1614,7 +1626,13 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   // a start with no display (not-committed) keeps today's reset at once
   const bool lockWait =
       job.delay <= 0 && job.filmStart && job.kind == OUTPUT::DriveReply::DONE;
-  if (job.delay <= 0 && !lockWait)
+  // 5.V2-10 (Q13): W arms it at delay 0 too, a start with no display included; main resets at
+  // no delay
+  const bool gatesOnW = OUTPUT::SettleGatesOnW();
+  const bool atOnce = gatesOnW && job.delay <= 0 && !lockWait;
+  if (gatesOnW)
+    m_settleCommitted = job.id;
+  if (job.delay <= 0 && !lockWait && !atOnce)
     return;
 
   SSettle& settle = m_settle;
@@ -1625,24 +1643,35 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   settle.ledgerSet = job.ledgerSet;
   settle.lostGen = job.lostGen;
   settle.modeSetAt = job.modeSetAt;
-  settle.delay = std::chrono::milliseconds(lockWait ? 0 : job.delay * 100);
+  settle.delay = std::chrono::milliseconds(lockWait || atOnce ? 0 : job.delay * 100);
   settle.lockWait = lockWait;
+  settle.atOnce = atOnce;
   settle.lockedReads = 0;
   settle.unreadableLogged = false;
   if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle",
                                               std::chrono::milliseconds(0),
                                               [this, gen] { SettleCheck(gen); }))
   {
+    settle.armed = false;
+    if (gatesOnW)
+    {
+      // only at Kodi's exit (the player is closed first): main resets at no delay
+      CLog::Log(LOGWARNING, "SETTLE set={} request={} not armed: W is stopping, reset dropped",
+                job.ledgerSet, job.id);
+      job.settleArmed = true;
+      return;
+    }
     // W is stopping: main's handler resets as at delay 0
     CLog::Log(LOGWARNING, "SETTLE set={} request={} not armed: W is stopping", job.ledgerSet,
               job.id);
-    settle.armed = false;
     return;
   }
   m_resetPending = true;
   job.settleArmed = true;
   CLog::Log(LOGINFO, "SETTLE set={} request={} armed: delay {} ms{}", job.ledgerSet, job.id,
-            settle.delay.count(), lockWait ? ", sink lock wait (film start at delay 0)" : "");
+            settle.delay.count(),
+            lockWait ? ", sink lock wait (film start at delay 0)"
+                     : (atOnce ? ", at once (delay 0)" : ""));
 }
 
 void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
@@ -1650,7 +1679,9 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
   SSettle& settle = m_settle;
   if (!settle.armed || settle.gen != gen)
     return;
-  if (m_settleFailed == settle.request)
+  // 5.V2-10 (Q14): a GUI-surface failure after the commit does not hold the video and audio
+  const bool gatesOnW = OUTPUT::SettleGatesOnW();
+  if (!gatesOnW && m_settleFailed == settle.request)
   {
     SettleCancel("its handler failed");
     return;
@@ -1661,7 +1692,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
 
   // today's SinkLockedAfterModeSet on W's clock: two locked reads 50 ms apart, the first no
   // sooner than 100 ms after the commit; an unreadable lock (G12B) counts as locked there
-  if (settle.lockedReads < 2 && since >= 100ms && since <= cap)
+  if (!settle.atOnce && settle.lockedReads < 2 && since >= 100ms && since <= cap)
   {
     const int locked = aml_hdmi_sink_locked();
     if (locked < 0)
@@ -1683,18 +1714,26 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
 
   // once the set's handler has run; then as main's poll at delay > 0 (presentation ready, no
   // hotplug pending), as the handler's reset at delay 0
-  const bool due = since >= settle.delay && (locked || since > cap);
-  const unsigned int waitsMain = !due ? 0
-                                      : (m_settleHandled != settle.request ? 1 : 0) |
-                                            (!settle.lockWait && !IsPresentationReady() ? 2 : 0) |
-                                            (IsHotplugPending() ? 4 : 0);
+  const bool due = settle.atOnce || (since >= settle.delay && (locked || since > cap));
+  // 5.V2-10 (Q12): W's own facts instead of main's handler flags; the connected read at delay > 0
+  // only, as main's handler reset tests none
+  const bool waitsW =
+      gatesOnW && due &&
+      (m_settleCommitted != settle.request ||
+       (settle.delay.count() > 0 && !settle.lockWait && !GetDRMConnected()));
+  const unsigned int waitsMain =
+      !due ? 0
+           : (gatesOnW ? 0
+                       : (m_settleHandled != settle.request ? 1 : 0) |
+                             (!settle.lockWait && !IsPresentationReady() ? 2 : 0)) |
+                 (IsHotplugPending() ? 4 : 0);
   if (waitsMain)
   {
     if (!settle.waitsMain)
       settle.waitsMainSince = std::chrono::steady_clock::now();
     settle.waitsMain |= waitsMain;
   }
-  if (due && !waitsMain && DisplayResetAllowed())
+  if (due && !waitsW && !waitsMain && DisplayResetAllowed())
   {
     // 5.B3-7a (O3): the test above, again inside the lock, with the set's lost generation; a
     // drop ends this SETTLE unreset (owed to the next reset), as a supersede does
@@ -1724,8 +1763,8 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     CLog::Log(LOGINFO, "SETTLE set={} request={} reset on W {} ms after the commit: {} (delay {} "
                        "ms, lock wait {})",
               settle.ledgerSet, settle.request, since.count(),
-              locked ? "sink locked" : "sink never locked", settle.delay.count(),
-              settle.lockWait ? 1 : 0);
+              settle.atOnce ? "at once" : (locked ? "sink locked" : "sink never locked"),
+              settle.delay.count(), settle.lockWait ? 1 : 0);
     if (!ordering)
       lock.lock();
     for (IDispResource* resource : m_resources)
@@ -1743,7 +1782,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
   // the next check: the lock's 100 ms floor, then 50 ms reads (and polls); once locked, the
   // delay's end; past the cap only main's handler or a later set is waited for
   std::chrono::milliseconds next = 50ms;
-  if (since < 100ms)
+  if (since < 100ms && !settle.atOnce)
     next = 100ms - since;
   else if (locked && since < settle.delay)
     next = settle.delay - since;

@@ -177,6 +177,10 @@ bool ModeSetsOnW();
 //! ModeSetsOnW and no outputdrive_skip "B2-6". Not latched (ModeSetsOnW is false until W starts);
 //! the switch line is logged once
 bool SettleOnW();
+//! 5.V2-10: SETTLE tests W's own facts (W's committed reply, W's connected read) instead of main's
+//! handler flags, and is armed on W at delay 0 too (Q12, Q13): SettleOnW, HotplugOnW, vconfigure
+//! on and no vconfigure_skip "V2-10"; the switch line is logged once
+bool SettleGatesOnW();
 //! 5.B2-5c: the lost walk runs right after W's park (ModeSetsOnW, no outputdrive_skip "B2-5c",
 //! no outputdrive_order "today")
 bool LostFirstOn();
@@ -311,6 +315,9 @@ int TestHotplugRaceGapMs();
 //! test and its lock, widening O3's race window for the B3-7a gate (0: off; 1-1000 ms, a
 //! larger value is clamped). Primed at W's start under OrderingOn: no reset probes the file
 int TestHotplugSettleGapMs();
+//! vconfigure_handlerstall "<ms>" (test only, 5.V2-10's gate): main sleeps before the handler of
+//! every done or not-committed set, holding SETTLE's main gates (0: off)
+int TestHandlerStallMs();
 //! hotplugworker_applythrow "<n> [times] [table|adopt]": called once per reply apply; true for
 //! the n-th apply and the times-1 after it (times default 1): main throws in that apply, after its
 //! table step, or inside it (table), or after the adopt's GC set (adopt)

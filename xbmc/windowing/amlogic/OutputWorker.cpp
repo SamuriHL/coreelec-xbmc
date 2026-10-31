@@ -566,6 +566,21 @@ bool SettleOnW()
   return on;
 }
 
+bool SettleGatesOnW()
+{
+  // HotplugOnW is latched at W's start, vconfigure at its own latch: not cached here
+  if (!SettleOnW() || !HotplugOnW() || !aml_vconfigure_on() || aml_vconfigure_skip("V2-10"))
+    return false;
+  static std::once_flag logged;
+  std::call_once(logged,
+                 []
+                 {
+                   CLog::Log(LOGINFO, "VCONFIGURE V2-10: SETTLE on W's own facts, armed at "
+                                      "every delay");
+                 });
+  return true;
+}
+
 bool LostFirstOn()
 {
   return ModeSetsOnW() && !OutputDriveSkip("B2-5c") && !TestOrderToday();
@@ -1103,6 +1118,18 @@ int TestHotplugSettleGapMs()
       CLog::Log(LOGWARNING,
                 "HOTPLUGWORKER: test gap of {} ms between SETTLE's reset test and its lock",
                 value);
+    return value;
+  }();
+  return ms;
+}
+
+int TestHandlerStallMs()
+{
+  static const int ms = []
+  {
+    const int value = std::max(0, HotplugTestValue("vconfigure_handlerstall", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "VCONFIGURE test: main sleeps {} ms before each set's handler", value);
     return value;
   }();
   return ms;
