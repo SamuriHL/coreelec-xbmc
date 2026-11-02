@@ -16,6 +16,12 @@
 #include "utils/BitstreamConverter.h"
 #include "utils/Geometry.h"
 
+namespace VIDEOGEOMETRY
+{
+struct SAmlAxisIn;
+struct SAmlAxisOut;
+} // namespace VIDEOGEOMETRY
+
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -105,6 +111,11 @@ public:
   //! with no new frame (nothing about whether the layer is on). Without
   //! decoderRate it leaves the decoder handle alone.
   void          ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, bool decoderRate);
+  //! ApplyVideoGeometry's decoder side: vadj1 (with decoderRate), contrast, brightness, the
+  //! rate (with decoderRate)
+  void          ApplyDecoderSide(bool decoderRate);
+  //! ApplyVideoGeometry's frame-locked writes on a change: the 3D mode, axis and screen_mode
+  void          ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis);
   bool          IsOpened() const { return m_opened; }
   void          SetVideoRate(int videoRate);
   uint64_t      GetOMXPts() const { return m_cur_pts; }
@@ -201,6 +212,15 @@ private:
   std::atomic<uint64_t> m_diagGetPictureCalls{0};
   std::atomic<uint64_t> m_diagPictures{0};
   std::atomic<uint32_t> m_diagRateChanges{0};
+  // 5.V3-2 shadow A (geometrytick_shadow)
+  VIDEOGEOMETRY::SAmlAxisOut ComputeAmlAxisHead(CRect dst_rect, const CRect& screen,
+                                                const RESOLUTION_INFO& video_res_info);
+  void ShadowAxisCompare(const VIDEOGEOMETRY::SAmlAxisIn& in,
+                         const VIDEOGEOMETRY::SAmlAxisOut& head,
+                         const VIDEOGEOMETRY::SAmlAxisOut& now);
+  int m_shadowAxisEvals = 0;
+  int m_shadowAxisDiffs = 0;
+  int m_shadowAxisRecords = 0;
   static constexpr uint32_t RATE_LINES = 3; //!< INFO lines per open; the rest only counted
 
   bool            m_buffer_level_ready;

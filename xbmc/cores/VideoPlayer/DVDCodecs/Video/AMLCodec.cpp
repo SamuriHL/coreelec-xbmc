@@ -24,6 +24,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
@@ -42,6 +43,7 @@
 
 #include <unistd.h>
 #include <algorithm>
+#include <cstring>
 #include <queue>
 #include <vector>
 #include <signal.h>
@@ -2077,6 +2079,9 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo)
 
 CAMLCodec::~CAMLCodec()
 {
+  if (m_shadowAxisEvals)
+    CLog::Log(LOGINFO, "GEOMDIAG shadowA codec: axis evals {} diffs {} records {}",
+              m_shadowAxisEvals, m_shadowAxisDiffs, m_shadowAxisRecords);
   delete am_private;
   am_private = NULL;
   delete m_dll, m_dll = NULL;
@@ -4301,13 +4306,8 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
     aml_set_frame_kept(false);
 }
 
-void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, bool decoderRate)
+void CAMLCodec::ApplyDecoderSide(bool decoderRate)
 {
-  // this routine gets called every video frame
-  // and is in the context of the renderer thread so
-  // do not do anything stupid here.
-  bool update = false;
-
   // video zoom adjustment.
   float zoom = m_processInfo.GetVideoSettings().m_CustomZoomAmount;
   if ((int)(zoom * 1000) != (int)(m_zoom * 1000))
@@ -4343,6 +4343,15 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
                 video_rate, OUTPUT::ThreadRoleName(OUTPUT::ThreadRole()), gettid());
     am_private->video_rate = video_rate;
   }
+}
+
+void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, bool decoderRate)
+{
+  // this routine gets called every video frame
+  // and is in the context of the renderer thread so
+  // do not do anything stupid here.
+  ApplyDecoderSide(decoderRate);
+  bool update = false;
 
   // video view mode
   int view_mode = m_processInfo.GetVideoSettings().m_ViewMode;
@@ -4370,24 +4379,8 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
     m_guiStereoView = guiStereoView;
   }
 
-  // dest_rect
-  CRect dst_rect = DestRect;
-  // handle orientation
-  switch (am_private->video_rotation_degree)
-  {
-    case 0:
-    case 2:
-      break;
-
-    case 1:
-    case 3:
-      {
-        float scale = static_cast<float>(dst_rect.Height()) / dst_rect.Width();
-        int diff = (int) ((dst_rect.Height()*scale - dst_rect.Width()) / 2);
-        dst_rect = CRect(DestRect.x1 - diff, DestRect.y1, DestRect.x2 + diff, DestRect.y2);
-      }
-
-  }
+  // dest_rect, turned for the orientation
+  CRect dst_rect = VIDEOGEOMETRY::AmlRotatedDest(DestRect, am_private->video_rotation_degree);
 
   if (m_dst_rect != dst_rect)
   {
@@ -4408,9 +4401,101 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   if (!update)
     return;
 
+  m_display_rect = screen;
+  VIDEOGEOMETRY::SAmlAxisIn in;
+  in.dest = dst_rect;
+  in.screen = screen;
+  in.guiWidth = video_res_info.iWidth;
+  in.guiHeight = video_res_info.iHeight;
+  in.stereoMode = m_guiStereoMode;
+  if (m_guiStereoMode == RenderStereoMode::MONO)
+    in.videoStereoMode = m_processInfo.GetVideoStereoMode();
+  else if (m_guiStereoMode == RenderStereoMode::HARDWAREBASED)
+  {
+    const RESOLUTION_INFO info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+    in.hwHeight = info.iHeight;
+    in.hwBlanking = info.iBlanking;
+  }
+  const VIDEOGEOMETRY::SAmlAxisOut axis = VIDEOGEOMETRY::ComputeAmlAxis(in);
+  if (aml_geometrytick_hooks().shadow)
+    ShadowAxisCompare(in, ComputeAmlAxisHead(dst_rect, screen, video_res_info), axis);
+
+  ApplyFrameLocked(axis);
+}
+
+void CAMLCodec::ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis)
+{
+  MAINCOUPLING("CAMLDisplay aml_display_support_3d");
+  if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
+  {
+    int mvc_view_mode = 3;
+    switch (am_private->video_format)
+    {
+      case VFORMAT_H264MVC:
+        {
+          mvc_view_mode = m_processInfo.GetVideoStereoMode() == "block_lr" ? 3 : 2;
+          switch (m_guiStereoMode)
+          {
+            case RenderStereoMode::HARDWAREBASED:
+              aml_set_3d_video_mode(MODE_3D_ENABLE | MODE_3D_FA, true, mvc_view_mode);
+              break;
+            case RenderStereoMode::SPLIT_VERTICAL:
+              aml_set_3d_video_mode(MODE_3D_OUT_LR | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+              break;
+            case RenderStereoMode::SPLIT_HORIZONTAL:
+              aml_set_3d_video_mode(MODE_3D_OUT_TB | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+              break;
+            default:
+              aml_set_3d_video_mode(MODE_3D_TO_2D_R | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+              break;
+          }
+          break;
+        }
+      default:
+        aml_set_3d_video_mode(MODE_3D_DISABLE, false, mvc_view_mode);
+        break;
+    }
+  }
+
+#if 1
+  std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
+    (int)axis.dest.x1, (int)axis.dest.y1,
+    (int)axis.dest.Width(), (int)axis.dest.Height());
+  std::string s_m_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
+    (int)m_dst_rect.x1, (int)m_dst_rect.y1,
+    (int)m_dst_rect.Width(), (int)m_dst_rect.Height());
+  std::string s_display = StringUtils::Format("{:d},{:d},{:d},{:d}",
+    (int)m_display_rect.x1, (int)m_display_rect.y1,
+    (int)m_display_rect.Width(), (int)m_display_rect.Height());
+  std::string s_gui = StringUtils::Format("{:d},{:d},{:d},{:d}",
+    (int)axis.gui.x1, (int)axis.gui.y1,
+    (int)axis.gui.Width(), (int)axis.gui.Height());
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:display({})", s_display.c_str());
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:gui({})", s_gui.c_str());
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_dst_rect({})", s_m_dst_rect.c_str());
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:dst_rect({})", s_dst_rect.c_str());
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_guiStereoMode({:d})", m_guiStereoMode);
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_guiStereoView({:d})", m_guiStereoView);
+#endif
+
+  char video_axis[256] = {};
+  sprintf(video_axis, "%d %d %d %d", axis.axis[0], axis.axis[1], axis.axis[2], axis.axis[3]);
+
+  MAINCOUPLING("CDisplaySettings IsNonLinearStretched");
+  int screen_mode = CDisplaySettings::GetInstance().IsNonLinearStretched() ? 4 : 1;
+
+  CSysfsPath("/sys/class/video/axis", video_axis);
+  CSysfsPath("/sys/class/video/screen_mode", screen_mode);
+}
+
+// 5.V3-2 shadow A: HEAD's axis computation, unchanged but for its inputs and outputs
+VIDEOGEOMETRY::SAmlAxisOut CAMLCodec::ComputeAmlAxisHead(CRect dst_rect,
+                                                         const CRect& screen,
+                                                         const RESOLUTION_INFO& video_res_info)
+{
   CRect gui, display;
 
-  display = m_display_rect = screen;
+  display = screen;
   gui = CRect(0, 0, video_res_info.iWidth, video_res_info.iHeight);
 
   if (gui != display)
@@ -4447,72 +4532,52 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
     dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
   }
 
-  MAINCOUPLING("CAMLDisplay aml_display_support_3d");
-  if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
-  {
-    int mvc_view_mode = 3;
-    switch (am_private->video_format)
-    {
-      case VFORMAT_H264MVC:
-        {
-          mvc_view_mode = m_processInfo.GetVideoStereoMode() == "block_lr" ? 3 : 2;
-          switch (m_guiStereoMode)
-          {
-            case RenderStereoMode::HARDWAREBASED:
-              aml_set_3d_video_mode(MODE_3D_ENABLE | MODE_3D_FA, true, mvc_view_mode);
-              break;
-            case RenderStereoMode::SPLIT_VERTICAL:
-              aml_set_3d_video_mode(MODE_3D_OUT_LR | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-            case RenderStereoMode::SPLIT_HORIZONTAL:
-              aml_set_3d_video_mode(MODE_3D_OUT_TB | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-            default:
-              aml_set_3d_video_mode(MODE_3D_TO_2D_R | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-          }
-          break;
-        }
-      default:
-        aml_set_3d_video_mode(MODE_3D_DISABLE, false, mvc_view_mode);
-        break;
-    }
-  }
-
-#if 1
-  std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
-    (int)dst_rect.x1, (int)dst_rect.y1,
-    (int)dst_rect.Width(), (int)dst_rect.Height());
-  std::string s_m_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
-    (int)m_dst_rect.x1, (int)m_dst_rect.y1,
-    (int)m_dst_rect.Width(), (int)m_dst_rect.Height());
-  std::string s_display = StringUtils::Format("{:d},{:d},{:d},{:d}",
-    (int)m_display_rect.x1, (int)m_display_rect.y1,
-    (int)m_display_rect.Width(), (int)m_display_rect.Height());
-  std::string s_gui = StringUtils::Format("{:d},{:d},{:d},{:d}",
-    (int)gui.x1, (int)gui.y1,
-    (int)gui.Width(), (int)gui.Height());
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:display({})", s_display.c_str());
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:gui({})", s_gui.c_str());
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_dst_rect({})", s_m_dst_rect.c_str());
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:dst_rect({})", s_dst_rect.c_str());
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_guiStereoMode({:d})", m_guiStereoMode);
-  CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect:m_guiStereoView({:d})", m_guiStereoView);
-#endif
-
+  VIDEOGEOMETRY::SAmlAxisOut out;
+  out.gui = gui;
+  out.dest = dst_rect;
   // goofy 0/1 based difference in aml axis coordinates.
   // fix them.
   dst_rect.x2--;
   dst_rect.y2--;
+  out.axis[0] = (int)dst_rect.x1;
+  out.axis[1] = (int)dst_rect.y1;
+  out.axis[2] = (int)dst_rect.x2;
+  out.axis[3] = (int)dst_rect.y2;
+  return out;
+}
 
-  char video_axis[256] = {};
-  sprintf(video_axis, "%d %d %d %d", (int)dst_rect.x1, (int)dst_rect.y1, (int)dst_rect.x2, (int)dst_rect.y2);
-
-  MAINCOUPLING("CDisplaySettings IsNonLinearStretched");
-  int screen_mode = CDisplaySettings::GetInstance().IsNonLinearStretched() ? 4 : 1;
-
-  CSysfsPath("/sys/class/video/axis", video_axis);
-  CSysfsPath("/sys/class/video/screen_mode", screen_mode);
+void CAMLCodec::ShadowAxisCompare(const VIDEOGEOMETRY::SAmlAxisIn& in,
+                                  const VIDEOGEOMETRY::SAmlAxisOut& head,
+                                  const VIDEOGEOMETRY::SAmlAxisOut& now)
+{
+  const auto same = [](const CRect& a, const CRect& b) {
+    return std::memcmp(&a.x1, &b.x1, sizeof(float)) == 0 &&
+           std::memcmp(&a.y1, &b.y1, sizeof(float)) == 0 &&
+           std::memcmp(&a.x2, &b.x2, sizeof(float)) == 0 &&
+           std::memcmp(&a.y2, &b.y2, sizeof(float)) == 0;
+  };
+  const auto hex = [](const CRect& r) {
+    return StringUtils::Format("{:a},{:a},{:a},{:a}", r.x1, r.y1, r.x2, r.y2);
+  };
+  const auto outputs = [&hex](const VIDEOGEOMETRY::SAmlAxisOut& o) {
+    return StringUtils::Format("gui={} dst={} axis={} {} {} {}", hex(o.gui), hex(o.dest),
+                               o.axis[0], o.axis[1], o.axis[2], o.axis[3]);
+  };
+  m_shadowAxisEvals++;
+  const bool equal = same(head.gui, now.gui) && same(head.dest, now.dest) &&
+                     std::equal(std::begin(head.axis), std::end(head.axis), std::begin(now.axis));
+  const std::string inputs = StringUtils::Format(
+      "dst={} screen={} gui={}x{} stereo={} video={} hw={}+{}", hex(in.dest), hex(in.screen),
+      in.guiWidth, in.guiHeight, static_cast<int>(in.stereoMode),
+      in.videoStereoMode.empty() ? "-" : in.videoStereoMode, in.hwHeight, in.hwBlanking);
+  if (!equal && m_shadowAxisDiffs++ < 10)
+    CLog::Log(LOGWARNING, "GEOMDIAG shadowA axis DIFF {} head {} new {}", inputs, outputs(head),
+              outputs(now));
+  if (m_shadowAxisRecords < 400)
+  {
+    m_shadowAxisRecords++;
+    CLog::Log(LOGINFO, "GEOMDIAG shadowA rec axis {} -> {}", inputs, outputs(head));
+  }
 }
 
 void CAMLCodec::SetVideoRate(int videoRate)

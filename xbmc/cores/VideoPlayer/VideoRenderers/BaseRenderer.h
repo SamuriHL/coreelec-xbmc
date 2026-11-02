@@ -15,6 +15,7 @@
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "utils/Geometry.h"
 
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,12 @@
 
 class CSetting;
 struct IntegerSettingOption;
+
+namespace VIDEOGEOMETRY
+{
+struct SRenderAreaIn;
+struct SViewModeIn;
+} // namespace VIDEOGEOMETRY
 
 enum EFIELDSYNC
 {
@@ -172,5 +179,37 @@ protected:
   CVideoSettings m_videoSettings;
 
 private:
+  // 5.V3-2: HEAD's bodies, run only by shadow A (geometrytick_shadow) beside the pure functions
+  void ManageRenderAreaHead();
+  void SetViewModeHead(int viewMode);
+
+  struct SAreaState
+  {
+    CRect viewRect;
+    CRect sourceRect;
+    CRect destRect;
+    CPoint rotated[4];
+  };
+  struct SViewState
+  {
+    CVideoSettings settings;
+    float zoomAmount = 1.0f;
+    float pixelRatio = 1.0f;
+    float verticalShift = 0.0f;
+    bool nonLinearStretched = false;
+  };
+  SAreaState GetAreaState() const;
+  void SetAreaState(const SAreaState& st);
+  SViewState GetViewState() const;
+  void SetViewState(const SViewState& st);
+  void ShadowAreaCompare(const VIDEOGEOMETRY::SRenderAreaIn& in, const SAreaState& head);
+  void ShadowViewCompare(const VIDEOGEOMETRY::SViewModeIn& in, const SViewState& head);
+
   bool m_alwaysClip = false;
+  int m_shadowAreaEvals = 0;
+  int m_shadowAreaDiffs = 0;
+  int m_shadowViewEvals = 0;
+  int m_shadowViewDiffs = 0;
+  int m_shadowRecords = 0;
+  std::string m_shadowAreaLast;
 };

@@ -1,4 +1,5 @@
 set(SOURCES BaseRenderer.cpp
+            VideoGeometry.cpp
             ColorManager.cpp
             OverlayRenderer.cpp
             OverlayRendererUtil.cpp
@@ -8,6 +9,7 @@ set(SOURCES BaseRenderer.cpp
             DebugRenderer.cpp)
 
 set(HEADERS BaseRenderer.h
+            VideoGeometry.h
             ColorManager.h
             DebugInfo.h
             HdrGraphics.h

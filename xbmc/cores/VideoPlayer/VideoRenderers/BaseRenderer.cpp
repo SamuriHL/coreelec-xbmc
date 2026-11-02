@@ -9,6 +9,7 @@
 #include "BaseRenderer.h"
 
 #include "ServiceBroker.h"
+#include "VideoGeometry.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
@@ -23,6 +24,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING(what) static_cast<void>(0)
@@ -30,6 +32,43 @@
 
 #include <algorithm>
 #include <cstdlib> // std::abs(int) prototype
+#include <cstring>
+#include <type_traits>
+
+// VideoGeometry's std::pow and std::sqrt are HEAD's overloads (SetViewModeHead's unqualified calls)
+static_assert(std::is_same_v<decltype(pow(1.0f, 1.0f)), float> &&
+              std::is_same_v<decltype(sqrt(1.0f)), float>);
+
+namespace
+{
+// 5.V3-2 shadow A (geometrytick_shadow): HEAD's bodies run beside the pure functions
+bool ShadowA()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_geometrytick_hooks().shadow;
+#else
+  return false;
+#endif
+}
+
+bool Same(float a, float b)
+{
+  return std::memcmp(&a, &b, sizeof(float)) == 0;
+}
+
+bool Same(const CRect& a, const CRect& b)
+{
+  return Same(a.x1, b.x1) && Same(a.y1, b.y1) && Same(a.x2, b.x2) && Same(a.y2, b.y2);
+}
+
+std::string Hex(const CRect& r)
+{
+  return fmt::format("{:a},{:a},{:a},{:a}", r.x1, r.y1, r.x2, r.y2);
+}
+
+constexpr int SHADOW_DIFF_LINES = 10;
+constexpr int SHADOW_RECORDS = 400;
+} // namespace
 
 
 CBaseRenderer::CBaseRenderer()
@@ -43,7 +82,118 @@ CBaseRenderer::CBaseRenderer()
   }
 }
 
-CBaseRenderer::~CBaseRenderer() = default;
+CBaseRenderer::~CBaseRenderer()
+{
+  if (m_shadowAreaEvals || m_shadowViewEvals)
+    CLog::Log(LOGINFO,
+              "GEOMDIAG shadowA renderer: area evals {} diffs {}, view mode evals {} diffs {}, "
+              "records {}",
+              m_shadowAreaEvals, m_shadowAreaDiffs, m_shadowViewEvals, m_shadowViewDiffs,
+              m_shadowRecords);
+}
+
+CBaseRenderer::SAreaState CBaseRenderer::GetAreaState() const
+{
+  SAreaState st;
+  st.viewRect = m_viewRect;
+  st.sourceRect = m_sourceRect;
+  st.destRect = m_destRect;
+  std::copy(std::begin(m_rotatedDestCoords), std::end(m_rotatedDestCoords), st.rotated);
+  return st;
+}
+
+void CBaseRenderer::SetAreaState(const SAreaState& st)
+{
+  m_viewRect = st.viewRect;
+  m_sourceRect = st.sourceRect;
+  m_destRect = st.destRect;
+  std::copy(std::begin(st.rotated), std::end(st.rotated), m_rotatedDestCoords);
+}
+
+CBaseRenderer::SViewState CBaseRenderer::GetViewState() const
+{
+  SViewState st;
+  st.settings = m_videoSettings;
+  st.zoomAmount = CDisplaySettings::GetInstance().GetZoomAmount();
+  st.pixelRatio = CDisplaySettings::GetInstance().GetPixelRatio();
+  st.verticalShift = CDisplaySettings::GetInstance().GetVerticalShift();
+  st.nonLinearStretched = CDisplaySettings::GetInstance().IsNonLinearStretched();
+  return st;
+}
+
+void CBaseRenderer::SetViewState(const SViewState& st)
+{
+  m_videoSettings = st.settings;
+  CDisplaySettings::GetInstance().SetZoomAmount(st.zoomAmount);
+  CDisplaySettings::GetInstance().SetPixelRatio(st.pixelRatio);
+  CDisplaySettings::GetInstance().SetVerticalShift(st.verticalShift);
+  CDisplaySettings::GetInstance().SetNonLinearStretched(st.nonLinearStretched);
+}
+
+void CBaseRenderer::ShadowAreaCompare(const VIDEOGEOMETRY::SRenderAreaIn& in,
+                                      const SAreaState& head)
+{
+  m_shadowAreaEvals++;
+  const SAreaState now = GetAreaState();
+  bool same = Same(now.viewRect, head.viewRect) && Same(now.sourceRect, head.sourceRect) &&
+              Same(now.destRect, head.destRect);
+  for (int i = 0; i < 4 && same; i++)
+    same = Same(now.rotated[i].x, head.rotated[i].x) && Same(now.rotated[i].y, head.rotated[i].y);
+
+  const std::string inputs = fmt::format(
+      "view={} src={}x{} flags={:#x} sview={} aspect={:a} par={:a} zoom={:a} shift={:a} "
+      "guipar={:a} err={} orient={} clip={:d}",
+      Hex(in.viewRect), in.sourceWidth, in.sourceHeight, in.flags,
+      static_cast<int>(in.stereoView), in.aspectRatio, in.pixelRatio, in.zoomAmount,
+      in.verticalShift, in.guiPixelRatio, in.errorInAspect, in.orientation, in.clip);
+  if (!same && m_shadowAreaDiffs++ < SHADOW_DIFF_LINES)
+    CLog::Log(LOGWARNING, "GEOMDIAG shadowA area DIFF {} head src={} dst={} new src={} dst={}",
+              inputs, Hex(head.sourceRect), Hex(head.destRect), Hex(now.sourceRect),
+              Hex(now.destRect));
+  if (inputs != m_shadowAreaLast && m_shadowRecords < SHADOW_RECORDS)
+  {
+    m_shadowAreaLast = inputs;
+    m_shadowRecords++;
+    CLog::Log(LOGINFO, "GEOMDIAG shadowA rec area {} -> src={} dst={}", inputs,
+              Hex(head.sourceRect), Hex(head.destRect));
+  }
+}
+
+void CBaseRenderer::ShadowViewCompare(const VIDEOGEOMETRY::SViewModeIn& in,
+                                      const SViewState& head)
+{
+  m_shadowViewEvals++;
+  const SViewState now = GetViewState();
+  const bool same =
+      now.settings.m_ViewMode == head.settings.m_ViewMode &&
+      Same(now.settings.m_CustomZoomAmount, head.settings.m_CustomZoomAmount) &&
+      Same(now.settings.m_CustomPixelRatio, head.settings.m_CustomPixelRatio) &&
+      Same(now.settings.m_CustomVerticalShift, head.settings.m_CustomVerticalShift) &&
+      now.settings.m_CustomNonLinStretch == head.settings.m_CustomNonLinStretch &&
+      Same(now.zoomAmount, head.zoomAmount) && Same(now.pixelRatio, head.pixelRatio) &&
+      Same(now.verticalShift, head.verticalShift) &&
+      now.nonLinearStretched == head.nonLinearStretched;
+
+  const std::string inputs = fmt::format(
+      "mode={} overscan={},{},{},{} gui={}x{} screen={}x{} guipar={:a} ratio={:a} srch={} "
+      "custom={:a},{:a},{:a},{:d} s43={}",
+      in.viewMode, in.overscanLeft, in.overscanTop, in.overscanRight, in.overscanBottom,
+      in.width, in.height, in.screenWidth, in.screenHeight, in.guiPixelRatio,
+      in.sourceFrameRatio, in.sourceHeight, in.customZoomAmount, in.customPixelRatio,
+      in.customVerticalShift, in.customNonLinStretch, in.stretch43);
+  const auto outputs = [](const SViewState& st) {
+    return fmt::format("mode={} zoom={:a} par={:a} shift={:a} nonlin={:d}", st.settings.m_ViewMode,
+                       st.zoomAmount, st.pixelRatio, st.verticalShift, st.nonLinearStretched);
+  };
+  if (!same && m_shadowViewDiffs++ < SHADOW_DIFF_LINES)
+    CLog::Log(LOGWARNING, "GEOMDIAG shadowA viewmode DIFF {} head {} new {}", inputs,
+              outputs(head), outputs(now));
+  if (m_shadowRecords < SHADOW_RECORDS)
+  {
+    m_shadowRecords++;
+    CLog::Log(LOGINFO, "GEOMDIAG shadowA rec viewmode {} -> {}", inputs, outputs(head));
+  }
+}
 
 float CBaseRenderer::GetAspectRatio() const
 {
@@ -315,7 +465,53 @@ void CBaseRenderer::ManageRenderArea()
   if (newRect.Width() != m_viewRect.Width() || newRect.Height() != m_viewRect.Height())
     CLog::Log(LOGDEBUG, "CBaseRenderer::ManageRenderArea: viewRect {:.0f}x{:.0f} -> {:.0f}x{:.0f}",
               m_viewRect.Width(), m_viewRect.Height(), newRect.Width(), newRect.Height());
+
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  VIDEOGEOMETRY::SRenderAreaIn in;
+  in.viewRect = newRect;
+  in.sourceWidth = m_sourceWidth;
+  in.sourceHeight = m_sourceHeight;
+  in.flags = m_iFlags;
+  MAINCOUPLING("GC GetStereoView");
+  in.stereoView = gfx.GetStereoView();
+  in.aspectRatio = GetAspectRatio();
+  MAINCOUPLING("CDisplaySettings GetPixelRatio GetZoomAmount GetVerticalShift");
+  in.pixelRatio = CDisplaySettings::GetInstance().GetPixelRatio();
+  in.zoomAmount = CDisplaySettings::GetInstance().GetZoomAmount();
+  in.verticalShift = CDisplaySettings::GetInstance().GetVerticalShift();
+  in.orientation = m_renderOrientation;
+  if (newRect.Width() != 0 && newRect.Height() != 0)
+  {
+    in.guiPixelRatio = gfx.GetResInfo().fPixelRatio;
+    in.errorInAspect = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+        CSettings::SETTING_VIDEOPLAYER_ERRORINASPECT);
+    in.clip = m_alwaysClip || !(gfx.IsFullScreenVideo() || gfx.IsCalibrating());
+  }
+
+  SAreaState head;
+  const bool shadow = ShadowA();
+  if (shadow)
+  {
+    const SAreaState saved = GetAreaState();
+    ManageRenderAreaHead();
+    head = GetAreaState();
+    SetAreaState(saved);
+  }
+
   m_viewRect = newRect;
+  const VIDEOGEOMETRY::SRenderAreaOut out = VIDEOGEOMETRY::ComputeRenderArea(in);
+  m_sourceRect = out.sourceRect;
+  m_destRect = out.destRect;
+  if (out.reorder)
+    ReorderDrawPoints();
+
+  if (shadow)
+    ShadowAreaCompare(in, head);
+}
+
+void CBaseRenderer::ManageRenderAreaHead()
+{
+  m_viewRect = CServiceBroker::GetWinSystem()->GetGfxContext().GetViewWindow();
 
   m_sourceRect.x1 = 0.0f;
   m_sourceRect.y1 = 0.0f;
@@ -413,6 +609,63 @@ EShaderFormat CBaseRenderer::GetShaderFormat()
 }
 
 void CBaseRenderer::SetViewMode(int viewMode)
+{
+  SViewState head;
+  const bool shadow = ShadowA();
+  if (shadow)
+  {
+    const SViewState saved = GetViewState();
+    SetViewModeHead(viewMode);
+    head = GetViewState();
+    SetViewState(saved);
+  }
+
+  // get our calibrated full screen resolution
+  const RESOLUTION_INFO info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+  VIDEOGEOMETRY::SViewModeIn in;
+  in.viewMode = viewMode;
+  in.overscanLeft = info.Overscan.left;
+  in.overscanTop = info.Overscan.top;
+  in.overscanRight = info.Overscan.right;
+  in.overscanBottom = info.Overscan.bottom;
+  in.width = info.iWidth;
+  in.height = info.iHeight;
+  in.screenWidth = info.iScreenWidth;
+  in.screenHeight = info.iScreenHeight;
+  in.guiPixelRatio = info.fPixelRatio;
+  in.sourceFrameRatio = GetAspectRatio();
+  in.sourceHeight = m_sourceHeight;
+  in.customZoomAmount = m_videoSettings.m_CustomZoomAmount;
+  in.customPixelRatio = m_videoSettings.m_CustomPixelRatio;
+  in.customVerticalShift = m_videoSettings.m_CustomVerticalShift;
+  in.customNonLinStretch = m_videoSettings.m_CustomNonLinStretch;
+
+  // the view mode's outputs are process-global, and STRETCH43 (read for a 4:3 source) is
+  // main's setting
+  MAINCOUPLING("CDisplaySettings SetViewMode outputs");
+  if (VIDEOGEOMETRY::ViewModeIs43(VIDEOGEOMETRY::ClampViewMode(viewMode), in.sourceFrameRatio))
+  {
+    MAINCOUPLING("CSettings STRETCH43");
+    in.stretch43 = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+        CSettings::SETTING_VIDEOPLAYER_STRETCH43);
+  }
+  const VIDEOGEOMETRY::SViewModeOut out = VIDEOGEOMETRY::ComputeViewMode(in);
+
+  m_videoSettings.m_ViewMode = out.viewMode;
+  CDisplaySettings::GetInstance().SetVerticalShift(out.verticalShift);
+  CDisplaySettings::GetInstance().SetNonLinearStretched(out.nonLinearStretched);
+  CDisplaySettings::GetInstance().SetZoomAmount(out.zoomAmount);
+  CDisplaySettings::GetInstance().SetPixelRatio(out.pixelRatio);
+  m_videoSettings.m_CustomZoomAmount = out.zoomAmount;
+  m_videoSettings.m_CustomPixelRatio = out.pixelRatio;
+  m_videoSettings.m_CustomNonLinStretch = out.nonLinearStretched;
+  m_videoSettings.m_CustomVerticalShift = out.verticalShift;
+
+  if (shadow)
+    ShadowViewCompare(in, head);
+}
+
+void CBaseRenderer::SetViewModeHead(int viewMode)
 {
   if (viewMode < ViewModeNormal || viewMode > ViewModeZoom110Width)
     viewMode = ViewModeNormal;
