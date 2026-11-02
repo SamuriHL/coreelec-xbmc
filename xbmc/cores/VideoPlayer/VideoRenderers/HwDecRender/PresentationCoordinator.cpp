@@ -293,6 +293,7 @@ uint64_t CPresentationCoordinator::Submit(int plane,
     ready.pts = pts;
     ready.epoch = epoch;
     ready.cOwned = false;
+    ready.readyNs = fence < 0 ? MonotonicNs() : 0;
     ready.seq = seq = ++m_submitSeq;
     if (plane == PLANE_UI)
       m_report.uiSubmits++;
@@ -818,6 +819,7 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
       op->epoch = epoch;
       op->result = result;
       op->state = PlaneOffOp::State::DONE;
+      m_diagUnblockedNs = MonotonicNs();
     }
     m_uiCond.notify_all();
   }
@@ -834,6 +836,7 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
     return;
   m_inFlight = false;
   m_inCommitTag = 0;
+  m_diagUnblockedNs = MonotonicNs();
   for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
     PlaneState& state = m_planes[plane];
@@ -997,6 +1000,7 @@ void CPresentationCoordinator::Process()
       {
         close(ready.fence);
         ready.fence = -1;
+        ready.readyNs = MonotonicNs();
       }
     }
 
@@ -1209,6 +1213,8 @@ void CPresentationCoordinator::CommitUi()
           continue;
         drmModeAtomicFree(ready.req);
       }
+      if (plane == PLANE_UI && !ready.cOwned)
+        TimeUiCommit(std::max(ready.readyNs, m_diagUnblockedNs));
       commit.has[plane] = true;
       commit.bo[plane] = ready.bo;
       commit.generation[plane] = m_planes[plane].generation;
@@ -1236,6 +1242,23 @@ void CPresentationCoordinator::CommitUi()
     m_commitNs = MonotonicNs();
   }
   m_uiCond.notify_all();
+}
+
+void CPresentationCoordinator::TimeUiCommit(int64_t readyNs)
+{
+  // only while video ticks give the vblanks, from a recent one
+  const int64_t now = MonotonicNs();
+  const int64_t period = m_diagPeriodNs;
+  if (!m_videoAttached || !readyNs || !m_diagVblankNs || period <= 0 ||
+      now - m_diagVblankNs > 4 * period)
+    return;
+  // the first vblank after the submit became committable (fence, flight and plane offs)
+  const int64_t since = readyNs - m_diagVblankNs;
+  const int64_t periods = (since >= 0 ? since / period : -((-since + period - 1) / period)) + 1;
+  const int64_t deadline = m_diagVblankNs + periods * period;
+  m_report.uiTimed++;
+  if (now > deadline)
+    m_report.uiLate++;
 }
 
 void CPresentationCoordinator::PlaceClearedUi()
@@ -1288,6 +1311,7 @@ void CPresentationCoordinator::CommitWorker()
 
     lock.lock();
     m_committing = Committing();
+    m_diagUnblockedNs = MonotonicNs();
     m_report.commitMax = std::max(m_report.commitMax, took);
     // TEMP TICKDIAG (timebase audit Q6)
     if (took >= 20000.0)
@@ -1324,6 +1348,7 @@ void CPresentationCoordinator::CommitWorker()
     {
       m_inFlight = false;
       m_inCommitTag = 0;
+      m_diagUnblockedNs = MonotonicNs();
       for (int plane = 0; plane < PLANE_COUNT; plane++)
       {
         PlaneState& state = m_planes[plane];
@@ -1431,6 +1456,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
   }
   m_inFlight = false;
   m_inCommitTag = 0;
+  m_diagUnblockedNs = MonotonicNs();
   const double flip = static_cast<double>(MonotonicNs() - m_commitNs) / 1000.0;
   m_report.uiFlips++;
   m_report.flipSum += flip;
@@ -1597,6 +1623,11 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
   r.ticks++;
   if (tick.vblankNs)
   {
+    // 5.V3-1: the vblanks UI commits are timed against
+    if (m_diagVblankSeq && tick.seq == m_diagVblankSeq + 1)
+      m_diagPeriodNs = tick.vblankNs - m_diagVblankNs;
+    m_diagVblankNs = tick.vblankNs;
+    m_diagVblankSeq = tick.seq;
     if (m_lastSeq && tick.seq > m_lastSeq + 1)
       r.missed += static_cast<int>(tick.seq - m_lastSeq - 1);
     m_lastSeq = tick.seq;
@@ -1606,7 +1637,10 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
     r.wakeMax = std::max(r.wakeMax, wake);
   }
   else
+  {
     m_lastSeq = 0;
+    m_diagVblankSeq = 0;
+  }
 
   const double work = static_cast<double>(workNs) / 1000.0;
   r.workSum += work;
@@ -1698,6 +1732,9 @@ void CPresentationCoordinator::LogReport()
             r.gfxPlacement[3], r.gfxPlacement[4]);
   if (r.gfxSuspect)
     CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
+  if (r.uiTimed)
+    CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
+              r.uiTimed, r.ticks);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

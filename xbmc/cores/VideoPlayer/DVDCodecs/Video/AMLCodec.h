@@ -195,6 +195,13 @@ private:
   // itself to time the decoder-stall timeout, which a wall-clock step would
   // trip (or suppress) with no decoder involvement at all.
   std::chrono::time_point<std::chrono::steady_clock> m_tp_last_frame;
+  //! 5.V3-1 (log only): GetPicture calls on an open decoder (V), its pictures, and main's rate
+  //! changes, since the open; read at the close, which can run on P
+  std::chrono::time_point<std::chrono::steady_clock> m_diagOpenTime;
+  std::atomic<uint64_t> m_diagGetPictureCalls{0};
+  std::atomic<uint64_t> m_diagPictures{0};
+  std::atomic<uint32_t> m_diagRateChanges{0};
+  static constexpr uint32_t RATE_LINES = 3; //!< INFO lines per open; the rest only counted
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;

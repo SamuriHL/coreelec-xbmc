@@ -243,6 +243,12 @@ public:
   double GetLatencyTweak() const;
 
   void SetVideoSettings(const CVideoSettings& settings);
+  //! 5.V3-1 (log only, P): how fileGen was opened, for its landing population
+  void NoteFileOrigin(unsigned int fileGen, bool nextFile, bool fullscreen);
+  //! 5.V3-1 (log only): the player's per-file settings request for fileGen is done (P's
+  //! outbound thread), timed against the file's first release
+  void NoteSettingsLanded(unsigned int fileGen);
+  unsigned int FileGen() const { return m_fileGen; }
 
 protected:
   void NotifyWorker(); // under m_presentlock
@@ -388,6 +394,18 @@ protected:
   inline static std::atomic<unsigned int> s_playerGens{0};
   const unsigned int m_playerGen{++s_playerGens};
   std::atomic<unsigned int> m_fileGen{0};
+  //! 5.V3-1 (GEOMDIAG, log only): the file's first release to the renderer (coordinator) and
+  //! its settings landing (P's outbound thread), steady ns; each time is stored before its file
+  std::atomic<int64_t> m_diagReleaseNs{0};
+  std::atomic<unsigned int> m_diagReleaseFile{0};
+  std::atomic<bool> m_diagNextFile{false}; //!< the current file's origin (NoteFileOrigin)
+  std::atomic<int64_t> m_diagLandedNs{0};
+  std::atomic<unsigned int> m_diagLandedFile{0};
+  //! the RM lead: frames queued at each QBUF of the file, by count (the last bin: that many or
+  //! more); logged at the next file and at the end
+  static constexpr int LEAD_BINS = 16;
+  std::atomic<uint32_t> m_diagLead[LEAD_BINS] = {};
+  void LogLead(unsigned int fileGen);
 
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);

@@ -175,6 +175,30 @@ protected:
   std::chrono::steady_clock::time_point m_feedBlockedUntil; //!< after a refused packet
   std::chrono::steady_clock::time_point m_collectHoldoffUntil; //!< rewind throttle, paused drain
   std::chrono::steady_clock::time_point m_outputRetryAt; //!< no-GUI discard at the clock
+  //! 5.V3-1 (log only, V): a timed wake's lateness, for waits not already past their due
+  //! (poll's timeout > 0): against the due, which includes poll's round-up to whole ms, and
+  //! against the timeout poll was given. 50 us bins to 20 ms (the last bin: later); logged at
+  //! the thread's end
+  static constexpr int WAKE_LATE_BINS = 401;
+  static constexpr int WAKE_LATE_BIN_US = 50;
+  struct SWakeLateness
+  {
+    uint32_t bins[WAKE_LATE_BINS] = {};
+    int64_t maxUs = 0;
+    void Add(int64_t us);
+    std::string Format(uint64_t& n) const;
+  };
+  SWakeLateness m_diagWakeLateDue;
+  SWakeLateness m_diagWakeLatePoll;
+  void LogWakeLateness();
+  //! start DQBUF latency: picture fd ready to the picture, for a start's first frames, sampled
+  //! only when the first GetPicture after the fd's wake returns it (the fill gate open)
+  static constexpr int START_FRAMES = 5;
+  std::chrono::steady_clock::time_point m_diagPictureReady{};
+  int m_diagStartFrames = START_FRAMES; //!< frames taken since the start; START_FRAMES: done
+  int64_t m_diagStartUs[START_FRAMES] = {}; //!< -1: no fd wake whose first call took it
+  int m_diagStartGated = 0; //!< fd wakes whose first GetPicture returned no picture
+  void DiagStart();
   int m_forceGenCounter = 0;
   int m_startPendingGen = -1; //!< the forced start picture not yet taken by a tick
   std::chrono::steady_clock::time_point m_startPendingSince;

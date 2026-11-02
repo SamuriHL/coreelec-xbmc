@@ -362,6 +362,7 @@ void CBaseRenderer::ManageRenderArea()
       break;
   }
 
+  MAINCOUPLING("CDisplaySettings GetPixelRatio GetZoomAmount GetVerticalShift");
   CalcNormalRenderRect(m_viewRect.x1, m_viewRect.y1, m_viewRect.Width(), m_viewRect.Height(),
                        inputFrameRatio * CDisplaySettings::GetInstance().GetPixelRatio(),
                        CDisplaySettings::GetInstance().GetZoomAmount(),
@@ -436,6 +437,11 @@ void CBaseRenderer::SetViewMode(int viewMode)
   screenWidth   *= xscale;
   screenHeight  *= yscale;
 
+  // the view mode's outputs are process-global, and STRETCH43 (read for a 4:3 source) is
+  // main's setting
+  MAINCOUPLING("CDisplaySettings SetViewMode outputs");
+  if (is43)
+    MAINCOUPLING("CSettings STRETCH43");
   CDisplaySettings::GetInstance().SetVerticalShift(0.0f);
   CDisplaySettings::GetInstance().SetNonLinearStretched(false);
 

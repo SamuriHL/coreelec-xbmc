@@ -23,6 +23,7 @@
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "utils/MathUtils.h"
+#include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
@@ -32,6 +33,7 @@
 
 #include "platform/linux/SysfsPath.h"
 
+#include <algorithm>
 #include <iomanip>
 
 #include <poll.h>
@@ -274,6 +276,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   m_packets.clear();
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
   m_renderManager.ShowVideo(false);
+  DiagStart();
 }
 
 void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
@@ -627,6 +630,7 @@ void CVideoPlayerVideo::Process()
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
       m_renderManager.ShowVideo(false);
       m_rewindStalled = false;
+      DiagStart();
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_SEGMENT_GEN))
     {
@@ -672,6 +676,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
 
       m_stalled = true;
+      DiagStart();
       if (sync)
       {
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
@@ -887,6 +892,7 @@ void CVideoPlayerVideo::Process()
     }
   }
 
+  LogWakeLateness();
   if (m_wakeFd >= 0)
   {
     // the writers stop under their own locks before the fd goes
@@ -968,7 +974,18 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
     const auto wait = duration_cast<microseconds>(due - now);
     const int waitMs =
         wait.count() <= 0 ? 0 : static_cast<int>((wait.count() + 999) / 1000);
-    poll(fds, nfds, waitMs);
+    const int woken = poll(fds, nfds, waitMs);
+    // 5.V3-1 (log only): a timed wake's lateness; the picture fd's wake at a start
+    const auto polled = steady_clock::now();
+    if (woken == 0 && waitMs > 0)
+    {
+      m_diagWakeLateDue.Add(duration_cast<microseconds>(polled - due).count());
+      m_diagWakeLatePoll.Add(
+          duration_cast<microseconds>(polled - (now + milliseconds(waitMs))).count());
+    }
+    else if (pictureFd >= 0 && (fds[1].revents & POLLIN) && m_diagStartFrames < START_FRAMES &&
+             m_diagPictureReady == steady_clock::time_point{})
+      m_diagPictureReady = polled;
     // consumed before the state is read again: an event after this read wakes
     // the next poll
     uint64_t events = 0;
@@ -980,6 +997,55 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
     // a picture fd that woke is not armed again until a picture is taken
     m_armPicture = false;
   }
+}
+
+void CVideoPlayerVideo::SWakeLateness::Add(int64_t us)
+{
+  us = std::max<int64_t>(0, us);
+  bins[std::min<int64_t>(us / WAKE_LATE_BIN_US, WAKE_LATE_BINS - 1)]++;
+  maxUs = std::max(maxUs, us);
+}
+
+std::string CVideoPlayerVideo::SWakeLateness::Format(uint64_t& n) const
+{
+  n = 0;
+  for (const uint32_t count : bins)
+    n += count;
+  const auto percentile = [&](uint64_t permille)
+  {
+    uint64_t below = 0;
+    for (int bin = 0; bin < WAKE_LATE_BINS; bin++)
+    {
+      below += bins[bin];
+      if (below * 1000 >= n * permille)
+        return (bin + 1) * WAKE_LATE_BIN_US;
+    }
+    return WAKE_LATE_BINS * WAKE_LATE_BIN_US;
+  };
+  return StringUtils::Format("p50 <{} us p99 <{} us max {} us", percentile(500),
+                             percentile(990), maxUs);
+}
+
+void CVideoPlayerVideo::LogWakeLateness()
+{
+  uint64_t n = 0;
+  const std::string due = m_diagWakeLateDue.Format(n);
+  if (!n)
+    return;
+  uint64_t polled = 0;
+  CLog::Log(LOGINFO,
+            "GEOMDIAG V wake lateness: timed wakes {}, from the due (incl. the ms round-up) {}, "
+            "from poll's timeout {}",
+            n, due, m_diagWakeLatePoll.Format(polled));
+  m_diagWakeLateDue = {};
+  m_diagWakeLatePoll = {};
+}
+
+void CVideoPlayerVideo::DiagStart()
+{
+  m_diagStartFrames = 0;
+  m_diagStartGated = 0;
+  m_diagPictureReady = {};
 }
 
 void CVideoPlayerVideo::WorkerDuties()
@@ -1121,6 +1187,34 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
   m_lastDecoderState = decoderState;
   m_armPicture = false;
+
+  // 5.V3-1 (log only): start DQBUF latency, the first frames of a start. Only the first call
+  // after the fd's wake is timed: one that returns no picture was held (the fill gate)
+  if (m_diagStartFrames < START_FRAMES)
+  {
+    const bool woken = m_diagPictureReady != std::chrono::steady_clock::time_point{};
+    if (decoderState == CDVDVideoCodec::VC_PICTURE)
+    {
+      m_diagStartUs[m_diagStartFrames++] =
+          woken ? std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - m_diagPictureReady)
+                      .count()
+                : -1;
+      if (m_diagStartFrames == START_FRAMES)
+      {
+        std::string values;
+        for (const int64_t us : m_diagStartUs)
+          values += us < 0 ? " -" : StringUtils::Format(" {}", us);
+        CLog::Log(LOGINFO,
+                  "GEOMDIAG start DQBUF latency us (picture fd ready -> picture; -: no fd "
+                  "wake took it):{}; gated {}",
+                  values, m_diagStartGated);
+      }
+    }
+    else if (woken)
+      m_diagStartGated++;
+    m_diagPictureReady = {};
+  }
 
   // phase 0 counter (docs/real_player_disc_session_design.md 4.1): a run of
   // VC_NONE starves the priority-0 queue

@@ -44,6 +44,11 @@ int ResolveThreadRole()
   return threadRole;
 }
 
+const char* ThreadRoleName(int role)
+{
+  return role >= 0 && role < ROLE_COUNT ? ROLE_NAMES[role] : "unknown";
+}
+
 void LogMainCoupling(const SCouplingSite& site, int role, const void* caller)
 {
   const char* file = std::strrchr(site.file, '/');

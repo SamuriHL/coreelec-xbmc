@@ -2802,11 +2802,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   am_private->hdr_buf.data = NULL;
   pre_header_feeding(am_private, &am_private->am_pkt);
 
+  MAINCOUPLING("CDisplaySettings GetCurrentResolutionInfo");
   m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iHeight);
 
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
   m_opened = true;
+  m_diagOpenTime = std::chrono::steady_clock::now();
+  m_diagGetPictureCalls = 0;
+  m_diagPictures = 0;
+  m_diagRateChanges = 0;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
   SetSpeed(m_speedFix ? speedBeforeOpen : m_speed);
@@ -2999,6 +3004,20 @@ void CAMLCodec::CloseDecoder()
 
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
+  if (m_opened)
+  {
+    // 5.V3-1 (log only): V3-4 samples the rate once per call
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                         m_diagOpenTime)
+                               .count();
+    const uint64_t calls = m_diagGetPictureCalls.load(std::memory_order_relaxed);
+    CLog::Log(LOGINFO,
+              "GEOMDIAG GetPicture calls {} pictures {} over {:.1f} s: {:.1f} calls/s; rate "
+              "changes {}",
+              calls, m_diagPictures.load(std::memory_order_relaxed), seconds,
+              seconds > 0.0 ? static_cast<double>(calls) / seconds : 0.0,
+              m_diagRateChanges.load(std::memory_order_relaxed));
+  }
   m_opened = false;
 
   am_packet_release(&am_private->am_pkt);
@@ -3773,6 +3792,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
+  m_diagGetPictureCalls.fetch_add(1, std::memory_order_relaxed);
 
   // While draining, always attempt the dequeue - drain means no further
   // input is coming, so the fill gates are moot and anything the hardware
@@ -3899,6 +3919,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     }
 
     pVideoPicture->iFlags = 0;
+    m_diagPictures.fetch_add(1, std::memory_order_relaxed);
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
@@ -4315,6 +4336,11 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   if (video_rate > 0 && video_rate != am_private->video_rate)
   {
     CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
+    // 5.V3-1 (log only): which thread samples the rate (V from V3-4); capped per open, as a
+    // VFR stream can change it every frame on main's geometry apply
+    if (m_diagRateChanges.fetch_add(1, std::memory_order_relaxed) < RATE_LINES)
+      CLog::Log(LOGINFO, "GEOMDIAG rate {} -> {} on {} tid {}", am_private->video_rate,
+                video_rate, OUTPUT::ThreadRoleName(OUTPUT::ThreadRole()), gettid());
     am_private->video_rate = video_rate;
   }
 

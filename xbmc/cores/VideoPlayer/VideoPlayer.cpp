@@ -2950,7 +2950,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
-void CVideoPlayer::Prepare()
+void CVideoPlayer::Prepare(bool nextFile)
 {
   // a start-pts defer window belongs to the previous open's sync attempt
   m_syncStartDeferred = false;
@@ -3001,8 +3001,15 @@ void CVideoPlayer::Prepare()
 
   IPlayerCallback *cb = &m_callback;
   CFileItem fileItem = m_item;
-  m_outboundEvents->Submit([=]() {
+  // 5.V3-1 (log only): the landing, timed against this file's first release. "first": an open
+  // on a new or closed player; "next": a playlist next or a Player.Open over a playing file,
+  // which arrive alike (CDVDMsgOpenFile, options with no origin), so the gate's scenario splits
+  // them. "Landed" also when the database did not open and nothing was applied
+  const unsigned int fileGen = m_renderManager.FileGen();
+  m_renderManager.NoteFileOrigin(fileGen, nextFile, m_playerOptions.fullscreen);
+  m_outboundEvents->Submit([=, this]() {
     cb->RequestVideoSettings(fileItem);
+    m_renderManager.NoteSettingsLanded(fileGen);
   });
 
   if (!OpenInputStream())
@@ -5835,7 +5842,7 @@ void CVideoPlayer::HandleMessages()
 
       m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NONE);
 
-      Prepare();
+      Prepare(true);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&

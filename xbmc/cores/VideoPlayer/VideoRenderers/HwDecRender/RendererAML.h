@@ -10,6 +10,7 @@
 
 #include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+#include "rendering/RenderSystemTypes.h"
 
 #include <atomic>
 #include <memory>
@@ -125,4 +126,9 @@ private:
   std::shared_ptr<CAMLCodec> m_rectCodec;
   //! the codec of the last frame on screen: geometry changes apply with no new frame
   std::weak_ptr<CAMLCodec> m_geometryCodec;
+  //! 5.V3-1 (log only): RenderUpdate calls per GUI stereo mode, and those whose stereo view
+  //! was not OFF (main counts; logged at the end)
+  static constexpr int STEREO_MODES = static_cast<int>(RenderStereoMode::COUNT);
+  std::atomic<uint32_t> m_stereoCalls[STEREO_MODES] = {};
+  std::atomic<uint32_t> m_stereoNotOff[STEREO_MODES] = {};
 };

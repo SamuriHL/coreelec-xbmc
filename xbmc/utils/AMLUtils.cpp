@@ -100,6 +100,12 @@ bool aml_presentation_validated()
   return id == AML_S6 || id == AML_G12B;
 }
 
+bool aml_geometrytick_validated()
+{
+  // 5.V3 (Q5 (b)): G12B joins after its look through VRROOM input 0
+  return aml_get_cpufamily_id() == AML_S6;
+}
+
 bool aml_codec_speed_fix()
 {
   // phase 5 step 5.C (P4-38, P5-1); A/B: special://profile/codecspeed_off
@@ -2808,6 +2814,70 @@ std::atomic<uint64_t> s_timingInputsGen{0};
 std::vector<std::string> s_vconfigureSkip; // written once, before s_vconfigureLatched
 std::atomic<bool> s_vconfigureLatched{false};
 std::atomic<bool> s_vconfigureOn{false};
+// 5.V3; written once, before s_geometryTickLatched
+std::vector<std::string> s_geometryTickSkip;
+SGeometryTickHooks s_geometryTickHooks;
+std::atomic<bool> s_geometryTickLatched{false};
+std::atomic<bool> s_geometryTickOn{false};
+
+// a skipped 5.V3 sub-step takes the ones that need it along (plan §2)
+void AddGeometryTickSkipDependents(std::vector<std::string>& list)
+{
+  static constexpr std::pair<const char*, const char*> needs[] = {
+      {"V3-3", "V3-4"}, {"V3-3", "V3-5"}, {"V3-3", "V3-7"}, {"V3-4", "V3-5"},
+      {"V3-4", "V3-7"}, {"V3-5", "V3-4"}};
+  const auto listed = [&](const char* substep)
+  { return std::find(list.begin(), list.end(), substep) != list.end(); };
+  for (bool added = true; added;)
+  {
+    added = false;
+    for (const auto& [substep, dependent] : needs)
+    {
+      if (listed(substep) && !listed(dependent))
+      {
+        list.emplace_back(dependent);
+        added = true;
+      }
+    }
+  }
+}
+
+// test hooks for 5.V3's gates (Q1), read with the latch; a hook whose sub-step is not built yet
+// is parsed and logged only
+SGeometryTickHooks ReadGeometryTickHooks()
+{
+  SGeometryTickHooks hooks;
+  if (XFILE::CFile::Exists("special://profile/geometrytick_shadow"))
+  {
+    hooks.shadow = true;
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: shadow (parsed only: shadow A is V3-2's, B V3-3's)");
+  }
+  if (XFILE::CFile::Exists("special://profile/geometrytick_rateshadow"))
+  {
+    hooks.rateShadow = true;
+    CLog::Log(LOGWARNING,
+              "GEOMETRYTICK test: rate shadow (parsed only: V3-4's, OUTDIAG-V3 builds)");
+  }
+  if (const auto line = OUTPUT::ReadTestSwitch("geometrytick_gfxhold"))
+  {
+    hooks.gfxHoldMs = std::max(0, std::atoi(line->c_str()));
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: gfx lock held {} ms at a notice (parsed only: V3-4)",
+              hooks.gfxHoldMs);
+  }
+  if (XFILE::CFile::Exists("special://profile/geometrytick_fsbeforenotice"))
+  {
+    hooks.fsBeforeNotice = true;
+    CLog::Log(LOGWARNING,
+              "GEOMETRYTICK test: fullscreen before the notice (parsed only: V3-4)");
+  }
+  if (XFILE::CFile::Exists("special://profile/geometrytick_reopenpending"))
+  {
+    hooks.reopenPending = true;
+    CLog::Log(LOGWARNING,
+              "GEOMETRYTICK test: a reopen while the notice is pending (parsed only: V3-4)");
+  }
+  return hooks;
+}
 } // namespace
 
 void aml_displaystate_init()
@@ -2839,6 +2909,43 @@ void aml_displaystate_init()
                    s_vconfigureOn = vconfigure;
                    s_vconfigureLatched.store(true, std::memory_order_release);
                    CLog::Log(LOGINFO, "VCONFIGURE {} ({})", vconfigure ? "on" : "off", reason);
+
+                   // 5.V3's switch, in vconfigure's form; never aml_geometrytick_on() here
+                   const bool listed = aml_geometrytick_validated();
+                   const bool optIn =
+                       XFILE::CFile::Exists("special://profile/geometrytick_on");
+                   bool geometryTick = false;
+                   if (!vconfigure)
+                     reason = "vconfigure off";
+                   else if (XFILE::CFile::Exists("special://profile/geometrytick_off"))
+                     reason = "geometrytick_off";
+                   else if (listed)
+                   {
+                     reason = "listed SoC";
+                     geometryTick = true;
+                   }
+                   else if (optIn)
+                   {
+                     reason = "geometrytick_on";
+                     geometryTick = true;
+                   }
+                   else
+                     reason = "not in list";
+                   if (listed && optIn)
+                     CLog::Log(LOGWARNING,
+                               "GEOMETRYTICK geometrytick_on does nothing on a listed SoC");
+                   s_geometryTickSkip = OUTPUT::ReadSkipList("geometrytick_skip", "GEOMETRYTICK");
+                   if (!s_geometryTickSkip.empty())
+                   {
+                     AddGeometryTickSkipDependents(s_geometryTickSkip);
+                     CLog::Log(LOGWARNING, "GEOMETRYTICK skip with dependents: {}",
+                               StringUtils::Join(s_geometryTickSkip, ","));
+                   }
+                   s_geometryTickHooks = ReadGeometryTickHooks();
+                   s_geometryTickOn = geometryTick;
+                   s_geometryTickLatched.store(true, std::memory_order_release);
+                   CLog::Log(LOGINFO, "GEOMETRYTICK {} ({})", geometryTick ? "on" : "off",
+                             reason);
                  });
 }
 
@@ -2858,6 +2965,26 @@ bool aml_vconfigure_skip(const std::string& substep)
   return s_vconfigureLatched.load(std::memory_order_acquire) && !substep.empty() &&
          std::find(s_vconfigureSkip.begin(), s_vconfigureSkip.end(), substep) !=
              s_vconfigureSkip.end();
+}
+
+bool aml_geometrytick_on()
+{
+  return s_geometryTickLatched.load(std::memory_order_acquire) &&
+         s_geometryTickOn.load(std::memory_order_relaxed);
+}
+
+bool aml_geometrytick_skip(const std::string& substep)
+{
+  return s_geometryTickLatched.load(std::memory_order_acquire) && !substep.empty() &&
+         std::find(s_geometryTickSkip.begin(), s_geometryTickSkip.end(), substep) !=
+             s_geometryTickSkip.end();
+}
+
+SGeometryTickHooks aml_geometrytick_hooks()
+{
+  if (!s_geometryTickLatched.load(std::memory_order_acquire))
+    return {};
+  return s_geometryTickHooks;
 }
 
 void aml_timing_inputs_bump()

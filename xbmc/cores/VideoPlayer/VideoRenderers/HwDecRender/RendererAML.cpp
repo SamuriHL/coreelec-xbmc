@@ -26,6 +26,8 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
 
+#include <iterator>
+
 CRendererAML::CRendererAML()
  : m_prevVPts(DVD_NOPTS_VALUE)
  , m_bConfigured(false)
@@ -33,9 +35,33 @@ CRendererAML::CRendererAML()
   CLog::Log(LOGINFO, "Constructing CRendererAML");
 }
 
+namespace
+{
+// RenderStereoMode's names, for 5.V3-1's counter
+constexpr const char* STEREO_MODE_NAMES[] = {"OFF",
+                                             "SPLIT_HORIZONTAL",
+                                             "SPLIT_VERTICAL",
+                                             "ANAGLYPH_RED_CYAN",
+                                             "ANAGLYPH_GREEN_MAGENTA",
+                                             "ANAGLYPH_YELLOW_BLUE",
+                                             "INTERLACED",
+                                             "CHECKERBOARD",
+                                             "HARDWAREBASED",
+                                             "MONO"};
+static_assert(std::size(STEREO_MODE_NAMES) == static_cast<size_t>(RenderStereoMode::COUNT));
+} // namespace
+
 CRendererAML::~CRendererAML()
 {
   Reset();
+  // 5.V3-1 (Q4's plan gate): 0 not-OFF calls in every mode tried
+  for (int mode = 0; mode < STEREO_MODES; mode++)
+  {
+    if (const uint32_t calls = m_stereoCalls[mode].load(std::memory_order_relaxed))
+      CLog::Log(LOGINFO, "GEOMDIAG stereo view in RenderUpdate: mode {} calls {} not off {}",
+                STEREO_MODE_NAMES[mode], calls,
+                m_stereoNotOff[mode].load(std::memory_order_relaxed));
+  }
 }
 
 void CRendererAML::EndRenderSession()
@@ -411,6 +437,20 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
   {
     m_geometryErrorLogged = true;
     CLog::Log(LOGERROR, "VCONFIGURE drawn before its duties: SetVideoRect before SetViewMode");
+  }
+  // 5.V3-1 (log only): the GUI stereo view main's geometry evaluation runs under, per mode
+  {
+    CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+    const int mode = static_cast<int>(gfx.GetStereoMode());
+    if (mode >= 0 && mode < STEREO_MODES)
+    {
+      m_stereoCalls[mode].fetch_add(1, std::memory_order_relaxed);
+      const RenderStereoView view = gfx.GetStereoView();
+      if (view != RenderStereoView::OFF &&
+          m_stereoNotOff[mode].fetch_add(1, std::memory_order_relaxed) == 0)
+        CLog::Log(LOGWARNING, "GEOMDIAG stereo view {} in RenderUpdate, mode {}",
+                  view == RenderStereoView::LEFT ? "LEFT" : "RIGHT", STEREO_MODE_NAMES[mode]);
+    }
   }
   ManageRenderArea();
 

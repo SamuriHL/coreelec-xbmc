@@ -32,6 +32,8 @@ inline thread_local int threadRole = -1;
 //! at thread start: P, V, C, RefClock, G, W, A or timekeeper; logs the tid it runs on
 void SetThreadRole(const char* role);
 int ResolveThreadRole();
+//! the role's name, for logs
+const char* ThreadRoleName(int role);
 inline int ThreadRole()
 {
   return threadRole >= 0 ? threadRole : ResolveThreadRole();

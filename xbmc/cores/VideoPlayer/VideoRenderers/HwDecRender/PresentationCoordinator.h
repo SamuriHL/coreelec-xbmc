@@ -187,6 +187,7 @@ private:
     double pts = DVD_NOPTS_VALUE;
     uint64_t epoch = 0;
     bool cOwned = false; //!< C's cleared buffer (no bo, never returned)
+    int64_t readyNs = 0; //!< 5.V3-1: committable from (its GPU fence signalled), monotonic
   };
 
   struct Returned
@@ -262,6 +263,8 @@ private:
   void ReadTimelineTick(SPresentTick& tick, bool& gotTick, unsigned int epoch);
   void NoteVblank(int64_t vblankNs);
   void CommitUi();
+  //! 5.V3-1 (log only, under m_uiMutex on C's thread): a GUI plane commit against its vblank
+  void TimeUiCommit(int64_t readyNs);
   void CommitWorker();
   void OnFlip(uint64_t tag, unsigned int sequence);
   //! graphics flipped at sequence: count its frame against the video frame shown
@@ -406,7 +409,18 @@ private:
     double shadowSum = 0.0, shadowSumSq = 0.0, shadowMin = 0.0, shadowMax = 0.0;
     double shadowAdjustSum = 0.0;
     int shadowUnsynced = 0; //!< samples with clock sync off, not in the stats
+    //! 5.V3-1: GUI plane commits timed against the vblanks, and those issued after the first
+    //! vblank that followed the submit becoming committable (shown a vblank late). Committable:
+    //! its fence signalled, no commit in flight or in the ioctl, no plane off queued
+    int uiTimed = 0, uiLate = 0;
   } m_report;
+  //! 5.V3-1 (under m_uiMutex): when CommitUi could last start a commit again (the flip in flight
+  //! landed or was abandoned, a failed or returned ioctl, a plane off done), monotonic
+  int64_t m_diagUnblockedNs = 0;
+  //! 5.V3-1, C's thread: the last tick's vblank and the period between consecutive ones
+  int64_t m_diagVblankNs = 0;
+  uint64_t m_diagVblankSeq = 0;
+  int64_t m_diagPeriodNs = 0;
   int m_shadowFrames = 0; //!< whole frames between the references, as last logged
   int m_shadowCandidate = 0; //!< a different whole-frame count, and how long it held
   int m_shadowCandidateN = 0;

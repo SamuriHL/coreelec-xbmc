@@ -131,7 +131,8 @@ void TimingInputsWritten()
 
 // test: special://profile/vconfigure_mainstall holds "<form> <event> <ms>"; main stalls once per
 // arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock) or
-// statelock (holding m_statelock)
+// statelock (holding m_statelock). 5.V3's events geometry (V3-4) and settings (V3-7) are parsed
+// only: nothing arms them yet
 struct SVStall
 {
   std::string form;
@@ -146,7 +147,7 @@ const SVStall& VStall()
     static constexpr const char* forms[] = {"sleep", "overlay", "statelock"};
     static constexpr const char* events[] = {"start", "firstpic", "flush",        "outputchanged",
                                              "stop",  "nextfile", "afterpublish", "after-set",
-                                             "playing"};
+                                             "playing", "geometry", "settings"};
     SVStall result;
     const auto line = OUTPUT::ReadTestSwitch("vconfigure_mainstall");
     if (!line)
@@ -158,7 +159,11 @@ const SVStall& VStall()
         std::find_if(std::begin(events), std::end(events),
                      [&](const char* e) { return fields[1] == e; }) != std::end(events))
       result = {fields[0], fields[1], std::atoi(fields[2].c_str())};
-    if (result.ms > 0)
+    if (result.ms > 0 && (result.event == "geometry" || result.event == "settings"))
+      CLog::Log(LOGWARNING,
+                "GEOMETRYTICK test stall {} of {} ms on main at \"{}\" (parsed only: {})",
+                result.form, result.ms, result.event, result.event == "geometry" ? "V3-4" : "V3-7");
+    else if (result.ms > 0)
       CLog::Log(LOGWARNING, "VCONFIGURE test stall {} of {} ms on main at \"{}\"", result.form,
                 result.ms, result.event);
     else
@@ -441,6 +446,7 @@ CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
 CRenderManager::~CRenderManager()
 {
   StopCoordinator();
+  LogLead(m_fileGen);
   // UnInit normally ended the session already; this covers a manager torn down
   // without it, as the renderer's own destructor used to.
   if (m_pRenderer)
@@ -474,6 +480,61 @@ unsigned int CRenderManager::GetOrientation() const
     return m_pRenderer->GetOrientation();
   else
     return 0;
+}
+
+void CRenderManager::NoteFileOrigin(unsigned int fileGen, bool nextFile, bool fullscreen)
+{
+  m_diagNextFile = nextFile;
+  CLog::Log(LOGINFO, "GEOMDIAG file origin player={} file={} ({}) fullscreen option {}",
+            m_playerGen, fileGen, nextFile ? "next" : "first", fullscreen ? 1 : 0);
+}
+
+void CRenderManager::NoteSettingsLanded(unsigned int fileGen)
+{
+  const int64_t now = SteadyNs();
+  const char* population = m_diagNextFile ? "next" : "first";
+  if (fileGen != m_fileGen.load())
+  {
+    CLog::Log(LOGINFO, "GEOMDIAG settings landed player={} file={} after the file changed",
+              m_playerGen, fileGen);
+    return;
+  }
+  m_diagLandedNs = now;
+  m_diagLandedFile = fileGen;
+  if (m_diagReleaseFile.load() == fileGen)
+    CLog::Log(LOGINFO,
+              "GEOMDIAG settings landed player={} file={} ({}): landing - first release {:+.3f} "
+              "ms",
+              m_playerGen, fileGen, population,
+              static_cast<double>(now - m_diagReleaseNs.load()) / 1e6);
+  else
+    CLog::Log(LOGINFO,
+              "GEOMDIAG settings landed player={} file={} ({}): before the first release",
+              m_playerGen, fileGen, population);
+}
+
+void CRenderManager::LogLead(unsigned int fileGen)
+{
+  uint32_t counts[LEAD_BINS];
+  uint64_t n = 0;
+  for (int i = 0; i < LEAD_BINS; i++)
+    n += counts[i] = m_diagLead[i].exchange(0, std::memory_order_relaxed);
+  if (!n)
+    return;
+  int median = 0;
+  for (uint64_t below = 0; median < LEAD_BINS - 1; median++)
+  {
+    below += counts[median];
+    if (2 * below >= n)
+      break;
+  }
+  std::string bins;
+  for (int i = 0; i < LEAD_BINS; i++)
+    if (counts[i])
+      bins += StringUtils::Format(" {}{}:{}", i, i == LEAD_BINS - 1 ? "+" : "", counts[i]);
+  CLog::Log(LOGINFO,
+            "GEOMDIAG RM lead player={} file={} QBUFs {}: median {} frames queued, by count{}",
+            m_playerGen, fileGen, n, median, bins);
 }
 
 void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
@@ -1222,6 +1283,7 @@ void CRenderManager::BeginFile()
   m_startHeld = false;
   m_startGate = false;
   m_closed = false;
+  LogLead(m_fileGen);
   ++m_fileGen;
   if (VStallAt("firstpic"))
     m_testStallArmed = 1;
@@ -3959,6 +4021,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     SFpsMismatch fpsEnded;
     SFpsMismatch fpsBegun;
     std::string firstPresent; //!< 5.V2-4: the file's first picture released
+    std::string firstRelease; //!< 5.V3-1: the file's first release to the renderer
     std::string composed; //!< 5.V2-4b: a new composition
     ~RefusedLog()
     {
@@ -3966,6 +4029,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
         CLog::Log(LOGINFO, "VTIMING composed by the coordinator: {}", composed);
       if (!firstPresent.empty())
         CLog::Log(LOGINFO, "VCONFIGURE first present {}", firstPresent);
+      if (!firstRelease.empty())
+        CLog::Log(LOGINFO, "GEOMDIAG first release {}", firstRelease);
       if (aheadEnded.ticks)
         LogAheadTicks(aheadEnded, endNs, aheadEnd);
       if (aheadPublished.fps)
@@ -4198,6 +4263,24 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
           StringUtils::Format("player={} file={} pts {:.3f} s epoch {} rgen {}", m_playerGen,
                               m_firstPresentFile, result.pts / DVD_TIME_BASE, tick.epoch, m_rgen);
     }
+    // 5.V3-1 (log only): the file's first release (the frame goes to the renderer at this tick's
+    // vblank; a repeated pts is not queued again), against the settings landing; the RM lead
+    const unsigned int fileGen = m_fileGen;
+    if (m_diagReleaseFile.load() != fileGen)
+    {
+      const int64_t now = SteadyNs();
+      m_diagReleaseNs = now;
+      m_diagReleaseFile = fileGen;
+      refusedLog.firstRelease = StringUtils::Format(
+          "player={} file={} ({}) released at vblank {} ({} ns)", m_playerGen, fileGen,
+          m_diagNextFile ? "next" : "first", tick.seq, tick.vblankNs);
+      if (m_diagLandedFile.load() == fileGen)
+        refusedLog.firstRelease += StringUtils::Format(
+            ": landing - first release {:+.3f} ms",
+            static_cast<double>(m_diagLandedNs.load() - now) / 1e6);
+    }
+    m_diagLead[std::min<size_t>(m_queued.size(), LEAD_BINS - 1)].fetch_add(
+        1, std::memory_order_relaxed);
   }
   diagFrame = diagClock::now();
 

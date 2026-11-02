@@ -435,7 +435,8 @@ protected:
   virtual void CreatePlayers();
   void DestroyPlayers();
 
-  void Prepare();
+  //! nextFile: a PLAYER_OPENFILE on the running player (5.V3-1's landing population)
+  void Prepare(bool nextFile = false);
   bool ShouldDeferSync(bool ready, std::chrono::steady_clock::time_point now);
   bool OpenStream(CCurrentStream& current, int64_t demuxerId, int iStream, int source, bool reset = true);
   bool OpenAudioStream(CDVDStreamInfo& hint, bool reset = true);

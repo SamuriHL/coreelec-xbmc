@@ -70,6 +70,8 @@ int  aml_get_cpufamily_id();
 // the SoCs the presentation timeline work is validated on (S6, G12B): elsewhere
 // the player keeps today's behaviour
 bool aml_presentation_validated();
+//! 5.V3's list (Q5): the SoCs its switch is on by default on (S6)
+bool aml_geometrytick_validated();
 //! 5.C: the decoder keeps the stream's speed across its open and a display
 //! hold pauses it; the DV wait is re-armed per file (validated, A/B switch)
 bool aml_codec_speed_fix();
@@ -442,6 +444,23 @@ bool aml_displaystate_on();
 bool aml_vconfigure_on();
 //! vconfigure_skip "<substep>[,<substep>]": true for a listed 5.V2 sub-step (bisect only)
 bool aml_vconfigure_skip(const std::string& substep);
+// 5.V3's switch (geometrytick), latched after vconfigure: vconfigure on, no
+// special://profile/geometrytick_off, and a listed SoC (aml_geometrytick_validated) or
+// special://profile/geometrytick_on. Off before the latch.
+bool aml_geometrytick_on();
+//! geometrytick_skip "<substep>[,<substep>]", with its dependents: true for a listed 5.V3
+//! sub-step (bisect only)
+bool aml_geometrytick_skip(const std::string& substep);
+//! 5.V3's test hooks (Q1), read with the latch; all off by default
+struct SGeometryTickHooks
+{
+  bool shadow = false; //!< geometrytick_shadow
+  bool rateShadow = false; //!< geometrytick_rateshadow (OUTDIAG-V3 builds)
+  int gfxHoldMs = 0; //!< geometrytick_gfxhold <ms>
+  bool fsBeforeNotice = false; //!< geometrytick_fsbeforenotice
+  bool reopenPending = false; //!< geometrytick_reopenpending
+};
+SGeometryTickHooks aml_geometrytick_hooks();
 void aml_timing_inputs_bump();
 uint64_t aml_timing_inputs_gen();
 
