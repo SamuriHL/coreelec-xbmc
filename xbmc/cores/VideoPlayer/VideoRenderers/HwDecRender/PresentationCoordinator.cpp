@@ -1576,7 +1576,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   else
     SetState(result.playing ? State::PLAYING : State::PAUSED, tick.epoch);
 
-  Account(tick, result, work);
+  Account(tick, result, work, start + work);
   return false;
 }
 
@@ -1617,7 +1617,8 @@ void CPresentationCoordinator::SetState(State state, unsigned int epoch)
 
 void CPresentationCoordinator::Account(const SPresentTick& tick,
                                        const SPresentResult& result,
-                                       int64_t workNs)
+                                       int64_t workNs,
+                                       int64_t releasedNs)
 {
   Report& r = m_report;
   r.ticks++;
@@ -1635,6 +1636,14 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
     r.woke++;
     r.wakeSum += wake;
     r.wakeMax = std::max(r.wakeMax, wake);
+    if (result.configured)
+    {
+      const int64_t bin = std::max<int64_t>(0, releasedNs - tick.vblankNs) / 10000;
+      if (bin < RELEASE_BINS)
+        r.releaseHist[bin]++;
+      else
+        r.releaseOver++;
+    }
   }
   else
   {
@@ -1735,6 +1744,16 @@ void CPresentationCoordinator::LogReport()
   if (r.uiTimed)
     CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
+  if (std::any_of(std::begin(r.releaseHist), std::end(r.releaseHist), [](int n) { return n; }) ||
+      r.releaseOver)
+  {
+    std::string bins;
+    for (int i = 0; i < RELEASE_BINS; i++)
+      if (r.releaseHist[i])
+        bins += fmt::format(" {}:{}", i, r.releaseHist[i]);
+    CLog::Log(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
+              r.releaseOver);
+  }
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

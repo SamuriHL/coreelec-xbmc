@@ -291,7 +291,10 @@ private:
   bool RunVideoTick(SPresentTick& tick);
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   void SetState(State state, unsigned int epoch);
-  void Account(const SPresentTick& tick, const SPresentResult& result, int64_t workNs);
+  void Account(const SPresentTick& tick,
+               const SPresentResult& result,
+               int64_t workNs,
+               int64_t releasedNs);
   void LogReport();
 
   const int m_masterFd;
@@ -380,6 +383,7 @@ private:
   //! replaced at a GUI size change: freed after a later GUI plane flip
   std::vector<Retired> m_cbufRetired;
 
+  static constexpr int RELEASE_BINS = 1000;
   struct Report
   {
     int ticks = 0;
@@ -413,6 +417,10 @@ private:
     //! vblank that followed the submit becoming committable (shown a vblank late). Committable:
     //! its fence signalled, no commit in flight or in the ioctl, no plane off queued
     int uiTimed = 0, uiLate = 0;
+    //! 5.V3-4 (ccost): the presentation step's end after the hardware vblank with a video
+    //! configured, 10 us bins
+    int releaseHist[RELEASE_BINS] = {};
+    int releaseOver = 0; //!< at or past RELEASE_BINS * 10 us
   } m_report;
   //! 5.V3-1 (under m_uiMutex): when CommitUi could last start a commit again (the flip in flight
   //! landed or was abandoned, a failed or returned ioctl, a plane off done), monotonic
