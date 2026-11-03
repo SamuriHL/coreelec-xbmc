@@ -12,9 +12,11 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+#include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/DisplaySettings.h"
 #include "settings/MediaSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -23,6 +25,7 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
 
@@ -62,6 +65,13 @@ CRendererAML::~CRendererAML()
                 STEREO_MODE_NAMES[mode], calls,
                 m_stereoNotOff[mode].load(std::memory_order_relaxed));
   }
+  if (m_shadowB.evals)
+    CLog::Log(LOGINFO,
+              "GEOMDIAG shadowB renderer: evals {} match {} PENDING {} GIVEN_UP {} windowed {} "
+              "unexplained {} no snapshot {} stereo string {}",
+              m_shadowB.evals, m_shadowB.match, m_shadowB.pending, m_shadowB.givenUp,
+              m_shadowB.windowed, m_shadowB.unexplained, m_shadowB.noSnapshot,
+              m_shadowB.stereoString);
 }
 
 void CRendererAML::EndRenderSession()
@@ -197,6 +207,8 @@ void CRendererAML::ConfigureVideo(const VideoPicture& picture,
 
   // Calculate the input frame aspect ratio.
   CalculateFrameAspectRatio(picture.iDisplayWidth, picture.iDisplayHeight);
+  if (aml_geometrytick_inputs_on())
+    m_videoStereoMode = picture.stereoMode;
   StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
   m_bConfigured = true;
 }
@@ -487,6 +499,140 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
     }
   }
   CAMLCodec::PollFrame();
+}
+
+void CRendererAML::ShadowB(uint64_t request)
+{
+  using namespace VIDEOGEOMETRY;
+  m_shadowB.evals++;
+  GUISNAPSHOT::SSnapshot read;
+  if (GUISNAPSHOT::Read(read))
+    m_shadowSnap = read;
+  if (!m_shadowSnap.valid)
+  {
+    m_shadowB.noSnapshot++;
+    return;
+  }
+  const GUISNAPSHOT::SSnapshot& snap = m_shadowSnap;
+  const auto state = DISPLAYSTATE::Get();
+  if (!state)
+  {
+    m_shadowB.noSnapshot++;
+    return;
+  }
+
+  // the latest mode publish n against main's echo (plan §1.1: PENDING, TAKEN, GIVEN_UP)
+  enum class Mode
+  {
+    TAKEN,
+    PENDING,
+    GIVEN_UP,
+  };
+  const uint64_t n = state->modeSeq;
+  const Mode mode = n == 0                    ? Mode::TAKEN
+                    : snap.modeSeqSeen < n    ? Mode::PENDING
+                    : snap.rowMoved           ? Mode::TAKEN
+                                              : Mode::GIVEN_UP;
+  // a request is honoured until main finished its notice
+  const bool requested = (request & 1) && (request >> 1) > snap.noticeSeqDone;
+  const bool fullScreen = requested || snap.fullScreenVideo;
+  const RenderStereoMode stereo = static_cast<RenderStereoMode>(snap.stereoMode);
+  GUISNAPSHOT::SRow rawRow = snap.rawRow;
+  GUISNAPSHOT::SRow row = snap.row;
+  if (fullScreen && mode != Mode::TAKEN)
+  {
+    rawRow = GUISNAPSHOT::WRowOf(*state);
+    row = GUISNAPSHOT::StereoRow(rawRow, stereo);
+  }
+
+  // C's render area
+  SRenderAreaIn area;
+  area.viewRect = fullScreen || snap.calibrating
+                      ? CRect(row.overscanLeft, row.overscanTop, row.overscanRight,
+                              row.overscanBottom)
+                      : snap.videoRect;
+  area.sourceWidth = m_sourceWidth;
+  area.sourceHeight = m_sourceHeight;
+  area.flags = m_iFlags;
+  area.aspectRatio = GetAspectRatio();
+  area.pixelRatio = CDisplaySettings::GetInstance().GetPixelRatio();
+  area.zoomAmount = CDisplaySettings::GetInstance().GetZoomAmount();
+  area.verticalShift = CDisplaySettings::GetInstance().GetVerticalShift();
+  area.guiPixelRatio = row.pixelRatio;
+  area.errorInAspect =
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_ERRORINASPECT);
+  area.orientation = m_renderOrientation;
+  area.clip = AlwaysClip() || !(fullScreen || snap.calibrating);
+  const SRenderAreaOut c = ComputeRenderArea(area);
+
+  // main's VD1 axis inputs, as ApplyVideoGeometry reads them, and C's
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const int rotation = static_cast<int>(m_renderOrientation / 90) % 4;
+  const auto shown = m_geometryCodec.lock();
+  const std::string liveStereo = shown ? shown->VideoStereoMode() : m_videoStereoMode;
+  if (liveStereo != m_videoStereoMode)
+    m_shadowB.stereoString++;
+  const RESOLUTION_INFO& videoRow =
+      CDisplaySettings::GetInstance().GetResolutionInfo(gfx.GetVideoResolution());
+  SAmlAxisIn mainAxisIn;
+  mainAxisIn.dest = AmlRotatedDest(m_destRect, rotation);
+  mainAxisIn.screen = CRect(0, 0, videoRow.iScreenWidth, videoRow.iScreenHeight);
+  mainAxisIn.guiWidth = videoRow.iWidth;
+  mainAxisIn.guiHeight = videoRow.iHeight;
+  mainAxisIn.stereoMode = gfx.GetStereoMode();
+  mainAxisIn.videoStereoMode = liveStereo;
+  const RESOLUTION_INFO resInfo = gfx.GetResInfo();
+  mainAxisIn.hwHeight = resInfo.iHeight;
+  mainAxisIn.hwBlanking = resInfo.iBlanking;
+  SAmlAxisIn cAxisIn;
+  cAxisIn.dest = AmlRotatedDest(c.destRect, rotation);
+  cAxisIn.screen = CRect(0, 0, state->screenWidth, state->screenHeight);
+  cAxisIn.guiWidth = rawRow.width;
+  cAxisIn.guiHeight = rawRow.height;
+  cAxisIn.stereoMode = stereo;
+  cAxisIn.videoStereoMode = m_videoStereoMode;
+  cAxisIn.hwHeight = row.height;
+  cAxisIn.hwBlanking = row.blanking;
+  const SAmlAxisOut mainAxis = ComputeAmlAxis(mainAxisIn);
+  const SAmlAxisOut cAxis = ComputeAmlAxis(cAxisIn);
+
+  const bool same = c.sourceRect == m_sourceRect && c.destRect == m_destRect &&
+                    std::equal(std::begin(cAxis.axis), std::end(cAxis.axis),
+                               std::begin(mainAxis.axis));
+  if (same)
+  {
+    m_shadowB.match++;
+    return;
+  }
+  const char* kind;
+  if (mode == Mode::PENDING)
+  {
+    m_shadowB.pending++;
+    kind = "PENDING";
+  }
+  else if (mode == Mode::GIVEN_UP && fullScreen)
+  {
+    m_shadowB.givenUp++;
+    kind = "GIVEN_UP";
+  }
+  else if (!fullScreen && !snap.calibrating && gfx.GetVideoRect() != snap.videoRect)
+  {
+    m_shadowB.windowed++;
+    kind = "windowed";
+  }
+  else
+    kind = m_shadowB.unexplained++ < 10 ? "unexplained" : nullptr;
+  if (kind)
+    CLog::Log(kind[0] == 'u' ? LOGWARNING : LOGINFO,
+              "GEOMDIAG shadowB DIFF {}: main dst {:.0f},{:.0f},{:.0f},{:.0f} axis {} {} {} {} "
+              "fs {}; C dst {:.0f},{:.0f},{:.0f},{:.0f} axis {} {} {} {} fs {} (request {} "
+              "notice done {}) modeSeq {} seen {} rowMoved {} calibrating {} stereo {}",
+              kind, m_destRect.x1, m_destRect.y1, m_destRect.x2, m_destRect.y2,
+              mainAxis.axis[0], mainAxis.axis[1], mainAxis.axis[2], mainAxis.axis[3],
+              gfx.IsFullScreenVideo(), c.destRect.x1, c.destRect.y1, c.destRect.x2,
+              c.destRect.y2, cAxis.axis[0], cAxis.axis[1], cAxis.axis[2], cAxis.axis[3],
+              fullScreen, request >> 1, snap.noticeSeqDone, n, snap.modeSeqSeen, snap.rowMoved,
+              snap.calibrating, snap.stereoMode);
 }
 
 void CRendererAML::PresentFrame(int index)

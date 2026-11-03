@@ -125,6 +125,9 @@ public:
   //! armed at the next Configure, or now for the running stream
   void ArmContentReclock(bool now);
   void SetViewMode(int iViewMode);
+  //! 5.V3-3: this player's fullscreen notice request, seq << 1 | 1 (0: none), written by
+  //! CWinSystemBase::PostFullScreenVideo; C honours it until main's noticeSeqDone reaches seq
+  std::atomic<uint64_t>& FullScreenRequest() { return m_fullScreenRequest; }
   void PreInit();
   //! a new file in the same session: resets what belongs to the last one
   void BeginFile();
@@ -336,6 +339,7 @@ protected:
     uint32_t gen = 0;
   };
   std::atomic<uint64_t> m_timingFacts{0};
+  std::atomic<uint64_t> m_fullScreenRequest{0};
   //! under m_statelock
   void WriteTimingFacts(StreamHdrType hdrType, int vblanks);
   STimingFacts ReadTimingFacts() const;

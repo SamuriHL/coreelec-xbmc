@@ -89,6 +89,22 @@ struct DisplayState
   //! PREFERRED mode on a table without it, or the last one kept when the table has neither; empty
   //! before W's first caps publish under B3-8
   ModeFacts desktopMode;
+  //! 5.V3-3: the GUI row W set (its res), unread with the 5.V3 latch off
+  struct WRow
+  {
+    int width = 0; //!< iWidth
+    int height = 0;
+    int overscanLeft = 0;
+    int overscanTop = 0;
+    int overscanRight = 0;
+    int overscanBottom = 0;
+    float pixelRatio = 1.0f;
+    int blanking = 0;
+    int subtitles = 0;
+    float refreshRate = 0.0f; //!< the res's fRefreshRate (refresh is the link's committed one)
+  } wRow;
+  //! 5.V3-3: the seq of the mode publish this state carries; 0 before the first latched one
+  uint64_t modeSeq = 0;
   //! set only by 5.E2's deferred Restore; always false in 5.B3
   bool linkUncommitted = false;
   //! W's last HPD read (from B3-6); not read before
@@ -104,7 +120,8 @@ std::shared_ptr<const DisplayState> Get();
 std::shared_ptr<const DisplayState> LinkState();
 
 // W's publishes (or inline on their caller while W is not running)
-void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed);
+//! returns the publish's modeSeq (5.V3-3), 0 with the 5.V3 latch off
+uint64_t PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed);
 //! has2160: the caller's value (5.B3-7b: W's own table, or main's read of its table); without it
 //! the publish reads CDisplaySettings. desktopMode (5.B3-8, W's caps step): stored with these
 //! caps and kept by every later publish; null keeps the published one

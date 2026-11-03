@@ -121,6 +121,9 @@
 #include "pvr/guilib/PVRGUIActionsPlayback.h"
 #include "pvr/guilib/PVRGUIActionsPowerManagement.h"
 #include "rendering/RenderSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/GuiSnapshot.h"
+#endif
 #include "rendering/capture/CaptureMetadata.h"
 #include "rendering/capture/CapturePixels.h"
 #include "rendering/capture/CaptureService.h"
@@ -908,6 +911,10 @@ void CApplication::Render()
   if (!CServiceBroker::GetRenderSystem()->BeginRender())
     return;
 
+#if defined(HAS_LIBAMCODEC)
+  // 5.V3-3: publish (b) pairs this pass's rect with the state its GUI render runs under
+  GUISNAPSHOT::CaptureAtRenderEx();
+#endif
   // render video layer
   CServiceBroker::GetGUI()->GetWindowManager().RenderEx();
 
@@ -971,6 +978,9 @@ void CApplication::Render()
 
   CServiceBroker::GetWinSystem()->GetGfxContext().Flip(hasRendered,
                                                        appPlayer->IsRenderingVideoLayer());
+#if defined(HAS_LIBAMCODEC)
+  GUISNAPSHOT::PublishAfterFlip();
+#endif
 
   CTimeUtils::UpdateFrameTime(hasRendered);
 }
@@ -1640,6 +1650,10 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   if (processGUI && renderGUI && !m_skipGuiRender && appPlayer->IsRenderingVideoLayer() &&
       !CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions())
     m_skipGuiRender = true;
+#if defined(HAS_LIBAMCODEC)
+  // 5.V3-3: publish (a), nested render loops included
+  GUISNAPSHOT::PublishFrameMove();
+#endif
 }
 
 

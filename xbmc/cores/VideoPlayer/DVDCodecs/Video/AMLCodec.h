@@ -117,6 +117,8 @@ public:
   //! ApplyVideoGeometry's frame-locked writes on a change: the 3D mode, axis and screen_mode
   void          ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis);
   bool          IsOpened() const { return m_opened; }
+  //! 5.V3-3 shadow B: the stereo string ApplyVideoGeometry reads
+  std::string   VideoStereoMode() const { return m_processInfo.GetVideoStereoMode(); }
   void          SetVideoRate(int videoRate);
   uint64_t      GetOMXPts() const { return m_cur_pts; }
   uint32_t      GetBufferIndex() const { return m_bufferIndex; };

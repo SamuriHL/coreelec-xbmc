@@ -10,6 +10,7 @@
 
 #include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+#include "windowing/amlogic/GuiSnapshot.h"
 #include "rendering/RenderSystemTypes.h"
 
 #include <atomic>
@@ -65,6 +66,12 @@ public:
   // Feature support
   virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
   virtual bool Supports(ERENDERFEATURE feature) const override;
+
+  //! 5.V3-3 shadow B (geometrytick_shadow, latch on; main, after this renderer's present): the
+  //! geometry from C's inputs (the published snapshot, DisplayState, the configure facts, the
+  //! mirrored settings) against main's, each DIFF named (PENDING, GIVEN_UP, windowed) or counted
+  //! unexplained. request: the player's FullScreenRequest word
+  void ShadowB(uint64_t request);
 
 private:
   void Reset();
@@ -131,4 +138,19 @@ private:
   static constexpr int STEREO_MODES = static_cast<int>(RenderStereoMode::COUNT);
   std::atomic<uint32_t> m_stereoCalls[STEREO_MODES] = {};
   std::atomic<uint32_t> m_stereoNotOff[STEREO_MODES] = {};
+  //! 5.V3-3: the video stereo string at the configure (V), for C
+  std::string m_videoStereoMode;
+  // shadow B (main)
+  GUISNAPSHOT::SSnapshot m_shadowSnap; //!< the last good read
+  struct SShadowB
+  {
+    int evals = 0;
+    int match = 0;
+    int pending = 0;
+    int givenUp = 0;
+    int windowed = 0;
+    int unexplained = 0;
+    int noSnapshot = 0;
+    int stereoString = 0;
+  } m_shadowB;
 };

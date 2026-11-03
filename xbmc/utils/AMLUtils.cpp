@@ -2819,6 +2819,7 @@ std::vector<std::string> s_geometryTickSkip;
 SGeometryTickHooks s_geometryTickHooks;
 std::atomic<bool> s_geometryTickLatched{false};
 std::atomic<bool> s_geometryTickOn{false};
+std::atomic<bool> s_geometryTickInputs{false}; //!< on and no geometrytick_skip V3-3
 
 // a skipped 5.V3 sub-step takes the ones that need it along (plan §2)
 void AddGeometryTickSkipDependents(std::vector<std::string>& list)
@@ -2943,6 +2944,10 @@ void aml_displaystate_init()
                    }
                    s_geometryTickHooks = ReadGeometryTickHooks();
                    s_geometryTickOn = geometryTick;
+                   s_geometryTickInputs =
+                       geometryTick && std::find(s_geometryTickSkip.begin(),
+                                                 s_geometryTickSkip.end(),
+                                                 "V3-3") == s_geometryTickSkip.end();
                    s_geometryTickLatched.store(true, std::memory_order_release);
                    CLog::Log(LOGINFO, "GEOMETRYTICK {} ({})", geometryTick ? "on" : "off",
                              reason);
@@ -2971,6 +2976,12 @@ bool aml_geometrytick_on()
 {
   return s_geometryTickLatched.load(std::memory_order_acquire) &&
          s_geometryTickOn.load(std::memory_order_relaxed);
+}
+
+bool aml_geometrytick_inputs_on()
+{
+  return s_geometryTickLatched.load(std::memory_order_acquire) &&
+         s_geometryTickInputs.load(std::memory_order_relaxed);
 }
 
 bool aml_geometrytick_skip(const std::string& substep)
@@ -3016,6 +3027,16 @@ void aml_presenter_set_wake_fd(int fd)
 {
   std::unique_lock<std::mutex> lock(s_holdMutex);
   s_wakeFd = fd;
+}
+
+void aml_presenter_wake()
+{
+  std::unique_lock<std::mutex> lock(s_holdMutex);
+  if (s_wakeFd < 0)
+    return;
+  const uint64_t one = 1;
+  if (write(s_wakeFd, &one, sizeof(one)) < 0 && errno != EAGAIN)
+    CLog::Log(LOGDEBUG, "aml_presenter_wake: {}", strerror(errno));
 }
 
 void aml_set_video_presenter_active(bool active)

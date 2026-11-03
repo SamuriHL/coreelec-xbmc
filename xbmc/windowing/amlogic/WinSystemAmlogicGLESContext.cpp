@@ -10,6 +10,7 @@
 #include "VideoSyncTimeline.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "GraphicsPlaneAML.h"
+#include "GuiSnapshot.h"
 #include "Timekeeper.h"
 #include "utils/PresentationTimeline.h"
 #include "filesystem/File.h"
@@ -136,6 +137,7 @@ struct SDriveJob
   std::optional<SDarkRoute> route; //!< 5.B3-9a: W's Restore only (DarkRoutingOn)
   bool offRefused{false}; //!< S1''s GUI plane off was refused (the SB3 state)
   uint64_t uiEpoch{0}; //!< the UI surface epoch the job started
+  uint64_t modeSeq{0}; //!< 5.V3-3: this set's mode publish seq, 0 if W did not commit
   Backups result;
   std::chrono::steady_clock::time_point modeSetAt{};
   int64_t parkMs{-1}, offMs{-1}, lostMs{-1}, commitMs{-1}, engageMs{-1};
@@ -900,6 +902,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   // 5.B3-7b (M9): GC's set inside a hotplug reply's adopt takes W's Restore, posting nothing
   if (auto adopt = std::exchange(m_adoptJob, nullptr))
   {
+    // W's Restore ran synchronously before its reply was queued
+    GUISNAPSHOT::NoteModeSeq(adopt->modeSeq);
     if (SupersededOnW(*adopt))
       return false;
     const auto handlerStart = std::chrono::steady_clock::now();
@@ -1021,6 +1025,13 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - posted)
                           .count();
+  // 5.V3-3: a job still W's (the give-up) is recorded by its late reply
+  if (aml_geometrytick_inputs_on())
+  {
+    std::unique_lock lock(job->mutex);
+    if (job->done)
+      GUISNAPSHOT::NoteModeSeq(job->modeSeq);
+  }
 
   bool created = false;
   if (gaveUp)
@@ -1328,7 +1339,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   OUTPUT::TestStopAt("4");
   if (committed)
   {
-    DISPLAYSTATE::PublishMode(*display, res, !job.fullScreen);
+    job.modeSeq = DISPLAYSTATE::PublishMode(*display, res, !job.fullScreen);
     // N3 / r1 B1: counted, and the timing bumped, before the unpark
     DISPLAYSTATE::NoteCommit();
     aml_timing_inputs_bump();
@@ -1809,6 +1820,7 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
   }
   for (const auto& job : late)
   {
+    GUISNAPSHOT::NoteModeSeq(job->modeSeq);
     if (job->id != m_drivePosted)
     {
       CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
@@ -2039,6 +2051,9 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
 {
   using Kind = SHotplugReply::Kind;
   const std::shared_ptr<SDriveJob> job = reply.restoreJob;
+  // 5.V3-3: RunRestoreOnW finished the job before the reply was queued under m_replyMutex
+  if (job)
+    GUISNAPSHOT::NoteModeSeq(job->modeSeq);
   const RestoreForm form = job ? HotplugRestoreForm(*job) : RestoreForm::NOT_TORN_DOWN;
   // HEAD's not-ready per kind (r2 N1): every event's, then the set that re-readies
   const bool notReady = reply.kind == Kind::LOSS || reply.kind == Kind::LOSS_CAPSFAIL ||

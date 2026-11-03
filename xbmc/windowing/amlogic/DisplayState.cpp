@@ -207,6 +207,9 @@ void FillMode(DisplayState& s, const RESOLUTION_INFO& res, float refresh, bool h
   s.modeString = res.strId.substr(0, res.strId.find(' '));
   s.fps = FpsRule(refresh);
   s.windowed = windowed;
+  s.wRow = {res.iWidth,         res.iHeight,         res.Overscan.left, res.Overscan.top,
+            res.Overscan.right, res.Overscan.bottom, res.fPixelRatio,  res.iBlanking,
+            res.iSubtitles,     res.fRefreshRate};
 }
 
 void FillLink(DisplayState& s, const CAMLDisplay& display)
@@ -421,19 +424,23 @@ std::shared_ptr<const DisplayState> LinkState()
   return state;
 }
 
-void PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed)
+uint64_t PublishMode(const CAMLDisplay& display, const RESOLUTION_INFO& res, bool windowed)
 {
   if (!aml_displaystate_on())
-    return;
+    return 0;
   DisplayState s = Current();
   bool held = false;
   const float refresh = display.aml_committed_refresh(res, held);
   FillMode(s, res, refresh, held, windowed);
   FillLink(s, display);
+  // 5.V3-3: W is the only mode publisher once its sets run on W, so the count's next value is
+  // this publish's
+  s.modeSeq = aml_geometrytick_inputs_on() ? s_modePublishes.load() + 1 : 0;
   Store(s, "mode");
   s_modePublishes.fetch_add(1);
   s_restored = false;
   s_inSet = false;
+  return s.modeSeq;
 }
 
 void PublishCaps(const CAMLDisplay& display,

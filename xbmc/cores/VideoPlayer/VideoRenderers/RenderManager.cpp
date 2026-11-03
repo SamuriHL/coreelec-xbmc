@@ -1961,6 +1961,13 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       PresentSingle(*renderer, clear, flags, alpha);
 
     presented = true;
+#if defined(HAS_LIBAMCODEC)
+    if (aml_geometrytick_hooks().shadow && aml_geometrytick_inputs_on())
+    {
+      if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get()))
+        aml->ShadowB(m_fullScreenRequest.load(std::memory_order_acquire));
+    }
+#endif
   }
 
   // the just-presented region is video-only: OSD, GUI and subtitles come later

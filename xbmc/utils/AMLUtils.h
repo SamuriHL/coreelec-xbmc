@@ -448,6 +448,9 @@ bool aml_vconfigure_skip(const std::string& substep);
 // special://profile/geometrytick_off, and a listed SoC (aml_geometrytick_validated) or
 // special://profile/geometrytick_on. Off before the latch.
 bool aml_geometrytick_on();
+//! 5.V3-3's published inputs: aml_geometrytick_on() and no geometrytick_skip "V3-3" (whose
+//! dependents are V3-4, V3-5 and V3-7)
+bool aml_geometrytick_inputs_on();
 //! geometrytick_skip "<substep>[,<substep>]", with its dependents: true for a listed 5.V3
 //! sub-step (bisect only)
 bool aml_geometrytick_skip(const std::string& substep);
@@ -474,6 +477,8 @@ void aml_presenter_set_running(bool running);
 void aml_presenter_set_test_cstall(int ms, int nth = 0);
 //! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
 void aml_presenter_set_wake_fd(int fd);
+//! 5.V3-3: wake C (main's GUI snapshot publish); non-blocking
+void aml_presenter_wake();
 // true while a coordinator releases the video plane, so the GUI loop paces
 // itself instead of relying on the video release's vsync wait
 void aml_set_video_presenter_active(bool active);

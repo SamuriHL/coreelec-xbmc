@@ -150,6 +150,7 @@ protected:
   virtual EShaderFormat GetShaderFormat();
   void MarkDirty();
   void EnableAlwaysClip();
+  bool AlwaysClip() const { return m_alwaysClip; }
 
   //@todo drop those
   void saveRotatedCoords();//saves the current state of m_rotatedDestCoords

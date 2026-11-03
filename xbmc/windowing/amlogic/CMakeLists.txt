@@ -8,7 +8,8 @@ set(SOURCES WinSystemAmlogic.cpp
             OutputWorker.cpp
             SettingsMirror.cpp
             ThreadRole.cpp
-            DisplayState.cpp)
+            DisplayState.cpp
+            GuiSnapshot.cpp)
 
 set(HEADERS WinSystemAmlogic.h
             VideoSyncAML.h
@@ -20,7 +21,9 @@ set(HEADERS WinSystemAmlogic.h
             OutputWorker.h
             SettingsMirror.h
             ThreadRole.h
-            DisplayState.h)
+            DisplayState.h
+            GuiSnapshot.h
+            Seqlock.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp

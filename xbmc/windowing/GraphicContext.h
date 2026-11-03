@@ -96,6 +96,8 @@ public:
   void ResetScissors();
   const CRect &GetScissors() const;
   const CRect GetViewWindow() const;
+  //! the windowed video rect the GUI render last set (GetViewWindow's when not fullscreen)
+  const CRect& GetVideoRect() const { return m_videoRect; }
   void SetViewWindow(float left, float top, float right, float bottom);
   bool IsCalibrating() const;
   void SetCalibrating(bool bOnOff);

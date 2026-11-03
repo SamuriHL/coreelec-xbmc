@@ -21,6 +21,9 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/GuiSnapshot.h"
+#endif
 
 #include <algorithm>
 #include <memory>
@@ -313,16 +316,25 @@ void CWinSystemBase::PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHa
   m_renderLoopPosts.push_back({RenderLoopPost::Kind::UNREGISTER, handle, {}});
 }
 
-void CWinSystemBase::PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle)
+uint64_t CWinSystemBase::PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle,
+                                             std::atomic<uint64_t>* request)
 {
+  static std::atomic<uint64_t> s_noticeSeq{0};
   std::unique_lock lock(m_renderLoopPostSection);
-  m_renderLoopPosts.push_back({RenderLoopPost::Kind::FULLSCREEN, handle, {}});
+  uint64_t seq = 0;
+  if (request)
+  {
+    seq = s_noticeSeq.fetch_add(1) + 1;
+    request->store(seq << 1 | 1, std::memory_order_release);
+  }
+  m_renderLoopPosts.push_back({RenderLoopPost::Kind::FULLSCREEN, handle, {}, seq});
+  return seq;
 }
 
 void CWinSystemBase::ApplyRenderLoopPosts()
 {
   std::vector<std::shared_ptr<RenderLoopHandle>> handles;
-  std::vector<std::shared_ptr<RenderLoopHandle>> fullScreen;
+  std::vector<std::pair<std::shared_ptr<RenderLoopHandle>, uint64_t>> fullScreen;
   {
     std::unique_lock lock(m_renderLoopSection);
     {
@@ -336,7 +348,7 @@ void CWinSystemBase::ApplyRenderLoopPosts()
       {
         if (post->kind == RenderLoopPost::Kind::FULLSCREEN)
         {
-          fullScreen.push_back(post->handle);
+          fullScreen.emplace_back(post->handle, post->seq);
           continue;
         }
         if (post->kind == RenderLoopPost::Kind::UNREGISTER)
@@ -365,8 +377,16 @@ void CWinSystemBase::ApplyRenderLoopPosts()
 
   // outside the render-loop locks: the set runs the GUI's resolution change. A notice whose file
   // has unregistered or died is not this session's
-  for (const auto& handle : fullScreen)
+  for (const auto& [handle, seq] : fullScreen)
   {
+#if defined(HAS_LIBAMCODEC)
+    // 5.V3-3: every finished notice (applied, already set or refused); the next publish carries it
+    struct SNoticeDone
+    {
+      ~SNoticeDone() { GUISNAPSHOT::NoteNoticeDone(seq); }
+      uint64_t seq;
+    } noticeDone{seq};
+#endif
     bool live = std::ranges::find(handles, handle) != handles.end();
     if (live)
     {

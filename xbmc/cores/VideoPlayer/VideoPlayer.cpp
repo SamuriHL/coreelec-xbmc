@@ -7437,9 +7437,15 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
         {
           if (!m_renderLoopHandle->fullScreenPending.exchange(true))
           {
-            CServiceBroker::GetWinSystem()->PostFullScreenVideo(m_renderLoopHandle);
+            // 5.V3-3: a request exists only for a post (the exchange above succeeded)
+            const uint64_t seq = CServiceBroker::GetWinSystem()->PostFullScreenVideo(
+                m_renderLoopHandle,
+                aml_geometrytick_inputs_on() ? &m_renderManager.FullScreenRequest() : nullptr);
             CLog::Log(LOGINFO, "VCONFIGURE fullscreen notice posted gen={}",
                       m_renderLoopHandle->gen);
+            if (seq)
+              CLog::Log(LOGINFO, "GEOMDIAG fullscreen notice seq {} gen={}", seq,
+                        m_renderLoopHandle->gen);
           }
           break;
         }

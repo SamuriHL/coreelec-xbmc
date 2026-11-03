@@ -219,7 +219,11 @@ public:
   void PostRegisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
   void PostUnregisterRenderLoop(const std::shared_ptr<RenderLoopHandle>& handle);
   //! 5.V2-6: main sets fullscreen video for this handle's file, if it is still registered
-  void PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle);
+  //! 5.V3-3: with request (the 5.V3 latch on) the post takes a process-wide seq, drawn under the
+  //! post lock so seq order is queue order, and the RM's request word becomes seq << 1 | 1.
+  //! Returns the seq (0 without request)
+  uint64_t PostFullScreenVideo(const std::shared_ptr<RenderLoopHandle>& handle,
+                               std::atomic<uint64_t>* request = nullptr);
   //! main: the posts in order; also run before the fullscreen window activates, so a notice
   //! posted while main was busy lands first, as P's own set did
   void ApplyRenderLoopPosts();
@@ -433,6 +437,7 @@ protected:
     } kind;
     std::shared_ptr<RenderLoopHandle> handle;
     std::chrono::steady_clock::time_point applyAt;
+    uint64_t seq = 0; //!< 5.V3-3: a FULLSCREEN post's notice seq, 0 with the 5.V3 latch off
   };
   CCriticalSection m_renderLoopPostSection;
   std::vector<RenderLoopPost> m_renderLoopPosts;
