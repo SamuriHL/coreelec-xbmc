@@ -191,14 +191,16 @@ protected:
   SWakeLateness m_diagWakeLateDue;
   SWakeLateness m_diagWakeLatePoll;
   void LogWakeLateness();
-  //! start DQBUF latency: picture fd ready to the picture, for a start's first frames, sampled
-  //! only when the first GetPicture after the fd's wake returns it (the fill gate open)
+  //! start DQBUF latency: picture fd ready to the picture, for a start's first frames once the
+  //! clock runs, sampled only when the first GetPicture after the fd's wake returns it (the
+  //! fill gate open)
   static constexpr int START_FRAMES = 5;
   std::chrono::steady_clock::time_point m_diagPictureReady{};
   int m_diagStartFrames = START_FRAMES; //!< frames taken since the start; START_FRAMES: done
   int64_t m_diagStartUs[START_FRAMES] = {}; //!< -1: no fd wake whose first call took it
   int m_diagStartGated = 0; //!< fd wakes whose first GetPicture returned no picture
   void DiagStart();
+  bool DiagStartHeld(); //!< not in sync yet, the start hold or its lead: the clock not running
   int m_forceGenCounter = 0;
   int m_startPendingGen = -1; //!< the forced start picture not yet taken by a tick
   std::chrono::steady_clock::time_point m_startPendingSince;

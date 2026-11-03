@@ -984,7 +984,7 @@ MsgQueueReturnCode CVideoPlayerVideo::WorkerGetMessage(std::shared_ptr<CDVDMsg>&
           duration_cast<microseconds>(polled - (now + milliseconds(waitMs))).count());
     }
     else if (pictureFd >= 0 && (fds[1].revents & POLLIN) && m_diagStartFrames < START_FRAMES &&
-             m_diagPictureReady == steady_clock::time_point{})
+             m_diagPictureReady == steady_clock::time_point{} && !DiagStartHeld())
       m_diagPictureReady = polled;
     // consumed before the state is read again: an event after this read wakes
     // the next poll
@@ -1039,6 +1039,14 @@ void CVideoPlayerVideo::LogWakeLateness()
             n, due, m_diagWakeLatePoll.Format(polled));
   m_diagWakeLateDue = {};
   m_diagWakeLatePoll = {};
+}
+
+bool CVideoPlayerVideo::DiagStartHeld()
+{
+  int64_t startNs = 0;
+  double startClock = 0.0;
+  return m_syncState != IDVDStreamPlayer::SYNC_INSYNC || m_startHeld ||
+         m_pClock->GetPendingStart(startNs, startClock);
 }
 
 void CVideoPlayerVideo::DiagStart()
@@ -1188,9 +1196,12 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   m_lastDecoderState = decoderState;
   m_armPicture = false;
 
-  // 5.V3-1 (log only): start DQBUF latency, the first frames of a start. Only the first call
-  // after the fd's wake is timed: one that returns no picture was held (the fill gate)
-  if (m_diagStartFrames < START_FRAMES)
+  // 5.V3-1 (log only): start DQBUF latency, the first frames once the clock runs (one taken
+  // in the hold or its scheduled lead waited at the gate). Only the first call after the fd's
+  // wake is timed: one that returns no picture was held (the fill gate)
+  if (m_diagStartFrames < START_FRAMES && DiagStartHeld())
+    m_diagPictureReady = {};
+  else if (m_diagStartFrames < START_FRAMES)
   {
     const bool woken = m_diagPictureReady != std::chrono::steady_clock::time_point{};
     if (decoderState == CDVDVideoCodec::VC_PICTURE)
@@ -1206,8 +1217,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
         for (const int64_t us : m_diagStartUs)
           values += us < 0 ? " -" : StringUtils::Format(" {}", us);
         CLog::Log(LOGINFO,
-                  "GEOMDIAG start DQBUF latency us (picture fd ready -> picture; -: no fd "
-                  "wake took it):{}; gated {}",
+                  "GEOMDIAG start DQBUF latency us (picture fd ready -> picture, once the clock "
+                  "runs; -: no fd wake took it):{}; gated {}",
                   values, m_diagStartGated);
       }
     }
