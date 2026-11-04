@@ -24,6 +24,7 @@ struct SAmlAxisOut;
 
 #include <deque>
 #include <mutex>
+#include <array>
 #include <atomic>
 #include <vector>
 
@@ -236,6 +237,9 @@ private:
   std::atomic<uint64_t> m_diagGetPictureCalls{0};
   std::atomic<uint64_t> m_diagPictures{0};
   std::atomic<uint32_t> m_diagRateChanges{0};
+  //! 5.V3-4 (log only, the cost gate): V's rate sample per GetPicture, 10 us bins, the last over 1 ms
+  std::array<std::atomic<uint32_t>, 101> m_diagRateUs{};
+  std::atomic<uint32_t> m_diagRateMaxUs{0};
   // 5.V3-2 shadow A (geometrytick_shadow)
   VIDEOGEOMETRY::SAmlAxisOut ComputeAmlAxisHead(CRect dst_rect, const CRect& screen,
                                                 const RESOLUTION_INFO& video_res_info);

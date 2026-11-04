@@ -2817,6 +2817,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_diagGetPictureCalls = 0;
   m_diagPictures = 0;
   m_diagRateChanges = 0;
+  for (auto& bin : m_diagRateUs)
+    bin = 0;
+  m_diagRateMaxUs = 0;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
   SetSpeed(m_speedFix ? speedBeforeOpen : m_speed);
@@ -3030,6 +3033,23 @@ void CAMLCodec::CloseDecoder()
               calls, m_diagPictures.load(std::memory_order_relaxed), seconds,
               seconds > 0.0 ? static_cast<double>(calls) / seconds : 0.0,
               m_diagRateChanges.load(std::memory_order_relaxed));
+    uint64_t samples = 0;
+    for (const auto& bin : m_diagRateUs)
+      samples += bin.load(std::memory_order_relaxed);
+    if (samples > 0)
+    {
+      // p99 as the upper edge of the bin holding the 99th percentile; 1010 = over 1 ms
+      uint64_t seen = 0;
+      size_t bin = 0;
+      for (; bin < m_diagRateUs.size(); ++bin)
+      {
+        seen += m_diagRateUs[bin].load(std::memory_order_relaxed);
+        if (seen * 100 >= samples * 99)
+          break;
+      }
+      CLog::Log(LOGINFO, "GEOMDIAG rate sample on V us: n {} p99 {} max {}", samples,
+                (bin + 1) * 10, m_diagRateMaxUs.load(std::memory_order_relaxed));
+    }
   }
   m_opened = false;
 
@@ -3815,7 +3835,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   // 5.V3-4 (Q10): the rate sampled before its readers here (frame_ms, the poll gap, the
   // duration, GetNextPoll)
   if (m_decoderSideOnV)
+  {
+    const auto t0 = std::chrono::steady_clock::now();
     ApplyDecoderRate();
+    const uint32_t us = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count());
+    m_diagRateUs[std::min<uint32_t>(us / 10, 100)].fetch_add(1, std::memory_order_relaxed);
+    if (us > m_diagRateMaxUs.load(std::memory_order_relaxed))
+      m_diagRateMaxUs.store(us, std::memory_order_relaxed);
+  }
 
   // While draining, always attempt the dequeue - drain means no further
   // input is coming, so the fill gates are moot and anything the hardware
