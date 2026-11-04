@@ -18,6 +18,7 @@
 #include <mutex>
 
 class CAMLCodec;
+struct SGeometryIn;
 
 class CRendererAML : public CBaseRenderer
 {
@@ -140,6 +141,10 @@ private:
   std::atomic<uint32_t> m_stereoNotOff[STEREO_MODES] = {};
   //! 5.V3-3: the video stereo string at the configure (V), for C
   std::string m_videoStereoMode;
+public:
+  //! 5.V3-4: the configure facts C computes from (under the RM state lock)
+  void GetConfigureFacts(SGeometryIn& in) const;
+private:
   // shadow B (main)
   GUISNAPSHOT::SSnapshot m_shadowSnap; //!< the last good read
   struct SShadowB

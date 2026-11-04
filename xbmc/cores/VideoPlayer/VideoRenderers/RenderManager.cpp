@@ -560,6 +560,32 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
   DecoderSettingsChanged();
 }
 
+void CRenderManager::RecordViewMode(int viewMode, const CVideoSettings& settings)
+{
+  if (!V34On())
+    return;
+  m_viewModeRequest.gen++;
+  m_viewModeRequest.viewMode = viewMode;
+  m_viewModeRequest.customZoomAmount = settings.m_CustomZoomAmount;
+  m_viewModeRequest.customPixelRatio = settings.m_CustomPixelRatio;
+  m_viewModeRequest.customVerticalShift = settings.m_CustomVerticalShift;
+  m_viewModeRequest.customNonLinStretch = settings.m_CustomNonLinStretch;
+}
+
+void CRenderManager::FillGeometryIn(SGeometryIn& in) const
+{
+#if defined(HAS_LIBAMCODEC)
+  const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get());
+  if (!aml)
+    return;
+  in.renderer = m_pRenderer;
+  in.rgen = m_rgen;
+  in.request = m_fullScreenRequest.load(std::memory_order_acquire);
+  in.viewMode = m_viewModeRequest;
+  aml->GetConfigureFacts(in);
+#endif
+}
+
 bool CRenderManager::GeometryTickRenderer() const
 {
   return m_presenterMode && V34On();
@@ -809,7 +835,9 @@ bool CRenderManager::Configure()
     }
   }
 
-  m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+  const CVideoSettings settings = m_playerPort->GetVideoSettings();
+  m_pRenderer->SetVideoSettings(settings);
+  RecordViewMode(settings.m_ViewMode, settings);
   bool result = m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
   if (result)
   {
@@ -920,7 +948,10 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
     if (!m_closed)
     {
       swapped = true;
-      renderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+      const CVideoSettings settings = m_playerPort->GetVideoSettings();
+      renderer->SetVideoSettings(settings);
+      // main's ApplyGeometry computes from these (D1, r1 B2)
+      RecordViewMode(settings.m_ViewMode, settings);
       old = std::move(m_pRenderer);
       // the old renderer's decoder buffers go now (a main pass may hold it a while); one of
       // another kind (the GLES placeholder) is deleted on main
@@ -1852,7 +1883,10 @@ void CRenderManager::SetViewMode(int iViewMode)
   std::unique_lock lock(m_statelock);
   CMainHold hold("SetViewMode");
   if (m_pRenderer)
+  {
+    RecordViewMode(iViewMode, m_pRenderer->GetVideoSettings());
     m_pRenderer->SetViewMode(iViewMode);
+  }
   DecoderSettingsChanged();
   m_playerPort->VideoParamsChange();
 }
@@ -3958,10 +3992,15 @@ void CRenderManager::ReencodeOnOutputChange()
       outcome = "not configured, the next picture configures";
     else if (!m_pRenderer->ConfigChanged(m_picture))
       outcome = "encoding current";
-    else if ((reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation)))
-      outcome = "CRendererAML::Configure, no new picture";
     else
-      outcome = "CRendererAML::Configure failed";
+    {
+      // its SetViewMode reads these
+      const CVideoSettings settings = m_pRenderer->GetVideoSettings();
+      RecordViewMode(settings.m_ViewMode, settings);
+      reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation);
+      outcome = reencoded ? "CRendererAML::Configure, no new picture"
+                          : "CRendererAML::Configure failed";
+    }
     if (const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get()); aml && reencoded)
       encoding = aml->GuiEncodingName();
     locks = "in CRendererAML::Configure, under the RM locks";
@@ -4089,6 +4128,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   if (m_renderState != STATE_CONFIGURED || m_vConfiguring || !m_presenterMode || !m_pRenderer)
     return;
   result.configured = true;
+  if (GeometryTickSession())
+    FillGeometryIn(result.geom);
   result.displayLost = m_displayLost;
   result.playing = !m_displayLost && !m_dvdClock.IsPaused();
   if (PRESENTATION::ShadowActive() && tick.vblankNs)

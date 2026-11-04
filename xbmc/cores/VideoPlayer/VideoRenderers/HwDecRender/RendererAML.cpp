@@ -12,6 +12,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+#include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
@@ -211,6 +212,17 @@ void CRendererAML::ConfigureVideo(const VideoPicture& picture,
     m_videoStereoMode = picture.stereoMode;
   StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
   m_bConfigured = true;
+}
+
+void CRendererAML::GetConfigureFacts(SGeometryIn& in) const
+{
+  in.sourceWidth = m_sourceWidth;
+  in.sourceHeight = m_sourceHeight;
+  in.flags = m_iFlags;
+  in.orientation = m_renderOrientation;
+  in.aspectRatio = GetAspectRatio();
+  in.alwaysClip = AlwaysClip();
+  in.videoStereoMode = m_videoStereoMode;
 }
 
 void CRendererAML::ApplyGeometry()

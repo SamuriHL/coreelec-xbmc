@@ -85,6 +85,35 @@ struct SPresentTick
   int64_t holdReleaseNs = 0; //!< steady_clock
 };
 
+//! 5.V3-4 (plan M2 (a)): a view mode C computes at main's SetViewMode moments, from the
+//! same inputs
+struct SViewModeRequest
+{
+  uint64_t gen = 0;
+  int viewMode = 0;
+  float customZoomAmount = 1.0f;
+  float customPixelRatio = 1.0f;
+  float customVerticalShift = 0.0f;
+  bool customNonLinStretch = false;
+};
+
+//! 5.V3-4: C's inputs from RM, copied under m_statelock on the path only
+struct SGeometryIn
+{
+  std::shared_ptr<CBaseRenderer> renderer;
+  unsigned int rgen = 0;
+  uint64_t request = 0; //!< the fullscreen request word
+  SViewModeRequest viewMode;
+  // the configure facts
+  unsigned int sourceWidth = 0;
+  unsigned int sourceHeight = 0;
+  unsigned int flags = 0;
+  unsigned int orientation = 0;
+  float aspectRatio = 1.0f;
+  bool alwaysClip = false;
+  std::string videoStereoMode;
+};
+
 struct SPresentResult
 {
   bool configured = false;
@@ -101,6 +130,7 @@ struct SPresentResult
   double shadowAdjust = 0.0; //!< the vsyncAdjust in it
   bool shadowSynced = false; //!< clock sync on (off: no phase, raw lateness)
   double frametime = 0.0;
+  SGeometryIn geom; //!< 5.V3-4: empty off the path
 };
 
 class CRenderManager
@@ -616,6 +646,11 @@ protected:
   std::atomic_bool m_decoderSideOnV{false};
   std::atomic<unsigned int> m_decoderSettingsGen{0};
   void DecoderSettingsChanged(); // under m_statelock
+  bool GeometryTickSession() const { return m_decoderSideOnV && m_presenterMode; }
+  //! 5.V3-4: the view mode request C computes from (m_statelock)
+  SViewModeRequest m_viewModeRequest;
+  void RecordViewMode(int viewMode, const CVideoSettings& settings); // under m_statelock
+  void FillGeometryIn(SGeometryIn& in) const; // under m_statelock
   //! the source the render thread snapshotted in FrameMove; not freed until
   //! the next FrameMove
   int m_renderSource = -1;
