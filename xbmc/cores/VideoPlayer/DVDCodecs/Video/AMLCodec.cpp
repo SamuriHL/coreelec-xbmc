@@ -4451,39 +4451,64 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   ApplyFrameLocked(axis);
 }
 
+void CAMLCodec::Set3dMode(RenderStereoMode guiStereoMode)
+{
+  int mvc_view_mode = 3;
+  switch (am_private->video_format)
+  {
+    case VFORMAT_H264MVC:
+      {
+        mvc_view_mode = m_processInfo.GetVideoStereoMode() == "block_lr" ? 3 : 2;
+        switch (guiStereoMode)
+        {
+          case RenderStereoMode::HARDWAREBASED:
+            aml_set_3d_video_mode(MODE_3D_ENABLE | MODE_3D_FA, true, mvc_view_mode);
+            break;
+          case RenderStereoMode::SPLIT_VERTICAL:
+            aml_set_3d_video_mode(MODE_3D_OUT_LR | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+            break;
+          case RenderStereoMode::SPLIT_HORIZONTAL:
+            aml_set_3d_video_mode(MODE_3D_OUT_TB | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+            break;
+          default:
+            aml_set_3d_video_mode(MODE_3D_TO_2D_R | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
+            break;
+        }
+        break;
+      }
+    default:
+      aml_set_3d_video_mode(MODE_3D_DISABLE, false, mvc_view_mode);
+      break;
+  }
+}
+
+void CAMLCodec::ApplyFrameLockedOnC(const VIDEOGEOMETRY::SAmlAxisOut& axis,
+                                    const SFrameLockedIn& in)
+{
+  if (in.support3d)
+    Set3dMode(in.stereoMode);
+  char video_axis[256] = {};
+  sprintf(video_axis, "%d %d %d %d", axis.axis[0], axis.axis[1], axis.axis[2], axis.axis[3]);
+  CLog::Log(LOGDEBUG, "CAMLCodec::ApplyFrameLockedOnC: axis {} screen_mode {}", video_axis,
+            in.nonLinear ? 4 : 1);
+  CSysfsPath("/sys/class/video/axis", video_axis);
+  CSysfsPath("/sys/class/video/screen_mode", in.nonLinear ? 4 : 1);
+}
+
+void CAMLCodec::ShowFrameOnC()
+{
+  // as SetVideoRect's tail
+  if (!(m_opened && StepDeferredFelKeep()))
+    ShowMainVideo(true);
+  if (m_opened)
+    aml_set_frame_kept(false);
+}
+
 void CAMLCodec::ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis)
 {
   MAINCOUPLING("CAMLDisplay aml_display_support_3d");
   if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
-  {
-    int mvc_view_mode = 3;
-    switch (am_private->video_format)
-    {
-      case VFORMAT_H264MVC:
-        {
-          mvc_view_mode = m_processInfo.GetVideoStereoMode() == "block_lr" ? 3 : 2;
-          switch (m_guiStereoMode)
-          {
-            case RenderStereoMode::HARDWAREBASED:
-              aml_set_3d_video_mode(MODE_3D_ENABLE | MODE_3D_FA, true, mvc_view_mode);
-              break;
-            case RenderStereoMode::SPLIT_VERTICAL:
-              aml_set_3d_video_mode(MODE_3D_OUT_LR | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-            case RenderStereoMode::SPLIT_HORIZONTAL:
-              aml_set_3d_video_mode(MODE_3D_OUT_TB | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-            default:
-              aml_set_3d_video_mode(MODE_3D_TO_2D_R | MODE_3D_FA | MODE_3D_ENABLE, false, mvc_view_mode);
-              break;
-          }
-          break;
-        }
-      default:
-        aml_set_3d_video_mode(MODE_3D_DISABLE, false, mvc_view_mode);
-        break;
-    }
-  }
+    Set3dMode(m_guiStereoMode);
 
 #if 1
   std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",

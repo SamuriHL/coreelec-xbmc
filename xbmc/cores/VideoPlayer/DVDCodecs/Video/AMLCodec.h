@@ -122,6 +122,20 @@ public:
   void          ApplyDecoderRate();
   //! ApplyVideoGeometry's frame-locked writes on a change: the 3D mode, axis and screen_mode
   void          ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis);
+  //! 5.V3-4: C's frame-locked writes, with its own inputs (the 3D call when supported, axis,
+  //! screen_mode), and the layer-on, FEL step and kept clear of a shown frame
+  struct SFrameLockedIn
+  {
+    RenderStereoMode stereoMode = RenderStereoMode::OFF;
+    bool support3d = false;
+    bool nonLinear = false;
+    bool operator==(const SFrameLockedIn&) const = default;
+  };
+  void          ApplyFrameLockedOnC(const VIDEOGEOMETRY::SAmlAxisOut& axis, const SFrameLockedIn& in);
+  void          ShowFrameOnC();
+  uint32_t      SessionGen() const { return m_sessionGen.load(); }
+  //! the MVC 3D mode (both of HEAD's sites; unchanged)
+  void          Set3dMode(RenderStereoMode guiStereoMode);
   bool          IsOpened() const { return m_opened; }
   //! 5.V3-3 shadow B: the stereo string ApplyVideoGeometry reads
   std::string   VideoStereoMode() const { return m_processInfo.GetVideoStereoMode(); }

@@ -85,6 +85,8 @@ struct SPresentTick
   int64_t holdReleaseNs = 0; //!< steady_clock
 };
 
+class CAMLCodec;
+
 //! 5.V3-4 (plan M2 (a)): a view mode C computes at main's SetViewMode moments, from the
 //! same inputs
 struct SViewModeRequest
@@ -131,6 +133,8 @@ struct SPresentResult
   bool shadowSynced = false; //!< clock sync on (off: no phase, raw lateness)
   double frametime = 0.0;
   SGeometryIn geom; //!< 5.V3-4: empty off the path
+  std::shared_ptr<CAMLCodec> qbufCodec; //!< 5.V3-4: the QBUFed frame's decoder (the path)
+  bool qbufShown = false; //!< queued to be shown
 };
 
 class CRenderManager
@@ -251,6 +255,11 @@ public:
   {
     return m_decoderSettingsGen.load(std::memory_order_relaxed);
   }
+  //! 5.V3-4 (C): the tail after PresentTick (its locks released), and the wake tail
+  bool GeometryTailOnC(SPresentResult& result); //!< true when it wrote
+  bool GeometryWakeOnC();
+  //! 5.V3-4 (V): reset the decoders C used
+  void DrainCodecsFromC();
   bool ForcedPictureTaken(int gen) const;
   void CancelForce(int gen);
   // non-blocking WaitForBuffer: the level, or -1 with no free buffer (retryIn
@@ -650,7 +659,19 @@ protected:
   //! 5.V3-4: the view mode request C computes from (m_statelock)
   SViewModeRequest m_viewModeRequest;
   void RecordViewMode(int viewMode, const CVideoSettings& settings); // under m_statelock
-  void FillGeometryIn(SGeometryIn& in) const; // under m_statelock
+  void FillGeometryIn(SGeometryIn& in); // under m_statelock
+  //! C's renderer (m_statelock): moved only by C's PresentTick and cleared by UnInit, so a
+  //! copy C holds in its tail is never the last; a stale one waits in m_cReleased, reset by V
+  //! at its next swap and by UnInit (never m_retire: no EndRenderSession)
+  std::shared_ptr<CBaseRenderer> m_cRenderer;
+  std::vector<std::shared_ptr<CBaseRenderer>> m_cReleased;
+  //! decoders C used, reset by V (WorkerDuties) and UnInit: never the last owner on C
+  std::vector<std::shared_ptr<CAMLCodec>> m_codecReleased; // m_presentlock
+  void ReleaseCodecFromC(std::shared_ptr<CAMLCodec>&& codec);
+  //! 5.V3-4 (D7): the renderer's rects, C's published ones on the path
+  void RendererVideoRect(const CBaseRenderer& renderer, CRect& source, CRect& dest, CRect& view) const;
+  bool m_videoRectOnC = false; //!< main: this pass reads C's rects (set in Render)
+  uint64_t m_rgenMismatch = 0; //!< main: passes refused for C's rgen
   //! the source the render thread snapshotted in FrameMove; not freed until
   //! the next FrameMove
   int m_renderSource = -1;

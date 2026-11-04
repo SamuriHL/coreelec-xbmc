@@ -1064,6 +1064,9 @@ void CVideoPlayerVideo::WorkerDuties()
   if (m_pVideoCodec)
     m_pVideoCodec->ServiceInput();
 
+  // 5.V3-4: the decoders C used are let go here, never on C
+  if (m_decoderSideOnV)
+    m_renderManager.DrainCodecsFromC();
   // 5.V3-4 (L6): a settings or view mode change, paused too
   if (m_decoderSideOnV && m_pVideoCodec &&
       m_renderManager.DecoderSettingsGen() != m_decoderSettingsSeen)

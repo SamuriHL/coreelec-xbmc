@@ -476,6 +476,26 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
                   view == RenderStereoView::LEFT ? "LEFT" : "RIGHT", STEREO_MODE_NAMES[mode]);
     }
   }
+  // 5.V3-4: C writes VD1 (D6); main copies C's view mode result for its latest request (D5)
+  if (m_mainOnC)
+  {
+    VIDEOGEOMETRY::SViewModeOut vm;
+    if (m_mainViewModeCopied != m_mainViewModeGen && ViewModeFromC(m_mainViewModeGen, vm))
+    {
+      m_mainViewModeCopied = m_mainViewModeGen;
+      CDisplaySettings& ds = CDisplaySettings::GetInstance();
+      if (ds.GetVerticalShift() != vm.verticalShift)
+        ds.SetVerticalShift(vm.verticalShift);
+      if (ds.IsNonLinearStretched() != vm.nonLinearStretched)
+        ds.SetNonLinearStretched(vm.nonLinearStretched);
+      if (ds.GetZoomAmount() != vm.zoomAmount)
+        ds.SetZoomAmount(vm.zoomAmount);
+      if (ds.GetPixelRatio() != vm.pixelRatio)
+        ds.SetPixelRatio(vm.pixelRatio);
+    }
+    return;
+  }
+
   ManageRenderArea();
 
   if (m_offThreadPresent)
@@ -640,6 +660,7 @@ CRendererAML::SOnC CRendererAML::ComputeOnC(const SGeometryIn& in,
                       ? CRect(row.overscanLeft, row.overscanTop, row.overscanRight,
                               row.overscanBottom)
                       : snap.videoRect;
+  out.viewRect = area.viewRect;
   area.sourceWidth = in.sourceWidth;
   area.sourceHeight = in.sourceHeight;
   area.flags = in.flags;
@@ -666,6 +687,173 @@ CRendererAML::SOnC CRendererAML::ComputeOnC(const SGeometryIn& in,
   out.axisIn.hwBlanking = row.blanking;
   out.axis = ComputeAmlAxis(out.axisIn);
   return out;
+}
+
+void CRendererAML::PresentFrameOnC(int index, std::shared_ptr<CAMLCodec>& codec, bool& shown)
+{
+  shown = false;
+  CAMLVideoBuffer* amli = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
+  if (!amli || !amli->m_amlCodec)
+    return;
+
+  uint64_t pts = amli->m_omxPts;
+  if (pts == m_prevVPts)
+    return;
+
+  amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE,
+                                 amli->m_sessionGen, &shown);
+  codec = std::move(amli->m_amlCodec); // also marks the frame processed
+  m_prevVPts = pts;
+}
+
+bool CRendererAML::GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>& codec, bool shown)
+{
+  using namespace VIDEOGEOMETRY;
+  if (in)
+  {
+    if (!m_cIn)
+      m_cIn = std::make_unique<SGeometryIn>();
+    *m_cIn = *in;
+    m_cIn->renderer.reset(); // C's reference is the caller's: not a cycle through this
+    m_c.in = m_cIn.get();
+  }
+  const bool qbuf = codec != nullptr;
+  if (!qbuf)
+  {
+    codec = m_c.codec.lock();
+    if (!codec || !codec->IsOpened())
+      return false;
+  }
+  // a new session: another decoder object (each open makes one, its gen from 1), or a reopen
+  // on the same one (AMLC:2203)
+  const bool sameDecoder = !m_c.codec.owner_before(codec) && !codec.owner_before(m_c.codec);
+  const uint32_t sessionGen = codec->SessionGen();
+  if (!sameDecoder || sessionGen != m_c.sessionGen)
+  {
+    m_c.sessionGen = sessionGen;
+    m_c.shownOnce = false;
+    m_c.applied = false;
+  }
+  if (qbuf)
+  {
+    m_c.codec = codec;
+    if (shown)
+      m_c.shownOnce = true;
+  }
+  const bool wrote = ApplyGeometryOnC(*codec);
+  // the shown frame's layer-on, FEL step and kept clear, as SetVideoRect's tail, whatever the
+  // geometry's state
+  if (qbuf && shown)
+    codec->ShowFrameOnC();
+  return wrote;
+}
+
+bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
+{
+  using namespace VIDEOGEOMETRY;
+  if (!m_c.in)
+    return false;
+
+  GUISNAPSHOT::SSnapshot read;
+  if (GUISNAPSHOT::Read(read))
+    m_c.snap = read;
+  const auto state = DISPLAYSTATE::Get();
+  // nothing is applied from a not-connected, zero-size or uncommitted link (plan §1.1)
+  if (!m_c.snap.valid || !state || !state->connected || state->linkUncommitted ||
+      state->screenWidth <= 0 || state->screenHeight <= 0)
+    return false;
+
+  const SGeometryIn& facts = *m_c.in;
+  SOnC onC = ComputeOnC(facts, m_c.snap, *state, m_c.viewMode);
+  // the view mode at main's SetViewMode moments (its request gen), with C's row
+  if (!m_c.haveViewMode || facts.viewMode.gen != m_c.viewModeGen)
+  {
+    SViewModeIn vm;
+    vm.viewMode = facts.viewMode.viewMode;
+    vm.overscanLeft = onC.row.overscanLeft;
+    vm.overscanTop = onC.row.overscanTop;
+    vm.overscanRight = onC.row.overscanRight;
+    vm.overscanBottom = onC.row.overscanBottom;
+    vm.width = onC.row.width;
+    vm.height = onC.row.height;
+    vm.screenWidth = onC.row.screenWidth;
+    vm.screenHeight = onC.row.screenHeight;
+    vm.guiPixelRatio = onC.row.pixelRatio;
+    vm.sourceFrameRatio = facts.aspectRatio;
+    vm.sourceHeight = facts.sourceHeight;
+    vm.customZoomAmount = facts.viewMode.customZoomAmount;
+    vm.customPixelRatio = facts.viewMode.customPixelRatio;
+    vm.customVerticalShift = facts.viewMode.customVerticalShift;
+    vm.customNonLinStretch = facts.viewMode.customNonLinStretch;
+    if (ViewModeIs43(ClampViewMode(vm.viewMode), vm.sourceFrameRatio))
+      vm.stretch43 =
+          OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_STRETCH43);
+    m_c.viewMode = ComputeViewMode(vm);
+    m_c.viewModeGen = facts.viewMode.gen;
+    m_c.haveViewMode = true;
+    onC = ComputeOnC(facts, m_c.snap, *state, m_c.viewMode);
+    std::lock_guard<std::mutex> lock(m_rectMutex);
+    m_cViewModeValid = true;
+    m_cViewModeGen = m_c.viewModeGen;
+    m_cViewModeOut = m_c.viewMode;
+  }
+  {
+    std::lock_guard<std::mutex> lock(m_rectMutex);
+    m_cGeometryValid = true;
+    m_cSource = onC.area.sourceRect;
+    m_cDest = onC.area.destRect;
+    m_cView = onC.viewRect;
+    m_cRgen = facts.rgen;
+  }
+
+  if (!m_c.shownOnce)
+    return false;
+
+  CAMLCodec::SFrameLockedIn frameLocked;
+  frameLocked.stereoMode = onC.axisIn.stereoMode;
+  frameLocked.support3d = state->support3d;
+  frameLocked.nonLinear = m_c.viewMode.nonLinearStretched;
+  const bool same = m_c.applied && std::equal(std::begin(onC.axis.axis), std::end(onC.axis.axis),
+                                               std::begin(m_c.axis)) &&
+                    frameLocked.stereoMode == m_c.stereoMode &&
+                    frameLocked.support3d == m_c.support3d &&
+                    frameLocked.nonLinear == m_c.nonLinear;
+  bool wrote = false;
+  if (!same)
+  {
+    codec.ApplyFrameLockedOnC(onC.axis, frameLocked);
+    std::copy(std::begin(onC.axis.axis), std::end(onC.axis.axis), std::begin(m_c.axis));
+    m_c.stereoMode = frameLocked.stereoMode;
+    m_c.support3d = frameLocked.support3d;
+    m_c.nonLinear = frameLocked.nonLinear;
+    m_c.applied = true;
+    wrote = true;
+  }
+  return wrote;
+}
+
+bool CRendererAML::ViewModeFromC(uint64_t gen, VIDEOGEOMETRY::SViewModeOut& out) const
+{
+  std::lock_guard<std::mutex> lock(m_rectMutex);
+  if (!m_cViewModeValid || m_cViewModeGen != gen)
+    return false;
+  out = m_cViewModeOut;
+  return true;
+}
+
+bool CRendererAML::VideoGeometryFromC(CRect& source,
+                                      CRect& dest,
+                                      CRect& view,
+                                      unsigned int& rgen) const
+{
+  std::lock_guard<std::mutex> lock(m_rectMutex);
+  if (!m_cGeometryValid)
+    return false;
+  source = m_cSource;
+  dest = m_cDest;
+  view = m_cView;
+  rgen = m_cRgen;
+  return true;
 }
 
 void CRendererAML::PresentFrame(int index)

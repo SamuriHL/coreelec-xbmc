@@ -982,7 +982,9 @@ void CPresentationCoordinator::Process()
     if (m_bStop)
       break;
 
-    if (fds[0].revents & POLLIN)
+    const bool woke = fds[0].revents & POLLIN;
+    bool wakePending = woke;
+    if (woke)
     {
       uint64_t count;
       if (read(m_wakeFd, &count, sizeof(count)) < 0 && errno != EAGAIN)
@@ -1041,6 +1043,12 @@ void CPresentationCoordinator::Process()
 
     if (!gotTick)
     {
+      // 5.V3-4: a wake with no tick (paused, or between vblanks; also while held)
+      if (wakePending)
+      {
+        RunWakeTail();
+        wakePending = false;
+      }
       // no vblank for a while (CRTC off or stalled): keep time with a timer
       // tick, as the render thread's 50 ms poll fallback did
       if (now - m_lastTickNs < SYNTHETIC_TICK_NS)
@@ -1052,6 +1060,9 @@ void CPresentationCoordinator::Process()
       m_report.synthetic++;
     }
     const bool tickHeld = RunVideoTick(tick);
+    // the tick first (plan §3 V3-4)
+    if (wakePending)
+      RunWakeTail();
     if (planeOffOnC)
       RunPlaneOffs(tickHeld);
   }
@@ -1534,6 +1545,19 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   m_video->PresentTick(tick, result);
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
+  // 5.V3-4: C's geometry tail, the RM locks released (outside work: the release is the QBUF's)
+  m_geometryOnC = result.geom.renderer != nullptr;
+  if (m_geometryOnC)
+  {
+    const int64_t tailStart = MonotonicNs();
+    const bool wrote = m_video->GeometryTailOnC(result);
+    const int64_t tailNs = MonotonicNs() - tailStart;
+    m_report.tails++;
+    m_report.tailWrites += wrote;
+    m_report.tailMaxNs = std::max(m_report.tailMaxNs, tailNs);
+    if (m_tickPeriodNs && tailNs > m_tickPeriodNs)
+      m_report.tailsOverVblank++;
+  }
 
   if (tick.vblankNs && OUTPUT::PlaneOffOnC())
   {
@@ -1578,6 +1602,22 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 
   Account(tick, result, work, start + work);
   return false;
+}
+
+void CPresentationCoordinator::RunWakeTail()
+{
+  // off the path: nothing, no lock
+  if (!m_geometryOnC)
+    return;
+  std::unique_lock lock(m_videoMutex);
+  if (!m_video)
+    return;
+  const int64_t start = MonotonicNs();
+  const bool wrote = m_video->GeometryWakeOnC();
+  const int64_t ns = MonotonicNs() - start;
+  m_report.wakeTails++;
+  m_report.wakeWrites += wrote;
+  m_report.wakeMaxNs = std::max(m_report.wakeMaxNs, ns);
 }
 
 void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,
@@ -1754,6 +1794,12 @@ void CPresentationCoordinator::LogReport()
     CLog::Log(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
               r.releaseOver);
   }
+  if (r.tails || r.wakeTails)
+    CLog::Log(LOGINFO,
+              "GEOMDIAG C tails: tick {} (wrote {}, max {} us, over a vblank {}), wake {} "
+              "(wrote {}, max {} us)",
+              r.tails, r.tailWrites, r.tailMaxNs / 1000, r.tailsOverVblank, r.wakeTails,
+              r.wakeWrites, r.wakeMaxNs / 1000);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

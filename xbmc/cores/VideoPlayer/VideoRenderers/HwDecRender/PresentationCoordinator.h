@@ -289,6 +289,8 @@ private:
   void RunPlaneOffs(bool held);
   //! true: a hold landed first, nothing was released
   bool RunVideoTick(SPresentTick& tick);
+  void RunWakeTail(); //!< 5.V3-4
+  bool m_geometryOnC = false; //!< 5.V3-4: the last tick's session is on the path (C only)
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick,
@@ -421,6 +423,14 @@ private:
     //! configured, 10 us bins
     int releaseHist[RELEASE_BINS] = {};
     int releaseOver = 0; //!< at or past RELEASE_BINS * 10 us
+    //! 5.V3-4: C's geometry tails (after the QBUF's release; not in work)
+    int tails = 0;
+    int tailWrites = 0;
+    int tailsOverVblank = 0;
+    int64_t tailMaxNs = 0;
+    int wakeTails = 0;
+    int wakeWrites = 0;
+    int64_t wakeMaxNs = 0;
   } m_report;
   //! 5.V3-1 (under m_uiMutex): when CommitUi could last start a commit again (the flip in flight
   //! landed or was abandoned, a failed or returned ioctl, a plane off done), monotonic

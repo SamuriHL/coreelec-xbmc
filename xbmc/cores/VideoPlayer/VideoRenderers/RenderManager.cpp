@@ -471,7 +471,29 @@ void CRenderManager::GetVideoRect(CRect& source, CRect& dest, CRect& view) const
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_pRenderer)
+  {
+#if defined(HAS_LIBAMCODEC)
+    unsigned int rgen = 0;
+    if (const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get());
+        aml && GeometryTickSession() && aml->VideoGeometryFromC(source, dest, view, rgen))
+      return;
+#endif
     m_pRenderer->GetVideoRect(source, dest, view);
+  }
+}
+
+void CRenderManager::RendererVideoRect(const CBaseRenderer& renderer,
+                                       CRect& source,
+                                       CRect& dest,
+                                       CRect& view) const
+{
+#if defined(HAS_LIBAMCODEC)
+  unsigned int rgen = 0;
+  if (const auto* aml = dynamic_cast<const CRendererAML*>(&renderer);
+      aml && m_videoRectOnC && aml->VideoGeometryFromC(source, dest, view, rgen))
+    return;
+#endif
+  renderer.GetVideoRect(source, dest, view);
 }
 
 float CRenderManager::GetAspectRatio() const
@@ -572,17 +594,78 @@ void CRenderManager::RecordViewMode(int viewMode, const CVideoSettings& settings
   m_viewModeRequest.customNonLinStretch = settings.m_CustomNonLinStretch;
 }
 
-void CRenderManager::FillGeometryIn(SGeometryIn& in) const
+void CRenderManager::FillGeometryIn(SGeometryIn& in)
 {
 #if defined(HAS_LIBAMCODEC)
   const auto* aml = dynamic_cast<const CRendererAML*>(m_pRenderer.get());
   if (!aml)
     return;
+  if (m_cRenderer != m_pRenderer)
+  {
+    if (m_cRenderer)
+      m_cReleased.push_back(std::move(m_cRenderer));
+    m_cRenderer = m_pRenderer;
+  }
   in.renderer = m_pRenderer;
   in.rgen = m_rgen;
   in.request = m_fullScreenRequest.load(std::memory_order_acquire);
   in.viewMode = m_viewModeRequest;
   aml->GetConfigureFacts(in);
+#endif
+}
+
+void CRenderManager::ReleaseCodecFromC(std::shared_ptr<CAMLCodec>&& codec)
+{
+  if (!codec)
+    return;
+  std::unique_lock lock(m_presentlock);
+  m_codecReleased.push_back(std::move(codec));
+}
+
+void CRenderManager::DrainCodecsFromC()
+{
+  std::vector<std::shared_ptr<CAMLCodec>> codecs;
+  {
+    std::unique_lock lock(m_presentlock);
+    codecs.swap(m_codecReleased);
+  }
+}
+
+bool CRenderManager::GeometryTailOnC(SPresentResult& result)
+{
+#if defined(HAS_LIBAMCODEC)
+  auto* aml = dynamic_cast<CRendererAML*>(result.geom.renderer.get());
+  if (!aml)
+    return false;
+  const bool wrote = aml->GeometryOnC(&result.geom, result.qbufCodec, result.qbufShown);
+  ReleaseCodecFromC(std::move(result.qbufCodec));
+  result.geom.renderer.reset(); // m_cRenderer still holds it
+  return wrote;
+#else
+  return false;
+#endif
+}
+
+bool CRenderManager::GeometryWakeOnC()
+{
+#if defined(HAS_LIBAMCODEC)
+  std::shared_ptr<CBaseRenderer> renderer;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    if (!GeometryTickSession())
+      return false;
+    renderer = m_cRenderer;
+  }
+  auto* aml = dynamic_cast<CRendererAML*>(renderer.get());
+  if (!aml)
+    return false;
+  std::shared_ptr<CAMLCodec> codec;
+  const bool wrote = aml->GeometryOnC(nullptr, codec, false);
+  ReleaseCodecFromC(std::move(codec));
+  return wrote;
+#else
+  return false;
 #endif
 }
 
@@ -935,6 +1018,7 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
   const int64_t builtNs = SteadyNs();
 
   std::shared_ptr<CBaseRenderer> old;
+  std::vector<std::shared_ptr<CBaseRenderer>> cReleased; // reset after the locks, as old
   const char* oldKind;
   bool swapped = false;
   {
@@ -948,6 +1032,7 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
     if (!m_closed)
     {
       swapped = true;
+      cReleased.swap(m_cReleased);
       const CVideoSettings settings = m_playerPort->GetVideoSettings();
       renderer->SetVideoSettings(settings);
       // main's ApplyGeometry computes from these (D1, r1 B2)
@@ -1505,6 +1590,17 @@ void CRenderManager::UnInit()
   // before the renderer goes: the coordinator releases frames through it
   StopCoordinator();
   m_decoderSideOnV = false;
+  {
+    // 5.V3-4: C's references, after C stopped (reset outside the locks, as V's swap does)
+    std::shared_ptr<CBaseRenderer> cRenderer;
+    std::vector<std::shared_ptr<CBaseRenderer>> cReleased;
+    {
+      std::unique_lock lock(m_statelock);
+      cRenderer = std::move(m_cRenderer);
+      cReleased.swap(m_cReleased);
+    }
+    DrainCodecsFromC();
+  }
 
   // the GL teardown (and the overlays' settings save)
   const auto teardown =
@@ -1828,7 +1924,7 @@ void CRenderManager::ServiceVideoCaptures(CBaseRenderer& renderer)
   CRect src;
   CRect dst;
   CRect view;
-  renderer.GetVideoRect(src, dst, view);
+  RendererVideoRect(renderer, src, dst, view);
 
   // zoom modes push destRect past the output; the copy is clamped to the
   // visible region, so native-size targets must be sized from it too
@@ -2007,6 +2103,31 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       return;
     }
     renderer = m_pRenderer;
+#if defined(HAS_LIBAMCODEC)
+    // 5.V3-4 (D6, D7): C writes VD1; this pass draws with C's rects, of this rgen
+    m_videoRectOnC = false;
+    if (V34On())
+    {
+      if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get()))
+      {
+        const bool onC = GeometryTickSession();
+        aml->SetGeometryOnCMain(onC, m_viewModeRequest.gen);
+        CRect src, dst, view;
+        unsigned int rgen = 0;
+        if (onC && (!aml->VideoGeometryFromC(src, dst, view, rgen) || rgen != m_rgen))
+        {
+          if (m_rgenMismatch++ % 100 == 0)
+            CLog::Log(LOGINFO, "GEOMDIAG rgen mismatch: C's rects not of rgen {} ({} passes)",
+                      m_rgen, m_rgenMismatch);
+          hold.End();
+          lock.unlock();
+          RenderWithoutPicture(gui, true);
+          return;
+        }
+        m_videoRectOnC = onC;
+      }
+    }
+#endif
   }
 
   if (!gui && renderer->IsGuiLayer())
@@ -2042,7 +2163,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (presented && !gui)
   {
     CRect src, dst, view;
-    renderer->GetVideoRect(src, dst, view);
+    RendererVideoRect(*renderer, src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
 
     // Off-screen when the platform composites them (see BeginHdrOverlayRender),
@@ -2073,7 +2194,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       renderer->Update();
 
     CRect src, dst, view;
-    renderer->GetVideoRect(src, dst, view);
+    RendererVideoRect(*renderer, src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
     const bool withheld = GraphicsWithheld();
     if (!withheld)
@@ -4334,7 +4455,14 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   if (result.newFrame)
   {
-    m_pRenderer->PresentFrame(m_presentsource);
+#if defined(HAS_LIBAMCODEC)
+    // 5.V3-4: C's tail takes the frame's decoder (no hand-off to main)
+    if (result.geom.renderer)
+      static_cast<CRendererAML*>(m_pRenderer.get())
+          ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown);
+    else
+#endif
+      m_pRenderer->PresentFrame(m_presentsource);
     if (V24On() && m_firstPresentFile != m_fileGen)
     {
       m_firstPresentFile = m_fileGen;

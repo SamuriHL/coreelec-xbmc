@@ -14,6 +14,7 @@
 #include "windowing/amlogic/GuiSnapshot.h"
 #include "rendering/RenderSystemTypes.h"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -131,7 +132,7 @@ private:
   bool m_geometryErrorLogged{false};
   // the codec of the last frame the coordinator released, for the render
   // thread's SetVideoRect
-  std::mutex m_rectMutex;
+  mutable std::mutex m_rectMutex;
   std::shared_ptr<CAMLCodec> m_rectCodec;
   //! the codec of the last frame on screen: geometry changes apply with no new frame
   std::weak_ptr<CAMLCodec> m_geometryCodec;
@@ -157,6 +158,7 @@ public:
     } mode = Mode::TAKEN;
     bool fullScreen = false;
     GUISNAPSHOT::SRow row; //!< the GUI row C sizes from (the stereo rule applied)
+    CRect viewRect; //!< the render area's view (GetVideoRect's view)
     VIDEOGEOMETRY::SRenderAreaOut area;
     VIDEOGEOMETRY::SAmlAxisIn axisIn;
     VIDEOGEOMETRY::SAmlAxisOut axis;
@@ -165,6 +167,60 @@ public:
                          const GUISNAPSHOT::SSnapshot& snap,
                          const DISPLAYSTATE::DisplayState& state,
                          const VIDEOGEOMETRY::SViewModeOut& viewMode);
+  //! 5.V3-4 (C, under the RM locks): PresentFrame without the hand-off to main; the frame's
+  //! decoder and whether it was queued to be shown
+  void PresentFrameOnC(int index, std::shared_ptr<CAMLCodec>& codec, bool& shown);
+  //! 5.V3-4 (C, after the RM locks): the tail. With a QBUF's decoder: compute, and from the
+  //! session's first shown frame the frame-locked writes and (shown) the layer-on, FEL step
+  //! and kept clear. Without (in null: a wake): the last inputs with a new snapshot, the
+  //! frame-locked writes only, on the decoder on screen if it is open. codec returns the
+  //! decoder used, for the caller to release off C. True when it wrote
+  bool GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>& codec, bool shown);
+  //! GeometryOnC's compute and frame-locked writes (C)
+  bool ApplyGeometryOnC(CAMLCodec& codec);
+  //! main: C's view mode result for request gen (D5)
+  bool ViewModeFromC(uint64_t gen, VIDEOGEOMETRY::SViewModeOut& out) const;
+  //! main and RM: C's published render area (D7)
+  bool VideoGeometryFromC(CRect& source, CRect& dest, CRect& view, unsigned int& rgen) const;
+  //! main (RM's Render, under its state lock): the session is on the path, and the latest
+  //! view mode request gen main's synchronous write made
+  void SetGeometryOnCMain(bool on, uint64_t viewModeGen)
+  {
+    m_mainOnC = on;
+    m_mainViewModeGen = viewModeGen;
+  }
+private:
+  //! C only (the coordinator thread, under its video mutex)
+  struct SOnCState
+  {
+    GUISNAPSHOT::SSnapshot snap; //!< the last good read
+    SGeometryIn* in = nullptr; //!< the last tick's inputs (owned below)
+    bool haveViewMode = false;
+    uint64_t viewModeGen = 0;
+    VIDEOGEOMETRY::SViewModeOut viewMode;
+    std::weak_ptr<CAMLCodec> codec; //!< the decoder on screen
+    uint32_t sessionGen = UINT32_MAX;
+    bool shownOnce = false; //!< this decoder session's first shown frame was queued
+    bool applied = false;
+    int axis[4] = {};
+    RenderStereoMode stereoMode = RenderStereoMode::OFF;
+    bool support3d = false;
+    bool nonLinear = false;
+  } m_c;
+  std::unique_ptr<SGeometryIn> m_cIn;
+  //! C's results for main (m_rectMutex)
+  bool m_cViewModeValid = false;
+  uint64_t m_cViewModeGen = 0;
+  VIDEOGEOMETRY::SViewModeOut m_cViewModeOut;
+  bool m_cGeometryValid = false;
+  CRect m_cSource;
+  CRect m_cDest;
+  CRect m_cView;
+  unsigned int m_cRgen = 0;
+  //! main only
+  bool m_mainOnC = false;
+  uint64_t m_mainViewModeGen = 0;
+  uint64_t m_mainViewModeCopied = 0;
 private:
   // shadow B (main)
   GUISNAPSHOT::SSnapshot m_shadowSnap; //!< the last good read
