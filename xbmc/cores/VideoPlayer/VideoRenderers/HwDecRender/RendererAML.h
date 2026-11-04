@@ -10,6 +10,7 @@
 
 #include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+#include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
 #include "windowing/amlogic/GuiSnapshot.h"
 #include "rendering/RenderSystemTypes.h"
 
@@ -144,6 +145,26 @@ private:
 public:
   //! 5.V3-4: the configure facts C computes from (under the RM state lock)
   void GetConfigureFacts(SGeometryIn& in) const;
+  //! 5.V3-4: C's geometry from the published inputs (plan §1.1); shadow B compares it with
+  //! main's. The view mode's outputs are passed in (C's own; shadow B's are main's)
+  struct SOnC
+  {
+    enum class Mode
+    {
+      TAKEN,
+      PENDING,
+      GIVEN_UP,
+    } mode = Mode::TAKEN;
+    bool fullScreen = false;
+    GUISNAPSHOT::SRow row; //!< the GUI row C sizes from (the stereo rule applied)
+    VIDEOGEOMETRY::SRenderAreaOut area;
+    VIDEOGEOMETRY::SAmlAxisIn axisIn;
+    VIDEOGEOMETRY::SAmlAxisOut axis;
+  };
+  static SOnC ComputeOnC(const SGeometryIn& in,
+                         const GUISNAPSHOT::SSnapshot& snap,
+                         const DISPLAYSTATE::DisplayState& state,
+                         const VIDEOGEOMETRY::SViewModeOut& viewMode);
 private:
   // shadow B (main)
   GUISNAPSHOT::SSnapshot m_shadowSnap; //!< the last good read

@@ -2026,7 +2026,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     presented = true;
 #if defined(HAS_LIBAMCODEC)
-    if (aml_geometrytick_hooks().shadow && aml_geometrytick_inputs_on())
+    // 5.V3-3's check; with V3-4 on, C writes (shadow B only with geometrytick_skip V3-4)
+    if (aml_geometrytick_hooks().shadow && aml_geometrytick_inputs_on() && !V34On())
     {
       if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get()))
         aml->ShadowB(m_fullScreenRequest.load(std::memory_order_acquire));
