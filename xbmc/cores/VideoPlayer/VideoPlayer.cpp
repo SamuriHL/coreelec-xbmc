@@ -946,6 +946,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // Stash the path for the Amlogic DV L5 active-area detector, which runs on the
   // codec thread where g_application.CurrentFile() is not yet set.
   aml_dv_detect_set_file(file.GetPath());
+  m_testReopenDone = false;
 
   // real_player: a start is held until the output mode is final (disc session
   // design 3); the debug flag turns it off for A/B runs
@@ -7446,6 +7447,26 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
             if (seq)
               CLog::Log(LOGINFO, "GEOMDIAG fullscreen notice seq {} gen={}", seq,
                         m_renderLoopHandle->gen);
+            const SGeometryTickHooks hooks = aml_geometrytick_hooks();
+            // test (geometrytick_gfxhold): main's SetFullScreenVideo blocks on the gfx lock
+            if (hooks.gfxHoldMs > 0)
+              std::thread(
+                  [ms = hooks.gfxHoldMs]
+                  {
+                    std::unique_lock lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+                    CLog::Log(LOGWARNING, "GEOMETRYTICK test: gfx lock taken for {} ms", ms);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+                  })
+                  .detach();
+            // test (geometrytick_fsbeforenotice): the fullscreen window comes up in Process()
+            // before DriveRenderLoop takes the notice
+            if (hooks.fsBeforeNotice)
+            {
+              CLog::Log(LOGWARNING, "GEOMETRYTICK test: ACTION_SHOW_GUI posted with the notice");
+              CServiceBroker::GetAppMessenger()->PostMsg(
+                  TMSG_GUI_ACTION, WINDOW_INVALID, -1,
+                  static_cast<void*>(new CAction(ACTION_SHOW_GUI)));
+            }
           }
           break;
         }
@@ -7521,6 +7542,19 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       res = false;
       break;
   }
+
+#if defined(HAS_LIBAMCODEC)
+  // test (geometrytick_reopenpending): the video path once more with the notice pending; its
+  // exchange finds the flag set and posts nothing
+  if (res && current.type == StreamType::VIDEO && m_renderLoopHandle &&
+      m_renderLoopHandle->fullScreenPending && aml_geometrytick_hooks().reopenPending &&
+      !std::exchange(m_testReopenDone, true))
+  {
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: video OpenStream again, notice pending gen={}",
+              m_renderLoopHandle->gen);
+    return OpenStream(current, demuxerId, iStream, source, reset);
+  }
+#endif
 
   if (res)
   {

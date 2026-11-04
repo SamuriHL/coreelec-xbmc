@@ -839,6 +839,7 @@ protected:
   // its own flag. Player thread only.
   bool m_bdStreamReuseVideo = false;
   bool m_bdStreamReuseAudio = false;
+  bool m_testReopenDone = false; //!< geometrytick_reopenpending: once per file
   /* Armed at a Blu-ray seamless playitem boundary, consumed by the first
    * sub-second FORWARD timestamp step CheckContinuity sees afterwards - or, on a
    * glided (cc 5/6) seam (m_seamStepOverlapOk), by the first sub-second

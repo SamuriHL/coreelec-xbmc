@@ -2844,6 +2844,14 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
 
 bool CAMLCodec::Enable_vadj1(void)
 {
+  // test (geometrytick_vadj1fail): the first n enables fail, process-wide
+  static std::atomic<int> s_testFailed{0};
+  if (s_testFailed.load() < aml_geometrytick_hooks().vadj1FailCalls)
+  {
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: vadj1 enable {} failed",
+              s_testFailed.fetch_add(1) + 1);
+    return false;
+  }
   struct vpp_pq_ctrl_s vpp_pq_ctrl = {};
   struct pq_ctrl_s pq_ctrl = {};
   vpp_pq_ctrl.length = sizeof(struct pq_ctrl_s);

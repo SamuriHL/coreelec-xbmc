@@ -33,6 +33,7 @@
 #include "HwDecRender/RendererAML.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "filesystem/File.h"
+#include "filesystem/SpecialProtocol.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
@@ -131,8 +132,9 @@ void TimingInputsWritten()
 
 // test: special://profile/vconfigure_mainstall holds "<form> <event> <ms>"; main stalls once per
 // arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock) or
-// statelock (holding m_statelock). 5.V3's events geometry (V3-4) and settings (V3-7) are parsed
-// only: nothing arms them yet
+// statelock (holding m_statelock). 5.V3's geometry (V3-4) is armed by each special://temp/
+// geometrystall_now (main deletes it), so W's and V's changes land while main sleeps; settings
+// (V3-7) is parsed only
 struct SVStall
 {
   std::string form;
@@ -159,10 +161,10 @@ const SVStall& VStall()
         std::find_if(std::begin(events), std::end(events),
                      [&](const char* e) { return fields[1] == e; }) != std::end(events))
       result = {fields[0], fields[1], std::atoi(fields[2].c_str())};
-    if (result.ms > 0 && (result.event == "geometry" || result.event == "settings"))
+    if (result.ms > 0 && result.event == "settings")
       CLog::Log(LOGWARNING,
-                "GEOMETRYTICK test stall {} of {} ms on main at \"{}\" (parsed only: {})",
-                result.form, result.ms, result.event, result.event == "geometry" ? "V3-4" : "V3-7");
+                "GEOMETRYTICK test stall {} of {} ms on main at \"settings\" (parsed only: V3-7)",
+                result.form, result.ms);
     else if (result.ms > 0)
       CLog::Log(LOGWARNING, "VCONFIGURE test stall {} of {} ms on main at \"{}\"", result.form,
                 result.ms, result.event);
@@ -1229,6 +1231,17 @@ void CRenderManager::FrameMove()
   TestStall("stop");
   TestStall("nextfile");
   TestStall("playing");
+#if defined(HAS_LIBAMCODEC)
+  // the local path, uncached: special:// re-enters CFile::Exists with the directory cache, which
+  // hides a file created after the cache was filled
+  static const std::string trigger = CSpecialProtocol::TranslatePath("special://temp/geometrystall_now");
+  if (VStallAt("geometry") && XFILE::CFile::Exists(trigger, false))
+  {
+    XFILE::CFile::Delete(trigger);
+    ArmTestStall("geometry");
+    TestStall("geometry");
+  }
+#endif
   bool firstFrame = false;
   std::shared_ptr<CBaseRenderer> renderer;
   bool applied = true;

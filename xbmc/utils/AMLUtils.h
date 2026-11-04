@@ -462,6 +462,7 @@ struct SGeometryTickHooks
   int gfxHoldMs = 0; //!< geometrytick_gfxhold <ms>
   bool fsBeforeNotice = false; //!< geometrytick_fsbeforenotice
   bool reopenPending = false; //!< geometrytick_reopenpending
+  int vadj1FailCalls = 0; //!< geometrytick_vadj1fail <n>: Enable_vadj1's first n calls fail
 };
 SGeometryTickHooks aml_geometrytick_hooks();
 void aml_timing_inputs_bump();

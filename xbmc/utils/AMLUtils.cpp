@@ -2843,8 +2843,7 @@ void AddGeometryTickSkipDependents(std::vector<std::string>& list)
   }
 }
 
-// test hooks for 5.V3's gates (Q1), read with the latch; a hook whose sub-step is not built yet
-// is parsed and logged only
+// test hooks for 5.V3's gates (Q1), read with the latch (on or off)
 SGeometryTickHooks ReadGeometryTickHooks()
 {
   SGeometryTickHooks hooks;
@@ -2862,20 +2861,23 @@ SGeometryTickHooks ReadGeometryTickHooks()
   if (const auto line = OUTPUT::ReadTestSwitch("geometrytick_gfxhold"))
   {
     hooks.gfxHoldMs = std::max(0, std::atoi(line->c_str()));
-    CLog::Log(LOGWARNING, "GEOMETRYTICK test: gfx lock held {} ms at a notice (parsed only: V3-4)",
-              hooks.gfxHoldMs);
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: gfx lock held {} ms at a notice", hooks.gfxHoldMs);
   }
   if (XFILE::CFile::Exists("special://profile/geometrytick_fsbeforenotice"))
   {
     hooks.fsBeforeNotice = true;
-    CLog::Log(LOGWARNING,
-              "GEOMETRYTICK test: fullscreen before the notice (parsed only: V3-4)");
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: fullscreen before the notice");
   }
   if (XFILE::CFile::Exists("special://profile/geometrytick_reopenpending"))
   {
     hooks.reopenPending = true;
-    CLog::Log(LOGWARNING,
-              "GEOMETRYTICK test: a reopen while the notice is pending (parsed only: V3-4)");
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: a reopen while the notice is pending");
+  }
+  if (const auto line = OUTPUT::ReadTestSwitch("geometrytick_vadj1fail"))
+  {
+    hooks.vadj1FailCalls = std::max(0, std::atoi(line->c_str()));
+    CLog::Log(LOGWARNING, "GEOMETRYTICK test: the first {} vadj1 enables fail",
+              hooks.vadj1FailCalls);
   }
   return hooks;
 }
