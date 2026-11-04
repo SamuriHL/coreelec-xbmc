@@ -1558,6 +1558,9 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     if (m_tickPeriodNs && tailNs > m_tickPeriodNs)
       m_report.tailsOverVblank++;
   }
+  // 5.V3-4f: the worker's wake for the buffers PresentTick freed, after the release
+  if (result.wakeWorker)
+    m_video->WakeWorkerOnC();
 
   if (tick.vblankNs && OUTPUT::PlaneOffOnC())
   {

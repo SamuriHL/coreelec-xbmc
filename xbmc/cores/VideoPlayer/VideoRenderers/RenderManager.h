@@ -135,6 +135,7 @@ struct SPresentResult
   SGeometryIn geom; //!< 5.V3-4: empty off the path
   std::shared_ptr<CAMLCodec> qbufCodec; //!< 5.V3-4: the QBUFed frame's decoder (the path)
   bool qbufShown = false; //!< queued to be shown
+  bool wakeWorker = false; //!< 5.V3-4f: buffers freed on the path, the worker woken after the tick
 };
 
 class CRenderManager
@@ -258,6 +259,8 @@ public:
   //! 5.V3-4 (C): the tail after PresentTick (its locks released), and the wake tail
   bool GeometryTailOnC(SPresentResult& result); //!< true when it wrote
   bool GeometryWakeOnC();
+  //! 5.V3-4f (C): the worker's wake for the buffers PresentTick freed, after the release
+  void WakeWorkerOnC();
   //! 5.V3-4 (V): reset the decoders C used
   void DrainCodecsFromC();
   bool ForcedPictureTaken(int gen) const;

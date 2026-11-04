@@ -648,6 +648,13 @@ bool CRenderManager::GeometryTailOnC(SPresentResult& result)
 #endif
 }
 
+void CRenderManager::WakeWorkerOnC()
+{
+  MAINCOUPLING_ACCESSOR("RM m_presentlock");
+  std::unique_lock lock(m_presentlock);
+  NotifyWorker();
+}
+
 bool CRenderManager::GeometryWakeOnC()
 {
 #if defined(HAS_LIBAMCODEC)
@@ -4490,20 +4497,29 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   // released by WaitForBuffer before the buffer is reused: the overlay lock
   // is held across the render thread's overlay pass. The source the render
   // thread is drawing overlays for is freed after it moves on.
+  //
+  // 5.V3-4f: on the path C wakes the worker after the tick (WakeWorkerOnC): it runs
+  // real-time and, woken here, preempted C on its CPU before the frame's release
+  const bool geometryTick = GeometryTickSession();
+  bool wakeWorker = false;
   for (auto it = m_discard.begin(); it != m_discard.end();)
   {
     // 5.V3-5: on the path main draws from its pin record, not the buffer
-    if ((*it != m_renderSource || GeometryTickSession()) &&
+    if ((*it != m_renderSource || geometryTick) &&
         (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI))
     {
       m_pRenderer->ReleaseBuffer(*it);
       m_free.push_back(*it);
       it = m_discard.erase(it);
-      NotifyWorker();
+      if (geometryTick)
+        wakeWorker = true;
+      else
+        NotifyWorker();
     }
     else
       ++it;
   }
+  result.wakeWorker = wakeWorker;
 
   if (result.newFrame)
   {
