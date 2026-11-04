@@ -559,6 +559,22 @@ protected:
     uint64_t overlaySerial;
     OVERLAY::FrameOverlays overlays;
   } m_Queue[NUM_BUFFERS]{};
+  //! 5.V3-5 (MC-24): main's copy of the pinned frame's fields, so C can release every discard
+  //! on the path; written at FrameMove's pin under m_presentlock, read by main
+  struct SPin
+  {
+    bool onPath = false;
+    int index = -1;
+    double pts = 0.0;
+    EFIELDSYNC presentfield = FS_NONE;
+    EPRESENTMETHOD presentmethod = PRESENT_METHOD_SINGLE;
+    // the overlay copy's (the buffer can be V's again before it runs)
+    bool framedOverlays = false;
+    uint64_t overlaySerial = 0;
+    unsigned int segmentGen = 0;
+    OVERLAY::FrameOverlays overlays;
+  } m_pin;
+  EFIELDSYNC PinnedField() const;
   //! 5.V2-7, under m_presentlock: the last serial given; a flush drops overlays up to the floor
   uint64_t m_overlaySerial = 0;
   uint64_t m_overlayFloor = 0;

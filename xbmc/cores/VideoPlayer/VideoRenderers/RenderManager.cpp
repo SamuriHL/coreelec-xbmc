@@ -1314,6 +1314,24 @@ void CRenderManager::FrameMove()
     // 5.V2-4: a renderer V swapped in after this pass's duties is drawn from the next pass
     source = applied ? m_presentsource : -1;
     m_renderSource = source;
+    m_pin.onPath = GeometryTickSession();
+    m_pin.index = source;
+    if (source >= 0)
+    {
+      m_pin.pts = m_Queue[source].pts;
+      m_pin.presentfield = m_Queue[source].presentfield;
+      m_pin.presentmethod = m_Queue[source].presentmethod;
+      if (m_pin.onPath)
+      {
+        m_pin.framedOverlays = m_Queue[source].framedOverlays;
+        m_pin.overlaySerial = m_Queue[source].overlaySerial;
+        m_pin.segmentGen = m_Queue[source].segmentGen;
+        if (m_pin.framedOverlays && m_pin.overlaySerial > m_overlayFloor)
+          m_pin.overlays = m_Queue[source].overlays;
+        else
+          m_pin.overlays = {};
+      }
+    }
   }
   if (!applied)
     LogPinRefused("pin skipped");
@@ -1354,8 +1372,9 @@ void CRenderManager::FrameMove()
       m_presentevent.notifyAll();
     }
 
-    // release all previous
-    for (std::deque<int>::iterator it = m_discard.begin(); it != m_discard.end(); )
+    // release all previous (5.V3-5: on the path the coordinator releases them all)
+    for (std::deque<int>::iterator it = m_discard.begin();
+         !(m_presenterMode && m_pin.onPath) && it != m_discard.end();)
     {
       // renderer may want to keep the frame for postprocessing
       if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
@@ -1389,8 +1408,18 @@ void CRenderManager::FrameMove()
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
+    // 5.V3-5: on the path from the pin record (C may have freed the buffer since the pin)
+    if (m_presenterMode && m_pin.onPath && m_pin.index >= 0 && m_pin.framedOverlays)
+    {
+      source = m_pin.index;
+      framed = true;
+      serial = m_pin.overlaySerial;
+      if (serial > m_overlayFloor)
+        overlays = std::move(m_pin.overlays);
+      segmentGen = m_pin.segmentGen;
+    }
     // 5.V2-7: the overlays of the frame Render draws, copied with it
-    if (m_presenterMode && m_renderSource >= 0 && m_Queue[m_renderSource].framedOverlays)
+    else if (m_presenterMode && m_renderSource >= 0 && m_Queue[m_renderSource].framedOverlays)
     {
       source = m_renderSource;
       framed = true;
@@ -1398,8 +1427,9 @@ void CRenderManager::FrameMove()
       if (serial > m_overlayFloor)
         overlays = m_Queue[source].overlays;
     }
-    if (source >= 0 && source < NUM_BUFFERS)
-      segmentGen = m_Queue[source].segmentGen;
+    if (!framed || !m_pin.onPath)
+      if (source >= 0 && source < NUM_BUFFERS)
+        segmentGen = m_Queue[source].segmentGen;
   }
   // test (vconfigure_mainstall overlay playing): what V queued while main held the overlay lock
   const bool stallArmed = m_overlays.TestStallArmed();
@@ -2070,7 +2100,7 @@ void CRenderManager::PresentHdrGraphics(int idx,
   graphics.view = view;
   graphics.width = static_cast<float>(winSystem->GetGfxContext().GetWidth());
   graphics.height = static_cast<float>(winSystem->GetGfxContext().GetHeight());
-  graphics.pts = idx >= 0 && timed ? m_Queue[idx].pts : DVD_NOPTS_VALUE;
+  graphics.pts = idx >= 0 && timed ? (m_pin.onPath ? m_pin.pts : m_Queue[idx].pts) : DVD_NOPTS_VALUE;
   winSystem->PresentHdrGraphics(graphics);
 }
 
@@ -2136,11 +2166,12 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   bool presented = false;
   if (!gui || renderer->IsGuiLayer())
   {
-    SPresent& m = m_Queue[source];
+    const EPRESENTMETHOD method =
+        m_pin.onPath ? m_pin.presentmethod : m_Queue[source].presentmethod;
 
-    if( m.presentmethod == PRESENT_METHOD_BOB )
+    if (method == PRESENT_METHOD_BOB)
       PresentFields(*renderer, clear, flags, alpha);
-    else if( m.presentmethod == PRESENT_METHOD_BLEND )
+    else if (method == PRESENT_METHOD_BLEND)
       PresentBlend(*renderer, clear, flags, alpha);
     else
       PresentSingle(*renderer, clear, flags, alpha);
@@ -2211,7 +2242,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     {
       m_overlayVisible = visible;
       CLog::Log(LOGINFO, "OUTDIAG overlay visible {} pts {:.3f}", visible,
-                source >= 0 ? m_Queue[source].pts / DVD_TIME_BASE : -1.0);
+                source >= 0 ? (m_pin.onPath ? m_pin.pts : m_Queue[source].pts) / DVD_TIME_BASE
+                            : -1.0);
     }
 
     if (m_renderDebug)
@@ -2332,13 +2364,18 @@ bool CRenderManager::IsGuiLayer()
 }
 
 /* simple present method */
+EFIELDSYNC CRenderManager::PinnedField() const
+{
+  return m_pin.onPath ? m_pin.presentfield : m_Queue[m_presentsource].presentfield;
+}
+
 void CRenderManager::PresentSingle(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const EFIELDSYNC field = PinnedField();
 
-  if (m.presentfield == FS_BOT)
+  if (field == FS_BOT)
     renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT, alpha);
-  else if (m.presentfield == FS_TOP)
+  else if (field == FS_TOP)
     renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP, alpha);
   else
     renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags, alpha);
@@ -2348,18 +2385,18 @@ void CRenderManager::PresentSingle(CBaseRenderer& renderer, bool clear, DWORD fl
  * we just render the two fields right after each other */
 void CRenderManager::PresentFields(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const EFIELDSYNC field = PinnedField();
 
   if(m_presentstep == PRESENT_FRAME)
   {
-    if( m.presentfield == FS_BOT)
+    if (field == FS_BOT)
       renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
     else
       renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
   }
   else
   {
-    if( m.presentfield == FS_TOP)
+    if (field == FS_TOP)
       renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
     else
       renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
@@ -2368,9 +2405,9 @@ void CRenderManager::PresentFields(CBaseRenderer& renderer, bool clear, DWORD fl
 
 void CRenderManager::PresentBlend(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const EFIELDSYNC field = PinnedField();
 
-  if( m.presentfield == FS_BOT )
+  if (field == FS_BOT)
   {
     renderer.RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
     renderer.RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_TOP, alpha / 2);
@@ -4442,7 +4479,9 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   // thread is drawing overlays for is freed after it moves on.
   for (auto it = m_discard.begin(); it != m_discard.end();)
   {
-    if (*it != m_renderSource && (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI))
+    // 5.V3-5: on the path main draws from its pin record, not the buffer
+    if ((*it != m_renderSource || GeometryTickSession()) &&
+        (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI))
     {
       m_pRenderer->ReleaseBuffer(*it);
       m_free.push_back(*it);
