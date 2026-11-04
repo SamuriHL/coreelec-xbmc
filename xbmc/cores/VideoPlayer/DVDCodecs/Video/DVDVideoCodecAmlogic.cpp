@@ -1634,6 +1634,18 @@ bool CDVDVideoCodecAmlogic::ServiceInput()
   return m_Codec && m_Codec->ServiceInput();
 }
 
+void CDVDVideoCodecAmlogic::SetDecoderSideOnV(bool on)
+{
+  if (m_Codec)
+    m_Codec->SetDecoderSideOnV(on);
+}
+
+void CDVDVideoCodecAmlogic::ApplyDecoderSideOnV()
+{
+  if (m_Codec)
+    m_Codec->ApplyDecoderSideOnV();
+}
+
 int CDVDVideoCodecAmlogic::GetPictureWakeFd()
 {
   return m_Codec ? m_Codec->GetPictureWakeFd() : -1;

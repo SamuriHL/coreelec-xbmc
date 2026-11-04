@@ -213,6 +213,14 @@ public:
   // a stream worker (design §17): its eventfd, written when a buffer is freed and
   // when its forced start picture is taken; -1 clears
   void SetWorkerWakeFd(int fd);
+  //! 5.V3-4: this renderer is on the path (the presenter, the latch); V adds its worker
+  bool GeometryTickRenderer() const;
+  //! 5.V3-4: V applies the decoder side; a settings or view mode change then wakes V
+  void SetDecoderSideOnV(bool on) { m_decoderSideOnV = on; }
+  unsigned int DecoderSettingsGen() const
+  {
+    return m_decoderSettingsGen.load(std::memory_order_relaxed);
+  }
   bool ForcedPictureTaken(int gen) const;
   void CancelForce(int gen);
   // non-blocking WaitForBuffer: the level, or -1 with no free buffer (retryIn
@@ -605,6 +613,9 @@ protected:
   bool m_coordinatorDelivers = false; //!< its vblank events arrive
   //! the coordinator releases the video frames; set in Configure() under all locks
   std::atomic_bool m_presenterMode{false};
+  std::atomic_bool m_decoderSideOnV{false};
+  std::atomic<unsigned int> m_decoderSettingsGen{0};
+  void DecoderSettingsChanged(); // under m_statelock
   //! the source the render thread snapshotted in FrameMove; not freed until
   //! the next FrameMove
   int m_renderSource = -1;

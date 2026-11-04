@@ -1064,6 +1064,14 @@ void CVideoPlayerVideo::WorkerDuties()
   if (m_pVideoCodec)
     m_pVideoCodec->ServiceInput();
 
+  // 5.V3-4 (L6): a settings or view mode change, paused too
+  if (m_decoderSideOnV && m_pVideoCodec &&
+      m_renderManager.DecoderSettingsGen() != m_decoderSettingsSeen)
+  {
+    m_decoderSettingsSeen = m_renderManager.DecoderSettingsGen();
+    m_pVideoCodec->ApplyDecoderSideOnV();
+  }
+
   if (m_startPendingGen >= 0)
   {
     const bool taken = m_renderManager.ForcedPictureTaken(m_startPendingGen);
@@ -1651,6 +1659,17 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
     return false;
   }
+  // 5.V3-4: per picture, as the decoder or the renderer can change
+  const bool decoderSideOnV = m_worker && m_renderManager.GeometryTickRenderer();
+  m_pVideoCodec->SetDecoderSideOnV(decoderSideOnV);
+  // RM's too: its UnInit clears it for a reused player
+  m_renderManager.SetDecoderSideOnV(decoderSideOnV);
+  if (decoderSideOnV != m_decoderSideOnV)
+  {
+    m_decoderSideOnV = decoderSideOnV;
+    m_decoderSettingsSeen = m_renderManager.DecoderSettingsGen();
+    CLog::Log(LOGINFO, "GEOMDIAG decoder side on {}", decoderSideOnV ? "V" : "the render thread");
+  }
 
   //try to calculate the framerate
   m_ptsTracker.Add(pPicture->pts);
@@ -1793,6 +1812,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
     return OUTPUT_DROPPED;
   }
+  // 5.V3-4: at each output picture (vadj1 retried until it takes)
+  if (m_decoderSideOnV)
+    m_pVideoCodec->ApplyDecoderSideOnV();
 
   return OUTPUT_NORMAL;
 }

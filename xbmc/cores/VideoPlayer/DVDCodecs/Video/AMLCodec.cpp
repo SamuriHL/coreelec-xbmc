@@ -3568,9 +3568,11 @@ void CAMLCodec::SetPollDevice(int dev)
   m_pollDevice = dev;
 }
 
-int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen)
+int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen, bool* shown)
 {
   int ret;
+  if (shown)
+    *shown = false;
   v4l2_buffer vbuf = v4l2_buffer();
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   vbuf.index = index;
@@ -3601,6 +3603,8 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
       vbuf.flags |= V4L2_BUF_FLAG_DONE;
     if ((ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
       CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
+    else if (shown)
+      *shown = !drop;
     return ret;
   }
 
@@ -3653,6 +3657,8 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
     }
     m_outstanding.erase(m_outstanding.begin(), it);
     ret = QueueBack(amlVideoFile, index, false);
+    if (shown)
+      *shown = ret >= 0;
     m_outstanding.pop_front();
   }
   while (!m_outstanding.empty() && m_outstanding.front().dropped)
@@ -3798,6 +3804,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
   m_diagGetPictureCalls.fetch_add(1, std::memory_order_relaxed);
+  // 5.V3-4 (Q10): the rate sampled before its readers here (frame_ms, the poll gap, the
+  // duration, GetNextPoll)
+  if (m_decoderSideOnV)
+    ApplyDecoderRate();
 
   // While draining, always attempt the dequeue - drain means no further
   // input is coming, so the fill gates are moot and anything the hardware
@@ -4308,6 +4318,19 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
 
 void CAMLCodec::ApplyDecoderSide(bool decoderRate)
 {
+  ApplyDecoderSettings(decoderRate);
+  if (decoderRate)
+    ApplyDecoderRate();
+}
+
+void CAMLCodec::ApplyDecoderSideOnV()
+{
+  if (m_opened)
+    ApplyDecoderSettings(true);
+}
+
+void CAMLCodec::ApplyDecoderSettings(bool vadj1)
+{
   // video zoom adjustment.
   float zoom = m_processInfo.GetVideoSettings().m_CustomZoomAmount;
   if ((int)(zoom * 1000) != (int)(m_zoom * 1000))
@@ -4315,7 +4338,7 @@ void CAMLCodec::ApplyDecoderSide(bool decoderRate)
     m_zoom = zoom;
   }
   // enable vadj1
-  if (!m_vadj1_enabled && decoderRate)
+  if (!m_vadj1_enabled && vadj1)
     m_vadj1_enabled = Enable_vadj1();
   // video contrast adjustment.
   int contrast = m_processInfo.GetVideoSettings().m_Contrast;
@@ -4331,8 +4354,12 @@ void CAMLCodec::ApplyDecoderSide(bool decoderRate)
     SetVideoBrightness(brightness);
     m_brightness = brightness;
   }
+}
+
+void CAMLCodec::ApplyDecoderRate()
+{
   // video rate adjustment.
-  unsigned int video_rate = decoderRate ? GetDecoderVideoRate() : 0;
+  unsigned int video_rate = GetDecoderVideoRate();
   if (video_rate > 0 && video_rate != am_private->video_rate)
   {
     CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
@@ -4350,7 +4377,8 @@ void CAMLCodec::ApplyVideoGeometry(const CRect &SrcRect, const CRect &DestRect, 
   // this routine gets called every video frame
   // and is in the context of the renderer thread so
   // do not do anything stupid here.
-  ApplyDecoderSide(decoderRate);
+  if (!m_decoderSideOnV)
+    ApplyDecoderSide(decoderRate);
   bool update = false;
 
   // video view mode

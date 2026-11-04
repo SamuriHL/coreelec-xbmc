@@ -166,6 +166,9 @@ protected:
   int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder
 
   bool m_worker = false;
+  //! 5.V3-4: V applies the decoder side (its worker, the renderer on the path)
+  bool m_decoderSideOnV = false;
+  unsigned int m_decoderSettingsSeen = 0;
   int m_wakeFd = -1;
   bool m_workerOutputDue = false; //!< a wake: try the output once
   bool m_workerTimedOut = false; //!< the stall timeout passed (not an output wake)

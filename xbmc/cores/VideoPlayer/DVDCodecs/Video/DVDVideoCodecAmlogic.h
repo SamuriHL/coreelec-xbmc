@@ -103,6 +103,8 @@ public:
   bool SetNonBlocking(bool on) override;
   std::chrono::microseconds GetNextPoll(bool paused) override;
   bool ServiceInput() override;
+  void SetDecoderSideOnV(bool on) override;
+  void ApplyDecoderSideOnV() override;
   int GetPictureWakeFd() override;
   // Non-zero so VideoPlayerVideo buffers recent packets and REPLAYS them
   // after VC_FLUSHED/VC_REOPEN. Without this (base returns 0) a reopened

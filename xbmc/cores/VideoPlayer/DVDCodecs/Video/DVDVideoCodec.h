@@ -297,6 +297,15 @@ public:
   virtual bool ServiceInput() { return false; }
 
   /**
+  * 5.V3-4: the decoder side (picture adjustments, the rate) is applied by the video
+  * thread, not by the renderer's geometry apply
+  */
+  virtual void SetDecoderSideOnV(bool on) {}
+  //! 5.V3-4: the picture adjustments now (the video thread, after an output picture or a
+  //! settings change)
+  virtual void ApplyDecoderSideOnV() {}
+
+  /**
   * In non-blocking mode: an fd that polls readable when a decoded picture can
   * be taken, or -1.
   */

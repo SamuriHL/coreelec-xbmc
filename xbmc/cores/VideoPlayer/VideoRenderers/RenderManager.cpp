@@ -325,6 +325,18 @@ bool V27On()
 #endif
 }
 
+// 5.V3-4 (MC-27, MC-45): C writes VD1, V owns the decoder side (§2: on the legacy branch GC
+// applies the row before the set)
+bool V34On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_geometrytick_on() && !aml_geometrytick_skip("V3-4") && V24On() && V27On() &&
+         OUTPUT::ModeSetsOnW();
+#else
+  return false;
+#endif
+}
+
 #if defined(HAS_LIBAMCODEC)
 // 5.V2-3: B2-8's re-encode runs the GUI encoding outside the RM locks
 bool V23On()
@@ -545,6 +557,22 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
   {
     m_pRenderer->SetVideoSettings(settings);
   }
+  DecoderSettingsChanged();
+}
+
+bool CRenderManager::GeometryTickRenderer() const
+{
+  return m_presenterMode && V34On();
+}
+
+// under m_statelock: V applies the decoder side (L6)
+void CRenderManager::DecoderSettingsChanged()
+{
+  if (!m_decoderSideOnV || !m_presenterMode)
+    return;
+  m_decoderSettingsGen.fetch_add(1, std::memory_order_relaxed);
+  std::unique_lock lock(m_presentlock);
+  NotifyWorker();
 }
 
 bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers)
@@ -1445,6 +1473,7 @@ void CRenderManager::UnInit()
 
   // before the renderer goes: the coordinator releases frames through it
   StopCoordinator();
+  m_decoderSideOnV = false;
 
   // the GL teardown (and the overlays' settings save)
   const auto teardown =
@@ -1824,6 +1853,7 @@ void CRenderManager::SetViewMode(int iViewMode)
   CMainHold hold("SetViewMode");
   if (m_pRenderer)
     m_pRenderer->SetViewMode(iViewMode);
+  DecoderSettingsChanged();
   m_playerPort->VideoParamsChange();
 }
 

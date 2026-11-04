@@ -114,6 +114,12 @@ public:
   //! ApplyVideoGeometry's decoder side: vadj1 (with decoderRate), contrast, brightness, the
   //! rate (with decoderRate)
   void          ApplyDecoderSide(bool decoderRate);
+  //! 5.V3-4: the decoder side on V (the rate at each GetPicture, the rest from V's calls);
+  //! the geometry apply then leaves it alone
+  void          SetDecoderSideOnV(bool on) { m_decoderSideOnV = on; }
+  void          ApplyDecoderSideOnV();
+  void          ApplyDecoderSettings(bool vadj1);
+  void          ApplyDecoderRate();
   //! ApplyVideoGeometry's frame-locked writes on a change: the 3D mode, axis and screen_mode
   void          ApplyFrameLocked(const VIDEOGEOMETRY::SAmlAxisOut& axis);
   bool          IsOpened() const { return m_opened; }
@@ -126,8 +132,9 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
+  //! shown: set when this call queued the buffer to be shown (5.V3-4)
   int           ReleaseFrame(const uint32_t index, bool bDrop = false,
-                             uint32_t sessionGen = UINT32_MAX);
+                             uint32_t sessionGen = UINT32_MAX, bool* shown = nullptr);
   // decode-session generation, bumped at every OpenDecoder: buffers carry
   // the generation they were decoded in, and ReleaseFrame refuses to QBUF a
   // previous session's index into the new v4l session (VC_REOPEN made
@@ -177,6 +184,7 @@ private:
   int              m_contrast = -1;
   int              m_brightness = -1;
   bool             m_vadj1_enabled = false;
+  std::atomic_bool m_decoderSideOnV{false};
   RESOLUTION       m_video_res = RES_INVALID;
 
   static const unsigned int STATE_PREFILLED  = 1;
