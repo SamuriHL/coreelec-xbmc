@@ -464,7 +464,7 @@ protected:
   // real_player: the presentation coordinator's per-vsync step
   void PresentTick(const SPresentTick& tick, SPresentResult& result);
   void ShadowReference(SPresentResult& result, bool forced, const STickTiming* timing);
-  void StartCoordinator();
+  bool StartCoordinator(); //!< true: attached by this call
   void StopCoordinator();
 
   //! main's unlocked users take a copy under m_statelock
@@ -669,6 +669,8 @@ protected:
 
   CPresentationCoordinator* m_coordinator = nullptr; // the win system's; AML builds only
   bool m_coordinatorDelivers = false; //!< its vblank events arrive
+  bool m_coordinatorStopped = false; //!< StopCoordinator ran: no attach until the next PreInit
+  unsigned int m_coordinatorStops = 0; //!< bumped by StopCoordinator; an attach across one is undone
   //! the coordinator releases the video frames; set in Configure() under all locks
   std::atomic_bool m_presenterMode{false};
   std::atomic_bool m_decoderSideOnV{false};

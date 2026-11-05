@@ -770,6 +770,17 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   }
 
 #if defined(HAS_LIBAMCODEC)
+  // a file opened while the display gave no vblanks (a hotplug restore in progress) joins the
+  // coordinator at a configure once the output is back
+  bool retryAttach = false;
+  if (V24On())
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    retryAttach = !m_coordinator && !m_coordinatorStopped;
+  }
+  if (retryAttach && StartCoordinator())
+    CLog::Log(LOGINFO, "CRenderManager::Configure - presentation coordinator attached at a configure");
   if (V24On())
   {
     const char* why = nullptr;
@@ -1577,6 +1588,11 @@ void CRenderManager::PreInit()
     }
   }
 
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    m_coordinatorStopped = false;
+  }
   StartCoordinator();
 
   MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -3979,37 +3995,65 @@ void CRenderManager::CheckEnableClockSync(const STickTiming* timing)
   m_playerPort->UpdateClockSync(m_clockSync.m_enabled);
 }
 
-void CRenderManager::StartCoordinator()
+bool CRenderManager::StartCoordinator()
 {
 #if defined(HAS_LIBAMCODEC)
-  if (m_coordinator)
-    return;
-  m_coordinator = CPresentationCoordinator::Get();
-  if (m_coordinator)
-    m_coordinatorDelivers = m_coordinator->AttachVideo(this);
-  if (m_coordinator && !m_coordinatorDelivers)
+  unsigned int stops;
   {
-    m_coordinator->DetachVideo(this);
-    m_coordinator = nullptr;
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    // a stop between the caller's test and here: no attach until the next PreInit
+    if (m_coordinator || m_coordinatorStopped)
+      return false;
+    stops = m_coordinatorStops;
   }
+  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
+  const bool delivers = coordinator && coordinator->AttachVideo(this);
+  // V tests both under m_statelock (5.V2-4); a retry runs on V's configure, beside a stop on main.
+  // The detach runs after the lock (the coordinator takes m_videoMutex before m_statelock)
+  bool keep;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    keep = delivers && m_coordinatorStops == stops;
+    if (keep)
+    {
+      m_coordinator = coordinator;
+      m_coordinatorDelivers = true;
+    }
+  }
+  if (coordinator && !keep)
+    coordinator->DetachVideo(this);
+  return keep;
+#else
+  return false;
 #endif
 }
 
 void CRenderManager::StopCoordinator()
 {
 #if defined(HAS_LIBAMCODEC)
-  if (m_coordinator)
-    m_coordinator->DetachVideo(this);
-  // 5.V2-4: V tests both under m_statelock
-  std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
-  if (V24On())
+  CPresentationCoordinator* coordinator;
+  bool presenter;
   {
-    MAINCOUPLING_ACCESSOR("RM m_statelock");
-    lock.lock();
+    // 5.V2-4: V tests both under m_statelock; the detach runs after it (the coordinator takes
+    // m_videoMutex before m_statelock)
+    std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+    if (V24On())
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      lock.lock();
+    }
+    coordinator = m_coordinator;
+    m_coordinator = nullptr;
+    m_coordinatorDelivers = false;
+    m_coordinatorStopped = true;
+    ++m_coordinatorStops;
+    presenter = m_presenterMode;
   }
-  m_coordinator = nullptr;
-  m_coordinatorDelivers = false;
-  if (m_presenterMode)
+  if (coordinator)
+    coordinator->DetachVideo(this);
+  if (presenter)
     aml_set_video_presenter_active(false);
 #endif
 }

@@ -212,8 +212,8 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
     m_video = renderManager;
   }
   // the CRTC: under hotplugworker the published DisplayState's id (5.B3-4); under off HEAD's live
-  // read (racy, as today: this runs on VideoPlayer::OpenFile's caller via RM PreInit, not with
-  // the re-init)
+  // read (racy: this runs on VideoPlayer::OpenFile's caller via RM PreInit, or on V at a configure
+  // after a failed attach, which can be during a restore)
   if (auto winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
     m_crtc = winSystem->GetDRMCrtcId();
 
