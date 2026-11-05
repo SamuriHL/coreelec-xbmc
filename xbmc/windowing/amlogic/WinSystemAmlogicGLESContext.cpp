@@ -188,6 +188,18 @@ bool DriveShadowOn()
   return on;
 }
 
+// a frac-only difference of a 24/30/60 mode that no film start re-clocks: the set would re-train
+// at the held clock and change nothing, so it is no change (a stop after a 23.976 film)
+bool HeldFracOnly(const RESOLUTION_INFO& cur, const RESOLUTION_INFO& res, bool fracDiffers,
+                  bool fracRequest)
+{
+  const float familyRate = std::round(res.fRefreshRate);
+  return fracDiffers && !fracRequest &&
+         (familyRate == 24.0f || familyRate == 30.0f || familyRate == 60.0f) &&
+         std::round(cur.fRefreshRate) == familyRate &&
+         MathUtils::FloatEquals(cur.fRefreshRate, res.fRefreshRate, 0.06f);
+}
+
 // 5.B3-5 (design §6, every path): the current resolution for CreateNewWindow's decision. A
 // connected CRTC with no mode (disabled) is a mode set required, with an empty current
 // resolution that no "No need" test matches; today's predicate never reads that state
@@ -244,11 +256,12 @@ void ShadowDecide(CAMLDisplay& display, SDriveShadow& s)
   const bool sameSize = cur.iWidth == res.iWidth && cur.iHeight == res.iHeight &&
                         cur.iScreenWidth == res.iScreenWidth &&
                         cur.iScreenHeight == res.iScreenHeight;
+  const bool heldFrac = HeldFracOnly(cur, res, d.frac, s.fracRequest);
   d.noop = !dark && sameSize && b.fullScreen == s.fullScreen &&
-           cur.fRefreshRate == res.fRefreshRate &&
+           (cur.fRefreshRate == res.fRefreshRate || heldFrac) &&
            (cur.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
-           b.windowCreated && s.nativeGUI == b.nativeGUI && !d.hdr && !d.hotplug && !d.frac &&
-           !d.stereo && !d.wire;
+           b.windowCreated && s.nativeGUI == b.nativeGUI && !d.hdr && !d.hotplug &&
+           (!d.frac || heldFrac) && !d.stereo && !d.wire;
   if (d.noop)
   {
     d.reply = "done(noChange)";
@@ -572,18 +585,22 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
 
   // check if mode switch is needed
+  const bool heldFrac = HeldFracOnly(current_resolution, res,
+                                     force_mode_switch_by_fractional_rate,
+                                     aml_frac_reclock_request());
   if (!dark && current_resolution.iWidth == res.iWidth &&
       current_resolution.iHeight == res.iHeight &&
       current_resolution.iScreenWidth == res.iScreenWidth &&
       current_resolution.iScreenHeight == res.iScreenHeight && m_bFullScreen == fullScreen &&
-      current_resolution.fRefreshRate == res.fRefreshRate &&
+      (current_resolution.fRefreshRate == res.fRefreshRate || heldFrac) &&
       (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
           (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
       m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
-      !force_mode_switch_by_hotplug && !force_mode_switch_by_fractional_rate &&
+      !force_mode_switch_by_hotplug && (!force_mode_switch_by_fractional_rate || heldFrac) &&
       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_wire)
   {
-    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window{}",
+              __FUNCTION__, heldFrac ? " (held 1000/1001 clock)" : "");
     if (shadow)
     {
       shadow->main.noop = true;
@@ -1187,21 +1204,23 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, job.nativeGUI);
 
   // check if mode switch is needed
+  const bool heldFrac = HeldFracOnly(current_resolution, res,
+                                     force_mode_switch_by_fractional_rate, job.fracRequest);
   if (!dark && current_resolution.iWidth == res.iWidth &&
       current_resolution.iHeight == res.iHeight &&
       current_resolution.iScreenWidth == res.iScreenWidth &&
       current_resolution.iScreenHeight == res.iScreenHeight &&
       job.backups.fullScreen == job.fullScreen &&
-      current_resolution.fRefreshRate == res.fRefreshRate &&
+      (current_resolution.fRefreshRate == res.fRefreshRate || heldFrac) &&
       (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
           (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
       job.backups.windowCreated && job.nativeGUI == job.backups.nativeGUI &&
       !force_mode_switch_by_hdr && !force_mode_switch_by_hotplug &&
-      !force_mode_switch_by_fractional_rate && !force_mode_switch_by_stereo_mode &&
+      (!force_mode_switch_by_fractional_rate || heldFrac) && !force_mode_switch_by_stereo_mode &&
       !force_mode_switch_by_wire)
   {
-    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window",
-              __FUNCTION__);
+    CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window{}",
+              __FUNCTION__, heldFrac ? " (held 1000/1001 clock)" : "");
     // D7: parked only for a disc engage the set carries (today's engage runs parked); no
     // not-ready, no lost walk
     const bool dvPicture = job.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
