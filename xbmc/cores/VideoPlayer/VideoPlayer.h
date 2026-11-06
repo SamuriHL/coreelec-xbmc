@@ -931,6 +931,7 @@ protected:
   unsigned int m_startGateGen = 0; //!< the stream set the gate belongs to
   std::chrono::steady_clock::time_point m_startGateSince;
   std::chrono::steady_clock::time_point m_startGateStarveSince;
+  bool m_startGateFullScreenPosted = false;
   //! debug (flag file): BD-J discs take the keep-alive transition, to reproduce
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;

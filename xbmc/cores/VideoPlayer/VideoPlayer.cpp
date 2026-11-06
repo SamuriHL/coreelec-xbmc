@@ -2707,10 +2707,12 @@ void CVideoPlayer::ArmStartGate(const char* where)
   if (m_pDemuxer && m_pInputBluray)
     hasVideo = m_pInputBluray->FirstClipHasVideo();
 #endif
+  // the open's fullscreen request holds until the session's first commit; later sets
+  // follow the GUI (a user who left fullscreen gets no mode decision, as ungated)
+  const bool startFullScreen = m_playerOptions.fullscreen && !m_State.streamsReady;
   const bool arm =
       hasVideo && m_startGateEnabled &&
-      (m_playerOptions.fullscreen ||
-       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
+      (startFullScreen || CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
   if (!arm)
   {
     // the last set's gate ends with it; its audio is closed or flushed by now
@@ -2730,6 +2732,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
   m_startGateShut = true;
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
+  m_startGateFullScreenPosted = false;
   // before any audio of the set opens
   m_VideoPlayerAudio->SetStartGated(true);
   m_renderManager.SetModeFirstGate(true, m_startGateGen);
@@ -2745,6 +2748,17 @@ void CVideoPlayer::CheckStartGate()
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
   const State state = m_renderManager.GetModeFirstState(m_startGateGen);
+  // the session's fullscreen video window from its first picture, as the first commit
+  // posts it ungated: else the GUI stays up through the mode set and its settle (so also
+  // while lost). Once it is active, the commit's own switch does nothing.
+  if (state != State::UNCONFIGURED && !m_startGateFullScreenPosted &&
+      m_playerOptions.fullscreen && !m_State.streamsReady)
+  {
+    m_startGateFullScreenPosted = true;
+    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+    CLog::Log(LOGINFO, "VideoPlayer: start gate: fullscreen at the first picture (set {})",
+              m_startGateGen);
+  }
   if (m_displayLost)
     return;
   if (state == State::DECIDED)
