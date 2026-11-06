@@ -341,6 +341,17 @@ bool V34On()
 #endif
 }
 
+// 5.V3-6 (MC-26): V's buffer waits read no GUI power state; per process (the latch), not per
+// session: a file's first buffer request comes before its configure turns the session on
+bool V36On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_geometrytick_on() && !aml_geometrytick_skip("V3-6");
+#else
+  return false;
+#endif
+}
+
 #if defined(HAS_LIBAMCODEC)
 // 5.V2-3: B2-8's re-encode runs the GUI encoding outside the RM locks
 bool V23On()
@@ -1349,7 +1360,9 @@ void CRenderManager::FrameMove()
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     CMainHold hold("FrameMove pin");
-    m_bRenderGUI = true;
+    // 5.V3-6: on the path main does not re-arm RM's teardown marker
+    if (!GeometryTickSession())
+      m_bRenderGUI = true;
     // 5.V2-4: a renderer V swapped in after this pass's duties is drawn from the next pass
     source = applied ? m_presentsource : -1;
     m_renderSource = source;
@@ -1430,7 +1443,9 @@ void CRenderManager::FrameMove()
     }
 
     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
-    m_bRenderGUI = true;
+    // 5.V3-6: on the path main does not re-arm RM's teardown marker
+    if (!GeometryTickSession())
+      m_bRenderGUI = true;
     source = m_presentsource;
   }
 
@@ -3374,8 +3389,13 @@ int CRenderManager::TryGetBuffer(std::chrono::milliseconds& retryIn, bool releas
 
   // as WaitForBuffer: with the GUI not rendering, pictures are discarded at
   // the clock (its wait becomes the caller's retry)
-  MAINCOUPLING("GetRenderGUI");
-  if (!m_bRenderGUI || !g_application.GetRenderGUI())
+  // 5.V3-6: with the latch on only RM's teardown marker; main's power state is not read.
+  // It is always true on Amlogic (no DPMS manager in CWinSystemAmlogic); a winsystem
+  // with DPMS would need its power state published to V before taking this
+  const bool tickPath = V36On();
+  if (!tickPath)
+    MAINCOUPLING("GetRenderGUI");
+  if (!m_bRenderGUI || (!tickPath && !g_application.GetRenderGUI()))
   {
     m_bRenderGUI = false;
     double presenttime = 0;
@@ -3422,8 +3442,11 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
 
   // check if gui is active and discard buffer if not
   // this keeps videoplayer going
-  MAINCOUPLING("GetRenderGUI");
-  if (!m_bRenderGUI || !g_application.GetRenderGUI())
+  // 5.V3-6: with the latch on only RM's teardown marker; main's power state is not read
+  const bool tickPath = V36On();
+  if (!tickPath)
+    MAINCOUPLING("GetRenderGUI");
+  if (!m_bRenderGUI || (!tickPath && !g_application.GetRenderGUI()))
   {
     m_bRenderGUI = false;
     double presenttime = 0;
