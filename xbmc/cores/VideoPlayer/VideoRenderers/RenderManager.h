@@ -97,6 +97,7 @@ struct SViewModeRequest
   float customPixelRatio = 1.0f;
   float customVerticalShift = 0.0f;
   bool customNonLinStretch = false;
+  unsigned int fileGen = 0; //!< 5.V3-7: the file the request belongs to (RM's m_fileGen)
 };
 
 //! 5.V3-4: C's inputs from RM, copied under m_statelock on the path only
@@ -106,6 +107,8 @@ struct SGeometryIn
   unsigned int rgen = 0;
   uint64_t request = 0; //!< the fullscreen request word
   SViewModeRequest viewMode;
+  bool v37 = false; //!< 5.V3-7: a newer file's request waits for that file's first frame
+  unsigned int fileGen = 0; //!< RM's m_fileGen: a decoder first seen at a QBUF takes it
   // the configure facts
   unsigned int sourceWidth = 0;
   unsigned int sourceHeight = 0;
@@ -312,6 +315,11 @@ public:
   //! 5.V3-1 (log only): the player's per-file settings request for fileGen is done (P's
   //! outbound thread), timed against the file's first release
   void NoteSettingsLanded(unsigned int fileGen);
+  //! 5.V3-7 (outbound thread): the file's per-file settings landed; with V37 its view mode
+  //! becomes a request (C applies it at the file's first frame, or at the next tick)
+  void SettingsLanded(unsigned int fileGen);
+  //! test (vconfigure_mainstall "sleep settings <ms>"): delays the load on the outbound thread
+  void SettingsLoadTestStall();
   unsigned int FileGen() const { return m_fileGen; }
 
 protected:
@@ -704,7 +712,9 @@ protected:
   bool GeometryTickSession() const { return m_decoderSideOnV && m_presenterMode; }
   //! 5.V3-4: the view mode request C computes from (m_statelock)
   SViewModeRequest m_viewModeRequest;
-  void RecordViewMode(int viewMode, const CVideoSettings& settings); // under m_statelock
+  void RecordViewMode(int viewMode, const CVideoSettings& settings,
+                      const char* site); // under m_statelock
+  unsigned int m_viewModeFileGen = 0; //!< 5.V3-7: the file whose request is in (m_statelock)
   void FillGeometryIn(SGeometryIn& in); // under m_statelock
   //! C's renderer (m_statelock): moved only by C's PresentTick and cleared by UnInit, so a
   //! copy C holds in its tail is never the last; a stale one waits in m_cReleased, reset by V

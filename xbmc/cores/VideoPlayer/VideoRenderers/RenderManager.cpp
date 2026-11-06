@@ -136,7 +136,7 @@ void TimingInputsWritten()
 // arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock) or
 // statelock (holding m_statelock). 5.V3's geometry (V3-4) is armed by each special://temp/
 // geometrystall_now (main deletes it), so W's and V's changes land while main sleeps; settings
-// (V3-7) is parsed only
+// (V3-7) sleeps on P's outbound thread before the per-file settings load
 struct SVStall
 {
   std::string form;
@@ -165,7 +165,8 @@ const SVStall& VStall()
       result = {fields[0], fields[1], std::atoi(fields[2].c_str())};
     if (result.ms > 0 && result.event == "settings")
       CLog::Log(LOGWARNING,
-                "GEOMETRYTICK test stall {} of {} ms on main at \"settings\" (parsed only: V3-7)",
+                "GEOMETRYTICK test stall {} of {} ms on the outbound thread before the settings load "
+                "(V3-7)",
                 result.form, result.ms);
     else if (result.ms > 0)
       CLog::Log(LOGWARNING, "VCONFIGURE test stall {} of {} ms on main at \"{}\"", result.form,
@@ -347,6 +348,17 @@ bool V36On()
 {
 #if defined(HAS_LIBAMCODEC)
   return aml_geometrytick_on() && !aml_geometrytick_skip("V3-6");
+#else
+  return false;
+#endif
+}
+
+// 5.V3-7: live per-file settings (Q2, Q3): a landing and a same-parameter next file record the
+// file's view mode; C holds a newer file's request until that file's first frame
+bool V37On()
+{
+#if defined(HAS_LIBAMCODEC)
+  return V34On() && !aml_geometrytick_skip("V3-7");
 #else
   return false;
 #endif
@@ -538,6 +550,36 @@ void CRenderManager::NoteFileOrigin(unsigned int fileGen, bool nextFile, bool fu
             m_playerGen, fileGen, nextFile ? "next" : "first", fullscreen ? 1 : 0);
 }
 
+void CRenderManager::SettingsLanded(unsigned int fileGen)
+{
+  if (!V37On())
+    return;
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  // not yet configured for this file: its configure reads the landed values (r1 B2: no
+  // session test, the decoder side goes on V after the configure)
+  if (fileGen != m_fileGen || m_viewModeFileGen != fileGen)
+    return;
+  const CVideoSettings settings = m_playerPort->GetVideoSettings();
+  RecordViewMode(settings.m_ViewMode, settings, "settings landed");
+}
+
+void CRenderManager::SettingsLoadTestStall()
+{
+#if defined(HAS_LIBAMCODEC)
+  if (!VStallAt("settings"))
+    return;
+  const SVStall& stall = VStall();
+  if (stall.form != "sleep")
+    return;
+  CLog::Log(LOGWARNING,
+            "GEOMETRYTICK test stall sleep {} ms on the outbound thread at \"settings\" player={} "
+            "file={}",
+            stall.ms, m_playerGen, m_fileGen.load());
+  std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+#endif
+}
+
 void CRenderManager::NoteSettingsLanded(unsigned int fileGen)
 {
   const int64_t now = SteadyNs();
@@ -597,11 +639,18 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
   DecoderSettingsChanged();
 }
 
-void CRenderManager::RecordViewMode(int viewMode, const CVideoSettings& settings)
+void CRenderManager::RecordViewMode(int viewMode,
+                                    const CVideoSettings& settings,
+                                    const char* site)
 {
   if (!V34On())
     return;
   m_viewModeRequest.gen++;
+  m_viewModeRequest.fileGen = m_fileGen;
+  if (V37On())
+    CLog::Log(LOGINFO, "VIEWMODE record {} file {} gen {} mode {} zoom {:.3f}", site,
+              m_viewModeRequest.fileGen, m_viewModeRequest.gen, viewMode,
+              settings.m_CustomZoomAmount);
   m_viewModeRequest.viewMode = viewMode;
   m_viewModeRequest.customZoomAmount = settings.m_CustomZoomAmount;
   m_viewModeRequest.customPixelRatio = settings.m_CustomPixelRatio;
@@ -625,6 +674,8 @@ void CRenderManager::FillGeometryIn(SGeometryIn& in)
   in.rgen = m_rgen;
   in.request = m_fullScreenRequest.load(std::memory_order_acquire);
   in.viewMode = m_viewModeRequest;
+  in.v37 = V37On();
+  in.fileGen = m_fileGen;
   aml->GetConfigureFacts(in);
 #endif
 }
@@ -747,6 +798,14 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
           m_dvdClock.ResetVsyncAdjust();
         }
         m_lateframes = -1;
+      }
+      // 5.V3-7 (Q3): a same-parameter next file keeps the renderer; its view mode is recorded
+      // here (C holds it until the file's first frame)
+      if (V37On() && m_viewModeFileGen != m_fileGen)
+      {
+        m_viewModeFileGen = m_fileGen;
+        const CVideoSettings settings = m_playerPort->GetVideoSettings();
+        RecordViewMode(settings.m_ViewMode, settings, "same-parameter file");
       }
       PromoteReclockArm();
       TagModeFirstConfigure();
@@ -957,7 +1016,8 @@ bool CRenderManager::Configure()
 
   const CVideoSettings settings = m_playerPort->GetVideoSettings();
   m_pRenderer->SetVideoSettings(settings);
-  RecordViewMode(settings.m_ViewMode, settings);
+  RecordViewMode(settings.m_ViewMode, settings, "configure");
+  m_viewModeFileGen = m_fileGen;
   bool result = m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
   if (result)
   {
@@ -1074,7 +1134,8 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       const CVideoSettings settings = m_playerPort->GetVideoSettings();
       renderer->SetVideoSettings(settings);
       // main's ApplyGeometry computes from these (D1, r1 B2)
-      RecordViewMode(settings.m_ViewMode, settings);
+      RecordViewMode(settings.m_ViewMode, settings, "configure on V");
+      m_viewModeFileGen = m_fileGen;
       old = std::move(m_pRenderer);
       // the old renderer's decoder buffers go now (a main pass may hold it a while); one of
       // another kind (the GLES placeholder) is deleted on main
@@ -2070,7 +2131,7 @@ void CRenderManager::SetViewMode(int iViewMode)
   CMainHold hold("SetViewMode");
   if (m_pRenderer)
   {
-    RecordViewMode(iViewMode, m_pRenderer->GetVideoSettings());
+    RecordViewMode(iViewMode, m_pRenderer->GetVideoSettings(), "SetViewMode");
     m_pRenderer->SetViewMode(iViewMode);
   }
   DecoderSettingsChanged();
@@ -4308,7 +4369,7 @@ void CRenderManager::ReencodeOnOutputChange()
     {
       // its SetViewMode reads these
       const CVideoSettings settings = m_pRenderer->GetVideoSettings();
-      RecordViewMode(settings.m_ViewMode, settings);
+      RecordViewMode(settings.m_ViewMode, settings, "B2-8");
       reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation);
       outcome = reencoded ? "CRendererAML::Configure, no new picture"
                           : "CRendererAML::Configure failed";

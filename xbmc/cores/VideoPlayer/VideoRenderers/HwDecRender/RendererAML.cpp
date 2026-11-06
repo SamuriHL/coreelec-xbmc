@@ -718,6 +718,14 @@ bool CRendererAML::GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>
     m_c.in = m_cIn.get();
   }
   const bool qbuf = codec != nullptr;
+  // 5.V3-7: a frame's file is its decoder's: a decoder first seen here takes the current file
+  // (a late frame of the old decoder keeps the old file)
+  if (qbuf && m_c.in &&
+      (m_c.fileCodec.owner_before(codec) || codec.owner_before(m_c.fileCodec)))
+  {
+    m_c.fileCodec = codec;
+    m_c.shownFileGen = m_c.in->fileGen;
+  }
   if (!qbuf)
   {
     codec = m_c.codec.lock();
@@ -766,8 +774,21 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
   const SGeometryIn& facts = *m_c.in;
   SOnC onC = ComputeOnC(facts, m_c.snap, *state, m_c.viewMode);
   // the view mode at main's SetViewMode moments (its request gen), with C's row
-  if (!m_c.haveViewMode || facts.viewMode.gen != m_c.viewModeGen)
+  // 5.V3-7: a newer file's request waits for that file's first frame (the screen still shows
+  // the previous file's)
+  const bool held = facts.v37 && m_c.haveViewMode && m_c.shownFileGen != 0 &&
+                    facts.viewMode.fileGen > m_c.shownFileGen;
+  if (held && m_c.heldGen != facts.viewMode.gen)
   {
+    m_c.heldGen = facts.viewMode.gen;
+    CLog::Log(LOGINFO, "VIEWMODE hold file {} gen {} shown file {}", facts.viewMode.fileGen,
+              facts.viewMode.gen, m_c.shownFileGen);
+  }
+  if (!held && (!m_c.haveViewMode || facts.viewMode.gen != m_c.viewModeGen))
+  {
+    if (facts.v37)
+      CLog::Log(LOGINFO, "VIEWMODE apply file {} gen {} shown file {}", facts.viewMode.fileGen,
+                facts.viewMode.gen, m_c.shownFileGen);
     SViewModeIn vm;
     vm.viewMode = facts.viewMode.viewMode;
     vm.overscanLeft = onC.row.overscanLeft;

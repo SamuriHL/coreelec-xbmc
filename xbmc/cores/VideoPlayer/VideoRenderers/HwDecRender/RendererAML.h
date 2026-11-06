@@ -199,6 +199,11 @@ private:
     uint64_t viewModeGen = 0;
     VIDEOGEOMETRY::SViewModeOut viewMode;
     std::weak_ptr<CAMLCodec> codec; //!< the decoder on screen
+    //! 5.V3-7: the decoder whose frames C last took, and the file it was first seen in (each
+    //! file opens a new decoder: Amlogic has no Reconfigure); compared with owner_before
+    std::weak_ptr<CAMLCodec> fileCodec;
+    unsigned int shownFileGen = 0;
+    uint64_t heldGen = 0; //!< the held request already logged
     uint32_t sessionGen = UINT32_MAX;
     bool shownOnce = false; //!< this decoder session's first shown frame was queued
     bool applied = false;

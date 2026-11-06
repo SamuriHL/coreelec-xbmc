@@ -3126,8 +3126,11 @@ void CVideoPlayer::Prepare(bool nextFile)
   const unsigned int fileGen = m_renderManager.FileGen();
   m_renderManager.NoteFileOrigin(fileGen, nextFile, m_playerOptions.fullscreen);
   m_outboundEvents->Submit([=, this]() {
+    m_renderManager.SettingsLoadTestStall();
     cb->RequestVideoSettings(fileItem);
     m_renderManager.NoteSettingsLanded(fileGen);
+    // 5.V3-7: the landed view mode as a request
+    m_renderManager.SettingsLanded(fileGen);
   });
 
   if (!OpenInputStream())
