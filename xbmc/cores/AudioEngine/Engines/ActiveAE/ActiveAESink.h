@@ -65,6 +65,7 @@ public:
     STREAMING,
     APPFOCUSED,
     RESERVE,
+    IDLECLOSE,
     VOLUME,
     FLUSH,
     TIMEOUT,

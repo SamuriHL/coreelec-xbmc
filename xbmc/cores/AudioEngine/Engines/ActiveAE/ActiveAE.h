@@ -102,6 +102,7 @@ public:
     APPFOCUSED,
     KEEPCONFIG,
     SESSIONHOLD,
+    STARTGATE,
     YIELDDEVICE,
     TIMEOUT,
   };
@@ -287,6 +288,7 @@ public:
   bool IsSettingVisible(const std::string &settingId) override;
   void KeepConfiguration(unsigned int millis) override;
   void SetSessionHold(bool hold) override;
+  void SetStartGate(bool gated) override;
   void DeviceChange() override;
   void DefaultDeviceChange() override;
   void DeviceCountChange(const std::string& driver) override;
@@ -339,6 +341,7 @@ protected:
   //! recorded, and replayed after the reset only if the device list or the ELD differs
   void RecordInDisplayLost(int signal, const char* driver);
   void ReplayAfterDisplayReset();
+  bool StartGateIdleClose();
   bool NeedReconfigureBuffers();
   bool NeedReconfigureSink();
   void ApplySettingsToFormat(AEAudioFormat& format,
@@ -393,6 +396,9 @@ protected:
   std::chrono::milliseconds m_extKeepConfig;
   //! design 5: the session hold and the input format it keeps between streams
   bool m_extSessionHold = false;
+  //! start order design §6: a gated start, and the GUI sounds it dropped
+  bool m_extStartGate = false;
+  unsigned int m_startGateDroppedSounds = 0;
   //! design §18.18: an HDMI sink stays open across a display reset
   std::atomic_bool m_keepOutputAcrossDisplay{false};
   bool m_extDisplayLost = false;

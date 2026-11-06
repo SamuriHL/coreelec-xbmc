@@ -483,6 +483,31 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           }
           return;
         }
+        case CActiveAEControlProtocol::STARTGATE:
+        {
+          const bool gated = *reinterpret_cast<bool*>(msg->data);
+          if (gated == m_extStartGate)
+            return;
+          m_extStartGate = gated;
+          if (gated)
+          {
+            m_startGateDroppedSounds = 0;
+            CLog::Log(LOGINFO, "CActiveAE - start gate set");
+            // a drain's Configure would open 2.0 PCM in the old mode
+            if (m_extDrain)
+            {
+              m_extDrain = false;
+              CLog::Log(LOGINFO, "CActiveAE - start gate: pending drain cancelled");
+            }
+          }
+          else
+          {
+            // no drain re-arm: a stream is coming, or the stop's session-hold release arms it
+            CLog::Log(LOGINFO, "CActiveAE - start gate clear, {} GUI sounds dropped",
+                      m_startGateDroppedSounds);
+          }
+          return;
+        }
         case CActiveAEControlProtocol::DISPLAYRESET:
           m_extDisplayLost = false;
           ReplayAfterDisplayReset();
@@ -760,6 +785,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::DISPLAYLOST:
           if (m_sink.GetDeviceType(m_mode == MODE_PCM ? m_settings.device : m_settings.passthroughdevice) == AE_DEVTYPE_HDMI)
           {
+            const bool idleClosed = StartGateIdleClose();
             // the output keeps its sink across the mode change: the player
             // takes back what the device has not played and lands it after
             if (m_keepOutputAcrossDisplay)
@@ -779,7 +805,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
               msg->Reply(CActiveAEControlProtocol::ACC);
               return;
             }
-            UnconfigureSink();
+            // closed and the device kept: the reset's Configure reopens only on a change
+            if (!idleClosed)
+              UnconfigureSink();
             m_stats.SetSuspended(true);
             m_state = AE_TOP_CONFIGURED_SUSPEND;
             m_extDeferData = true;
@@ -968,6 +996,13 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             // a held bitstream output has no PCM mix for it
             if (m_extSessionHold && m_mode == MODE_RAW)
               return;
+            // it would reopen an idle sink before a gated start's mode is set
+            if (m_extStartGate && m_streams.empty())
+            {
+              if (m_startGateDroppedSounds++ == 0)
+                CLog::Log(LOGINFO, "CActiveAE - start gate: GUI sound dropped");
+              return;
+            }
 
             SoundState st = {sound, 0};
             m_sounds_playing.push_back(st);
@@ -1024,7 +1059,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           {
             CLog::Log(LOGDEBUG, "CActiveAE - last stream gone, output held");
           }
-          else if (m_streams.empty())
+          else if (m_streams.empty() && !m_extStartGate)
           {
             if (m_extKeepConfig > 0ms)
               m_extDrainTimer.Set(m_extKeepConfig);
@@ -4075,6 +4110,47 @@ void CActiveAE::ReplayAfterDisplayReset()
 #endif
 }
 
+/*!
+ * \brief At a gated start's display loss, close an idle sink so the film's first open
+ * comes once, in the new mode. The device and the format are kept.
+ */
+bool CActiveAE::StartGateIdleClose()
+{
+  if (!m_extStartGate)
+    return false;
+  const bool held = m_extSessionHold && m_heldFormatValid;
+  const bool close = m_streams.empty() && !held;
+  CLog::Log(LOGINFO,
+            "CActiveAE - start gate: display lost, streams {} session hold {} held format {}: {}",
+            m_streams.size(), m_extSessionHold, m_heldFormatValid,
+            close ? "IDLECLOSE sent" : "sink kept");
+  if (!close)
+    return false;
+  // a sound still mixing would send a SAMPLE, and the closed sink reopens on it
+  m_sounds_playing.clear();
+  Message* reply;
+  bool closed = false;
+  if (m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::IDLECLOSE, &reply, 2s))
+  {
+    closed = reply->signal == CSinkControlProtocol::ACC;
+    reply->Release();
+  }
+  if (!closed)
+  {
+    // the caller's unconfigure then forces the reopen as today
+    CLog::Log(LOGWARNING, "CActiveAE - start gate: sink not idle-closed");
+    return false;
+  }
+  // what the sink returned unplayed: buffered samples would stay counted in the delay
+  ClearHistory();
+  if (m_sinkBuffers)
+    m_sinkBuffers->Flush();
+  if (m_vizBuffers)
+    m_vizBuffers->Flush();
+  m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+  return true;
+}
+
 void CActiveAE::HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged)
 {
   if (defaultDeviceChanged)
@@ -4422,6 +4498,11 @@ void CActiveAE::KeepConfiguration(unsigned int millis)
 void CActiveAE::SetSessionHold(bool hold)
 {
   m_controlPort.SendOutMessage(CActiveAEControlProtocol::SESSIONHOLD, &hold, sizeof(bool));
+}
+
+void CActiveAE::SetStartGate(bool gated)
+{
+  m_controlPort.SendOutMessage(CActiveAEControlProtocol::STARTGATE, &gated, sizeof(bool));
 }
 
 void CActiveAE::DeviceChange()

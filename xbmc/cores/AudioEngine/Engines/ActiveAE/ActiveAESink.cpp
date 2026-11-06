@@ -365,6 +365,25 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           return;
         }
 
+        case CSinkControlProtocol::IDLECLOSE:
+          // unlike the idle TIMEOUT, from any configured state; a queued SAMPLE is
+          // returned, as SUSPEND would reopen on it. ERR: not configured, nothing closed
+          if (m_state == S_TOP_UNCONFIGURED)
+          {
+            msg->Reply(CSinkControlProtocol::ERR);
+            return;
+          }
+          CLog::Log(LOGINFO, "CActiveAESink - idle close (state {}, sink {})", m_state,
+                    m_sink ? "open" : "closed");
+          ReturnBuffers();
+          ReleaseHeld();
+          CloseSink(false);
+          m_extSilenceTimer.Set(0ms);
+          m_state = S_TOP_CONFIGURED_SUSPEND;
+          m_extTimeout = 0ms;
+          msg->Reply(CSinkControlProtocol::ACC);
+          return;
+
         case CSinkControlProtocol::STREAMING:
           m_extStreaming = *(bool*)msg->data;
           return;

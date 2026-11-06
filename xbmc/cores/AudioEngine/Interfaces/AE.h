@@ -290,6 +290,13 @@ public:
   virtual void SetSessionHold(bool hold) {}
 
   /*!
+   * \brief Gate a start until its display mode is set: while gated, no idle
+   * output opens, an idle one closes at the mode change, and GUI sounds with no
+   * stream are dropped.
+   */
+  virtual void SetStartGate(bool gated) {}
+
+  /*!
    * \brief Instruct AE to re-initialize, e.g. after ELD change event
    */
   virtual void DeviceChange() {}
