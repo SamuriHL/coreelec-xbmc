@@ -19,7 +19,9 @@
 #include "application/Application.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "guilib/StereoscopicsManager.h"
+#include "guilib/WindowIDs.h"
 #include "messaging/ApplicationMessenger.h"
 #include "rendering/capture/CaptureBlit.h"
 #include "rendering/capture/CaptureMetadata.h"
@@ -2778,7 +2780,7 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
   if (!m_sessionModeDecided)
     return true;
   const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
-  return (gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot()) || ModeFirstStandIn();
+  return gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot();
 }
 
 void CRenderManager::SetModeFirstGate(bool gated, unsigned int gen)
@@ -2845,14 +2847,10 @@ void CRenderManager::UpdateResolution()
   {
 #if defined(HAS_LIBAMCODEC)
     if (m_rmRetry && !(CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
-                       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()) &&
-        !ModeFirstStandIn())
+                       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()))
       AbandonRmRetry("left fullscreen");
 #endif
-    // a gated start decides at its first picture, before the fullscreen switch
-    if ((CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
-         CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()) ||
-        ModeFirstStandIn())
+    if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
     {
       std::chrono::time_point<std::chrono::steady_clock> started;
       {
@@ -2885,7 +2883,14 @@ void CRenderManager::UpdateResolution()
       // a held start (E1) has decoded its first picture and paused the clock,
       // so the decoder may never report video started before the mode is set
       // (Superman UHD: the decision waited out the 5 s render timeout)
-      else if (aml_video_started() || m_startHeld || ModeFirstStandIn() ||
+      // a gated start decides on its first picture once the fullscreen window is up (as
+      // ungated, where the window comes with the commit): a window it replaces may set its
+      // own mode on the way out
+      else if ((ModeFirstTagged()
+                    ? CServiceBroker::GetGUI() &&
+                          CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() ==
+                              WINDOW_FULLSCREEN_VIDEO
+                    : aml_video_started() || m_startHeld) ||
                elapsed > std::chrono::seconds(m_render_timeout))
       {
         // Consume the trigger with the parameters it was raised for; a trigger
@@ -2912,7 +2917,7 @@ void CRenderManager::UpdateResolution()
           stereoMode = m_picture.stereoMode;
           hdrType = m_picture.hdrType;
           m_bTriggerUpdateResolution = false;
-          modeFirstGen = ModeFirstStandIn() ? m_modeFirstGen.load() : 0;
+          modeFirstGen = ModeFirstTagged() ? m_modeFirstGen.load() : 0;
           m_modeFirstInFlight = true;
 #if defined(HAS_LIBAMCODEC)
           // pending until the count below (5.B2-2)

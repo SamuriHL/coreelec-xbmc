@@ -219,8 +219,8 @@ public:
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }
-  //! start order design §4: the player's start gate for its stream set gen; the first
-  //! configure after it stands in for fullscreen at the mode decision
+  //! start order design §4: the player's start gate for its stream set gen; a decision on
+  //! the first configure after it is counted for the set, without waiting for the picture
   void SetModeFirstGate(bool gated, unsigned int gen);
   enum class ModeFirstState
   {
@@ -526,7 +526,7 @@ protected:
   std::atomic<unsigned int> m_modeFirstDecidedGen{0};
   //! a consumed trigger whose count has not landed
   std::atomic_bool m_modeFirstInFlight{false};
-  bool ModeFirstStandIn() const
+  bool ModeFirstTagged() const
   {
     return m_modeFirstGate && m_modeFirstCfgGen.load() == m_modeFirstGen.load();
   }
