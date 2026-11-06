@@ -219,6 +219,17 @@ public:
   //! real_player E1: the player holds the start for the output mode; its first
   //! picture is decoded, so the mode decision need not wait for it on screen
   void SetStartHeld(bool held) { m_startHeld = held; }
+  //! start order design §4: the player's start gate for its stream set gen; the first
+  //! configure after it stands in for fullscreen at the mode decision
+  void SetModeFirstGate(bool gated, unsigned int gen);
+  enum class ModeFirstState
+  {
+    UNCONFIGURED, //!< no configure of the set yet
+    PENDING, //!< a decision is due or running
+    DECIDED, //!< a decision made on the set's configure has been counted
+    UNCHANGED, //!< the set's configure needs no decision
+  };
+  ModeFirstState GetModeFirstState(unsigned int gen) const;
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
 
@@ -507,6 +518,20 @@ protected:
   //! raised once more
   std::atomic_bool m_rmRetry{false};
   std::atomic_bool m_startHeld{false};
+  //! start order design §4: written under m_statelock (the gate and its set by the player,
+  //! the configure's tag by V or main, the decision by main)
+  std::atomic_bool m_modeFirstGate{false};
+  std::atomic<unsigned int> m_modeFirstGen{0};
+  std::atomic<unsigned int> m_modeFirstCfgGen{0};
+  std::atomic<unsigned int> m_modeFirstDecidedGen{0};
+  //! a consumed trigger whose count has not landed
+  std::atomic_bool m_modeFirstInFlight{false};
+  bool ModeFirstStandIn() const
+  {
+    return m_modeFirstGate && m_modeFirstCfgGen.load() == m_modeFirstGen.load();
+  }
+  void TagModeFirstConfigure();
+  void CountModeFirstDecision(unsigned int gen);
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   bool m_overlayVisible = false; //!< render thread: at the last GUI pass
   //! from a start the clock had yet to make until its display phase is measured:

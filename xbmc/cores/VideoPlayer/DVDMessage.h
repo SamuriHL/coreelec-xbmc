@@ -58,6 +58,7 @@ public:
     PLAYER_DISPLAY_RESET,           // report display reset event
     PLAYER_DISPLAY_LOST,            // the display is lost: pause, keeping audio from this pts
     PLAYER_AUDIO_RELAND,            // land the audio anew with this audio offset
+    PLAYER_START_GATE,              // no-op: wakes the audio player to read its start gate
 
     // demuxer related messages
     DEMUXER_PACKET,                 // data packet

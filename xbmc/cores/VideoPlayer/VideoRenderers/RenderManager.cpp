@@ -708,7 +708,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     std::unique_lock lock(m_statelock);
 
     if (!m_bRenderGUI)
+    {
+      TagModeFirstConfigure();
       return true;
+    }
 
     if (m_pRenderer != nullptr && m_picture.IsSameParams(picture) && m_orientation == orientation &&
         m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture) &&
@@ -733,6 +736,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_lateframes = -1;
       }
       PromoteReclockArm();
+      TagModeFirstConfigure();
       return true;
     }
   }
@@ -986,6 +990,7 @@ bool CRenderManager::Configure()
     m_bRenderGUI = true;
     m_videostarted = std::chrono::steady_clock::now();
     m_bTriggerUpdateResolution = true;
+    TagModeFirstConfigure();
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
     m_lateframes = -1;
@@ -1101,6 +1106,7 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       m_bRenderGUI = true;
       m_videostarted = std::chrono::steady_clock::now();
       m_bTriggerUpdateResolution = true;
+      TagModeFirstConfigure();
       m_presentstep = PRESENT_IDLE;
       m_presentpts = DVD_NOPTS_VALUE;
       m_lateframes = -1;
@@ -1500,6 +1506,7 @@ void CRenderManager::BeginFile()
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     CMainHold hold("BeginFile");
+    m_modeFirstGate = false;
     if (m_reclockPending || m_reclockArmed)
       CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm dropped (new file)");
     m_reclockPending = false;
@@ -2771,7 +2778,49 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
   if (!m_sessionModeDecided)
     return true;
   const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
-  return gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot();
+  return (gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot()) || ModeFirstStandIn();
+}
+
+void CRenderManager::SetModeFirstGate(bool gated, unsigned int gen)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  m_modeFirstGen = gen;
+  m_modeFirstGate = gated;
+}
+
+CRenderManager::ModeFirstState CRenderManager::GetModeFirstState(unsigned int gen) const
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (m_modeFirstCfgGen != gen)
+    return ModeFirstState::UNCONFIGURED;
+  if (m_modeFirstDecidedGen == gen)
+    return ModeFirstState::DECIDED;
+  if (m_bTriggerUpdateResolution || m_modeFirstInFlight || m_resolutionInFlight)
+    return ModeFirstState::PENDING;
+  return ModeFirstState::UNCHANGED;
+}
+
+// m_statelock held: with the trigger it raised or left, so a reader sees both
+void CRenderManager::TagModeFirstConfigure()
+{
+  if (!m_modeFirstGate || m_modeFirstCfgGen.load() == m_modeFirstGen.load())
+    return;
+  m_modeFirstCfgGen = m_modeFirstGen.load();
+  CLog::Log(LOGINFO, "CRenderManager - start gate: set {} configured, {}", m_modeFirstGen.load(),
+            m_bTriggerUpdateResolution ? "mode decision due" : "no mode decision due");
+}
+
+// m_statelock held; gen is the gated set whose configure the decision consumed, or 0
+void CRenderManager::CountModeFirstDecision(unsigned int gen)
+{
+  m_modeFirstInFlight = false;
+  if (!gen)
+    return;
+  m_modeFirstDecidedGen = gen;
+  CLog::Log(LOGINFO, "CRenderManager - start gate: set {} mode decision counted ({})", gen,
+            m_resolutionDecisions.load());
 }
 
 #if defined(HAS_LIBAMCODEC)
@@ -2796,10 +2845,14 @@ void CRenderManager::UpdateResolution()
   {
 #if defined(HAS_LIBAMCODEC)
     if (m_rmRetry && !(CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
-                       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()))
+                       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()) &&
+        !ModeFirstStandIn())
       AbandonRmRetry("left fullscreen");
 #endif
-    if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
+    // a gated start decides at its first picture, before the fullscreen switch
+    if ((CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
+         CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()) ||
+        ModeFirstStandIn())
     {
       std::chrono::time_point<std::chrono::steady_clock> started;
       {
@@ -2832,7 +2885,7 @@ void CRenderManager::UpdateResolution()
       // a held start (E1) has decoded its first picture and paused the clock,
       // so the decoder may never report video started before the mode is set
       // (Superman UHD: the decision waited out the 5 s render timeout)
-      else if (aml_video_started() || m_startHeld ||
+      else if (aml_video_started() || m_startHeld || ModeFirstStandIn() ||
                elapsed > std::chrono::seconds(m_render_timeout))
       {
         // Consume the trigger with the parameters it was raised for; a trigger
@@ -2842,6 +2895,7 @@ void CRenderManager::UpdateResolution()
         std::string stereoMode;
         StreamHdrType hdrType;
         bool fracArmed;
+        unsigned int modeFirstGen;
 #if defined(HAS_LIBAMCODEC)
         const bool outputDrive = HeldStartPendingWindow(); // read before the lock
         // 5.B2-5b: W's reply was failed or failed(park)
@@ -2858,6 +2912,8 @@ void CRenderManager::UpdateResolution()
           stereoMode = m_picture.stereoMode;
           hdrType = m_picture.hdrType;
           m_bTriggerUpdateResolution = false;
+          modeFirstGen = ModeFirstStandIn() ? m_modeFirstGen.load() : 0;
+          m_modeFirstInFlight = true;
 #if defined(HAS_LIBAMCODEC)
           // pending until the count below (5.B2-2)
           m_resolutionInFlight = outputDrive;
@@ -2951,7 +3007,7 @@ void CRenderManager::UpdateResolution()
 #if defined(HAS_LIBAMCODEC)
             // 5.B2-5b: the request is origin=rm (r1 M4); 5.B2-6: a film start's when the player
             // holds a start for it (Q6's lock wait)
-            OUTPUT::CDriveOriginRm origin(m_startHeld);
+            OUTPUT::CDriveOriginRm origin(m_startHeld || m_modeFirstGate);
 #endif
             CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           }
@@ -3026,6 +3082,7 @@ void CRenderManager::UpdateResolution()
             ++m_resolutionDecisions;
             m_sessionModeDecided = true;
             m_resolutionInFlight = false;
+            CountModeFirstDecision(modeFirstGen);
           }
         }
         else
@@ -3033,6 +3090,10 @@ void CRenderManager::UpdateResolution()
         {
           ++m_resolutionDecisions;
           m_sessionModeDecided = true;
+          MAINCOUPLING_ACCESSOR("RM m_statelock");
+          std::unique_lock lock(m_statelock);
+          CMainHold hold("UpdateResolution");
+          CountModeFirstDecision(modeFirstGen);
         }
         m_playerPort->VideoParamsChange();
       }

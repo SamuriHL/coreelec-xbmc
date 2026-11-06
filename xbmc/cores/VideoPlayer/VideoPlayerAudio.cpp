@@ -219,8 +219,9 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   bool bWait = bWaitForBuffers && m_speed > 0 && !CServiceBroker::GetActiveAE()->IsSuspended();
   m_closeDraining = bWait;
 
-  // wait until buffers are empty
-  if (bWait)
+  // wait until buffers are empty; a gated queue is not decoded (with the clock paused the
+  // wait's budget is 30 s)
+  if (bWait && !m_startGated)
   {
     // a display mode change pauses the clock mid-drain; that is not a stall
     m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
@@ -384,7 +385,7 @@ void CVideoPlayerAudio::Process()
     if (m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
       priority = 1;
 
-    if (m_paused)
+    if (m_paused || m_startGated)
       priority = 1;
 
     if (onlyPrioMsgs)

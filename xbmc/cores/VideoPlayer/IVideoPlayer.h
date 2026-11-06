@@ -176,6 +176,9 @@ public:
   virtual bool IsPassthrough() const = 0;
   virtual float GetDynamicRangeAmplification() const = 0;
   virtual bool IsEOS() { return false; }
+  //! start order design §3: while gated, only priority messages are taken (written by the
+  //! player thread only)
+  virtual void SetStartGated(bool gated) {}
 
   virtual int  GetDataLevel() const = 0;
   virtual void SetMaxDataSize(int iMaxDataSize) {}

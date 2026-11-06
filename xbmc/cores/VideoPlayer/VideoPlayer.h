@@ -567,6 +567,11 @@ protected:
   void ReleaseHeldStart(const char* why);
   //! true while a held disc boundary waits for the old streams to finish starting
   bool WaitStartAtBoundary();
+  //! start order design §3: a stream set's audio and start wait for its output mode
+  void ArmStartGate(const char* where);
+  void CheckStartGate();
+  void OpenStartGate(const char* why, bool bound);
+  bool StartGateShut() const { return m_startGateShut; }
 
   bool IsValidStream(const CCurrentStream& stream);
   bool IsBetterStream(const CCurrentStream& current, CDemuxStream* stream);
@@ -921,6 +926,11 @@ protected:
   void ConvertLostDisplayToPause();
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
+  bool m_startGateEnabled = false; //!< start order flag files, read at open
+  bool m_startGateShut = false;
+  unsigned int m_startGateGen = 0; //!< the stream set the gate belongs to
+  std::chrono::steady_clock::time_point m_startGateSince;
+  std::chrono::steady_clock::time_point m_startGateStarveSince;
   //! debug (flag file): BD-J discs take the keep-alive transition, to reproduce
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;

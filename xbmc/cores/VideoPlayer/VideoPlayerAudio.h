@@ -57,6 +57,7 @@ public:
     m_messageQueue.Put(pMsg, priority);
   }
   void FlushMessages() override { m_messageQueue.Flush(); }
+  void SetStartGated(bool gated) override { m_startGated = gated; }
 
   void SetDynamicRangeCompression(long drc) override { m_audioSink.SetDynamicRangeCompression(drc); }
   float GetDynamicRangeAmplification() const override { return 0.0f; }
@@ -127,6 +128,7 @@ protected:
   int m_speed;
   bool m_stalled;
   bool m_paused;
+  std::atomic_bool m_startGated{false}; //!< the player's start gate: Open/Close/Flush leave it
   bool m_displayHold = false;
   bool m_displayHoldTaken = false;
   IDVDStreamPlayer::ESyncState m_syncState;

@@ -184,6 +184,12 @@ public:
   bool IsFeatureLengthPlaylist() const;
   //! a stream change is held (not a still): Read() returns nothing until NextStream()
   bool IsHoldingBoundary() const { return m_hold == HOLD_HELD && m_holdIsBoundary; }
+  //! the current playlist's first clip has a video stream
+  bool FirstClipHasVideo() const
+  {
+    return m_titleInfo && m_titleInfo->clip_count > 0 &&
+           m_titleInfo->clips[0].video_stream_count > 0;
+  }
   // The current playlist's STN table names at least one IG stream. The STN
   // covers out-of-mux IG carried by a sub-path (TNG's menus), which the
   // clip files alone would miss.

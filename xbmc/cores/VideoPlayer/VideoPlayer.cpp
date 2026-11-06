@@ -951,10 +951,19 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // real_player: a start is held until the output mode is final (disc session
   // design 3); the debug flag turns it off for A/B runs
   m_heldStartEnabled = options.fullscreen;
-  if (XFILE::CFile::Exists("special://profile/heldstart_off"))
+  const bool heldStartOff = XFILE::CFile::Exists("special://profile/heldstart_off");
+  if (heldStartOff)
   {
     m_heldStartEnabled = false;
     CLog::Log(LOGWARNING, "VideoPlayer: DEBUG held start disabled");
+  }
+  // start order design §3: a start that needs a mode change opens no audio output
+  // until the mode is set (A/B flag)
+  m_startGateEnabled = aml_presentation_validated() && !heldStartOff;
+  if (m_startGateEnabled && XFILE::CFile::Exists("special://profile/startgate_off"))
+  {
+    m_startGateEnabled = false;
+    CLog::Log(LOGWARNING, "VideoPlayer: DEBUG start gate disabled");
   }
   // design §15 step 2.2: a held start resumes at a scheduled instant on the
   // timeline (A/B flag)
@@ -2271,7 +2280,8 @@ bool CVideoPlayer::WaitStartAtBoundary()
       m_startReleasedClock = DVD_NOPTS_VALUE;
   }
   const bool resuming = m_startReleasedClock != DVD_NOPTS_VALUE;
-  if (held && !m_bAbortRequest && (m_startHeld || resuming))
+  // a shut start gate holds it under the gate's own bound
+  if (held && !m_bAbortRequest && (m_startHeld || resuming || StartGateShut()))
   {
     m_boundaryStartWaitSince = {};
     return true;
@@ -2689,6 +2699,99 @@ void CVideoPlayer::CheckHeldStart()
     ReleaseHeldStart("no mode decision in 12s");
 }
 
+void CVideoPlayer::ArmStartGate(const char* where)
+{
+  bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
+#if defined(HAVE_LIBBLURAY)
+  // a menu disc dictates its streams: none may be open yet
+  if (m_pDemuxer && m_pInputBluray)
+    hasVideo = m_pInputBluray->FirstClipHasVideo();
+#endif
+  const bool arm =
+      hasVideo && m_startGateEnabled &&
+      (m_playerOptions.fullscreen ||
+       CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
+  if (!arm)
+  {
+    // the last set's gate ends with it; its audio is closed or flushed by now
+    if (m_startGateShut)
+    {
+      m_startGateShut = false;
+      m_VideoPlayerAudio->SetStartGated(false);
+      m_renderManager.SetModeFirstGate(false, m_startGateGen);
+      if (IAE* ae = CServiceBroker::GetActiveAE())
+        ae->SetStartGate(false);
+      CLog::Log(LOGINFO, "VideoPlayer: start gate ended (set {}): {} not gated", m_startGateGen,
+                where);
+    }
+    return;
+  }
+  ++m_startGateGen;
+  m_startGateShut = true;
+  m_startGateSince = std::chrono::steady_clock::now();
+  m_startGateStarveSince = {};
+  // before any audio of the set opens
+  m_VideoPlayerAudio->SetStartGated(true);
+  m_renderManager.SetModeFirstGate(true, m_startGateGen);
+  if (IAE* ae = CServiceBroker::GetActiveAE())
+    ae->SetStartGate(true);
+  CLog::Log(LOGINFO, "VideoPlayer: start gate armed (set {}, {})", m_startGateGen, where);
+}
+
+void CVideoPlayer::CheckStartGate()
+{
+  if (!m_startGateShut)
+    return;
+  using State = CRenderManager::ModeFirstState;
+  // the state first: a mode set that loses the display lands before its count
+  const State state = m_renderManager.GetModeFirstState(m_startGateGen);
+  if (m_displayLost)
+    return;
+  if (state == State::DECIDED)
+  {
+    OpenStartGate("output mode decided", false);
+    return;
+  }
+  if (state == State::UNCHANGED)
+  {
+    OpenStartGate("no mode decision needed", false);
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  // a full audio queue stops the reads, and a video decoder that needs more input
+  // never configures (Sync's audioFullVideoStarving)
+  if (state == State::UNCONFIGURED && m_CurrentAudio.id >= 0 &&
+      !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10)
+  {
+    if (m_startGateStarveSince == std::chrono::steady_clock::time_point{})
+      m_startGateStarveSince = now;
+    else if (now - m_startGateStarveSince >= 1s)
+    {
+      OpenStartGate("audio queue full before the first picture", true);
+      return;
+    }
+  }
+  else
+    m_startGateStarveSince = {};
+  if (now - m_startGateSince > 12s)
+    OpenStartGate("no mode decision in 12s", true);
+}
+
+void CVideoPlayer::OpenStartGate(const char* why, bool bound)
+{
+  m_startGateShut = false;
+  m_VideoPlayerAudio->SetStartGated(false);
+  // a flush can remove it, and then its own GENERAL_FLUSH wakes the player
+  m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_START_GATE), 1);
+  m_renderManager.SetModeFirstGate(false, m_startGateGen);
+  if (IAE* ae = CServiceBroker::GetActiveAE())
+    ae->SetStartGate(false);
+  const double shut =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startGateSince).count();
+  CLog::Log(bound ? LOGWARNING : LOGINFO,
+            "VideoPlayer: start gate opened after {:.3f}s (set {}): {}", shut, m_startGateGen, why);
+}
+
 bool CVideoPlayer::ScheduleUserResume()
 {
   // the lead of a scheduled start: what the audio output queues ahead
@@ -3058,6 +3161,7 @@ void CVideoPlayer::Prepare(bool nextFile)
     m_error = true;
     return;
   }
+  ArmStartGate("first set");
 
   if (m_processInfo)
     m_processInfo->SetStateStreaming(EvaluateIsStreaming());
@@ -3329,6 +3433,8 @@ void CVideoPlayer::Process()
         }
         UpdatePlayState(200);
         CheckMenuOnlyStart(waitState == 1);
+        // a gate still shut from the last set keeps its bound here
+        CheckStartGate();
         CThread::Sleep(20ms);
         continue;
       }
@@ -3345,6 +3451,8 @@ void CVideoPlayer::Process()
         m_bAbortRequest = true;
         break;
       }
+      if (m_pInputBluray)
+        ArmStartGate("Blu-ray set");
 
       if (m_processInfo)
         m_processInfo->SetStateStreaming(EvaluateIsStreaming());
@@ -3380,6 +3488,7 @@ void CVideoPlayer::Process()
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
     CheckHeldStart();
+    CheckStartGate();
     m_discTime.CheckBounds();
     PublishSegmentGen();
     CheckMenuPageWait();
@@ -4148,7 +4257,7 @@ void CVideoPlayer::HandlePlaySpeed()
       SetCaching(CACHESTATE_PLAY);
 
     // handle exceptions
-    if (m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0)
+    if (m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 && !StartGateShut())
     {
       if ((!m_VideoPlayerAudio->AcceptsData() || !m_VideoPlayerVideo->AcceptsData()) &&
           m_cachingTimer.IsTimePast())
@@ -4168,7 +4277,8 @@ void CVideoPlayer::HandlePlaySpeed()
 
   if (m_caching == CACHESTATE_DONE)
   {
-    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !streamEnded && !m_startHeld)
+    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !streamEnded && !m_startHeld &&
+        !StartGateShut())
     {
       // take action if audio or video stream is stalled
       if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
@@ -4298,9 +4408,10 @@ void CVideoPlayer::HandlePlaySpeed()
     m_brokenFileStallStarveLogged = false;
   }
 
-  // sync streams to clock
-  if ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
-      (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC))
+  // sync streams to clock; a shut start gate's audio cannot arrive, and the start
+  // would otherwise go ahead without it (no commit, no stuck-sync flushes)
+  if (!StartGateShut() && ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
+                           (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)))
   {
     unsigned int threshold = 20;
     if (m_pInputStream->IsRealtime())
@@ -5702,6 +5813,17 @@ void CVideoPlayer::OnExit()
   }
 
   CloseStream(m_CurrentAudio, !m_bAbortRequest);
+  // after the audio's close: cleared before it, a queued packet could open the sink in the
+  // old mode. The engine's flag is engine-wide, so it is cleared on every exit
+  if (m_startGateShut)
+  {
+    m_startGateShut = false;
+    m_renderManager.SetModeFirstGate(false, m_startGateGen);
+    CLog::Log(LOGINFO, "VideoPlayer: start gate ended (set {}): player exit", m_startGateGen);
+  }
+  m_VideoPlayerAudio->SetStartGated(false);
+  if (IAE* ae = CServiceBroker::GetActiveAE())
+    ae->SetStartGate(false);
   CloseStream(m_CurrentVideo, !m_bAbortRequest);
   // a picture kept at the last join, with no decoder left to replace it
   aml_drop_kept_frame("player exit");
@@ -8314,7 +8436,10 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         // and a held start, whose release would otherwise wait for this read
         // to return (the application may be waiting for that picture)
         if (m_pInputBluray && m_pInputBluray->BdjDeferStart())
+        {
           CheckHeldStart();
+          CheckStartGate();
+        }
         ApplyDiscTimelineEvents(false, true);
         break;
       }
