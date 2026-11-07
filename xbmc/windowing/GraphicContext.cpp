@@ -335,7 +335,7 @@ const CRect CGraphicContext::GetViewWindow() const
     rect.y2 = (float)info.Overscan.bottom;
     return rect;
   }
-  return m_videoRect;
+  return GetVideoRect();
 }
 
 void CGraphicContext::SetViewWindow(float left, float top, float right, float bottom)
@@ -344,6 +344,8 @@ void CGraphicContext::SetViewWindow(float left, float top, float right, float bo
   m_videoRect.y1 = ScaleFinalYCoord(left, top);
   m_videoRect.x2 = ScaleFinalXCoord(right, bottom);
   m_videoRect.y2 = ScaleFinalYCoord(right, bottom);
+  m_videoRectSet = true;
+  m_exitViewHeld = false;
 }
 
 void CGraphicContext::SetFullScreenVideo(bool bOnOff)
@@ -351,7 +353,10 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
   MAINCOUPLING_ACCESSOR("gfx lock");
   std::unique_lock lock(*this);
 
+  const bool exiting = m_bFullScreenVideo && !bOnOff;
   m_bFullScreenVideo = bOnOff;
+  if (bOnOff)
+    m_exitViewHeld = false;
 
   if (m_bFullScreenRoot)
   {
@@ -386,6 +391,24 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
   }
   else
     SetVideoResolution(RES_WINDOW, false);
+
+  // issue 31: the first exit of a session has no windowed rect yet: the new window's first
+  // pass renders the video (RenderEx) before its videowindow sets one (Render), and the
+  // coordinator's FrameMove snapshot reads it too. Hold the fullscreen view (after any
+  // resolution change above) until that pass flips; a skin without a videowindow then
+  // keeps its empty rect, as today
+  if (exiting && !m_videoRectSet)
+  {
+    const RESOLUTION_INFO info = GetResInfo();
+    m_exitViewRect = CRect(static_cast<float>(info.Overscan.left),
+                           static_cast<float>(info.Overscan.top),
+                           static_cast<float>(info.Overscan.right),
+                           static_cast<float>(info.Overscan.bottom));
+    m_exitViewHeld = true;
+    CLog::Log(LOGINFO, "GraphicContext: first fullscreen exit, no windowed video rect set: "
+                       "holding the fullscreen view {:.0f}x{:.0f} until the first rendered flip",
+              m_exitViewRect.Width(), m_exitViewRect.Height());
+  }
 }
 
 bool CGraphicContext::IsFullScreenVideo() const
@@ -1108,6 +1131,14 @@ const std::string& CGraphicContext::GetMediaDir() const
 void CGraphicContext::Flip(bool rendered, bool videoLayer)
 {
   CServiceBroker::GetRenderSystem()->PresentRender(rendered, videoLayer);
+  // issue 31: the new window has rendered once: its videowindow set the rect, or it has none
+  if (rendered && m_exitViewHeld)
+  {
+    m_exitViewHeld = false;
+    CLog::Log(LOGINFO, "GraphicContext: fullscreen exit hold ended at a rendered flip, "
+                       "windowed video rect {}",
+              m_videoRectSet ? "set" : "none (no videowindow)");
+  }
 }
 
 void CGraphicContext::GetAllowedResolutions(std::vector<RESOLUTION> &res)

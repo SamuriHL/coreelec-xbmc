@@ -96,8 +96,10 @@ public:
   void ResetScissors();
   const CRect &GetScissors() const;
   const CRect GetViewWindow() const;
-  //! the windowed video rect the GUI render last set (GetViewWindow's when not fullscreen)
-  const CRect& GetVideoRect() const { return m_videoRect; }
+  //! the windowed video rect the GUI render last set (GetViewWindow's when not fullscreen);
+  //! open issue 31: across a fullscreen exit before any videowindow has set it, the held
+  //! fullscreen view until the first rendered pass flips
+  CRect GetVideoRect() const { return m_exitViewHeld ? m_exitViewRect : m_videoRect; }
   void SetViewWindow(float left, float top, float right, float bottom);
   bool IsCalibrating() const;
   void SetCalibrating(bool bOnOff);
@@ -237,6 +239,13 @@ protected:
   int m_iScreenWidth = 720;
   std::string m_strMediaDir;
   CRect m_videoRect;
+  //! issue 31: a videowindow has set m_videoRect this session (SetViewWindow)
+  bool m_videoRectSet = false;
+  //! issue 31: a fullscreen exit with m_videoRect never set holds the fullscreen view
+  //! (m_exitViewRect) for the passes before the new window's first rendered Flip, as every
+  //! later exit holds the last set rect; cleared by SetViewWindow or a rendered Flip
+  bool m_exitViewHeld = false;
+  CRect m_exitViewRect;
   bool m_bFullScreenRoot = true;
   bool m_bFullScreenVideo = false;
   bool m_bCalibrating = false;
