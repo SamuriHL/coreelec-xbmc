@@ -1136,6 +1136,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
+      m_processInfo.SetVideoInterlaced(m_hints.interlaced);
 
       // HDR10+ -> DV 8.1: the bitstream has now been parsed, so HDR10+ presence is
       // known. If confirmed, present the stream to the DV core as profile 8.1
