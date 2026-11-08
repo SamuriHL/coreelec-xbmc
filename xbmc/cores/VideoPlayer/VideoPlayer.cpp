@@ -2716,6 +2716,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
   if (!arm)
   {
     // the last set's gate ends with it; its audio is closed or flushed by now
+    m_startGateOpenedAt = {};
     if (m_startGateShut)
     {
       m_startGateShut = false;
@@ -2730,6 +2731,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
   }
   ++m_startGateGen;
   m_startGateShut = true;
+  m_startGateOpenedAt = {};
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
   m_startGateFullScreenPosted = false;
@@ -2794,6 +2796,8 @@ void CVideoPlayer::CheckStartGate()
 void CVideoPlayer::OpenStartGate(const char* why, bool bound)
 {
   m_startGateShut = false;
+  m_startGateOpenedAt = std::chrono::steady_clock::now();
+  m_gatedAudioWaitLogged = false;
   m_VideoPlayerAudio->SetStartGated(false);
   // a flush can remove it, and then its own GENERAL_FLUSH wakes the player
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_START_GATE), 1);
@@ -4494,9 +4498,39 @@ void CVideoPlayer::HandlePlaySpeed()
         !m_firstPictureWaitExpired;
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  audioFullVideoStarving;
+    // The video queue fills while the start gate holds the audio, so at the
+    // gate's opening the "video full, audio starved" shortcut below would count
+    // audio ready before its first frame: the start is then scheduled before
+    // the audio's sink opens and lands up to a frame late. That audio has
+    // packets and reports on its own, so the shortcut waits for it, bounded.
+    bool gatedAudioPending = false;
+    if (m_startGateOpenedAt != std::chrono::steady_clock::time_point{} &&
+        m_CurrentAudio.id >= 0 && m_CurrentAudio.packets > 0 &&
+        m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
+    {
+      if (std::chrono::steady_clock::now() - m_startGateOpenedAt < 1s)
+        gatedAudioPending = true;
+      else
+      {
+        m_startGateOpenedAt = {};
+        CLog::Log(LOGINFO, "VideoPlayer::Sync - the gated audio did not report in 1s after the "
+                           "gate opened (set {}), starting without it",
+                  m_startGateGen);
+      }
+      if (gatedAudioPending && !m_gatedAudioWaitLogged && !m_VideoPlayerVideo->AcceptsData() &&
+          m_VideoPlayerAudio->GetLevel() < 10)
+      {
+        m_gatedAudioWaitLogged = true;
+        CLog::Log(LOGINFO,
+                  "VideoPlayer::Sync - video full at the gate's opening (set {}), waiting for "
+                  "the gated audio to report",
+                  m_startGateGen);
+      }
+    }
     bool audio = m_CurrentAudio.id < 0 || (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
                  (m_CurrentAudio.packets == 0 && m_CurrentVideo.packets > threshold) ||
-                 (!m_VideoPlayerVideo->AcceptsData() && m_VideoPlayerAudio->GetLevel() < 10);
+                 (!gatedAudioPending && !m_VideoPlayerVideo->AcceptsData() &&
+                  m_VideoPlayerAudio->GetLevel() < 10);
 
     const bool syncAudio = m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC &&
                            (m_CurrentAudio.avsync == CCurrentStream::AV_SYNC_CONT ||
@@ -4580,6 +4614,7 @@ void CVideoPlayer::HandlePlaySpeed()
       if (commit)
       {
       m_syncStartDeferred = false;
+      m_startGateOpenedAt = {};
       double clock = 0;
       if (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Audio - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",

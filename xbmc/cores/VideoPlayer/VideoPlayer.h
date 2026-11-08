@@ -932,6 +932,9 @@ protected:
   std::chrono::steady_clock::time_point m_startGateSince;
   std::chrono::steady_clock::time_point m_startGateStarveSince;
   bool m_startGateFullScreenPosted = false;
+  //! the gate's opening, until the set's audio reports or 1 s has passed
+  std::chrono::steady_clock::time_point m_startGateOpenedAt;
+  bool m_gatedAudioWaitLogged = false;
   //! debug (flag file): BD-J discs take the keep-alive transition, to reproduce
   //! the crash that excludes them (disc session design 4.2)
   bool m_bdjKeepAliveDebug = false;
