@@ -329,6 +329,10 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 {
   std::unique_lock lock(*this);
 
+  // the player sets fullscreen video before its window opens; the open must not switch again
+  if (bOnOff && m_bFullScreenVideo && m_bFullScreenRoot)
+    return;
+
   m_bFullScreenVideo = bOnOff;
 
   if (m_bFullScreenRoot)
