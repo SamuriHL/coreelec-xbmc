@@ -2138,7 +2138,10 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
       bool usable = false;
       for (int retry = 0; retry <= maxRetries && !usable; retry++)
       {
-        if (s_detectCacheStarved.load())
+        // P5-44: a stop joins this thread (aml_dv_detect_active_area_stop), so every loop
+        // here ends at the cancel; the drain below would software-decode the buffered 4K
+        // frames (~0.5 s measured at a stop during a DV start, ugoos, 2026-11-09)
+        if (s_detectCancel.load() || s_detectCacheStarved.load())
           break;
         int seekPct = seekPercents[s] + retry;
         if (seekPct > 90)
@@ -2152,7 +2155,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
           break; // unseekable - one attempt only
 
         bool gotFrame = false;
-        for (int vidPkts = 0; vidPkts < 50 && !gotFrame;)
+        for (int vidPkts = 0; vidPkts < 50 && !gotFrame && !s_detectCancel.load();)
         {
           if (av_read_frame(fmtCtx, pkt) < 0)
             break;
@@ -2167,6 +2170,8 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
           if (avcodec_receive_frame(codecCtx, frame) == 0)
             gotFrame = true;
         }
+        if (s_detectCancel.load())
+          break;
         if (!gotFrame)
         {
           avcodec_send_packet(codecCtx, nullptr);
@@ -2325,6 +2330,10 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
                 sTop, sBottom, sLeft, sRight);
     }
 
+    // a cancelled scan publishes nothing: its stopper (a stop, or the next file's start,
+    // which has already reset the offsets) owns the state
+    if (s_detectCancel.load())
+      goto cleanup;
     if (s_detectCacheStarved.load())
     {
       s_detectState.store(DV_DETECT_SKIPPED);
