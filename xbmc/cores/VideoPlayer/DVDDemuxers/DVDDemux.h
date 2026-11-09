@@ -12,6 +12,7 @@
 #include "cores/FFmpeg.h"
 #include "utils/LanguageTag.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -423,7 +424,7 @@ protected:
 private:
   static int64_t NewGuid()
   {
-    static int64_t guid = 0;
+    static std::atomic<int64_t> guid{0};
     return guid++;
   }
 
