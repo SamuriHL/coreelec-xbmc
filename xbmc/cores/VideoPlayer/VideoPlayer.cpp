@@ -2753,7 +2753,9 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
 {
   if (!aml_transaction_shadow_on())
     return;
-  const bool firstSet = !m_txShadowSetSeen;
+  // the file's first set (plan §2.3 item 4): a set armed after the streams are ready is a
+  // later one even when no earlier set armed (a windowed or no-video first set)
+  const bool firstSet = !m_txShadowSetSeen && !m_State.streamsReady;
   if (arm)
     m_txShadowSetSeen = true;
   const char* why = nullptr;

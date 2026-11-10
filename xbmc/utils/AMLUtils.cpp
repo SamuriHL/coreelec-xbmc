@@ -3111,8 +3111,6 @@ void aml_transaction_latch()
           reason = "vconfigure off";
         else if (!geometryTick)
           reason = "geometrytick off";
-        else if (!timeline)
-          reason = "timeline clock off";
         else if (!optIn)
           reason = "not enabled";
         else
@@ -3122,6 +3120,16 @@ void aml_transaction_latch()
           on = true;
         }
         const auto onOff = [](bool v) { return v ? "on" : "off"; };
+        // the per-open and per-stream switch files, as found at the latch (the open re-reads them)
+        std::string files;
+        for (const char* f : {"startgate_off", "heldstart_off", "scheduled_start_off",
+                              "streamsplit_video_off", "disctime_off", "geometrytick_off",
+                              "geometrytick_on", "vconfigure_skip", "geometrytick_skip",
+                              "outputdrive_skip", "wireprobe_off"})
+          files += StringUtils::Format("{}{} {}", files.empty() ? "" : ", ", f,
+                                       XFILE::CFile::Exists(std::string("special://profile/") + f)
+                                           ? "present"
+                                           : "absent");
         s_transactionSkip = OUTPUT::ReadSkipList("transaction_skip", "TRANSACTION");
         s_transactionHooks = ReadTransactionHooks();
         s_transactionReason = reason;
@@ -3130,21 +3138,17 @@ void aml_transaction_latch()
         s_transactionLatched.store(true, std::memory_order_release);
         CLog::Log(LOGINFO,
                   "TRANSACTION {} ({}) matrix=outputworker {}, displaystate {}, outputdrive {}, "
-                  "hotplugworker {}, vconfigure {}, geometrytick {}, timelineclock {}, "
+                  "hotplugworker {}, vconfigure {}, geometrytick {} ({}), "
+                  "timelineclock {} (at the latch; not a condition: a dark boot starts it later, "
+                  "the open's scheduled start reads it live), "
                   "coordinator n/a (no accessor; outputdrive requires it), "
                   "tickowner n/a (no accessor; GLES m_tickOwner), "
                   "keepsink n/a (no accessor; ActiveAE m_keepOutputAcrossDisplay), "
-                  "startgate n/a (per open, VideoPlayer m_startGateEnabled), "
-                  "heldstart_off n/a (per open, VideoPlayer::OpenFile), "
-                  "scheduled_start_off n/a (per open, VideoPlayer m_scheduledStart), "
-                  "streamsplit_video_off n/a (per stream open, VideoPlayerVideo), "
-                  "disctime_off n/a (per disc open, DVDInputStreamBluray), "
-                  "vconfigure_skip/geometrytick_skip/outputdrive_skip n/a (no any-substep "
-                  "accessor), wireprobe_off n/a (read by WireClassProbe, no accessor), "
-                  "transaction_on {}, transaction_off {}, shadow {}",
+                  "files: {}, transaction_on {}, transaction_off {}, shadow {}",
                   onOff(on), reason, onOff(worker), onOff(displayState), onOff(outputDrive),
-                  onOff(hotplug), onOff(vconfigure), onOff(geometryTick), onOff(timeline),
-                  optIn ? "present" : "absent", off ? "present" : "absent",
+                  onOff(hotplug), onOff(vconfigure), onOff(geometryTick),
+                  aml_geometrytick_validated() ? "listed SoC" : "not listed", onOff(timeline),
+                  files, optIn ? "present" : "absent", off ? "present" : "absent",
                   onOff(s_transactionShadowOn.load()));
       });
 }

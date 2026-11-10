@@ -1957,7 +1957,15 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       CLog::Log(LOGERROR, "HOTPLUGWORKER switch read failed, off: {}", e.what());
     }
     // 5.E2's switch (plan §3), after the hotplug switches it reads; log only in E2-1
-    aml_transaction_latch();
+    try
+    {
+      aml_transaction_latch();
+    }
+    catch (const std::exception& e)
+    {
+      // profile-file reads only; a throw leaves the transaction off (HEAD's path)
+      CLog::Log(LOGERROR, "TRANSACTION switch read failed, off: {}", e.what());
+    }
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",
