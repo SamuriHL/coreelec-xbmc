@@ -10078,6 +10078,11 @@ void CVideoPlayer::OnLostDisplay()
     return;
   }
   CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
+  // 5.E2-2: the mark first, before the stream players are held and the clock pauses, so no P
+  // reader (CheckHeldStart, CN's gate, the play press, the caching end, the offset landing)
+  // schedules a resume or lands an offset inside the freeze; m_lossState goes LOST below, and
+  // ConvertLostDisplayToPause retries its CAS on LOST (docs/phase5_e2_plan.md E2-2)
+  m_displayLost = true;
   if (m_VideoPlayerAudio->IsInited())
   {
     // the audio heard with the picture on screen: an output kept open through
@@ -10097,7 +10102,6 @@ void CVideoPlayer::OnLostDisplay()
   m_renderManager.SetDisplayLost(true);
   m_clock.Pause(true);
   m_lossState = LossState::LOST;
-  m_displayLost = true;
   m_discTime.SetDisplayLost(true);
   {
     // gate (§18.24): the next frame is never behind the held clock
