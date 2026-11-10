@@ -206,6 +206,9 @@ bool CInputStreamAddon::Open()
 
 void CInputStreamAddon::Close()
 {
+  if (!m_ifc.inputstream)
+    return;
+
   if (m_ifc.inputstream->toAddon->close)
     m_ifc.inputstream->toAddon->close(m_ifc.inputstream);
   DestroyInstance();
