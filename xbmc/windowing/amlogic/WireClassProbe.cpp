@@ -12,9 +12,11 @@
 #include "filesystem/File.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/SettingsMirror.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -298,7 +300,12 @@ void CWireClassProbe::Check(const char* origin, Source gfxSource, uint64_t seria
   const auto start = std::chrono::steady_clock::now();
   const int delayMs = 100 * OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   const auto first = start + std::chrono::milliseconds(delayMs + 100);
-  const auto cap = start + std::chrono::milliseconds(delayMs + 3000);
+  auto cap = start + std::chrono::milliseconds(delayMs + 3000);
+  // P5-49: a start holds its first picture until the mode set and the sink are done (E1's hold,
+  // CN's gate: 9 s on the am9pro), so while a decoder is open and VD1 has shown nothing the
+  // watch goes on to the first frame + 3 s, bounded by the delay + 30 s
+  const auto hardCap = start + std::chrono::milliseconds(delayMs + 30000);
+  long vd1Ms = -1;
 
   std::unique_lock lock(m_mutex);
   auto superseded = [this, serial] { return m_stop || m_serial != serial; };
@@ -318,10 +325,22 @@ void CWireClassProbe::Check(const char* origin, Source gfxSource, uint64_t seria
     const Inputs in = ReadInputs(gfxSource);
     const Prediction p = Expected(in);
     const std::string actual = Status();
+    const bool decoderOpen = m_decoderSource.load(std::memory_order_relaxed) != Source::UNKNOWN;
+    const bool vd1 = vd1Ms < 0 && decoderOpen && aml_video_started(); // sysfs, outside the lock
     lock.lock();
     if (firstActual.empty())
       firstActual = actual;
     const auto now = std::chrono::steady_clock::now();
+    if (vd1Ms < 0 && decoderOpen)
+    {
+      if (vd1)
+      {
+        vd1Ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+        cap = std::min(hardCap, std::max(cap, now + std::chrono::milliseconds(3000)));
+      }
+      else if (now >= cap)
+        cap = std::min(hardCap, now + 50ms);
+    }
     // an unmodelled prediction can become modelled once the DV core has seen a frame
     const bool match = p.expected == actual;
     if (match || now >= cap)
@@ -332,12 +351,13 @@ void CWireClassProbe::Check(const char* origin, Source gfxSource, uint64_t seria
       CLog::Log(LOGINFO,
                 "WIRECLASS {}: {} predicted {} ({}, {}) actual {} at +{} ms (first {}) | src {} "
                 "dv {} mode {} policy {} ll {} | hdr_policy {} hdr_mode {} sdr_mode {} "
-                "enable_hdr10plus {} | sink pq {} hlg {} hdr10+ {} dv {} | wire {} bit",
+                "enable_hdr10plus {} | sink pq {} hlg {} hdr10+ {} dv {} | wire {} bit | vd1 {}",
                 origin, p.expected == ANY ? "UNMODELLED" : (match ? "MATCH" : "DIFF"),
                 p.expected, p.row, p.basis, actual, ms, firstActual, SourceName(in.source),
                 in.dvEnable ? 1 : 0, in.dvTargetMode, in.dvPolicy, in.dvLlPolicy, in.hdrPolicy,
                 in.hdrMode, in.sdrMode, in.enableHdr10plus, in.sinkPq, in.sinkHlg,
-                in.sinkHdr10plus, in.sinkDv, in.wireBits);
+                in.sinkHdr10plus, in.sinkDv, in.wireBits,
+                vd1Ms < 0 ? std::string("-") : "+" + std::to_string(vd1Ms) + " ms");
       return;
     }
     if (m_cond.wait_for(lock, 50ms, superseded))
