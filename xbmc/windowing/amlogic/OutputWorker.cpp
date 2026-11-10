@@ -98,6 +98,346 @@ COutputWorker& COutputWorker::Get()
   return worker;
 }
 
+namespace
+{
+constexpr uint32_t WORD_T_MASK = (1u << 24) - 1;
+constexpr uint32_t WORD_F_MASK = (1u << 10) - 1;
+constexpr uint32_t WORD_E_MASK = (1u << 24) - 1;
+
+const char* WordStateName(COutputWorker::WordState state)
+{
+  switch (state)
+  {
+    using enum COutputWorker::WordState;
+    case NONE:
+      return "NONE";
+    case STARTING:
+      return "STARTING";
+    case LEADING:
+      return "LEADING";
+    case FREEZING:
+      return "FREEZING";
+    case LOST:
+      return "LOST";
+    case CONVERTING:
+      return "CONVERTING";
+    case PAUSED:
+      return "PAUSED";
+    case RESET_OWED:
+      return "RESET_OWED";
+    case RETURNING:
+      return "RETURNING";
+  }
+  return "?";
+}
+
+bool WordFrozenState(COutputWorker::WordState state)
+{
+  using enum COutputWorker::WordState;
+  return state == LOST || state == CONVERTING || state == PAUSED || state == RESET_OWED ||
+         state == RETURNING;
+}
+
+std::string WordOwned(const char* states, uint32_t ownT)
+{
+  return StringUtils::Format("{}{{T={}}}", states, ownT);
+}
+} // namespace
+
+uint64_t COutputWorker::PackWord(const SWord& word)
+{
+  return static_cast<uint64_t>(static_cast<uint8_t>(word.state) & 0xf) |
+         (static_cast<uint64_t>(word.sub ? 1 : 0) << 4) |
+         (static_cast<uint64_t>(word.t & WORD_T_MASK) << 5) |
+         (static_cast<uint64_t>(word.f & WORD_F_MASK) << 29) |
+         (static_cast<uint64_t>(word.e & WORD_E_MASK) << 39) |
+         (static_cast<uint64_t>(word.spanOpen ? 1 : 0) << 63);
+}
+
+COutputWorker::SWord COutputWorker::UnpackWord(uint64_t value)
+{
+  SWord word;
+  word.state = static_cast<WordState>(value & 0xf);
+  word.sub = (value >> 4) & 1;
+  word.t = static_cast<uint32_t>(value >> 5) & WORD_T_MASK;
+  word.f = static_cast<uint32_t>(value >> 29) & WORD_F_MASK;
+  word.e = static_cast<uint32_t>(value >> 39) & WORD_E_MASK;
+  word.spanOpen = (value >> 63) & 1;
+  return word;
+}
+
+std::string COutputWorker::WordText(uint64_t value)
+{
+  const SWord w = UnpackWord(value);
+  const char* sub = "";
+  if (w.sub)
+    sub = w.state == WordState::FREEZING ? " parked" : " held";
+  else if (w.state == WordState::FREEZING)
+    sub = " claimed";
+  return StringUtils::Format("{}{{T={} F={} e={}{}{}}}", WordStateName(w.state), w.t, w.f, w.e,
+                             sub, w.spanOpen ? " span" : "");
+}
+
+bool COutputWorker::WordCas(uint64_t expected, uint64_t desired, const char* row, const char* note)
+{
+  uint64_t found = expected;
+  if (m_word.compare_exchange_strong(found, desired, std::memory_order_acq_rel))
+  {
+    CLog::Log(LOGINFO, "WORD {} -> {} (row {}){}{}", WordText(expected), WordText(desired), row,
+              note ? " " : "", note ? note : "");
+    return true;
+  }
+  CLog::Log(LOGWARNING, "WORD CAS failed (row {}): expected {} found {}", row,
+            WordText(expected), WordText(found));
+  return false;
+}
+
+void COutputWorker::WordMismatch(const char* row, const std::string& expected, uint64_t found)
+{
+  CLog::Log(LOGWARNING, "WORD CAS failed (row {}): expected {} found {}", row, expected,
+            WordText(found));
+}
+
+void COutputWorker::WordLoss(bool walk)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  SWord n = w;
+  n.e = (w.e + 1) & WORD_E_MASK;
+  n.spanOpen = true;
+  const char* row = "19";
+  const char* note = walk ? "loss" : "loss inside the open span";
+  switch (w.state)
+  {
+    using enum WordState;
+    case NONE:
+      if (!w.f)
+        row = "27";
+      else if (walk)
+      {
+        // a Lost job's claim; the walk's FREEZE body parks it
+        n.state = FREEZING;
+        n.sub = false;
+        row = "11";
+      }
+      else
+        note = "loss inside the open span, the player not held";
+      break;
+    case RETURNING:
+      n.state = FREEZING;
+      n.sub = false;
+      row = "11";
+      break;
+    case LOST:
+      row = w.spanOpen ? "19" : "17";
+      break;
+    case RESET_OWED:
+      n.state = CONVERTING;
+      row = "22";
+      break;
+    case FREEZING:
+      row = w.f ? "11" : "27";
+      note = "loss while a freeze is claimed";
+      break;
+    case STARTING:
+      row = "9";
+      break;
+    case LEADING:
+      n.state = FREEZING;
+      n.sub = false;
+      row = "8";
+      break;
+    default: // CONVERTING, PAUSED
+      break;
+  }
+  WordCas(old, PackWord(n), row, note);
+}
+
+void COutputWorker::WordLossWalked()
+{
+  const uint64_t old = LoadWord();
+  SWord n = UnpackWord(old);
+  if (n.state != WordState::FREEZING || n.sub || !n.f)
+    return;
+  n.state = WordState::NONE;
+  WordCas(old, PackWord(n), "13", "no player parked the claim");
+}
+
+void COutputWorker::WordCommitted(bool notConnected)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  SWord n = w;
+  n.e = (w.e + 1) & WORD_E_MASK;
+  const char* row;
+  if (!w.f)
+    row = "27";
+  else if (w.spanOpen)
+    row = "19";
+  else
+    row = "15";
+  WordCas(old, PackWord(n), row, notConnected ? "commit, not-committed" : "commit");
+}
+
+void COutputWorker::WordSpanClosed()
+{
+  const uint64_t old = LoadWord();
+  SWord n = UnpackWord(old);
+  if (!n.spanOpen)
+    return;
+  n.spanOpen = false;
+  WordCas(old, PackWord(n), n.f ? "20" : "27",
+          n.f ? "span closed, the player not held" : "span closed");
+}
+
+uint32_t COutputWorker::WordOpen(uint32_t ownT, WordState mirror)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  SWord n = w;
+  uint32_t t = (m_wordT.fetch_add(1) + 1) & WORD_T_MASK;
+  if (!t)
+    t = (m_wordT.fetch_add(1) + 1) & WORD_T_MASK;
+  uint32_t f = (m_wordF.fetch_add(1) + 1) & WORD_F_MASK;
+  if (!f)
+    f = (m_wordF.fetch_add(1) + 1) & WORD_F_MASK;
+  n.t = t;
+  n.f = f;
+  n.state = mirror;
+  n.sub = false;
+  const char* row = "29";
+  const char* note = "open";
+  if (w.f && ownT && w.t == ownT)
+  {
+    row = "28+29";
+    note = "next file on this player";
+  }
+  else if (w.f)
+  {
+    row = "28+29";
+    note = "the previous player not stopped yet";
+  }
+  return WordCas(old, PackWord(n), row, note) ? t : 0;
+}
+
+void COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  const char* row = newcomer ? "29" : "11+12";
+  if (!ownT || w.t != ownT ||
+      !(w.state == WordState::NONE || (w.state == WordState::FREEZING && !w.sub)))
+  {
+    WordMismatch(row, WordOwned("NONE or FREEZING claimed", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::FREEZING;
+  n.sub = true;
+  if (w.state == WordState::FREEZING)
+    WordCas(old, PackWord(n), "12", "the FREEZE body begins");
+  else
+    WordCas(old, PackWord(n), row,
+            newcomer ? "the newcomer freeze's body" : "a request's walk, claimed and parked at once");
+}
+
+void COutputWorker::WordFrozen(uint32_t ownT, bool newcomer)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  const char* row = newcomer ? "29" : "14";
+  if (!ownT || w.t != ownT || w.state != WordState::FREEZING || !w.sub)
+  {
+    WordMismatch(row, WordOwned("FREEZING parked", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::LOST;
+  n.sub = false;
+  WordCas(old, PackWord(n), row, "after the FREEZE body");
+}
+
+void COutputWorker::WordConverting(uint32_t ownT)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  if (!ownT || w.t != ownT || w.state != WordState::LOST)
+  {
+    WordMismatch("18", WordOwned("LOST", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::CONVERTING;
+  WordCas(old, PackWord(n), "18", "conversion begins");
+}
+
+void COutputWorker::WordPaused(uint32_t ownT)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  if (!ownT || w.t != ownT || w.state != WordState::CONVERTING)
+  {
+    WordMismatch("18", WordOwned("CONVERTING", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::PAUSED;
+  WordCas(old, PackWord(n), "18", "conversion done");
+}
+
+void COutputWorker::WordReturning(uint32_t ownT)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  const bool from = w.state == WordState::LOST || w.state == WordState::PAUSED ||
+                    w.state == WordState::CONVERTING;
+  if (!ownT || w.t != ownT || !from)
+  {
+    WordMismatch("20", WordOwned("LOST, CONVERTING or PAUSED", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::RETURNING;
+  n.spanOpen = false;
+  if (w.state == WordState::CONVERTING)
+    WordCas(old, PackWord(n), "21+22", "RETURNING stored over CONVERTING after the 1 s wait");
+  else if (w.state == WordState::LOST && !w.spanOpen)
+    WordCas(old, PackWord(n), "16", "display reset");
+  else
+    WordCas(old, PackWord(n), "20", "display reset");
+}
+
+void COutputWorker::WordReturned(uint32_t ownT)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  if (!ownT || w.t != ownT || w.state != WordState::RETURNING)
+  {
+    WordMismatch("23", WordOwned("RETURNING", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.state = WordState::NONE;
+  WordCas(old, PackWord(n), "23", "the reset's resume");
+}
+
+void COutputWorker::WordStop(uint32_t ownT)
+{
+  const uint64_t old = LoadWord();
+  const SWord w = UnpackWord(old);
+  if (w.t != ownT || !w.f)
+  {
+    WordMismatch("28", WordOwned("any", ownT), old);
+    return;
+  }
+  SWord n = w;
+  n.f = 0;
+  // a pending claim stays FREEZING; a commit's display hold reads FREEZING parked
+  if (w.state != WordState::FREEZING)
+    n.state = w.sub ? WordState::FREEZING : WordState::NONE;
+  WordCas(old, PackWord(n), "28", WordFrozenState(w.state) ? "stop while frozen" : "stop");
+}
+
 void COutputWorker::Start()
 {
   std::unique_lock lock(m_mutex);

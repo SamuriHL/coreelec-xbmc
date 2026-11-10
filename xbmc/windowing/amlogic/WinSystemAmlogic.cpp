@@ -593,17 +593,27 @@ void CWinSystemAmlogic::OpenLostSpan()
   if (ordering)
     CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (lost span)", m_ledgerSet.load(),
               ++m_lostGen);
+  // 5.E2-3: the shadow word's loss (e+1, the span), before the walk's FREEZE bodies
+  const bool wordShadow = aml_transaction_shadow_on();
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordLoss(true);
   for (IDispResource* resource : m_resources)
   {
     resource->OnLostDisplay();
     LedgerLost(resource);
   }
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordLossWalked();
 }
 
 void CWinSystemAmlogic::CloseLostSpan()
 {
   if (m_lostOpen.exchange(false))
+  {
     CLog::Log(LOGINFO, "CWinSystemAmlogic: display back, the lost span ends");
+    if (aml_transaction_shadow_on())
+      OUTPUT::COutputWorker::Get().WordSpanClosed();
+  }
 }
 
 bool CWinSystemAmlogic::DisplayResetAllowed() const
@@ -1110,8 +1120,12 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
         // review #7: a loss inside an open span is a new generation, so a reset armed before it
         // cannot fire once a later connected read clears the stamp
         if (m_lostOpen)
+        {
           CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (re-stamp)", m_ledgerSet.load(),
                     ++m_lostGen);
+          if (aml_transaction_shadow_on())
+            OUTPUT::COutputWorker::Get().WordLoss(false);
+        }
         m_disconnectedSinceMs = SteadyMs();
       }
       OpenLostSpan();
@@ -1893,6 +1907,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           if (shadowAfter)
             shadowAfter(*committed, display->aml_set_not_connected());
+          // 5.E2-3: the shadow word's epoch
+          if (aml_transaction_shadow_on() && *committed)
+            OUTPUT::COutputWorker::Get().WordCommitted(display->aml_set_not_connected());
           OUTPUT::TestStopAt("4");
           if (*committed)
           {

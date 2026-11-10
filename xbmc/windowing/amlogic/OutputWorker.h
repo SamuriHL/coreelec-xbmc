@@ -83,7 +83,67 @@ public:
   //! jobs W has started (5.B2-5a: a shadow's reads raced one)
   uint64_t JobsStarted() const { return m_jobsStarted.load(); }
 
+  // 5.E2-3: the display word of design §4.7 as a shadow (docs/phase5_e2_plan.md E2-3). One packed
+  // 64-bit word {state 4, sub 1, T 24, F 10, e 24, spanOpen 1}, CASed at today's transitions and
+  // logged "WORD <old> -> <new> (row <n>)"; a CAS that fails logs the expected and found words
+  // and is not retried. Nothing reads it for behaviour. Every caller tests
+  // aml_transaction_shadow_on() first.
+  enum class WordState : uint8_t
+  {
+    NONE = 0,
+    STARTING,
+    LEADING,
+    FREEZING,
+    LOST,
+    CONVERTING,
+    PAUSED,
+    RESET_OWED,
+    RETURNING,
+  };
+  struct SWord
+  {
+    WordState state = WordState::NONE;
+    bool sub = false; //!< FREEZING: parked (else claimed); any other state: W's display hold
+    uint32_t t = 0; //!< transaction id, 24 bits
+    uint32_t f = 0; //!< file serial, 10 bits, 0 = no player
+    uint32_t e = 0; //!< output epoch, 24 bits
+    bool spanOpen = false;
+  };
+  static uint64_t PackWord(const SWord& word);
+  static SWord UnpackWord(uint64_t value);
+  static std::string WordText(uint64_t value);
+  uint64_t LoadWord() const { return m_word.load(std::memory_order_acquire); }
+  //! W, a loss it detects (e+1, the span set): walk = the span's lost walk follows (row 11's
+  //! claim for an open player), else a loss inside an open span (the re-stamp)
+  void WordLoss(bool walk);
+  //! W, after the span's lost walk: a claim no player parked is released (row 13)
+  void WordLossWalked();
+  //! W, a mode set's commit (e+1)
+  void WordCommitted(bool notConnected);
+  //! W, the lost span's close: the span bit, when no player's return cleared it
+  void WordSpanClosed();
+  //! P, a file's open (today's start: row 29, or 28+29 for a next file); mirror is the player's
+  //! own loss state. The new T, or 0 when the CAS failed
+  uint32_t WordOpen(uint32_t ownT, WordState mirror);
+  //! the FREEZE body begins (OnLostDisplay past its early returns); newcomer: on P (row 29)
+  void WordFreezeBody(uint32_t ownT, bool newcomer);
+  //! the FREEZE body done, the player's state LOST
+  void WordFrozen(uint32_t ownT, bool newcomer);
+  //! P's conversion to a pause (row 18's two steps)
+  void WordConverting(uint32_t ownT);
+  void WordPaused(uint32_t ownT);
+  //! the display reset: the player's state RETURNING (rows 16, 20, 21+22), then NONE (row 23)
+  void WordReturning(uint32_t ownT);
+  void WordReturned(uint32_t ownT);
+  //! P's stop (row 28)
+  void WordStop(uint32_t ownT);
+
 private:
+  //! one CAS, logged; never retried
+  bool WordCas(uint64_t expected, uint64_t desired, const char* row, const char* note = nullptr);
+  //! a row's precondition not met: no CAS, the expected and found words logged
+  void WordMismatch(const char* row, const std::string& expected, uint64_t found);
+
   struct Result
   {
     bool done = false;
@@ -123,6 +183,10 @@ private:
   bool m_stopping = false;
   uint64_t m_nextId = 1;
   std::atomic<uint64_t> m_jobsStarted{0};
+  // 5.E2-3: the display word (shadow) and its counters
+  std::atomic<uint64_t> m_word{0};
+  std::atomic<uint32_t> m_wordT{0};
+  std::atomic<uint32_t> m_wordF{0};
   // test: special://profile/outputworker_stall holds "<job name> <ms>"; W sleeps before that job
   std::string m_stallJob;
   int m_stallMs = 0;

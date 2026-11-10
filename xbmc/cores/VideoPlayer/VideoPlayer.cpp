@@ -2742,6 +2742,8 @@ void CVideoPlayer::ArmStartGate(const char* where)
   if (IAE* ae = CServiceBroker::GetActiveAE())
     ae->SetStartGate(true);
   CLog::Log(LOGINFO, "VideoPlayer: start gate armed (set {}, {})", m_startGateGen, where);
+  if (aml_transaction_shadow_on())
+    LogWordBoundary(true, where);
 }
 
 // 5.E2-1 (plan §3, log only): what the transaction's per-open matrix would say for this set.
@@ -2781,6 +2783,35 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
   else
     CLog::Log(LOGINFO, "TRANSACTION shadow set={} T={} legacy-open ({}; {})", set,
               m_txShadowSerial, why, where);
+}
+
+// 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
+// Reads the shadow word; CASes nothing
+void CVideoPlayer::LogWordBoundary(bool arm, const char* why)
+{
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const uint64_t value = OUTPUT::COutputWorker::Get().LoadWord();
+  const auto word = OUTPUT::COutputWorker::UnpackWord(value);
+  if (arm)
+  {
+    const char* row;
+    if (word.state == WordState::FREEZING)
+      row = word.sub ? "2, waits for the park" : "2";
+    else if (word.state == WordState::NONE)
+      row = "1";
+    else if (std::string_view(why) == "first set")
+      row = "28+1";
+    else
+      row = "25";
+    CLog::Log(LOGINFO, "WORD shadow STARTING set={} (row {}; CN arm, {}) word {}",
+              m_startGateGen, row, why, OUTPUT::COutputWorker::WordText(value));
+    return;
+  }
+  const bool lead = m_scheduledStart && m_playSpeed == DVD_PLAYSPEED_NORMAL && m_pInputStream &&
+                    !m_pInputStream->IsRealtime();
+  CLog::Log(LOGINFO, "WORD shadow START candidate set={} -> {} (row {}; CN open, {}) word {}",
+            m_startGateGen, lead ? "LEADING" : "NONE", lead ? "4" : "5", why,
+            OUTPUT::COutputWorker::WordText(value));
 }
 
 void CVideoPlayer::CheckStartGate()
@@ -2848,6 +2879,8 @@ void CVideoPlayer::OpenStartGate(const char* why, bool bound)
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startGateSince).count();
   CLog::Log(bound ? LOGWARNING : LOGINFO,
             "VideoPlayer: start gate opened after {:.3f}s (set {}): {}", shut, m_startGateGen, why);
+  if (aml_transaction_shadow_on())
+    LogWordBoundary(false, why);
 }
 
 bool CVideoPlayer::ScheduleUserResume()
@@ -3350,6 +3383,30 @@ void CVideoPlayer::Prepare(bool nextFile)
   // started while the display is lost: held like the players already open
   // (what it plays is not known yet: a deferred disc demux, the last device)
   m_holdOnDisplayLoss = true;
+  // 5.E2-3: the shadow word's open, mirroring this player's loss state (kept across a next file)
+  if (aml_transaction_shadow_on())
+  {
+    using WordState = OUTPUT::COutputWorker::WordState;
+    WordState mirror = WordState::NONE;
+    switch (m_lossState.load())
+    {
+      case LossState::NONE:
+        break;
+      case LossState::LOST:
+        mirror = WordState::LOST;
+        break;
+      case LossState::CONVERTING:
+        mirror = WordState::CONVERTING;
+        break;
+      case LossState::PAUSED:
+        mirror = WordState::PAUSED;
+        break;
+      case LossState::RETURNING:
+        mirror = WordState::RETURNING;
+        break;
+    }
+    m_txWordT = OUTPUT::COutputWorker::Get().WordOpen(m_txWordT, mirror);
+  }
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (winSystem && winSystem->HoldIfDisplayLost(this))
     CLog::Log(LOGINFO, "VideoPlayer: started while the display is lost, held until it is back");
@@ -3370,6 +3427,9 @@ void CVideoPlayer::ConvertLostDisplayToPause()
   LossState expected = LossState::LOST;
   if (!m_lossState.compare_exchange_strong(expected, LossState::CONVERTING))
     return;
+  const bool wordShadow = aml_transaction_shadow_on();
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordConverting(m_txWordT);
   CLog::Log(LOGINFO, "VideoPlayer: display lost for {} ms, now an ordinary pause",
             winSystem->DisconnectedForMs());
   // as a user pause (SetSpeed and PLAYER_SETSPEED), without a hold point: the
@@ -3389,6 +3449,8 @@ void CVideoPlayer::ConvertLostDisplayToPause()
   expected = LossState::CONVERTING;
   if (!m_lossState.compare_exchange_strong(expected, LossState::PAUSED))
     CLog::Log(LOGERROR, "VideoPlayer: the display came back during the pause conversion");
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordPaused(m_txWordT);
   // an ordinary pause: disc time (BD-J and HDMV timers) runs through it
   m_discTime.SetDisplayLost(false);
   IPlayerCallback* cb = &m_callback;
@@ -5869,6 +5931,12 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
+  // 5.E2-3: the shadow word's stop
+  if (aml_transaction_shadow_on() && m_txWordT)
+  {
+    OUTPUT::COutputWorker::Get().WordStop(m_txWordT);
+    m_txWordT = 0;
+  }
   m_renderManager.ArmTestStall("stop");
 
   ClearPendingElPackets();
@@ -10078,6 +10146,12 @@ void CVideoPlayer::OnLostDisplay()
     return;
   }
   CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
+  // 5.E2-3: the shadow word reads FREEZING parked while the body runs; on P it is the newcomer
+  // freeze (HoldIfDisplayLost)
+  const bool wordShadow = aml_transaction_shadow_on();
+  const bool newcomer = wordShadow && IsCurrentThread();
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordFreezeBody(m_txWordT, newcomer);
   // the audio heard with the picture on screen: an output kept open through the mode change
   // gives back what it has not played from there. Read before the mark below, so the offset
   // it adds is the one in force when the loss came (E2-2 code review L1)
@@ -10107,6 +10181,8 @@ void CVideoPlayer::OnLostDisplay()
   m_renderManager.SetDisplayLost(true);
   m_clock.Pause(true);
   m_lossState = LossState::LOST;
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordFrozen(m_txWordT, newcomer);
   m_discTime.SetDisplayLost(true);
   {
     // gate (§18.24): the next frame is never behind the held clock
@@ -10141,6 +10217,9 @@ void CVideoPlayer::OnResetDisplay()
       CLog::Log(LOGERROR, "VideoPlayer: display back while the pause conversion still runs");
     m_lossState = LossState::RETURNING;
   }
+  const bool wordShadow = aml_transaction_shadow_on();
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordReturning(m_txWordT);
   const bool heldAsPause = state == LossState::PAUSED;
 
   CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
@@ -10221,6 +10300,8 @@ void CVideoPlayer::OnResetDisplay()
   // never re-composed - repost it from the player thread (Process loop)
   m_repostDiscOverlays = true;
   m_lossState = LossState::NONE;
+  if (wordShadow)
+    OUTPUT::COutputWorker::Get().WordReturned(m_txWordT);
 }
 
 void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update)

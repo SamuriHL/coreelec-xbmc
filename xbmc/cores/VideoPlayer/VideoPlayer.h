@@ -934,6 +934,9 @@ protected:
   bool m_txShadowSetSeen = false;
   unsigned int m_txShadowSerial = 0;
   void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
+  //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
+  std::atomic<uint32_t> m_txWordT{0};
+  void LogWordBoundary(bool arm, const char* why);
   std::chrono::steady_clock::time_point m_startGateSince;
   std::chrono::steady_clock::time_point m_startGateStarveSince;
   bool m_startGateFullScreenPosted = false;

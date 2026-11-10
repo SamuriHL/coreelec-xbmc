@@ -1355,6 +1355,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
   const bool notConnected = committed && display->aml_set_not_connected();
+  // 5.E2-3: the shadow word's epoch
+  if (aml_transaction_shadow_on() && committed)
+    OUTPUT::COutputWorker::Get().WordCommitted(notConnected);
   OUTPUT::TestStopAt("4");
   if (committed)
   {
