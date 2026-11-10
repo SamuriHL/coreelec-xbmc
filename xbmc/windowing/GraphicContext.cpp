@@ -460,7 +460,7 @@ void CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
     // 5.E2-4: the caller's request origin travels with the message
     const char* origin = OUTPUT::CurrentRequestOrigin();
     CServiceBroker::GetAppMessenger()->SendMsg(TMSG_SETVIDEORESOLUTION, res, forceUpdate ? 1 : 0,
-                                               nullptr, origin ? origin : "");
+                                               nullptr, origin ? origin : "off-main (unscoped)");
 #else
     CServiceBroker::GetAppMessenger()->SendMsg(TMSG_SETVIDEORESOLUTION, res, forceUpdate ? 1 : 0);
 #endif

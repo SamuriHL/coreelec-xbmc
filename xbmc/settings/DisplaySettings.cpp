@@ -384,10 +384,12 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionFromString(std::static_pointer_cast<const CSettingString>(setting)->GetValue());
 
     SetCurrentResolution(newRes, false);
+    {
 #if defined(HAS_LIBAMCODEC)
-    OUTPUT::CRequestOrigin requestOrigin("user-pick");
+      OUTPUT::CRequestOrigin requestOrigin("user-pick");
 #endif
-    CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(newRes, false);
+      CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(newRes, false);
+    }
 
     // check if the old or the new resolution was/is windowed
     // in which case we don't show any prompt to the user
@@ -420,10 +422,12 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionForScreen();
 
     SetCurrentResolution(newRes, false);
+    {
 #if defined(HAS_LIBAMCODEC)
-    OUTPUT::CRequestOrigin requestOrigin("user-pick");
+      OUTPUT::CRequestOrigin requestOrigin("user-pick");
 #endif
-    winSystem->GetGfxContext().SetVideoResolution(newRes, true);
+      winSystem->GetGfxContext().SetVideoResolution(newRes, true);
+    }
 
     if (!m_resolutionChangeAborted)
     {

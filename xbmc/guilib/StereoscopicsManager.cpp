@@ -40,6 +40,9 @@
 #include "utils/log.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
+#endif
 
 #include <stdlib.h>
 
@@ -534,6 +537,9 @@ void CStereoscopicsManager::ApplyStereoMode(const RenderStereoMode mode, bool no
         const bool is3D = (mode != RenderStereoMode::OFF && mode != RenderStereoMode::MONO);
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(
             curInfo.fRefreshRate, curInfo.iScreenWidth, curInfo.iScreenHeight, is3D);
+#if defined(HAS_LIBAMCODEC)
+        OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
         CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, true);
       }
     }

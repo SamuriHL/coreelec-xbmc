@@ -2733,6 +2733,11 @@ void CVideoPlayer::ArmStartGate(const char* where)
         ae->SetStartGate(false);
       CLog::Log(LOGINFO, "VideoPlayer: start gate ended (set {}): {} not gated", m_startGateGen,
                 where);
+      // 5.E2-4: the window this gate opened ends with it (E2-4 review M1)
+      if (aml_transaction_shadow_on())
+        OUTPUT::COutputWorker::Get().ShadowStartPhase(
+            this, OUTPUT::COutputWorker::StartPhase::NONE, 0, "gate ended",
+            static_cast<int>(OUTPUT::COutputWorker::StartPhase::STARTING));
     }
     return;
   }
@@ -2752,8 +2757,8 @@ void CVideoPlayer::ArmStartGate(const char* where)
   {
     LogWordBoundary(true, where);
     // 5.E2-4: the start window W's request shadow reads
-    OUTPUT::COutputWorker::Get().ShadowStartPhase(OUTPUT::COutputWorker::StartPhase::STARTING, 0,
-                                                  "CN arm");
+    OUTPUT::COutputWorker::Get().ShadowStartPhase(
+        this, OUTPUT::COutputWorker::StartPhase::STARTING, 0, "CN arm");
   }
 }
 
@@ -2965,14 +2970,7 @@ void CVideoPlayer::OpenStartGate(const char* why, bool bound)
   CLog::Log(bound ? LOGWARNING : LOGINFO,
             "VideoPlayer: start gate opened after {:.3f}s (set {}): {}", shut, m_startGateGen, why);
   if (aml_transaction_shadow_on())
-  {
     LogWordBoundary(false, why);
-    // 5.E2-4: a start not held ends its window here; a held one at its release
-    if (!m_startHeld)
-      OUTPUT::COutputWorker::Get().ShadowStartPhase(
-          OUTPUT::COutputWorker::StartPhase::NONE, 0, "CN open, no held start",
-          static_cast<int>(OUTPUT::COutputWorker::StartPhase::STARTING));
-  }
 }
 
 bool CVideoPlayer::ScheduleUserResume()
@@ -3057,10 +3055,12 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   {
     using StartPhase = OUTPUT::COutputWorker::StartPhase;
     if (lead > 0.0)
-      OUTPUT::COutputWorker::Get().ShadowStartPhase(StartPhase::LEADING, discRunNs,
-                                                    "scheduled start");
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, discRunNs,
+                                                    "scheduled start",
+                                                    static_cast<int>(StartPhase::STARTING));
     else
-      OUTPUT::COutputWorker::Get().ShadowStartPhase(StartPhase::NONE, 0, why);
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::NONE, 0, why,
+                                                    static_cast<int>(StartPhase::STARTING));
   }
   CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", held, why,
             m_clock.GetClock() / DVD_TIME_BASE);
@@ -4901,6 +4901,12 @@ void CVideoPlayer::HandlePlaySpeed()
         m_clock.SetSpeedAdjust(0);
         // scheduleStart alone never read the count: today's snapshot (r1 L3)
         HoldStart(holdStart ? heldDecisions : std::nullopt);
+        // 5.E2-4: a file's held start is inside the window until its release (E2-4 review H1);
+        // a seek's resync is no start
+        if (aml_transaction_shadow_on() && !m_State.streamsReady)
+          OUTPUT::COutputWorker::Get().ShadowStartPhase(
+              this, OUTPUT::COutputWorker::StartPhase::STARTING, 0, "start held",
+              static_cast<int>(OUTPUT::COutputWorker::StartPhase::NONE));
         if (holdStart)
           m_discTime.SetStartHeld(true);
         // the clock ran from the discontinuity to the pause (up to 0.9 ms
@@ -4916,7 +4922,13 @@ void CVideoPlayer::HandlePlaySpeed()
       if (scheduleStart)
         ReleaseHeldStart("scheduled start");
       else if (!holdStart)
+      {
         SetCaching(CACHESTATE_DONE);
+        // 5.E2-4: an unheld start's window ends at its sync (E2-4 review H1)
+        if (aml_transaction_shadow_on())
+          OUTPUT::COutputWorker::Get().ShadowStartPhase(
+              this, OUTPUT::COutputWorker::StartPhase::NONE, 0, "sync, start not held");
+      }
       UpdatePlayState(0);
 
       // a released start armed the grace for its lead (ReleaseHeldStart)
@@ -6026,8 +6038,8 @@ void CVideoPlayer::OnExit()
   {
     if (const uint32_t wordT = m_txWordT.exchange(0))
       OUTPUT::COutputWorker::Get().WordStop(wordT);
-    OUTPUT::COutputWorker::Get().ShadowStartPhase(OUTPUT::COutputWorker::StartPhase::NONE, 0,
-                                                  "stop");
+    OUTPUT::COutputWorker::Get().ShadowStartPhase(this, OUTPUT::COutputWorker::StartPhase::NONE,
+                                                  0, "stop");
   }
   m_renderManager.ArmTestStall("stop");
 

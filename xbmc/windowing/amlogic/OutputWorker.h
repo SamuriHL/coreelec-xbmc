@@ -175,9 +175,15 @@ public:
     LEADING,
   };
   //! P: the start window the word would read (the shadow word stays NONE through a start, E2-3):
-  //! STARTING from CN's arm, LEADING until leadEndNs (CLOCK_MONOTONIC), NONE at the end or a stop.
-  //! from: only when the phase is still that one (-1: any)
-  void ShadowStartPhase(StartPhase phase, int64_t leadEndNs, const char* why, int from = -1);
+  //! STARTING from CN's arm or a held start, LEADING until leadEndNs (CLOCK_MONOTONIC), NONE at
+  //! the release, an unheld sync, a gate's end or the stop. owner: the player; a player's NONE or
+  //! LEADING applies only to its own window, STARTING takes the window over. from: only when the
+  //! phase is still that one (-1: any)
+  void ShadowStartPhase(const void* owner,
+                        StartPhase phase,
+                        int64_t leadEndNs,
+                        const char* why,
+                        int from = -1);
   //! W: SETTLE's display reset done for a request (SettleDone{T, e})
   void ShadowSettleDone(uint64_t request);
 
@@ -249,8 +255,11 @@ private:
   std::vector<uint64_t> m_after; //!< request ids held in the after-list (shadow: empty)
   uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job
   bool m_busy = false;
-  std::atomic<int> m_startPhase{0};
-  std::atomic<int64_t> m_leadEndNs{0};
+  // 5.E2-4: the start window (P writes, W reads), its own leaf lock; nothing logs under it
+  mutable std::mutex m_phaseMutex;
+  StartPhase m_startPhase = StartPhase::NONE;
+  int64_t m_leadEndNs = 0;
+  const void* m_phaseOwner = nullptr;
   // test: special://profile/outputworker_stall holds "<job name> <ms>"; W sleeps before that job
   std::string m_stallJob;
   int m_stallMs = 0;
