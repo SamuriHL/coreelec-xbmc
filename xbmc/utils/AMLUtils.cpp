@@ -18,6 +18,7 @@
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
+#include "utils/PresentationTimeline.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "utils/StringUtils.h"
@@ -3007,6 +3008,177 @@ SGeometryTickHooks aml_geometrytick_hooks()
   if (!s_geometryTickLatched.load(std::memory_order_acquire))
     return {};
   return s_geometryTickHooks;
+}
+
+namespace
+{
+// 5.E2 (plan §3); written once, before s_transactionLatched
+std::vector<std::string> s_transactionSkip;
+STransactionHooks s_transactionHooks;
+const char* s_transactionReason = "not latched";
+std::atomic<bool> s_transactionLatched{false};
+std::atomic<bool> s_transactionOn{false};
+std::atomic<bool> s_transactionShadowOn{false};
+
+int TransactionHookMs(const char* name)
+{
+  const auto line = OUTPUT::ReadTestSwitch(name);
+  if (!line)
+    return 0;
+  const int value = std::max(0, std::atoi(line->c_str()));
+  CLog::Log(LOGWARNING, "TRANSACTION test: {} {}", name, value);
+  return value;
+}
+
+bool TransactionHookFlag(const char* name)
+{
+  if (!XFILE::CFile::Exists(std::string("special://profile/") + name))
+    return false;
+  CLog::Log(LOGWARNING, "TRANSACTION test: {}", name);
+  return true;
+}
+
+std::string TransactionHookWord(const char* name)
+{
+  const auto line = OUTPUT::ReadTestSwitch(name);
+  if (!line)
+    return {};
+  std::string word = *line;
+  StringUtils::Trim(word);
+  CLog::Log(LOGWARNING, "TRANSACTION test: {} {}", name, word);
+  return word;
+}
+
+// plan §9: parsed and logged only; the step that wires each one reads it
+STransactionHooks ReadTransactionHooks()
+{
+  STransactionHooks hooks;
+  hooks.seekDelayMs = TransactionHookMs("transaction_seekdelay");
+  hooks.exc1 = TransactionHookFlag("transaction_exc1");
+  hooks.noPicture = TransactionHookFlag("transaction_nopicture");
+  hooks.demuxStallMs = TransactionHookMs("transaction_demuxstall");
+  hooks.reopenDelayMs = TransactionHookMs("transaction_reopendelay");
+  hooks.restoreCapsDelayMs = TransactionHookMs("transaction_restorecapsdelay");
+  hooks.aeDevChange = TransactionHookFlag("transaction_aedevchange");
+  hooks.noVideo = TransactionHookFlag("transaction_novideo");
+  hooks.resumeDelayMs = TransactionHookMs("transaction_resumedelay");
+  hooks.keepAlive = TransactionHookWord("transaction_keepalive");
+  hooks.xletDelayMs = TransactionHookMs("transaction_xletdelay");
+  hooks.xletStopS = TransactionHookMs("transaction_xletstop");
+  hooks.prefetchStall = TransactionHookFlag("transaction_prefetchstall");
+  hooks.parkHold = TransactionHookWord("transaction_parkhold");
+  hooks.pDemuxDelayMs = TransactionHookMs("transaction_pdemuxdelay");
+  hooks.noticeAt = TransactionHookWord("transaction_noticeat");
+  return hooks;
+}
+} // namespace
+
+void aml_transaction_latch()
+{
+  static std::once_flag once;
+  std::call_once(
+      once,
+      []
+      {
+        // the prerequisites with an accessor in today's code (plan §3); the rest are named
+        // n/a with where they are decided, and do not take part in the decision yet
+        const bool worker = !OUTPUT::COutputWorker::SwitchedOff();
+        const bool displayState = aml_displaystate_on();
+        const bool outputDrive = OUTPUT::OutputDriveOn();
+        const bool hotplug = OUTPUT::HotplugWorkerOn();
+        const bool vconfigure = aml_vconfigure_on();
+        const bool geometryTick = aml_geometrytick_on();
+        const bool timeline = PRESENTATION::TimelineClockActive().load();
+        const bool off = XFILE::CFile::Exists("special://profile/transaction_off");
+        const bool optIn = XFILE::CFile::Exists("special://profile/transaction_on");
+        const bool shadowOff = XFILE::CFile::Exists("special://profile/transaction_shadow_off");
+
+        bool on = false;
+        const char* reason;
+        if (off)
+          reason = "transaction_off";
+        else if (!aml_presentation_validated())
+          reason = "not a validated SoC";
+        else if (!worker)
+          reason = "outputworker off";
+        else if (!displayState)
+          reason = "display state off";
+        else if (!outputDrive)
+          reason = "outputdrive off";
+        else if (!hotplug)
+          reason = "hotplugworker off";
+        else if (!vconfigure)
+          reason = "vconfigure off";
+        else if (!geometryTick)
+          reason = "geometrytick off";
+        else if (!timeline)
+          reason = "timeline clock off";
+        else if (!optIn)
+          reason = "not enabled";
+        else
+        {
+          // E2-1: the n/a items below are not evaluated; nothing reads the switch yet
+          reason = "transaction_on, n/a items not evaluated";
+          on = true;
+        }
+        const auto onOff = [](bool v) { return v ? "on" : "off"; };
+        s_transactionSkip = OUTPUT::ReadSkipList("transaction_skip", "TRANSACTION");
+        s_transactionHooks = ReadTransactionHooks();
+        s_transactionReason = reason;
+        s_transactionOn = on;
+        s_transactionShadowOn = !off && !shadowOff;
+        s_transactionLatched.store(true, std::memory_order_release);
+        CLog::Log(LOGINFO,
+                  "TRANSACTION {} ({}) matrix=outputworker {}, displaystate {}, outputdrive {}, "
+                  "hotplugworker {}, vconfigure {}, geometrytick {}, timelineclock {}, "
+                  "coordinator n/a (no accessor; outputdrive requires it), "
+                  "tickowner n/a (no accessor; GLES m_tickOwner), "
+                  "keepsink n/a (no accessor; ActiveAE m_keepOutputAcrossDisplay), "
+                  "startgate n/a (per open, VideoPlayer m_startGateEnabled), "
+                  "heldstart_off n/a (per open, VideoPlayer::OpenFile), "
+                  "scheduled_start_off n/a (per open, VideoPlayer m_scheduledStart), "
+                  "streamsplit_video_off n/a (per stream open, VideoPlayerVideo), "
+                  "disctime_off n/a (per disc open, DVDInputStreamBluray), "
+                  "vconfigure_skip/geometrytick_skip/outputdrive_skip n/a (no any-substep "
+                  "accessor), wireprobe_off n/a (read by WireClassProbe, no accessor), "
+                  "transaction_on {}, transaction_off {}, shadow {}",
+                  onOff(on), reason, onOff(worker), onOff(displayState), onOff(outputDrive),
+                  onOff(hotplug), onOff(vconfigure), onOff(geometryTick), onOff(timeline),
+                  optIn ? "present" : "absent", off ? "present" : "absent",
+                  onOff(s_transactionShadowOn.load()));
+      });
+}
+
+bool aml_transaction_on()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) &&
+         s_transactionOn.load(std::memory_order_relaxed);
+}
+
+const char* aml_transaction_reason()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) ? s_transactionReason
+                                                              : "not latched";
+}
+
+bool aml_transaction_shadow_on()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) &&
+         s_transactionShadowOn.load(std::memory_order_relaxed);
+}
+
+bool aml_transaction_skip(const std::string& substep)
+{
+  return s_transactionLatched.load(std::memory_order_acquire) && !substep.empty() &&
+         std::find(s_transactionSkip.begin(), s_transactionSkip.end(), substep) !=
+             s_transactionSkip.end();
+}
+
+STransactionHooks aml_transaction_hooks()
+{
+  if (!s_transactionLatched.load(std::memory_order_acquire))
+    return {};
+  return s_transactionHooks;
 }
 
 void aml_timing_inputs_bump()

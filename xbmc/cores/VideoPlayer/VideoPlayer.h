@@ -929,6 +929,11 @@ protected:
   bool m_startGateEnabled = false; //!< start order flag files, read at open
   bool m_startGateShut = false;
   unsigned int m_startGateGen = 0; //!< the stream set the gate belongs to
+  // 5.E2-1's per-open shadow line (log only, P's own): a set of this file was armed already,
+  // and the number of opens the shadow would have engaged (T)
+  bool m_txShadowSetSeen = false;
+  unsigned int m_txShadowSerial = 0;
+  void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
   std::chrono::steady_clock::time_point m_startGateSince;
   std::chrono::steady_clock::time_point m_startGateStarveSince;
   bool m_startGateFullScreenPosted = false;

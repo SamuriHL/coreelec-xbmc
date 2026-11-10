@@ -465,6 +465,39 @@ struct SGeometryTickHooks
   int vadj1FailCalls = 0; //!< geometrytick_vadj1fail <n>: Enable_vadj1's first n calls fail
 };
 SGeometryTickHooks aml_geometrytick_hooks();
+// 5.E2's switch (transaction; docs/phase5_e2_plan.md §3), latched once at W's start after the
+// hotplug switches (aml_transaction_latch) and logged as "TRANSACTION on|off (<reason>)
+// matrix=...". E2-1 (log only): opt-in by special://profile/transaction_on on every SoC (Q3);
+// transaction_off wins. Nothing reads it for behaviour yet. Off before the latch.
+void aml_transaction_latch();
+bool aml_transaction_on();
+//! the latch's reason ("not latched" before it)
+const char* aml_transaction_reason();
+//! the E2-3..E2-5 shadows: on unless transaction_shadow_off or transaction_off (§3, L-7)
+bool aml_transaction_shadow_on();
+//! transaction_skip "<substep>[,<substep>]": true for a listed 5.E2 sub-step (bisect only)
+bool aml_transaction_skip(const std::string& substep);
+//! 5.E2's test hooks (plan §9), read with the latch; all off by default and unused in E2-1
+struct STransactionHooks
+{
+  int seekDelayMs = 0; //!< transaction_seekdelay <ms>: a seek in PRIME delayed (E2-9)
+  bool exc1 = false; //!< transaction_exc1: sync exception 1 forced in PRIME (E2-9)
+  bool noPicture = false; //!< transaction_nopicture: the decoder's pictures withheld (E2-9, E2-11)
+  int demuxStallMs = 0; //!< transaction_demuxstall <ms>: a demux stall (E2-7)
+  int reopenDelayMs = 0; //!< transaction_reopendelay <ms>: the OPEN after row 3's step (E2-10)
+  int restoreCapsDelayMs = 0; //!< transaction_restorecapsdelay <ms>: a Restore's caps (E2-11)
+  bool aeDevChange = false; //!< transaction_aedevchange: an AE device change after START (E2-10)
+  bool noVideo = false; //!< transaction_novideo: the next segment's video dropped (E2-13)
+  int resumeDelayMs = 0; //!< transaction_resumedelay <ms>: the drain-side RESUME held (E2-13)
+  std::string keepAlive; //!< transaction_keepalive novideo|reuse (E2-10, E2-13)
+  int xletDelayMs = 0; //!< transaction_xletdelay <ms> (E2-13)
+  int xletStopS = 0; //!< transaction_xletstop <s> (E2-13)
+  bool prefetchStall = false; //!< transaction_prefetchstall (E2-13)
+  std::string parkHold; //!< transaction_parkhold novideo (E2-13)
+  int pDemuxDelayMs = 0; //!< transaction_pdemuxdelay <ms> (E2-13)
+  std::string noticeAt; //!< transaction_noticeat owed|posted (E2-13)
+};
+STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();
 uint64_t aml_timing_inputs_gen();
 

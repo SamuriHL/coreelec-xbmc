@@ -1956,6 +1956,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       // sysfs and profile-file reads only; a throw leaves hotplugworker off (HEAD's path)
       CLog::Log(LOGERROR, "HOTPLUGWORKER switch read failed, off: {}", e.what());
     }
+    // 5.E2's switch (plan §3), after the hotplug switches it reads; log only in E2-1
+    aml_transaction_latch();
     if (aml_displaystate_on())
       OUTPUT::COutputWorker::Get().Run(
           OUTPUT::Lane::RESTORE, "display state seed",

@@ -2713,6 +2713,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
   const bool arm =
       hasVideo && m_startGateEnabled &&
       (startFullScreen || CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
+  LogTransactionShadow(arm, hasVideo, startFullScreen, where);
   if (!arm)
   {
     // the last set's gate ends with it; its audio is closed or flushed by now
@@ -2741,6 +2742,43 @@ void CVideoPlayer::ArmStartGate(const char* where)
   if (IAE* ae = CServiceBroker::GetActiveAE())
     ae->SetStartGate(true);
   CLog::Log(LOGINFO, "VideoPlayer: start gate armed (set {}, {})", m_startGateGen, where);
+}
+
+// 5.E2-1 (plan §3, log only): what the transaction's per-open matrix would say for this set.
+// Reads P's own members and latched switches; takes no lock and changes no playback state.
+void CVideoPlayer::LogTransactionShadow(bool arm,
+                                        bool hasVideo,
+                                        bool startFullScreen,
+                                        const char* where)
+{
+  if (!aml_transaction_shadow_on())
+    return;
+  const bool firstSet = !m_txShadowSetSeen;
+  if (arm)
+    m_txShadowSetSeen = true;
+  const char* why = nullptr;
+  if (!m_startGateEnabled)
+    why = "gate disabled";
+  else if (!hasVideo)
+    why = "no video";
+  else if (!arm)
+    why = "windowed";
+  else if (!firstSet)
+    why = "segment, before E2-10";
+  else if (!m_scheduledStart)
+    why = "scheduled start off";
+  else if (!aml_transaction_on())
+    why = aml_transaction_reason();
+  // the set's number is the one an arm takes next (ArmStartGate bumps it after this)
+  const unsigned int set = arm ? m_startGateGen + 1 : m_startGateGen;
+  if (!why)
+    CLog::Log(LOGINFO,
+              "TRANSACTION shadow set={} T={} engaged ({}, fullscreen {}; worker, renderer: "
+              "n/a at the arm)",
+              set, ++m_txShadowSerial, where, startFullScreen ? "requested" : "gui");
+  else
+    CLog::Log(LOGINFO, "TRANSACTION shadow set={} T={} legacy-open ({}; {})", set,
+              m_txShadowSerial, why, where);
 }
 
 void CVideoPlayer::CheckStartGate()
@@ -3082,6 +3120,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_processInfo->SetTempo(1.0);
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
+  m_txShadowSetSeen = false;
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
   m_CurrentVideo.hint.Clear();
