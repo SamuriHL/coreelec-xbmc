@@ -937,6 +937,17 @@ protected:
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
   std::atomic<uint32_t> m_txWordT{0};
   void LogWordBoundary(bool arm, const char* why);
+  //! the word state mirroring a loss state (a COutputWorker::WordState), and its name
+  static uint8_t WordMirror(LossState state);
+  static const char* LossStateName(LossState state);
+  //! a P hook's HEAD: m_lossState's name now, and whether it left the state the hook mirrors
+  std::pair<const char*, bool> WordHeadNow(LossState expected) const;
+  //! P (gate: WORD and m_lossState agree at every P sample): logged once per change of the pair;
+  //! a disagreement only once it has lasted 200 ms (a hook trails HEAD's store by a statement)
+  void SampleWord();
+  int m_wordSamplePair = -1;
+  int m_wordSampleLogged = -1;
+  std::chrono::steady_clock::time_point m_wordSampleSince;
   std::chrono::steady_clock::time_point m_startGateSince;
   std::chrono::steady_clock::time_point m_startGateStarveSince;
   bool m_startGateFullScreenPosted = false;

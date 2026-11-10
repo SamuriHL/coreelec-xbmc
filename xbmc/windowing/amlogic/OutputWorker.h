@@ -85,9 +85,10 @@ public:
 
   // 5.E2-3: the display word of design §4.7 as a shadow (docs/phase5_e2_plan.md E2-3). One packed
   // 64-bit word {state 4, sub 1, T 24, F 10, e 24, spanOpen 1}, CASed at today's transitions and
-  // logged "WORD <old> -> <new> (row <n>)"; a CAS that fails logs the expected and found words
-  // and is not retried. Nothing reads it for behaviour. Every caller tests
-  // aml_transaction_shadow_on() first.
+  // logged "WORD <old> -> <new> (row <n>)". A lost race re-reads and re-decides ("WORD race",
+  // at most 4 tries, then "WORD CAS failed"); a hook whose row does not hold for the word it reads
+  // logs "WORD skip" with HEAD's loss state beside it. Nothing reads the word for behaviour.
+  // Every caller tests aml_transaction_shadow_on() first.
   enum class WordState : uint8_t
   {
     NONE = 0,
@@ -109,6 +110,27 @@ public:
     uint32_t e = 0; //!< output epoch, 24 bits
     bool spanOpen = false;
   };
+  //! one decision on the word read: the next word and its row, a precondition miss, or nothing
+  struct SWordStep
+  {
+    enum class Kind
+    {
+      NOTHING,
+      APPLY,
+      SKIP,
+    } kind = Kind::NOTHING;
+    SWord next;
+    const char* row = "";
+    const char* note = nullptr;
+    std::string expected; //!< SKIP: the word the row needs
+  };
+  //! a P hook's HEAD: its m_lossState now, and whether HEAD already left the state this hook
+  //! mirrors (a skip is then explained)
+  struct SWordHead
+  {
+    const char* name = nullptr;
+    bool moved = false;
+  };
   static uint64_t PackWord(const SWord& word);
   static SWord UnpackWord(uint64_t value);
   static std::string WordText(uint64_t value);
@@ -126,23 +148,23 @@ public:
   //! own loss state. The new T, or 0 when the CAS failed
   uint32_t WordOpen(uint32_t ownT, WordState mirror);
   //! the FREEZE body begins (OnLostDisplay past its early returns); newcomer: on P (row 29)
-  void WordFreezeBody(uint32_t ownT, bool newcomer);
+  void WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head);
   //! the FREEZE body done, the player's state LOST
-  void WordFrozen(uint32_t ownT, bool newcomer);
+  void WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& head);
   //! P's conversion to a pause (row 18's two steps)
-  void WordConverting(uint32_t ownT);
-  void WordPaused(uint32_t ownT);
-  //! the display reset: the player's state RETURNING (rows 16, 20, 21+22), then NONE (row 23)
-  void WordReturning(uint32_t ownT);
-  void WordReturned(uint32_t ownT);
+  void WordConverting(uint32_t ownT, const SWordHead& head);
+  void WordPaused(uint32_t ownT, const SWordHead& head);
+  //! the display reset: the player's state RETURNING (rows 16, 20, 21+22, chosen from HEAD's
+  //! state after the spin, headFrom), then NONE (row 23)
+  void WordReturning(uint32_t ownT, WordState headFrom, const SWordHead& head);
+  void WordReturned(uint32_t ownT, const SWordHead& head);
   //! P's stop (row 28)
   void WordStop(uint32_t ownT);
 
 private:
-  //! one CAS, logged; never retried
-  bool WordCas(uint64_t expected, uint64_t desired, const char* row, const char* note = nullptr);
-  //! a row's precondition not met: no CAS, the expected and found words logged
-  void WordMismatch(const char* row, const std::string& expected, uint64_t found);
+  //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
+  bool WordApply(const std::function<SWordStep(const SWord&)>& decide,
+                 const SWordHead* head = nullptr);
 
   struct Result
   {

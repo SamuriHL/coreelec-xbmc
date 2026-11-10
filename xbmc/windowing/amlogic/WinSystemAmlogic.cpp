@@ -1907,9 +1907,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           if (shadowAfter)
             shadowAfter(*committed, display->aml_set_not_connected());
-          // 5.E2-3: the shadow word's epoch
-          if (aml_transaction_shadow_on() && *committed)
-            OUTPUT::COutputWorker::Get().WordCommitted(display->aml_set_not_connected());
+          // 5.E2-3: the shadow word's epoch, logged after the park (E2-3 review L3)
+          const bool wordCommit = aml_transaction_shadow_on() && *committed;
+          const bool wordNotConnected = wordCommit && display->aml_set_not_connected();
           OUTPUT::TestStopAt("4");
           if (*committed)
           {
@@ -1925,6 +1925,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
                   { return display->BuildFlipRequestLocked(fb, w, h); });
           }
           OUTPUT::TestStopAt("6");
+          if (wordCommit)
+            OUTPUT::COutputWorker::Get().WordCommitted(wordNotConnected);
         });
     ret = *committed;
     if (ret && !commitTiming)
