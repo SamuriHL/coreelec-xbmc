@@ -1808,6 +1808,9 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     LedgerResetDone();
     CloseLostSpan();
     lock.unlock();
+    // 5.E2-4: SettleDone{T, e} (shadow)
+    if (aml_transaction_shadow_on())
+      OUTPUT::COutputWorker::Get().ShadowSettleDone(settle.request);
     OUTPUT::TestStopAt("8");
     return;
   }
@@ -2255,7 +2258,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
       if (index >= 0)
       {
         CLog::Log(LOGERROR, "hotplug reply {}: recovery set {} posted", reply.replyId, index);
-        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, index, 1);
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, index, 1, nullptr,
+                                                   "recovery");
       }
       else
       {

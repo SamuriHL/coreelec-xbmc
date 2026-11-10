@@ -31,6 +31,9 @@
 
 #include <string>
 #include <utility>
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
+#endif
 
 using namespace KODI;
 
@@ -109,6 +112,9 @@ bool CGUIWindowSettingsScreenCalibration::OnAction(const CAction& action)
       // choose the next resolution in our list
       {
         m_iCurRes = (m_iCurRes + 1) % m_Res.size();
+#if defined(HAS_LIBAMCODEC)
+        OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
         CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(m_Res[m_iCurRes], false);
         ResetControls();
         // Send GUI_MSG_WINDOW_RESIZE to rescale font size/aspect for label controls
@@ -162,6 +168,9 @@ bool CGUIWindowSettingsScreenCalibration::OnMessage(CGUIMessage& message)
       CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
       CServiceBroker::GetWinSystem()->GetGfxContext().SetCalibrating(false);
       // reset our screen resolution to what it was initially
+#if defined(HAS_LIBAMCODEC)
+      OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
       CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(
           CDisplaySettings::GetInstance().GetCurrentResolution(), false);
       CServiceBroker::GetGUI()->GetWindowManager().SendMessage(

@@ -33,6 +33,7 @@
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
@@ -383,6 +384,9 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionFromString(std::static_pointer_cast<const CSettingString>(setting)->GetValue());
 
     SetCurrentResolution(newRes, false);
+#if defined(HAS_LIBAMCODEC)
+    OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
     CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(newRes, false);
 
     // check if the old or the new resolution was/is windowed
@@ -416,6 +420,9 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionForScreen();
 
     SetCurrentResolution(newRes, false);
+#if defined(HAS_LIBAMCODEC)
+    OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
     winSystem->GetGfxContext().SetVideoResolution(newRes, true);
 
     if (!m_resolutionChangeAborted)
@@ -473,10 +480,14 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
       SetCurrentResolution(newRes, false);
       // the mode change reads this setting on main; off main, waiting for it here, under the
       // setting's lock, deadlocks (a JSON-RPC change)
+#if defined(HAS_LIBAMCODEC)
+      OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
       if (CServiceBroker::GetAppMessenger()->IsProcessThread())
         winSystem->GetGfxContext().SetVideoResolution(newRes, true);
       else
-        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, newRes, 1);
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, newRes, 1, nullptr,
+                                                   "user-pick");
     }
   }
 

@@ -36,6 +36,9 @@
 #include "video/dialogs/GUIDialogAudioSettings.h"
 #include "video/guilib/VideoStreamSelectHelper.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
+#endif
 
 #include <algorithm>
 
@@ -575,6 +578,9 @@ bool CPlayerController::OnAction(const CAction &action)
           if (idx >= 0)
           {
             auto res = CDisplaySettings::GetInstance().GetResFromString(indexList[idx].asString());
+#if defined(HAS_LIBAMCODEC)
+            OUTPUT::CRequestOrigin requestOrigin("user-pick");
+#endif
             CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
           }
         }

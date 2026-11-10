@@ -24,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -503,6 +504,172 @@ void COutputWorker::WordStop(uint32_t ownT)
       });
 }
 
+
+// 5.E2-4: W's request lists as a shadow (design §8.10)
+namespace
+{
+const char* LaneName(Lane lane)
+{
+  switch (lane)
+  {
+    case Lane::DECODER:
+      return "decoder";
+    case Lane::RESTORE:
+      return "restore";
+    case Lane::START:
+      return "start";
+    case Lane::MIDPLAY:
+      return "midplay";
+    case Lane::SETTINGS:
+      return "settings";
+    case Lane::COUNT:
+      break;
+  }
+  return "?";
+}
+
+const char* StartPhaseName(COutputWorker::StartPhase phase)
+{
+  switch (phase)
+  {
+    case COutputWorker::StartPhase::NONE:
+      return "NONE";
+    case COutputWorker::StartPhase::STARTING:
+      return "STARTING";
+    case COutputWorker::StartPhase::LEADING:
+      return "LEADING";
+  }
+  return "?";
+}
+
+int64_t MonoNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// a request job's origin from its name and the poster's scope; nullptr: not a request
+const char* RequestOrigin(const char* name)
+{
+  const std::string_view job(name);
+  if (job == "vs10")
+    return "vs10";
+  if (job == "hdr conversion" || job == "gui sink peak" || job == "vsvdb setting")
+    return "setting";
+  if (job == "mode set")
+  {
+    // posted on main, where RM's scope is counted
+    if (DriveOriginRm())
+      return DriveFilmStart() ? "start-decision" : "main-decision";
+    if (const char* origin = CurrentRequestOrigin())
+      return origin;
+    return "main (unscoped)";
+  }
+  return nullptr;
+}
+} // namespace
+
+void COutputWorker::TagRequestLocked(Lane lane, Job& job)
+{
+  if ((lane != Lane::MIDPLAY && lane != Lane::SETTINGS) || !aml_transaction_shadow_on())
+    return;
+  job.origin = RequestOrigin(job.name);
+  if (!job.origin)
+    return;
+  job.reqF = UnpackWord(LoadWord()).f;
+  std::lock_guard listLock(m_listMutex);
+  job.reqId = ++m_reqNext;
+}
+
+uint64_t COutputWorker::LowestRequestLocked(Lane* lane) const
+{
+  uint64_t lowest = 0;
+  for (const Lane l : {Lane::MIDPLAY, Lane::SETTINGS})
+    for (const Job& waiting : m_lanes[static_cast<size_t>(l)])
+      if (waiting.reqId && (!lowest || waiting.reqId < lowest))
+      {
+        lowest = waiting.reqId;
+        *lane = l;
+      }
+  return lowest;
+}
+
+COutputWorker::StartPhase COutputWorker::ShadowPhaseNow() const
+{
+  const auto phase = static_cast<StartPhase>(m_startPhase.load());
+  if (phase == StartPhase::LEADING && MonoNs() >= m_leadEndNs.load())
+    return StartPhase::NONE;
+  return phase;
+}
+
+void COutputWorker::ShadowStartPhase(StartPhase phase, int64_t leadEndNs, const char* why, int from)
+{
+  const int to = static_cast<int>(phase);
+  int previous = m_startPhase.load();
+  if (from >= 0 && previous != from)
+    return;
+  // the lead's end before the phase, so a LEADING read never sees an old end
+  m_leadEndNs = leadEndNs;
+  if (from >= 0)
+  {
+    if (!m_startPhase.compare_exchange_strong(previous, to))
+      return;
+  }
+  else
+    previous = m_startPhase.exchange(to);
+  if (previous == to && phase != StartPhase::LEADING)
+    return;
+  if (phase == StartPhase::LEADING)
+    CLog::Log(LOGINFO, "WINDOW shadow {} -> LEADING for {:.0f} ms ({})",
+              StartPhaseName(static_cast<StartPhase>(previous)),
+              (leadEndNs - MonoNs()) / 1e6, why);
+  else
+    CLog::Log(LOGINFO, "WINDOW shadow {} -> {} ({})",
+              StartPhaseName(static_cast<StartPhase>(previous)), StartPhaseName(phase), why);
+}
+
+std::string COutputWorker::ShadowVerdict(const Job& job, const SWord& word, StartPhase phase) const
+{
+  using enum WordState;
+  const std::string_view origin(job.origin);
+  // RM's decision for a start the player holds: DECIDE's Start job (lane 3) from E2-8, not a
+  // request
+  if (origin == "start-decision")
+    return "run (the start's own decision: the Start job from E2-8)";
+  // a setting job's pending rule (§4.4): at once with no player, else at the next Start job's
+  // step 5 or the first job boundary after the stop
+  if (origin == "setting")
+    return word.f ? "pending (setting: a player is open; HEAD applies it now)" : "run (no player)";
+  // the ABORT rule: a request of another file, or of a file since stopped, is dropped
+  if (job.reqF && job.reqF != word.f)
+    return word.f ? StringUtils::Format("dropped (ABORT: made for F={}, F={} open)", job.reqF,
+                                        word.f)
+                  : StringUtils::Format("dropped (ABORT: F={} stopped)", job.reqF);
+  // a desktop set made with no player, dequeued while a file is open
+  if (!job.reqF && word.f)
+    return StringUtils::Format("dropped (desktop set, F={} open)", word.f);
+  if (word.f && phase != StartPhase::NONE)
+    return StringUtils::Format("deferred under T={} ({})", word.t, StartPhaseName(phase));
+  const bool frozen = word.state == LOST || word.state == CONVERTING || word.state == PAUSED;
+  if (word.state == RETURNING || word.state == RESET_OWED || (frozen && word.spanOpen) ||
+      (word.state == NONE && !word.f && word.spanOpen))
+    return "held (after-list: the span is open)";
+  if (frozen)
+    return "run (inside the MidPlay freeze, no span: row 26)";
+  return "run";
+}
+
+void COutputWorker::ShadowSettleDone(uint64_t request)
+{
+  const uint64_t value = LoadWord();
+  const SWord word = UnpackWord(value);
+  const StartPhase phase = ShadowPhaseNow();
+  std::lock_guard listLock(m_listMutex);
+  CLog::Log(LOGINFO, "SettleDone shadow request={} T={} e={} {} (lists: deferred {}, after {})",
+            request, word.t, word.e, StartPhaseName(phase), m_deferred.size(), m_after.size());
+}
+
 void COutputWorker::Start()
 {
   std::unique_lock lock(m_mutex);
@@ -597,6 +764,7 @@ void COutputWorker::Run(Lane lane,
   auto result = std::make_shared<Result>();
   const uint64_t id = m_nextId++;
   m_lanes[static_cast<size_t>(lane)].push_back({name, std::move(fn), generation, id, result});
+  TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
 
   const auto start = std::chrono::steady_clock::now();
@@ -624,6 +792,7 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
     return;
   }
   m_lanes[static_cast<size_t>(lane)].push_back({name, std::move(fn), generation, m_nextId++, {}});
+  TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
 }
 
@@ -636,6 +805,7 @@ bool COutputWorker::PostIfRunning(Lane lane,
   if (!m_running || m_stop)
     return false;
   m_lanes[static_cast<size_t>(lane)].push_back({name, std::move(fn), generation, m_nextId++, {}});
+  TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
   return true;
 }
@@ -650,6 +820,7 @@ bool COutputWorker::PostAfter(Lane lane,
     return false;
   m_timed.push_back({std::chrono::steady_clock::now() + after, lane,
                      {name, std::move(fn), 0, m_nextId++, {}}});
+  TagRequestLocked(lane, m_timed.back().job);
   m_cond.notify_all();
   return true;
 }
@@ -714,7 +885,35 @@ void COutputWorker::Process()
     Job job = std::move(lane->front());
     lane->pop_front();
     ++m_jobsStarted;
+    // 5.E2-4 (shadow): the lowest request id still waiting, read with the dequeue
+    const bool shadow = aml_transaction_shadow_on();
+    Lane lowestLane = Lane::MIDPLAY;
+    const uint64_t lowest = shadow && job.reqId ? LowestRequestLocked(&lowestLane) : 0;
+    const Lane jobLane = static_cast<Lane>(lane - m_lanes.data());
     lock.unlock();
+    uint32_t eBefore = 0;
+    if (shadow)
+    {
+      const uint64_t value = LoadWord();
+      const SWord word = UnpackWord(value);
+      eBefore = word.e;
+      {
+        // W's busy mark, under the list lock (design §8.10)
+        std::lock_guard listLock(m_listMutex);
+        m_busy = true;
+        m_busyT = word.t;
+      }
+      if (job.reqId)
+      {
+        if (lowest && lowest < job.reqId)
+          CLog::Log(LOGWARNING, "ORDER shadow: W took request {} ({}, {}) while request {} ({}) waits",
+                    job.reqId, LaneName(jobLane), job.origin, lowest, LaneName(lowestLane));
+        const StartPhase phase = ShadowPhaseNow();
+        CLog::Log(LOGINFO, "DEFER shadow {} id={} F={} T={} {} word {} -> {}", job.origin,
+                  job.reqId, job.reqF, word.t, StartPhaseName(phase), WordText(value),
+                  ShadowVerdict(job, word, phase));
+      }
+    }
     if (m_stallMs > 0 && m_stallJob == job.name)
       std::this_thread::sleep_for(std::chrono::milliseconds(m_stallMs));
     std::exception_ptr error;
@@ -727,6 +926,19 @@ void COutputWorker::Process()
       error = std::current_exception();
       if (!job.result)
         CLog::Log(LOGERROR, "OUTPUT: posted {} job {} threw", job.name, job.id);
+    }
+    if (shadow)
+    {
+      // JobEnded{T, e}: a request that made no e+1 while the start window is open, in one step
+      // with the busy mark's clear
+      const SWord word = UnpackWord(LoadWord());
+      const StartPhase phase = ShadowPhaseNow();
+      std::lock_guard listLock(m_listMutex);
+      if (job.reqId && word.e == eBefore && phase != StartPhase::NONE)
+        CLog::Log(LOGINFO, "JobEnded shadow T={} e={} request {} ({}) {}: no commit", word.t,
+                  word.e, job.reqId, job.origin, StartPhaseName(phase));
+      m_busy = false;
+      m_busyT = 0;
     }
     lock.lock();
     if (job.result)
@@ -1022,6 +1234,12 @@ const char* DriveReplyName(DriveReply reply)
       return "failed(park)";
     case DriveReply::GAVE_UP:
       return "gave-up";
+    case DriveReply::HELD:
+      return "held";
+    case DriveReply::DEFERRED:
+      return "deferred";
+    case DriveReply::DROPPED:
+      return "dropped";
     default:
       return "none";
   }
@@ -1063,6 +1281,35 @@ CDriveOriginRm::~CDriveOriginRm()
 bool DriveOriginRm()
 {
   return s_originRm > 0;
+}
+
+namespace
+{
+thread_local const char* t_requestOrigin = nullptr;
+constexpr const char* REQUEST_ORIGINS[] = {"user-pick", "window-rule", "test", "recovery", "boot"};
+} // namespace
+
+CRequestOrigin::CRequestOrigin(const char* origin) : m_previous(t_requestOrigin)
+{
+  t_requestOrigin = origin;
+}
+
+CRequestOrigin::~CRequestOrigin()
+{
+  t_requestOrigin = m_previous;
+}
+
+const char* CurrentRequestOrigin()
+{
+  return t_requestOrigin;
+}
+
+const char* InternRequestOrigin(const std::string& origin)
+{
+  for (const char* known : REQUEST_ORIGINS)
+    if (origin == known)
+      return known;
+  return "tmsg";
 }
 
 bool DriveFilmStart()

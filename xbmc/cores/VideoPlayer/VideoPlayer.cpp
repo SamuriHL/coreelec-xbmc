@@ -2749,7 +2749,12 @@ void CVideoPlayer::ArmStartGate(const char* where)
     ae->SetStartGate(true);
   CLog::Log(LOGINFO, "VideoPlayer: start gate armed (set {}, {})", m_startGateGen, where);
   if (aml_transaction_shadow_on())
+  {
     LogWordBoundary(true, where);
+    // 5.E2-4: the start window W's request shadow reads
+    OUTPUT::COutputWorker::Get().ShadowStartPhase(OUTPUT::COutputWorker::StartPhase::STARTING, 0,
+                                                  "CN arm");
+  }
 }
 
 // 5.E2-1 (plan §3, log only): what the transaction's per-open matrix would say for this set.
@@ -2960,7 +2965,14 @@ void CVideoPlayer::OpenStartGate(const char* why, bool bound)
   CLog::Log(bound ? LOGWARNING : LOGINFO,
             "VideoPlayer: start gate opened after {:.3f}s (set {}): {}", shut, m_startGateGen, why);
   if (aml_transaction_shadow_on())
+  {
     LogWordBoundary(false, why);
+    // 5.E2-4: a start not held ends its window here; a held one at its release
+    if (!m_startHeld)
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(
+          OUTPUT::COutputWorker::StartPhase::NONE, 0, "CN open, no held start",
+          static_cast<int>(OUTPUT::COutputWorker::StartPhase::STARTING));
+  }
 }
 
 bool CVideoPlayer::ScheduleUserResume()
@@ -3040,6 +3052,16 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   // some 50 ms later, off the vsync grid and 300 ms early (design 15.38).
   m_syncTimer.Set(3000ms + std::chrono::milliseconds(std::lround(lead * 1000.0)));
   m_streamPlayerSpeed = m_playSpeed;
+  // 5.E2-4: the start window W's request shadow reads ends with the lead
+  if (aml_transaction_shadow_on())
+  {
+    using StartPhase = OUTPUT::COutputWorker::StartPhase;
+    if (lead > 0.0)
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(StartPhase::LEADING, discRunNs,
+                                                    "scheduled start");
+    else
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(StartPhase::NONE, 0, why);
+  }
   CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", held, why,
             m_clock.GetClock() / DVD_TIME_BASE);
 }
@@ -6004,6 +6026,8 @@ void CVideoPlayer::OnExit()
   {
     if (const uint32_t wordT = m_txWordT.exchange(0))
       OUTPUT::COutputWorker::Get().WordStop(wordT);
+    OUTPUT::COutputWorker::Get().ShadowStartPhase(OUTPUT::COutputWorker::StartPhase::NONE, 0,
+                                                  "stop");
   }
   m_renderManager.ArmTestStall("stop");
 

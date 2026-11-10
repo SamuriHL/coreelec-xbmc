@@ -161,6 +161,26 @@ public:
   //! P's stop (row 28)
   void WordStop(uint32_t ownT);
 
+  // 5.E2-4: W's request lists as a shadow (design §8.10; docs/phase5_e2_plan.md E2-4). Requests
+  // (lanes 4 and 5: MIDPLAY and SETTINGS) take one id counter at their post, with their origin and
+  // the file serial F the word read then; W logs at each dequeue what §8.10 would do ("DEFER shadow
+  // <origin> id= F= T= -> run|deferred|held|dropped|pending") and whether the lowest id waiting
+  // was taken ("ORDER shadow"). The deferred list and the after-list stay empty; W's busy mark,
+  // JobEnded and SettleDone are logged. Nothing changes W's order or main's waits. Every caller
+  // tests aml_transaction_shadow_on() first, except the queue's own tagging, which tests it.
+  enum class StartPhase : int
+  {
+    NONE = 0,
+    STARTING,
+    LEADING,
+  };
+  //! P: the start window the word would read (the shadow word stays NONE through a start, E2-3):
+  //! STARTING from CN's arm, LEADING until leadEndNs (CLOCK_MONOTONIC), NONE at the end or a stop.
+  //! from: only when the phase is still that one (-1: any)
+  void ShadowStartPhase(StartPhase phase, int64_t leadEndNs, const char* why, int from = -1);
+  //! W: SETTLE's display reset done for a request (SettleDone{T, e})
+  void ShadowSettleDone(uint64_t request);
+
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
   bool WordApply(const std::function<SWordStep(const SWord&)>& decide,
@@ -179,6 +199,10 @@ private:
     uint64_t generation;
     uint64_t id;
     std::shared_ptr<Result> result; // guarded by m_mutex; null for a posted job
+    // 5.E2-4 (shadow): a request's id, origin and the file serial F the word read at its post
+    uint64_t reqId = 0;
+    const char* origin = nullptr;
+    uint32_t reqF = 0;
   };
 
   struct TimedJob
@@ -192,6 +216,14 @@ private:
   void Process();
   //! moves the due timed jobs into their lanes (m_mutex held); the earliest left, if any
   std::optional<std::chrono::steady_clock::time_point> ReleaseDueLocked();
+  //! 5.E2-4: a request lane's job takes its id, origin and F (m_mutex held)
+  void TagRequestLocked(Lane lane, Job& job);
+  //! 5.E2-4: the lowest request id waiting in lanes 4 and 5 (m_mutex held), 0 for none
+  uint64_t LowestRequestLocked(Lane* lane) const;
+  //! 5.E2-4: what §8.10 would do with a request W dequeued now
+  std::string ShadowVerdict(const Job& job, const SWord& word, StartPhase phase) const;
+  //! 5.E2-4: the start phase now (a lead past its end reads NONE)
+  StartPhase ShadowPhaseNow() const;
 
   mutable std::mutex m_mutex;
   std::condition_variable m_cond;
@@ -209,6 +241,16 @@ private:
   std::atomic<uint64_t> m_word{0};
   std::atomic<uint32_t> m_wordT{0};
   std::atomic<uint32_t> m_wordF{0};
+  // 5.E2-4: W's list lock (a leaf: taken alone or inside m_mutex) and what it covers; the lists
+  // stay empty in this step
+  mutable std::mutex m_listMutex;
+  uint64_t m_reqNext = 0;
+  std::vector<uint64_t> m_deferred; //!< request ids deferred under a T (shadow: empty)
+  std::vector<uint64_t> m_after; //!< request ids held in the after-list (shadow: empty)
+  uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job
+  bool m_busy = false;
+  std::atomic<int> m_startPhase{0};
+  std::atomic<int64_t> m_leadEndNs{0};
   // test: special://profile/outputworker_stall holds "<job name> <ms>"; W sleeps before that job
   std::string m_stallJob;
   int m_stallMs = 0;
@@ -284,6 +326,10 @@ enum class DriveReply
   FAILED,
   FAILED_PARK, //!< not given from 5.B2-5b's park retry on (kept for RM's test)
   GAVE_UP, //!< main stopped waiting at 15 s: the outcome is unknown, not a failure
+  // 5.E2-4: design §8.10's reply kinds, not given before E2-9
+  HELD, //!< held in W's after-list
+  DEFERRED, //!< deferred under a start's T
+  DROPPED, //!< dropped by the ABORT rule or as a desktop set while a file is open
 };
 const char* DriveReplyName(DriveReply reply);
 //! main: the reply of its last request, numbered (the give-up counts as FAILED)
@@ -306,6 +352,25 @@ private:
   bool m_startHeld;
 };
 bool DriveOriginRm();
+//! 5.E2-4: main: a resolution request made inside this scope has this origin (design §8.10:
+//! user-pick, window-rule; main-decision is CDriveOriginRm's, vs10 and setting are W jobs' own).
+//! The innermost scope wins. origin must be a string literal (InternRequestOrigin's)
+class CRequestOrigin
+{
+public:
+  explicit CRequestOrigin(const char* origin);
+  ~CRequestOrigin();
+  CRequestOrigin(const CRequestOrigin&) = delete;
+  CRequestOrigin& operator=(const CRequestOrigin&) = delete;
+
+private:
+  const char* m_previous;
+};
+//! the calling thread's request origin, or nullptr
+const char* CurrentRequestOrigin();
+//! a static origin string for a message's text (TMSG_SETVIDEORESOLUTION's strParam); "tmsg" for
+//! an unknown or empty one
+const char* InternRequestOrigin(const std::string& origin);
 //! the request is RM's for a start the player holds (5.B2-6, Q6)
 bool DriveFilmStart();
 //! main: the RESOLUTION GC is setting, for a late reply's GC update (r1 L11)

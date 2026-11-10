@@ -386,11 +386,19 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 
     if (allowResolutionChangeOnStop && !bTriggerUpdateRes)
     {
+#if defined(HAS_LIBAMCODEC)
+      OUTPUT::CRequestOrigin requestOrigin("window-rule");
+#endif
       SetVideoResolution(targetResolutionOnStop, false);
     }
   }
   else
+  {
+#if defined(HAS_LIBAMCODEC)
+    OUTPUT::CRequestOrigin requestOrigin("window-rule");
+#endif
     SetVideoResolution(RES_WINDOW, false);
+  }
 
   // issue 31: the first exit of a session has no windowed rect yet: the new window's first
   // pass renders the video (RenderEx) before its videowindow sets one (Render), and the
@@ -448,7 +456,14 @@ void CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
   }
   else
   {
+#if defined(HAS_LIBAMCODEC)
+    // 5.E2-4: the caller's request origin travels with the message
+    const char* origin = OUTPUT::CurrentRequestOrigin();
+    CServiceBroker::GetAppMessenger()->SendMsg(TMSG_SETVIDEORESOLUTION, res, forceUpdate ? 1 : 0,
+                                               nullptr, origin ? origin : "");
+#else
     CServiceBroker::GetAppMessenger()->SendMsg(TMSG_SETVIDEORESOLUTION, res, forceUpdate ? 1 : 0);
+#endif
   }
 }
 

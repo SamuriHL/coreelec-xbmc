@@ -76,6 +76,9 @@
 #ifdef TARGET_WINDOWS
 #include "platform/win32/WIN32Util.h"
 #endif
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
+#endif
 
 using namespace KODI;
 
@@ -251,9 +254,15 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
     break;
 
     case TMSG_SETVIDEORESOLUTION:
+    {
+#if defined(HAS_LIBAMCODEC)
+      // 5.E2-4: the poster's origin, carried in the message's text
+      OUTPUT::CRequestOrigin requestOrigin(OUTPUT::InternRequestOrigin(pMsg->strParam));
+#endif
       CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(
           static_cast<RESOLUTION>(pMsg->param1), pMsg->param2 == 1);
       break;
+    }
 
     case TMSG_TOGGLEFULLSCREEN:
       CServiceBroker::GetWinSystem()->GetGfxContext().ToggleFullScreen();

@@ -921,7 +921,7 @@ void CWinSystemAmlogic::TestSetAfter()
   const RESOLUTION res = CDisplaySettings::GetInstance().GetCurrentResolution();
   CLog::Log(LOGWARNING, "HOTPLUGWORKER: test settings resolution change to {} after a plug-in",
             static_cast<int>(res));
-  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, res, 1);
+  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, res, 1, nullptr, "test");
 }
 
 void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::ModeFacts> recover)

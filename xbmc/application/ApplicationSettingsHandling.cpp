@@ -27,6 +27,9 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/OutputWorker.h"
+#endif
 
 #if defined(TARGET_DARWIN_OSX)
 #include "utils/StringUtils.h"
@@ -136,8 +139,13 @@ void CApplicationSettingsHandling::OnSettingChanged(const std::shared_ptr<const 
   if (settingId == CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN)
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
+    {
+#if defined(HAS_LIBAMCODEC)
+      OUTPUT::CRequestOrigin requestOrigin("window-rule");
+#endif
       CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(
           CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), true);
+    }
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH)
   {
