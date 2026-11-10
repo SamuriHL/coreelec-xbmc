@@ -10078,21 +10078,26 @@ void CVideoPlayer::OnLostDisplay()
     return;
   }
   CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
-  // 5.E2-2: the mark first, before the stream players are held and the clock pauses, so no P
-  // reader (CheckHeldStart, CN's gate, the play press, the caching end, the offset landing)
-  // schedules a resume or lands an offset inside the freeze; m_lossState goes LOST below, and
-  // ConvertLostDisplayToPause retries its CAS on LOST (docs/phase5_e2_plan.md E2-2)
-  m_displayLost = true;
-  if (m_VideoPlayerAudio->IsInited())
+  // the audio heard with the picture on screen: an output kept open through the mode change
+  // gives back what it has not played from there. Read before the mark below, so the offset
+  // it adds is the one in force when the loss came (E2-2 code review L1)
+  const bool audioInited = m_VideoPlayerAudio->IsInited();
+  double holdFrom = DVD_NOPTS_VALUE;
+  if (audioInited)
   {
-    // the audio heard with the picture on screen: an output kept open through
-    // the mode change gives back what it has not played from there
-    double holdFrom = DVD_NOPTS_VALUE;
     double maxStep = 0.0;
     if (!(m_displayResumeOnGrid && m_renderManager.GetResumePts(holdFrom, maxStep)))
       holdFrom = DVD_NOPTS_VALUE;
     else
       holdFrom += m_clock.GetAudioOffset();
+  }
+  // 5.E2-2: the mark first, before the stream players are held and the clock pauses, so no P
+  // reader (CheckHeldStart, CN's gate, the play press, the caching end, the offset landing)
+  // schedules a resume or lands an offset inside the freeze; m_lossState goes LOST below, and
+  // ConvertLostDisplayToPause retries its CAS on LOST (docs/phase5_e2_plan.md E2-2)
+  m_displayLost = true;
+  if (audioInited)
+  {
     m_VideoPlayerAudio->SendMessage(
         std::make_shared<CDVDMsgDouble>(CDVDMsg::PLAYER_DISPLAY_LOST, holdFrom), 1);
   }
