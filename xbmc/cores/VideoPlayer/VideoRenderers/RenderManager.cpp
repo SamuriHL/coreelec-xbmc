@@ -2889,8 +2889,19 @@ void CRenderManager::TagModeFirstConfigure()
   CLog::Log(LOGINFO, "CRenderManager - start gate: set {} configured, {}", m_modeFirstGen.load(),
             m_bTriggerUpdateResolution ? "mode decision due" : "no mode decision due");
 #if defined(HAS_LIBAMCODEC)
+  // 5.E2-5 (shadow): the decision inputs as this configure leaves them, for P's read (E2-5
+  // review M4: P may run after main has consumed the arm)
+  if (DISPLAYSTATE::DecideShadowOn())
+    m_decideFacts = {m_modeFirstGen.load(),
+                     m_fps,
+                     static_cast<int>(m_picture.iWidth),
+                     static_cast<int>(m_picture.iHeight),
+                     m_picture.stereoMode,
+                     m_picture.hdrType,
+                     m_reclockArmed,
+                     m_reclockArmedAt};
   // 5.E2-5 (shadow): main makes no decision for this set
-  if (!m_bTriggerUpdateResolution && aml_transaction_shadow_on())
+  if (!m_bTriggerUpdateResolution && DISPLAYSTATE::DecideShadowOn())
   {
     DecideSide mainSide;
     mainSide.why = "no mode decision due";
@@ -3079,10 +3090,12 @@ void CRenderManager::UpdateResolution()
                       fracReclock ? "may re-clock"
                                   : (held ? "menu hold, no re-clock" : "refresh switching off"));
 #if defined(HAS_LIBAMCODEC)
-          // 5.E2-5 (shadow): main's decision for a CN set, against P's ResolveOutput
-          if (modeFirstGen && aml_transaction_shadow_on())
+          // 5.E2-5 (shadow): main's decision for a CN set, against P's ResolveOutput; recorded
+          // after the mode set (E2-5 review L2)
+          std::optional<DecideSide> mainDecision;
+          if (modeFirstGen && DISPLAYSTATE::DecideShadowOn())
           {
-            DecideSide mainSide;
+            DecideSide& mainSide = mainDecision.emplace();
             mainSide.decides = true;
             mainSide.res = res;
             mainSide.mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(res).strMode;
@@ -3090,7 +3103,6 @@ void CRenderManager::UpdateResolution()
             mainSide.filmStart = m_startHeld || m_modeFirstGate;
             mainSide.hdr = static_cast<int>(hdrType);
             mainSide.note = !mayChooseMode ? "refresh switching off" : held ? "disc hold" : "chosen";
-            DecideShadowRecord(modeFirstGen, false, mainSide);
           }
 #endif
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
@@ -3127,6 +3139,10 @@ void CRenderManager::UpdateResolution()
               setFailedReply = OUTPUT::DriveReplyName(reply);
           }
 #endif
+#if defined(HAS_LIBAMCODEC)
+          if (mainDecision)
+            DecideShadowRecord(modeFirstGen, false, *mainDecision);
+#endif
           TestMainStall("after-set");
           TestStall("after-set", true);
           UpdateLatencyTweak("after-set");
@@ -3161,7 +3177,7 @@ void CRenderManager::UpdateResolution()
         }
 #if defined(HAS_LIBAMCODEC)
         // 5.E2-5 (shadow): no decision: the set waits for the user's 3D choice
-        if (modeFirstGen && aml_transaction_shadow_on() && !stereoMode.empty() &&
+        if (modeFirstGen && DISPLAYSTATE::DecideShadowOn() && !stereoMode.empty() &&
             playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
             user_stereo_mode == RenderStereoMode::UNDEFINED)
         {
@@ -3263,26 +3279,35 @@ void CRenderManager::DecideShadowPlayer(unsigned int gen,
                                         bool cnArmed)
 {
   // RM's own decision inputs, as main's pass reads them (under m_statelock)
-  float fps;
-  int width, height;
-  std::string stereoMode;
-  StreamHdrType hdrType;
-  bool armed;
-  double armAgeS;
+  // as the set's configure left them (its snapshot); main's pass reads the same under m_statelock
+  DecideFacts facts;
+  bool mainTook;
   {
     std::unique_lock lock(m_statelock);
-    fps = m_fps;
-    width = m_picture.iWidth;
-    height = m_picture.iHeight;
-    stereoMode = m_picture.stereoMode;
-    hdrType = m_picture.hdrType;
-    armed = m_reclockArmed;
-    armAgeS = armed ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                    m_reclockArmedAt)
-                          .count()
-                    : 0.0;
+    facts = m_decideFacts;
+    if (facts.gen != gen)
+      facts = {gen,
+               m_fps,
+               static_cast<int>(m_picture.iWidth),
+               static_cast<int>(m_picture.iHeight),
+               m_picture.stereoMode,
+               m_picture.hdrType,
+               m_reclockArmed,
+               m_reclockArmedAt};
+    // main consumed the trigger or counted the set: its inputs and output are in what P reads
+    mainTook = m_modeFirstInFlight || m_modeFirstDecidedGen == gen;
   }
+  const float fps = facts.fps;
+  const int width = facts.width;
+  const int height = facts.height;
+  const std::string& stereoMode = facts.stereoMode;
+  const StreamHdrType hdrType = facts.hdrType;
+  const bool armed = facts.armed;
+  const double armAgeS =
+      armed ? std::chrono::duration<double>(std::chrono::steady_clock::now() - facts.armedAt).count()
+            : 0.0;
   DecideSide p;
+  p.inconclusive = mainTook;
   p.hdr = static_cast<int>(hdrType);
   // a CN set's start is held for its decision: the request's film-start origin
   p.filmStart = cnArmed;
@@ -3299,9 +3324,10 @@ void CRenderManager::DecideShadowPlayer(unsigned int gen,
   const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - latest.at)
                        .count();
-  p.note = StringUtils::Format("inputs seq {} age {} ms, root at open {}, arm {}{}", latest.seq,
-                               age, rootAtOpen, armed,
-                               armed ? StringUtils::Format(" {:.1f} s", armAgeS) : "");
+  p.note = StringUtils::Format("inputs seq {} published {} ms before, root {}, arm {}{}{}",
+                               latest.seq, age, rootAtOpen, armed,
+                               armed ? StringUtils::Format(" {:.1f} s", armAgeS) : "",
+                               mainTook ? ", read after main took its inputs" : "");
   if (!cnArmed || !rootAtOpen)
   {
     p.why = "not fullscreen";
@@ -3340,20 +3366,43 @@ void CRenderManager::DecideShadowPlayer(unsigned int gen,
 void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side)
 {
   std::optional<DecideSide> other;
+  std::string unpaired;
+  bool later = false;
   {
     std::unique_lock lock(m_decideMutex);
-    if (m_decideGen != gen)
+    // an older set's late record: logged, never wiping the newer set's (E2-5 review L4)
+    if (gen < m_decideGen)
+      later = true;
+    else
     {
-      m_decideGen = gen;
-      m_decideP.reset();
-      m_decideM.reset();
+      if (m_decideGen != gen)
+      {
+        if (m_decideGen && (m_decideP.has_value() != m_decideM.has_value()))
+          unpaired = StringUtils::Format("set={} UNPAIRED ({} only)", m_decideGen,
+                                         m_decideP ? "P" : "main");
+        m_decideGen = gen;
+        m_decideP.reset();
+        m_decideM.reset();
+      }
+      // a side's first record counts (a retry repeats main's); a later main decision after its
+      // "none" is logged as such (E2-5 review L5)
+      std::optional<DecideSide>& slot = player ? m_decideP : m_decideM;
+      if (slot)
+        later = true;
+      else
+      {
+        slot = side;
+        other = player ? m_decideM : m_decideP;
+      }
     }
-    // a side's first record counts (a retry repeats main's)
-    std::optional<DecideSide>& slot = player ? m_decideP : m_decideM;
-    if (slot)
-      return;
-    slot = side;
-    other = player ? m_decideM : m_decideP;
+  }
+  if (!unpaired.empty())
+    CLog::Log(LOGINFO, "DECIDE shadow {}", unpaired);
+  if (later)
+  {
+    CLog::Log(LOGINFO, "DECIDE shadow set={} {} later: {}", gen, player ? "P" : "main",
+              DecideSideText(side));
+    return;
   }
   CLog::Log(LOGINFO, "DECIDE shadow set={} {}: {}", gen, player ? "P" : "main",
             DecideSideText(side));
@@ -3390,7 +3439,10 @@ void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const Dec
   }
   if (p.hdr != m.hdr)
     diffs.push_back(StringUtils::Format("hdr (P {}, main {})", p.hdr, m.hdr));
-  if (diffs.empty())
+  if (p.inconclusive)
+    CLog::Log(LOGINFO, "DECIDE shadow set={} INCONCLUSIVE (P read after main took its inputs){}{}",
+              gen, diffs.empty() ? "" : ": ", StringUtils::Join(diffs, "; "));
+  else if (diffs.empty())
     CLog::Log(LOGINFO, "DECIDE shadow set={} MATCH", gen);
   else
     CLog::Log(LOGWARNING, "DECIDE shadow set={} DIFF {}", gen, StringUtils::Join(diffs, "; "));

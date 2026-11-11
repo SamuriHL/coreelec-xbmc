@@ -72,8 +72,6 @@ const char* const MIRRORED[] = {
     // 5.E2-5: DECIDE's mode rules on P (mayChooseMode, the 3D ASK predicate)
     CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE,
     CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE,
-    CSettings::SETTING_VIDEOPLAYER_QUITSTEREOMODEONSTOP,
-    CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE,
 };
 
 int ValueOf(const CSetting& setting)

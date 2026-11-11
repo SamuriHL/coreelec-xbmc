@@ -112,9 +112,28 @@ const RESOLUTION_INFO& ResolutionInputs::Info(RESOLUTION res) const
   return it != infos.end() ? it->second : invalidInfo;
 }
 
+namespace
+{
+// 5.E2-5: the choice from inputs, quiet on this thread (P's shadow): its log lines are main's
+// decision's
+thread_local bool t_quiet = false;
+} // namespace
+#define RES_LOG(...) \
+  do \
+  { \
+    if (!t_quiet) \
+      CLog::Log(__VA_ARGS__); \
+  } while (0)
+
 RESOLUTION CResolutionUtils::ChooseBestResolution(
     const ResolutionInputs& in, float fps, int width, int height, bool is3D, bool log)
 {
+  struct Quiet
+  {
+    explicit Quiet(bool on) : m_previous(t_quiet) { t_quiet = on; }
+    ~Quiet() { t_quiet = m_previous; }
+    bool m_previous;
+  } quiet(!log);
   RESOLUTION res = in.videoResolution;
   float weight = 0.0f;
 
@@ -126,8 +145,7 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(
     }
   }
 
-  if (log)
-    CLog::Log(LOGINFO, "Display resolution ADJUST : {} ({}) (weight: {:.3f})", in.Info(res).strMode,
+  RES_LOG(LOGINFO, "Display resolution ADJUST : {} ({}) (weight: {:.3f})", in.Info(res).strMode,
               res, weight);
   return res;
 }
@@ -152,23 +170,23 @@ void CResolutionUtils::FindResolutionFromWhitelist(
 
   bool noWhiteList = indexList.empty();
 
-  CLog::Log(LOGINFO,
+  RES_LOG(LOGINFO,
             "[WHITELIST] Searching the whitelist for: width: {}, height: {}, fps: {:0.3f}, 3D: {}:(0x{:x}), stereo mode: {:d}",
             width, height, fps, is3D ? "true" : "false", dwFlags, stereo_mode);
 
   switch (stereo_mode) {
     case RenderStereoMode::SPLIT_VERTICAL:
-      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D SidebySide mode with {:d}x{:d}{} @ {:.3f} Hz",
+      RES_LOG(LOGDEBUG, "[WHITELIST] Search for 3D SidebySide mode with {:d}x{:d}{} @ {:.3f} Hz",
         curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
       dwFlags |= D3DPRESENTFLAG_MODE3DSBS;
       break;
     case RenderStereoMode::SPLIT_HORIZONTAL:
-      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D TopBottom mode with {:d}x{:d}{} @ {:.3f} Hz",
+      RES_LOG(LOGDEBUG, "[WHITELIST] Search for 3D TopBottom mode with {:d}x{:d}{} @ {:.3f} Hz",
         curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
       dwFlags |= D3DPRESENTFLAG_MODE3DTB;
       break;
     case RenderStereoMode::HARDWAREBASED:
-      CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D Frame Packaging mode with {:d}x{:d}{} @ {:.3f} Hz",
+      RES_LOG(LOGDEBUG, "[WHITELIST] Search for 3D Frame Packaging mode with {:d}x{:d}{} @ {:.3f} Hz",
         curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
       dwFlags |= D3DPRESENTFLAG_MODE3DFP;
       break;
@@ -178,7 +196,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
 
   if (noWhiteList)
   {
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] Using the default whitelist because the user whitelist is empty");
     RESOLUTION_INFO info;
     for (const auto& [c, mapped] : in.allowed)
@@ -203,7 +221,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
 
   if (in.doubleRefreshRate)
   {
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] Searching for an exact resolution with double the refresh rate");
 
     for (const auto i : indexList)
@@ -215,7 +233,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
           MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched an exact resolution with double the refresh rate {} ({})",
                   info.strMode, i);
         unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
@@ -230,13 +248,13 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     if (found)
       return;
 
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] No match for an exact resolution with double the refresh rate");
   }
 
   if (in.wholeNumber)
   {
-    CLog::Log(
+    RES_LOG(
         LOGDEBUG,
         "[WHITELIST] Searching for an exact resolution with a whole-number repeat refresh rate");
 
@@ -250,7 +268,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
           (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
            MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched an exact resolution with a whole-number repeat refresh rate "
                   "{} ({})",
                   info.strMode, i);
@@ -266,11 +284,11 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     if (found)
       return;
 
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] No match for a resolution with a whole-number repeat refresh rate");
   }
 
-  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for an exact resolution with an exact refresh rate");
+  RES_LOG(LOGDEBUG, "[WHITELIST] Searching for an exact resolution with an exact refresh rate");
 
   for (const auto i : indexList)
   {
@@ -281,7 +299,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
         ModeFlagsMatch(info.dwFlags, dwFlags) &&
         MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f))
     {
-      CLog::Log(
+      RES_LOG(
           LOGDEBUG,
           "[WHITELIST] Matched an exact resolution with an exact refresh rate {}, 0x{:x} ({})",
           info.strMode, info.dwFlags, i);
@@ -296,14 +314,14 @@ void CResolutionUtils::FindResolutionFromWhitelist(
   }
 
   if (!found)
-    CLog::Log(LOGDEBUG, "[WHITELIST] No match for an exact resolution with an exact refresh rate");
+    RES_LOG(LOGDEBUG, "[WHITELIST] No match for an exact resolution with an exact refresh rate");
   else
     return;
 
   if (in.pulldown ||
       stereo_mode == RenderStereoMode::SPLIT_VERTICAL)
   {
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] Searching for an exact resolution with a 3:2 pulldown refresh rate");
 
     for (const auto i : indexList)
@@ -315,7 +333,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
           MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
       {
-        CLog::Log(
+        RES_LOG(
             LOGDEBUG,
             "[WHITELIST] Matched an exact resolution with a 3:2 pulldown refresh rate {} ({})",
             info.strMode, i);
@@ -331,10 +349,10 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     if (found)
       return;
 
-    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a resolution with a 3:2 pulldown refresh rate");
+    RES_LOG(LOGDEBUG, "[WHITELIST] No match for a resolution with a 3:2 pulldown refresh rate");
   }
 
-  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with an exact refresh rate");
+  RES_LOG(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with an exact refresh rate");
 
   for (const auto i : indexList)
   {
@@ -347,7 +365,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
       if (pen < penalty)
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched a closest resolution with an exact refresh rate {} ({}), penalty {}",
                   info.strMode, i, pen);
         resolution = i;
@@ -357,13 +375,13 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     }
   }
   if (!found)
-    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a closest resolution with an exact refresh rate");
+    RES_LOG(LOGDEBUG, "[WHITELIST] No match for a closest resolution with an exact refresh rate");
   else
     return;
 
   if (in.doubleRefreshRate)
   {
-    CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with double refresh rate");
+    RES_LOG(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with double refresh rate");
 
     for (const auto i : indexList)
     {
@@ -376,7 +394,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
         unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
         if (pen <= penalty)
         {
-          CLog::Log(LOGDEBUG,
+          RES_LOG(LOGDEBUG,
                     "[WHITELIST] Matched a closest resolution with double refresh rate {} ({}), penalty {}",
                     info.strMode, i, pen);
           resolution = i;
@@ -388,10 +406,10 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     if (found)
       return;
 
-    CLog::Log(LOGDEBUG, "[WHITELIST] No match for a closest resolution with double refresh rate");
+    RES_LOG(LOGDEBUG, "[WHITELIST] No match for a closest resolution with double refresh rate");
   }
 
-  CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a desktop resolution with an exact refresh rate");
+  RES_LOG(LOGDEBUG, "[WHITELIST] Searching for a desktop resolution with an exact refresh rate");
 
   for (const auto i : indexList)
   {
@@ -401,7 +419,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
         MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f))
     {
-      CLog::Log(LOGDEBUG,
+      RES_LOG(LOGDEBUG,
                 "[WHITELIST] Matched a desktop resolution with an exact refresh rate {} ({})",
                 info.strMode, i);
       resolution = i;
@@ -409,11 +427,11 @@ void CResolutionUtils::FindResolutionFromWhitelist(
     }
   }
 
-  CLog::Log(LOGDEBUG, "[WHITELIST] No match for a desktop resolution with an exact refresh rate");
+  RES_LOG(LOGDEBUG, "[WHITELIST] No match for a desktop resolution with an exact refresh rate");
 
   if (in.doubleRefreshRate)
   {
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] Searching for a desktop resolution with double the refresh rate");
 
     for (const auto i : indexList)
@@ -424,7 +442,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
           MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched a desktop resolution with double the refresh rate {} ({})",
                   info.strMode, i);
         resolution = i;
@@ -432,14 +450,14 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       }
     }
 
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] No match for a desktop resolution with double the refresh rate");
   }
 
   if (in.pulldown ||
       stereo_mode == RenderStereoMode::SPLIT_VERTICAL)
   {
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] Searching for a desktop resolution with a 3:2 pulldown refresh rate");
 
     for (const auto i : indexList)
@@ -450,7 +468,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
           MathUtils::FloatEquals(info.fRefreshRate, fps * 2.5f, 0.01f))
       {
-        CLog::Log(
+        RES_LOG(
             LOGDEBUG,
             "[WHITELIST] Matched a desktop resolution with a 3:2 pulldown refresh rate {} ({})",
             info.strMode, i);
@@ -459,13 +477,13 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       }
     }
 
-    CLog::Log(LOGDEBUG,
+    RES_LOG(LOGDEBUG,
               "[WHITELIST] No match for a desktop resolution with a 3:2 pulldown refresh rate");
   }
 
   if (in.wholeNumber)
   {
-    CLog::Log(
+    RES_LOG(
         LOGDEBUG,
         "[WHITELIST] Searching for a desktop resolution with a whole-number repeat refresh rate");
 
@@ -478,7 +496,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
           (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
            MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched a desktop resolution with a whole-number repeat refresh "
                   "rate {} ({})",
                   info.strMode, i);
@@ -487,14 +505,14 @@ void CResolutionUtils::FindResolutionFromWhitelist(
       }
     }
 
-    CLog::Log(
+    RES_LOG(
         LOGDEBUG,
         "[WHITELIST] No match for a desktop resolution with a whole-number repeat refresh rate");
   }
 
   if (is3D && curr.fRefreshRate > 30)
   {
-    CLog::Log(LOGDEBUG, "[WHITELIST] No resolution matched but refresh rate is {:0.3f}", curr.fRefreshRate);
+    RES_LOG(LOGDEBUG, "[WHITELIST] No resolution matched but refresh rate is {:0.3f}", curr.fRefreshRate);
     for (const auto i : indexList)
     {
       const RESOLUTION_INFO info = in.Info(i);
@@ -506,7 +524,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
           MathUtils::FloatEquals(info.fRefreshRate, curr.fRefreshRate, 0.01f))
       {
-        CLog::Log(LOGDEBUG,
+        RES_LOG(LOGDEBUG,
                   "[WHITELIST] Matched an fallback resolution with an exact refresh rate {} ({})",
                   info.strMode, i);
         unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
@@ -523,7 +541,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(
   if (found)
     return;
 
-  CLog::Log(LOGDEBUG, "[WHITELIST] No resolution matched");
+  RES_LOG(LOGDEBUG, "[WHITELIST] No resolution matched");
 }
 
 bool CResolutionUtils::FindResolutionFromOverride(const ResolutionInputs& in,
@@ -562,14 +580,14 @@ bool CResolutionUtils::FindResolutionFromOverride(const ResolutionInputs& in,
 
           if (fallback)
           {
-            CLog::Log(
+            RES_LOG(
                 LOGDEBUG,
                 "Found Resolution {} ({}) from fallback (refreshmin:{:.3f} refreshmax:{:.3f})",
                 info.strMode, resolution, override.refreshmin, override.refreshmax);
           }
           else
           {
-            CLog::Log(LOGDEBUG,
+            RES_LOG(LOGDEBUG,
                       "Found Resolution {} ({}) from override of fps {:.3f} (fpsmin:{:.3f} "
                       "fpsmax:{:.3f} refreshmin:{:.3f} refreshmax:{:.3f})",
                       info.strMode, resolution, fps, override.fpsmin, override.fpsmax,

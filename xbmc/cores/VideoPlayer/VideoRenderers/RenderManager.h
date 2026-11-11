@@ -253,6 +253,7 @@ public:
     int hdr = 0; //!< StreamHdrType
     bool ask = false; //!< the 3D ASK predicate
     std::string note; //!< the inputs' provenance (seq, age, arm source)
+    bool inconclusive = false; //!< P read after main took its inputs (E2-5 review M4)
   };
   //! P: ResolveOutput for CN set gen from the published inputs (latest, the root at the open),
   //! RM's own decision inputs (as main reads them) and the settings mirror. cnArmed: CN's arm
@@ -566,6 +567,18 @@ protected:
   unsigned int m_decideGen = 0;
   std::optional<DecideSide> m_decideP;
   std::optional<DecideSide> m_decideM;
+  //! RM's decision inputs as the set's configure left them (m_statelock), for P's read
+  struct DecideFacts
+  {
+    unsigned int gen = 0;
+    float fps = 0.0f;
+    int width = 0;
+    int height = 0;
+    std::string stereoMode;
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    bool armed = false;
+    std::chrono::steady_clock::time_point armedAt;
+  } m_decideFacts;
 #endif
   std::atomic<unsigned int> m_modeFirstCfgGen{0};
   std::atomic<unsigned int> m_modeFirstDecidedGen{0};

@@ -1219,6 +1219,7 @@ std::mutex s_decideMutex;
 DecideInputs s_decide;
 std::string s_decideKey;
 std::chrono::steady_clock::time_point s_decideTickAt;
+std::atomic<bool> s_decidePending{false};
 
 // what makes two takes the same: every input the choice reads, as text
 std::string DecideKey(const DecideInputs& d)
@@ -1239,10 +1240,17 @@ std::string DecideKey(const DecideInputs& d)
 }
 } // namespace
 
-void PublishDecideInputs(const char* why, bool force)
+bool DecideShadowOn()
 {
-  if (!aml_displaystate_on() || !aml_transaction_shadow_on())
+  return aml_displaystate_on() && aml_transaction_shadow_on() && aml_presentation_validated();
+}
+
+void PublishDecideInputs(const char* why, bool force, bool open)
+{
+  if (!DecideShadowOn())
     return;
+  if (open)
+    s_decidePending = true;
   // main only: GC, the display settings, the settings and the GUI's stereo manager
   DecideInputs d;
   d.res = ResolutionInputs::Take();
@@ -1254,6 +1262,13 @@ void PublishDecideInputs(const char* why, bool force)
     d.userStereo = gui->GetStereoscopicsManager().GetStereoModeByUser();
   d.at = std::chrono::steady_clock::now();
   std::string key = DecideKey(d);
+  // logged from these locals after the lock: P's read never waits on a log write (review L7)
+  const std::string text = StringUtils::Format(
+      "video {} desktop {} stereo {} table {} whitelist {} fullscreen video {} root {} "
+      "calibrating {} user 3D {}",
+      static_cast<int>(d.res.videoResolution), static_cast<int>(d.res.desktopResolution),
+      static_cast<int>(d.res.stereoMode), d.res.resolutionInfoSize, d.res.whitelist.size(),
+      d.fullScreenVideo, d.fullScreenRoot, d.calibrating, static_cast<int>(d.userStereo));
   uint64_t seq;
   {
     std::unique_lock lock(s_decideMutex);
@@ -1264,19 +1279,13 @@ void PublishDecideInputs(const char* why, bool force)
     s_decide = std::move(d);
     s_decideKey = std::move(key);
   }
-  // logged after the lock: P's read never waits on a log write
-  const DecideInputs& p = s_decide; // main is the only writer
-  CLog::Log(LOGINFO,
-            "DECIDEINPUTS seq={} ({}): video {} desktop {} stereo {} table {} whitelist {} "
-            "fullscreen video {} root {} calibrating {} user 3D {}",
-            seq, why, static_cast<int>(p.res.videoResolution),
-            static_cast<int>(p.res.desktopResolution), static_cast<int>(p.res.stereoMode),
-            p.res.resolutionInfoSize, p.res.whitelist.size(), p.fullScreenVideo,
-            p.fullScreenRoot, p.calibrating, static_cast<int>(p.userStereo));
+  CLog::Log(LOGINFO, "DECIDEINPUTS seq={} ({}): {}", seq, why, text);
 }
 
 void PublishDecideInputsTick()
 {
+  if (!s_decidePending)
+    return;
   const auto now = std::chrono::steady_clock::now();
   if (now - s_decideTickAt < std::chrono::milliseconds(250))
     return;
@@ -1284,8 +1293,10 @@ void PublishDecideInputsTick()
   PublishDecideInputs("pump");
 }
 
-DecideInputs GetDecideInputs()
+DecideInputs GetDecideInputs(bool taken)
 {
+  if (taken)
+    s_decidePending = false;
   std::unique_lock lock(s_decideMutex);
   return s_decide;
 }

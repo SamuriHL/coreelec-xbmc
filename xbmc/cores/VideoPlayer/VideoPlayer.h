@@ -289,10 +289,6 @@ struct CacheInfo
 class CProcessInfo;
 class CJobQueue;
 
-namespace DISPLAYSTATE
-{
-struct DecideInputs;
-}
 
 class CVideoPlayer : public IPlayer, public CThread, public IVideoPlayer,
                      public IDispResource, public IRenderLoop, public IRenderMsg
@@ -941,8 +937,7 @@ protected:
   void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
   std::atomic<uint32_t> m_txWordT{0};
-  //! 5.E2-5 (shadow): DECIDE's GUI-side inputs at the open; ResolveOutput's set of the last check
-  std::unique_ptr<DISPLAYSTATE::DecideInputs> m_decideAtOpen;
+  //! 5.E2-5 (shadow): the CN set ResolveOutput last ran for
   unsigned int m_decideShadowGen = 0;
   void DecideShadow();
   void LogWordBoundary(bool arm, const char* why);

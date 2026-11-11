@@ -279,12 +279,16 @@ struct DecideInputs
   uint64_t seq = 0; //!< 0: never published
   std::chrono::steady_clock::time_point at;
 };
+//! the publishes' switch: displaystate, the transaction shadow and a validated SoC (where CN runs)
+bool DecideShadowOn();
 //! main only: takes the inputs; publishes (and logs "DECIDEINPUTS seq=") when they changed, or
-//! always with force
-void PublishDecideInputs(const char* why, bool force = false);
-//! main's pump: PublishDecideInputs at most every 250 ms
+//! always with force. open: a player's open; main's pump re-publishes until P has read them
+void PublishDecideInputs(const char* why, bool force = false, bool open = false);
+//! main's pump: PublishDecideInputs at most every 250 ms, only between a player's open and P's
+//! read (E2-5 review M2)
 void PublishDecideInputsTick();
-DecideInputs GetDecideInputs();
+//! P: the published inputs; taken ends the pump's re-publishes for this open
+DecideInputs GetDecideInputs(bool taken = false);
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);
