@@ -975,6 +975,8 @@ protected:
   //! P: the stop's or the next file's clear (D7), or the fallback under another word
   void TxClearAtEnd(const char* why);
   void TxFreezeEnded();
+  //! P: the P-only pass fields back to rest (a legacy freeze, every end of a real one)
+  void TxResetPassState();
   //! 5.E2-7 (R5, D6): the caller of the draining close in progress (P only); OnExit's line once
   const char* m_txDrainSite = nullptr;
   bool m_txExitHookLogged = false;

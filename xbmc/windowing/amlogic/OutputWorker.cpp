@@ -540,7 +540,9 @@ bool COutputWorker::WordRefreeze(uint32_t ownT, WordState& from)
       });
 }
 
-COutputWorker::WordState COutputWorker::WordReturnReal(uint32_t ownT, WordState& from)
+COutputWorker::WordState COutputWorker::WordReturnReal(uint32_t ownT,
+                                                      WordState& from,
+                                                      const SWordHead* head)
 {
   using enum WordState;
   WordState to = NONE;
@@ -565,7 +567,8 @@ COutputWorker::WordState COutputWorker::WordReturnReal(uint32_t ownT, WordState&
           return Apply(n, w.spanOpen ? "20" : "16", "a real freeze's reset: RESUME owed to P");
         }
         return Skip("20", WordOwned("LOST, CONVERTING or PAUSED", ownT));
-      });
+      },
+      head);
   return to;
 }
 

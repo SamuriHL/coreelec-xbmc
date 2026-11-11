@@ -170,7 +170,7 @@ public:
   //! W, the reset of a real freeze: LOST/PAUSED with the span -> RETURNING (row 20), LOST without
   //! -> RETURNING (row 16), CONVERTING -> RESET_OWED (row 21). from: the state before; returns the
   //! state after (NONE when no row applied)
-  WordState WordReturnReal(uint32_t ownT, WordState& from);
+  WordState WordReturnReal(uint32_t ownT, WordState& from, const SWordHead* head = nullptr);
   //! P, conversion step 2 meeting W's reset: RESET_OWED -> RETURNING (row 22)
   bool WordResetOwedReturning(uint32_t ownT);
   //! P, RESUME's end: RETURNING -> NONE expecting exactly the word read under the guard, e
