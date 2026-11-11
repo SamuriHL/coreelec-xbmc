@@ -972,6 +972,8 @@ protected:
   bool m_txExitHookLogged = false;
   //! P: installs (site) or clears (nullptr) the held predicate of a stream player's close
   void TxSetDrainHook(StreamType type, const char* site);
+  //! P (D8): after a stream open's GENERAL_PAUSE(mark), resend the pause if the mark appeared
+  void TxResendPause(IDVDStreamPlayer* player, bool lostAtSend, const char* stream);
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
   bool m_startGateEnabled = false; //!< start order flag files, read at open

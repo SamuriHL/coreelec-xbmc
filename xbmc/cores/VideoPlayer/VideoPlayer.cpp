@@ -8155,7 +8155,9 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
     if (!player->OpenStream(hint))
       return false;
 
-    player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
+    const bool lostAtSend = m_displayLost;
+    player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, lostAtSend), 1);
+    TxResendPause(player, lostAtSend, "audio");
 
     static_cast<IDVDStreamPlayerAudio*>(player)->SetSpeed(m_streamPlayerSpeed);
     m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
@@ -8334,7 +8336,9 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       m_segmentGenPublished = m_segmentGen;
     }
 
-    player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
+    const bool lostAtSend = m_displayLost;
+    player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, lostAtSend), 1);
+    TxResendPause(player, lostAtSend, "video");
 
     const std::shared_ptr<CDVDInputStream::IExtentionStream>  pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInputStream);
     if (pExt && !static_cast<IDVDStreamPlayerVideo*>(player)->SupportsExtention())
@@ -10873,6 +10877,18 @@ void CVideoPlayer::TxSetDrainHook(StreamType type, const char* site)
   }
   else if (auto* video = dynamic_cast<CVideoPlayerVideo*>(m_VideoPlayerVideo.get()))
     video->SetDrainHeldHook(std::move(hook));
+}
+
+void CVideoPlayer::TxResendPause(IDVDStreamPlayer* player, bool lostAtSend, const char* stream)
+{
+  // 5.E2-7 (D8, plan E2-2's L2): W's FREEZE body can land between the mark's read and the send,
+  // its GENERAL_PAUSE(true) then overtaken by this GENERAL_PAUSE(false). On the real path only P
+  // clears the mark and W sets it before its sends, so a re-read after the send sees it
+  if (lostAtSend || !aml_transaction_loss_base() || aml_transaction_skip("l2") || !m_displayLost)
+    return;
+  player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
+  CLog::Log(LOGINFO, "L2 resend GENERAL_PAUSE(true) ({}): the display was lost during the open",
+            stream);
 }
 
 void CVideoPlayer::TxFrozenPass()
