@@ -6258,6 +6258,8 @@ void CVideoPlayer::OnExit()
   // CAS came first, at the top)
   if (m_txFreezeReal.load())
     TxClearAtEnd("stop");
+  // 5.E2-7 (D9, r2 L6): a VS10 epoch still owed to B2-8 does not outlive the file
+  DISPLAYSTATE::P533Clear(0, "stop");
   m_pInputBluray.reset();
   aml_set_disc_mode_hold(false);
   aml_set_disc_mode_anchored(false);

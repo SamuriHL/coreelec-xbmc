@@ -770,6 +770,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // 5.E2-7 (L-9): which term asked for the reconfigure; the terms keep HEAD's order and
   // short-circuit
   const char* changeReason = nullptr;
+  uint64_t p533Skipped = 0;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -788,12 +789,22 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       changeReason = "orientation";
     else if (m_NumberBuffers != buffers)
       changeReason = "buffers";
+#if defined(HAS_LIBAMCODEC)
+    // 5.E2-7 (P5-33, D9): while a VS10 DV publish is owed to B2-8 the DV mode is not this
+    // picture's reconfigure (B2-8 re-encodes the GUI for it); tested before the call
+    else if ((p533Skipped = DISPLAYSTATE::P533Owed()) == 0 && m_pRenderer->ConfigChanged(picture))
+#else
     else if (m_pRenderer->ConfigChanged(picture))
+#endif
       changeReason = "ConfigChanged";
     else if (TestForceSwap() && m_testForceSwap.exchange(false))
       changeReason = "forceswap";
     if (!changeReason)
     {
+#if defined(HAS_LIBAMCODEC)
+      if (p533Skipped && p533Skipped != m_p533Logged.exchange(p533Skipped))
+        CLog::Log(LOGINFO, "P533 skip epoch {}", p533Skipped);
+#endif
       if (m_fps != fps)
       {
         CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
@@ -1601,6 +1612,10 @@ void CRenderManager::FrameMove()
 
 void CRenderManager::BeginFile()
 {
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-7 (D9, r2 L6): an owed VS10 epoch never reaches the next file's first Configure
+  DISPLAYSTATE::P533Clear(0, "file change");
+#endif
 #if defined(HAS_LIBAMCODEC)
   if (aml_transaction_on())
   {
@@ -4904,6 +4919,8 @@ void CRenderManager::ReencodeOnOutputChange()
     locks = "in CRendererAML::Configure, under the RM locks";
   }
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 re-encode epoch={}: {}", epoch, outcome);
+  // 5.E2-7 (D9): B2-8 has run for this epoch, whatever the outcome
+  DISPLAYSTATE::P533Clear(epoch, "B2-8 ran");
   if (!reencoded)
     return;
   if (encoding)

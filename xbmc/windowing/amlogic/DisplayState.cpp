@@ -1065,6 +1065,8 @@ std::atomic<uint64_t> s_dvPublishes{0};
 // main only
 uint64_t s_handledPublishes = 0;
 uint64_t s_reencodeRequest = 0;
+// 5.E2-7 (D9): written on W at a VS10 publish, cleared by main or P, read by V
+std::atomic<uint64_t> s_p533Owed{0};
 
 std::string WriterNames(unsigned int writers)
 {
@@ -1126,6 +1128,10 @@ void PublishDvMode(unsigned int oldMode, unsigned int mode, DvWriter writer)
   }
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 dvmode publish epoch={} writer={} mode={}->{} posted", epoch,
             WriterNames(writer), oldMode, mode);
+  // 5.E2-7 (D9): owed to B2-8 until its pass for this epoch (the request's epoch, max(e, 1))
+  if ((writer & (DV_WRITER_VS10 | DV_WRITER_VS10_FOLLOW)) && aml_transaction_on() &&
+      !aml_transaction_skip("p533"))
+    s_p533Owed = std::max<uint64_t>(epoch, 1);
 }
 
 void HandleOutputChanged()
@@ -1161,6 +1167,22 @@ void HandleOutputChanged()
 uint64_t TakeReencodeRequest()
 {
   return std::exchange(s_reencodeRequest, 0);
+}
+
+uint64_t P533Owed()
+{
+  return s_p533Owed.load(std::memory_order_acquire);
+}
+
+void P533Clear(uint64_t epoch, const char* why)
+{
+  uint64_t owed = s_p533Owed.load();
+  if (!owed)
+    return;
+  if (epoch && owed != epoch)
+    return;
+  if (s_p533Owed.compare_exchange_strong(owed, 0))
+    CLog::Log(LOGINFO, "P533 owed epoch {} cleared ({})", owed, why);
 }
 
 void Tick()

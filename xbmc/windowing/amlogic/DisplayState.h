@@ -313,6 +313,12 @@ void PublishDvMode(unsigned int oldMode, unsigned int mode, DvWriter writer);
 void HandleOutputChanged();
 //! main, RM's render pass: the pending request's epoch, consumed; 0 when none
 uint64_t TakeReencodeRequest();
+//! 5.E2-7 (P5-33, docs/phase5_e2_7_impl.md D9): the DisplayState epoch of a VS10 DV publish not
+//! yet re-encoded by B2-8, on transaction sessions (0: none). V's Configure skips its
+//! ConfigChanged term while it is set, so the GUI re-encode stays B2-8's
+uint64_t P533Owed();
+//! clears the owed epoch: 0 any (a file change, a stop), else only that epoch (B2-8's pass for it)
+void P533Clear(uint64_t epoch, const char* why);
 
 // main only: the shadows' readers only count
 //! logs new DIFF/FAIL details, and the counters every 10 s

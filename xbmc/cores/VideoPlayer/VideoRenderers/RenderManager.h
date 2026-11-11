@@ -700,6 +700,8 @@ protected:
   std::atomic<int> m_amdv_wait_delay{-1};
   //! 5.E2-7 (L-9): reconfigures of this RM, counted on the INFO line (V's Configure only)
   std::atomic<unsigned int> m_configureChanges{0};
+  //! 5.E2-7 (D9): the owed VS10 epoch last logged as skipped
+  std::atomic<uint64_t> m_p533Logged{0};
   double m_presentpts = 0.0;
   EPRESENTSTEP m_presentstep = PRESENT_IDLE;
   XbmcThreads::EndTime<> m_presentTimer;
