@@ -40,6 +40,8 @@ typedef struct _drmModeAtomicReq* drmModeAtomicReqPtr;
 class CPresentationCoordinator : private CThread
 {
 public:
+  //! 5.E2-6 (r2 L5): C's state as last set, any thread
+  static const char* PublishedStateName();
   /*!
    * \param tickFd the timekeeper's tick eventfd and tickCrtc its CRTC: with
    * them, video ticks come from the timeline while the CRTC presenting is that

@@ -1465,6 +1465,14 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       }
 
       msg.timestamp = hasTimestamp ? (pts + m_renderManager.GetDelay() * 1000 + diCompensation) : DVD_NOPTS_VALUE;
+      // 5.E2-6 (D5): an engaged open's start is the accepted picture's own pts, not the guess
+      if (std::exchange(m_txAcceptedNow, false) && hasTimestamp)
+      {
+        const double today = msg.timestamp;
+        msg.timestamp = m_picture.pts + m_renderManager.GetDelay() * 1000 + diCompensation;
+        CLog::Log(LOGINFO, "TXGATE started at {:.3f} (today's value {:.3f})",
+                  msg.timestamp / DVD_TIME_BASE, today / DVD_TIME_BASE);
+      }
       auto started = std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg);
       // the worker sends it when a tick has taken the forced picture, as a
       // waiting AddVideoPicture would have returned first
@@ -1488,7 +1496,48 @@ void CVideoPlayerVideo::OnExit()
 int CVideoPlayerVideo::CodecSpeed() const
 {
   // validated SoCs: a display hold (GENERAL_PAUSE) pauses the decoder as well
-  return m_paused && m_codecSpeedFix ? DVD_PLAYSPEED_PAUSE : m_speed;
+  if (m_paused && m_codecSpeedFix)
+    return DVD_PLAYSPEED_PAUSE;
+  // 5.E2-6 (D10): an engaged open's shut gate holds the decoder once its start picture is
+  // accepted (the stall clock stops with it), independent of m_codecSpeedFix
+  if (m_renderManager.TxHoldsDecoder())
+    return DVD_PLAYSPEED_PAUSE;
+  return m_speed;
+}
+
+void CVideoPlayerVideo::TxStartPictureAccepted(const char* why)
+{
+  m_txAcceptedNow = true;
+  m_startPendingGen = -1;
+  if (m_pVideoCodec)
+  {
+    m_pVideoCodec->SetSpeed(CodecSpeed());
+    CLog::Log(LOGINFO, "TXGATE codec speed {} ({})",
+              CodecSpeed() == DVD_PLAYSPEED_PAUSE ? "PAUSE" : "resume", why);
+  }
+}
+
+void CVideoPlayerVideo::ReportTxReaccept(const VideoPicture& picture)
+{
+  if (m_pVideoCodec)
+    m_pVideoCodec->SetSpeed(CodecSpeed());
+  // r2 M3: after V took its RESYNC a re-send would make P re-sync: logged, E2-8 re-anchors
+  if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+  {
+    CLog::Log(LOGWARNING, "TXGATE re-accept after the sync: pts {:.3f} (re-anchor owed to E2-8)",
+              picture.pts / DVD_TIME_BASE);
+    return;
+  }
+  SStartMsg msg;
+  msg.player = VideoPlayer_VIDEO;
+  msg.cachetime = DVD_MSEC_TO_TIME(50);
+  msg.cachetotal = DVD_MSEC_TO_TIME(100);
+  msg.timestamp = picture.pts != DVD_NOPTS_VALUE
+                      ? picture.pts + m_renderManager.GetDelay() * 1000
+                      : DVD_NOPTS_VALUE;
+  CLog::Log(LOGINFO, "TXGATE re-accept before the sync: started re-sent at {:.3f}",
+            msg.timestamp / DVD_TIME_BASE);
+  m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
 }
 
 void CVideoPlayerVideo::SetSpeed(int speed)
@@ -1798,18 +1847,29 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     // the start picture is forced without waiting; a tick that takes it
     // releases PLAYER_STARTED (WorkerDuties)
     const int gen = ++m_forceGenCounter;
+    bool txAccepted = false;
     pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, false,
-                                                   gen, framed ? &overlays : nullptr);
-    if (pictureAdded)
+                                                   gen, framed ? &overlays : nullptr, &txAccepted);
+    // 5.E2-6 (D3): an engaged gate took no force; PLAYER_STARTED goes now, with the accepted
+    // picture's own pts (ProcessDecoderOutput), and the decoder holds (D10)
+    if (pictureAdded && txAccepted)
+      TxStartPictureAccepted("start picture");
+    else if (pictureAdded)
     {
       m_startPendingGen = gen;
       m_startPendingSince = std::chrono::steady_clock::now();
     }
   }
   else
+  {
+    bool txAccepted = false;
     pictureAdded = m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod,
                                                    (m_syncState == ESyncState::SYNC_STARTING), -1,
-                                                   framed ? &overlays : nullptr);
+                                                   framed ? &overlays : nullptr, &txAccepted);
+    // 5.E2-6 (r2 M1, D9): a re-accept outside SYNC_STARTING (after a second Configure)
+    if (pictureAdded && txAccepted)
+      ReportTxReaccept(*pPicture);
+  }
   if (!pictureAdded)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);

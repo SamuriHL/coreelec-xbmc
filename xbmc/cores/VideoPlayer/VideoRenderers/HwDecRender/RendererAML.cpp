@@ -689,7 +689,10 @@ CRendererAML::SOnC CRendererAML::ComputeOnC(const SGeometryIn& in,
   return out;
 }
 
-void CRendererAML::PresentFrameOnC(int index, std::shared_ptr<CAMLCodec>& codec, bool& shown)
+void CRendererAML::PresentFrameOnC(int index,
+                                   std::shared_ptr<CAMLCodec>& codec,
+                                   bool& shown,
+                                   bool startPicture)
 {
   shown = false;
   CAMLVideoBuffer* amli = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
@@ -700,7 +703,7 @@ void CRendererAML::PresentFrameOnC(int index, std::shared_ptr<CAMLCodec>& codec,
   if (pts == m_prevVPts)
     return;
 
-  amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE,
+  amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE && !startPicture,
                                  amli->m_sessionGen, &shown);
   codec = std::move(amli->m_amlCodec); // also marks the frame processed
   m_prevVPts = pts;

@@ -169,7 +169,11 @@ public:
                          const VIDEOGEOMETRY::SViewModeOut& viewMode);
   //! 5.V3-4 (C, under the RM locks): PresentFrame without the hand-off to main; the frame's
   //! decoder and whether it was queued to be shown
-  void PresentFrameOnC(int index, std::shared_ptr<CAMLCodec>& codec, bool& shown);
+  //! startPicture (5.E2-6 D8): an engaged open's first release, not the after-Reset drop
+  void PresentFrameOnC(int index,
+                       std::shared_ptr<CAMLCodec>& codec,
+                       bool& shown,
+                       bool startPicture = false);
   //! 5.V3-4 (C, after the RM locks): the tail. With a QBUF's decoder: compute, and from the
   //! session's first shown frame the frame-locked writes and (shown) the layer-on, FEL step
   //! and kept clear. Without (in null: a wake): the last inputs with a new snapshot, the

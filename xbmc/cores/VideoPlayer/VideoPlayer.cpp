@@ -2737,6 +2737,9 @@ void CVideoPlayer::ArmStartGate(const char* where)
         ae->SetStartGate(false);
       CLog::Log(LOGINFO, "VideoPlayer: start gate ended (set {}): {} not gated", m_startGateGen,
                 where);
+      // 5.E2-6 (r1 H4, r2 M2): the picture gate of the set ends with it
+      if (m_renderManager.ArmTxPictureGate(0, false, "gate ended"))
+        TxRestoreDecoderSpeed("gate ended");
       // 5.E2-4: the window this gate opened ends with it (E2-4 review M1)
       if (aml_transaction_shadow_on())
         OUTPUT::COutputWorker::Get().ShadowStartPhase(
@@ -2747,6 +2750,11 @@ void CVideoPlayer::ArmStartGate(const char* where)
   }
   ++m_startGateGen;
   m_startGateShut = true;
+  // 5.E2-6 (D1, r1 H4): an older picture gate is cleared; the file's first set arms a candidate
+  // that RM engages (or not) at the set's first picture
+  if (m_renderManager.ArmTxPictureGate(m_startGateGen, std::string_view(where) == "first set",
+                                       "new set"))
+    TxRestoreDecoderSpeed("new set");
   m_startGateOpenedAt = {};
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
@@ -3024,8 +3032,17 @@ bool CVideoPlayer::ScheduleUserResume()
   return true;
 }
 
+void CVideoPlayer::TxRestoreDecoderSpeed(const char* why)
+{
+  // r2 M2: V re-applies CodecSpeed() on a speed message; the gate's hold is gone now
+  m_VideoPlayerVideo->SetSpeed(m_streamPlayerSpeed);
+  CLog::Log(LOGINFO, "TXGATE decoder speed restored ({})", why);
+}
+
 void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
+  // 5.E2-6 (D7): START opens the picture gate, before V's speed below re-applies CodecSpeed()
+  m_renderManager.OpenTxPictureGate(why);
   const double held =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince).count();
   // the mode decision can set the latency tweak after this loop's check: the
@@ -4947,6 +4964,10 @@ void CVideoPlayer::HandlePlaySpeed()
       else if (!holdStart)
       {
         SetCaching(CACHESTATE_DONE);
+        // 5.E2-6 (r1 H2, r2 M2): a start the sync leaves unheld (a pause or FF in the start, a
+        // realtime first set) opens the picture gate here; the decoder's speed is restored
+        if (m_renderManager.OpenTxPictureGate("sync, start not held"))
+          TxRestoreDecoderSpeed("sync, start not held");
         // 5.E2-4: an unheld start's window ends at its sync (E2-4 review H1)
         if (aml_transaction_shadow_on())
           OUTPUT::COutputWorker::Get().ShadowStartPhase(
@@ -8382,6 +8403,9 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
     return false;
 
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
+  // 5.E2-6 (r1 M6, r2 L3): a stop or next file opens the picture gate before V's drain
+  if (current.type == StreamType::VIDEO)
+    m_renderManager.OpenTxPictureGate("close");
 
   if(bWaitForBuffers)
     SetCaching(CACHESTATE_DONE);

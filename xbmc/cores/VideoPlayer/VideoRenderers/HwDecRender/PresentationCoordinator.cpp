@@ -95,6 +95,9 @@ int ReadKernelDrops()
   return value ? std::atoi(value->c_str()) : -1;
 }
 
+// 5.E2-6 (r2 L5): C's state, published for RM's acceptance line
+std::atomic<int> s_publishedState{0};
+
 const char* StateName(int state)
 {
   static const char* const names[] = {"IDLE", "PLAYING", "PAUSED", "DISPLAY-LOST", "HELD"};
@@ -1656,6 +1659,12 @@ void CPresentationCoordinator::SetState(State state, unsigned int epoch)
   CLog::Log(LOGINFO, "CPresentationCoordinator - {} -> {} (display epoch {})",
             StateName(static_cast<int>(m_state)), StateName(static_cast<int>(state)), epoch);
   m_state = state;
+  s_publishedState = static_cast<int>(state);
+}
+
+const char* CPresentationCoordinator::PublishedStateName()
+{
+  return StateName(s_publishedState.load());
 }
 
 void CPresentationCoordinator::Account(const SPresentTick& tick,

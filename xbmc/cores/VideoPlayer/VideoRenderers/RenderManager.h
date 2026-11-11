@@ -11,6 +11,7 @@
 #include "DVDClock.h"
 #include "DebugRenderer.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRenderer.h"
 #include "cores/VideoSettings.h"
@@ -205,7 +206,22 @@ public:
                        EINTERLACEMETHOD deintMethod,
                        bool wait,
                        int forceGen = -1,
-                       OVERLAY::FrameOverlays* overlays = nullptr);
+                       OVERLAY::FrameOverlays* overlays = nullptr,
+                       bool* txAccepted = nullptr);
+  // 5.E2-6: C's picture side of CN's start gate on an engaged open (docs/phase5_e2_6_impl.md).
+  // P arms a candidate at CN's arm (the file's first set only); RM engages it inside that set's
+  // first AddVideoPicture (transaction_on, no "transaction_skip gate", a worker's force gen, a
+  // geometrytick session) and from then refuses the force, records the start picture's
+  // acceptance (txAccepted), shows it once on C when CN's state is committed (the pre-roll), and
+  // selects nothing else until START opens the gate. Every call is a no-op on a not-engaged open
+  //! P, at every ArmStartGate: clears an older gate; candidate for the file's first set. True when
+  //! the cleared gate held an accepted picture (P restores the decoder's speed)
+  bool ArmTxPictureGate(unsigned int gen, bool candidate, const char* why);
+  //! P, at START (or the sync's no-release branch, a stop, a close): opens the gate. True when it
+  //! held an accepted picture
+  bool OpenTxPictureGate(const char* why);
+  //! V's CodecSpeed: the decoder is held paused (an engaged, shut gate with its picture accepted)
+  bool TxHoldsDecoder() const { return m_txHoldsDecoder.load(); }
   //! 5.V2-7 (MC-41): with the presenter, a picture carries its overlays to AddVideoPicture
   //! instead of AddOverlay, and the buffer calls leave the overlay lock alone
   bool OverlaysTravel() const;
@@ -687,6 +703,29 @@ protected:
   XbmcThreads::EndTime<> m_presentTimer;
   bool m_forceNext = false;
   int m_forceGen = -1; // a worker's forced start picture (m_presentlock)
+  // 5.E2-6: the engaged open's picture gate (m_presentlock; gen also atomic for C's
+  // m_statelock-section read)
+  struct STxPictureGate
+  {
+    bool candidate = false;
+    bool engaged = false;
+    bool shut = false;
+    bool accepted = false;
+    double acceptedPts = DVD_NOPTS_VALUE;
+    bool prerollShown = false;
+    unsigned int prerollEpoch = 0;
+    bool prerollLostLogged = false;
+    bool prerollMismatchLogged = false;
+    bool forceRefusedLogged = false;
+    bool logFirstAfterOpen = false;
+  } m_txGate;
+  std::atomic<unsigned int> m_txGateGen{0};
+  std::atomic_bool m_txHoldsDecoder{false};
+  bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section
+  bool m_txPrerollThisTick = false; //!< C: this tick's flip is the pre-roll
+  bool m_txFirstRelease = false; //!< C: the next release is the engaged open's first (no drop)
+  //! m_presentlock held: resets the gate (logged with why when it was engaged)
+  void ClearTxGateLocked(const char* why);
   std::atomic<int> m_forceDoneGen{-1};
   int m_workerWakeFd = -1; // m_presentlock
   int m_presentsource = -1;

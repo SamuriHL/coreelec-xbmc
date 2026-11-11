@@ -566,6 +566,8 @@ protected:
   //! a user resume landing on the timeline like a start (design §16.21)
   bool ScheduleUserResume();
   void ReleaseHeldStart(const char* why);
+  //! 5.E2-6 (r2 M2): V's speed after a picture gate's hold ends outside ReleaseHeldStart
+  void TxRestoreDecoderSpeed(const char* why);
   //! true while a held disc boundary waits for the old streams to finish starting
   bool WaitStartAtBoundary();
   //! start order design §3: a stream set's audio and start wait for its output mode

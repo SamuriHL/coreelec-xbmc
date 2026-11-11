@@ -824,6 +824,25 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   {
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+    // 5.E2-6 (D9): a shut gate selects nothing, so a drain would wait out its 5 s: the queued
+    // pictures are discarded and the next picture is re-accepted and re-reported
+    if (m_txGate.engaged && m_txGate.shut)
+    {
+      while (!m_queued.empty())
+      {
+        m_discard.push_back(m_queued.front());
+        m_queued.pop_front();
+      }
+      m_txGate.accepted = false;
+      m_txGate.prerollShown = false;
+      m_txGate.prerollMismatchLogged = false;
+      m_txHoldsDecoder = false;
+      if (m_presentstep == PRESENT_READY)
+        m_presentstep = PRESENT_IDLE;
+      CLog::Log(LOGINFO, "TXGATE configure discard set={}", m_txGateGen.load());
+    }
+#endif
     XbmcThreads::EndTime<> endtime(5000ms);
     m_forceNext = true;
     while (m_presentstep != PRESENT_IDLE)
@@ -1563,6 +1582,13 @@ void CRenderManager::FrameMove()
 
 void CRenderManager::BeginFile()
 {
+#if defined(HAS_LIBAMCODEC)
+  {
+    // 5.E2-6: a next file never inherits a gate
+    std::unique_lock lock(m_presentlock);
+    ClearTxGateLocked("next file");
+  }
+#endif
   m_filePicturesFrom = m_picturesAdded.load();
   // a new file: any phase still pending belongs to the last one, and so does
   // its output mode decision (a running player opening the next file skips
@@ -1793,6 +1819,9 @@ void CRenderManager::UnInit()
     {
       // V's configure: its wait ends, its swap is refused
       m_closed = true;
+#if defined(HAS_LIBAMCODEC)
+      ClearTxGateLocked("close");
+#endif
       m_presentevent.notifyAll();
       retire.swap(m_retire);
     }
@@ -1966,6 +1995,18 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
         for (int i = 0; i < m_QueueSize; i++)
           m_free.push_back(i);
       }
+#if defined(HAS_LIBAMCODEC)
+      // 5.E2-6 (r1 M1): a flush before the sync keeps the gate shut; its picture is re-accepted
+      if (m_txGate.engaged && m_txGate.shut && m_txGate.accepted)
+      {
+        m_txGate.accepted = false;
+        m_txGate.prerollShown = false;
+        m_txGate.prerollMismatchLogged = false;
+        m_txHoldsDecoder = false;
+        CLog::Log(LOGINFO, "TXGATE flush set={}: the start picture is re-accepted",
+                  m_txGateGen.load());
+      }
+#endif
       // a worker's start picture is gone with the queue
       if (m_forceGen >= 0)
       {
@@ -3449,6 +3490,71 @@ void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const Dec
 }
 #endif
 
+#if defined(HAS_LIBAMCODEC)
+// 5.E2-6: C's picture side of CN's start gate (docs/phase5_e2_6_impl.md)
+void CRenderManager::ClearTxGateLocked(const char* why)
+{
+  if (m_txGate.engaged || m_txGate.candidate)
+    CLog::Log(LOGINFO, "TXGATE cleared set={} ({}{})", m_txGateGen.load(), why,
+              m_txGate.engaged && m_txGate.shut ? ", shut" : "");
+  m_txGate = {};
+  m_txGateGen = 0;
+  m_txHoldsDecoder = false;
+  m_txPrerollDue = false;
+  m_txPrerollThisTick = false;
+  m_txFirstRelease = false;
+}
+
+bool CRenderManager::ArmTxPictureGate(unsigned int gen, bool candidate, const char* why)
+{
+  if (!aml_transaction_on())
+    return false;
+  std::unique_lock lock(m_presentlock);
+  // r1 H4: every arm clears an older gate first, so a later (legacy) set is never blocked
+  const bool held = m_txGate.engaged && m_txGate.shut && m_txGate.accepted;
+  if (m_txGate.engaged || m_txGate.candidate)
+    ClearTxGateLocked(why);
+  if (candidate)
+  {
+    m_txGateGen = gen;
+    m_txGate.candidate = true;
+    CLog::Log(LOGINFO, "TXGATE candidate set={}", gen);
+  }
+  return held;
+}
+
+bool CRenderManager::OpenTxPictureGate(const char* why)
+{
+  if (!aml_transaction_on())
+    return false;
+  std::unique_lock lock(m_presentlock);
+  if (m_txGate.candidate)
+  {
+    // opened before its first picture: never engaged
+    CLog::Log(LOGINFO, "TXGATE legacy set={} (opened before the first picture: {})",
+              m_txGateGen.load(), why);
+    m_txGate.candidate = false;
+    return false;
+  }
+  if (!m_txGate.engaged || !m_txGate.shut)
+    return false;
+  const bool held = m_txGate.accepted;
+  m_txGate.shut = false;
+  m_txHoldsDecoder = false;
+  m_txGate.logFirstAfterOpen = true;
+  // D8: with no pre-roll, the first selection after the open is the first release
+  if (!m_txGate.prerollShown)
+    m_txFirstRelease = true;
+  CLog::Log(LOGINFO, "TXGATE opened set={} ({}){}", m_txGateGen.load(), why,
+            m_txGate.prerollShown ? "" : ", no pre-roll shown");
+  // the queued pictures are selectable again
+  if (!m_queued.empty() && m_presentstep == PRESENT_IDLE)
+    m_presentstep = PRESENT_READY;
+  m_presentevent.notifyAll();
+  return held;
+}
+#endif
+
 void CRenderManager::ArmContentReclock(bool now)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -3513,7 +3619,8 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
                                      EINTERLACEMETHOD deintMethod,
                                      bool wait,
                                      int forceGen,
-                                     OVERLAY::FrameOverlays* overlays)
+                                     OVERLAY::FrameOverlays* overlays,
+                                     bool* txAccepted)
 {
   // the slot's previous overlays are freed after the lock
   OVERLAY::FrameOverlays dropped;
@@ -3608,6 +3715,49 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
     m_presentevent.notifyAll();
   }
 
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-6 (D1): an armed candidate engages here, at its set's first picture
+  if (m_txGate.candidate)
+  {
+    m_txGate.candidate = false;
+    const char* legacy = nullptr;
+    if (!aml_transaction_on())
+      legacy = "transaction off";
+    else if (aml_transaction_skip("gate"))
+      legacy = "skip gate";
+    else if (forceGen < 0)
+      legacy = "no worker start picture";
+    else if (!GeometryTickSession())
+      legacy = "no geometrytick session";
+    if (legacy)
+      CLog::Log(LOGINFO, "TXGATE legacy set={} ({})", m_txGateGen.load(), legacy);
+    else
+    {
+      m_txGate.engaged = true;
+      m_txGate.shut = true;
+      CLog::Log(LOGINFO, "TXGATE engaged set={}", m_txGateGen.load());
+    }
+  }
+  // D2/D4, r2 M1: while engaged and shut no force passes; the first picture queued is the
+  // accepted start picture (re-accepted after a flush or a second Configure)
+  const bool txShut = m_txGate.engaged && m_txGate.shut;
+  if (txShut && !m_txGate.accepted)
+  {
+    m_txGate.accepted = true;
+    m_txGate.acceptedPts = picture.pts;
+    m_txHoldsDecoder = true;
+    if (txAccepted)
+      *txAccepted = true;
+    CLog::Log(LOGINFO, "TXGATE accepted set={} pts {:.3f} (C {}, epoch {})", m_txGateGen.load(),
+              picture.pts / DVD_TIME_BASE, CPresentationCoordinator::PublishedStateName(),
+              aml_presenter_epoch());
+  }
+  if (txShut)
+  {
+    forceGen = -1;
+    wait = false;
+  }
+#endif
   // a stream worker does not wait: the tick that takes the picture clears the
   // force and wakes it
   if (forceGen >= 0)
@@ -3863,6 +4013,49 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
     m_presentevent.notifyAll();
     return;
   }
+
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-6 (D2, r1 M3): an engaged, shut gate selects nothing and feeds no clock-sync phase;
+  // the pre-roll show (D6) is its own branch: the accepted start picture, once, when C read CN's
+  // state committed and the display not lost
+  if (m_txGate.engaged && m_txGate.shut)
+  {
+    if (m_forceNext && !m_txGate.forceRefusedLogged)
+    {
+      m_txGate.forceRefusedLogged = true;
+      CLog::Log(LOGERROR, "TXGATE forced picture refused set={} (force gen {})",
+                m_txGateGen.load(), m_forceGen);
+    }
+    if (m_txPrerollDue && m_txGate.accepted && !m_txGate.prerollShown)
+    {
+      const int idx = m_queued.front();
+      if (m_Queue[idx].pts != m_txGate.acceptedPts)
+      {
+        if (!m_txGate.prerollMismatchLogged)
+        {
+          m_txGate.prerollMismatchLogged = true;
+          CLog::Log(LOGWARNING, "TXGATE pre-roll skipped set={}: queue head pts {:.3f} is not the "
+                                "accepted {:.3f}",
+                    m_txGateGen.load(), m_Queue[idx].pts / DVD_TIME_BASE,
+                    m_txGate.acceptedPts / DVD_TIME_BASE);
+        }
+        return;
+      }
+      m_txGate.prerollShown = true;
+      m_txPrerollThisTick = true;
+      m_txFirstRelease = true;
+      m_presentstep = PRESENT_FLIP;
+      if (m_presentsource != -1)
+        m_discard.push_back(m_presentsource);
+      m_presentsource = idx;
+      m_queued.pop_front();
+      m_presentpts = m_Queue[m_presentsource].pts - m_displayLatency;
+      m_presentevent.notifyAll();
+      m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
+    }
+    return;
+  }
+#endif
 
   if (!m_showVideo && !m_forceNext)
     return;
@@ -4908,10 +5101,34 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   CheckEnableClockSync(timing);
 
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-6 (D6, r1 Q1): CN's state for the gate's set, read here under m_statelock (the lock
+  // order) with the display state; "committed" = the set's mode decision done or none due
+  bool txCommitted = false;
+  if (const unsigned int txGen = m_txGateGen.load())
+    txCommitted = m_modeFirstCfgGen == txGen &&
+                  (m_modeFirstDecidedGen == txGen ||
+                   !(m_bTriggerUpdateResolution || m_modeFirstInFlight || m_resolutionInFlight)) &&
+                  !m_displayLost;
+#endif
+
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock presentLock(m_presentlock);
   diagPresent = diagClock::now();
   lock.unlock();
+#if defined(HAS_LIBAMCODEC)
+  m_txPrerollDue = txCommitted;
+  m_txPrerollThisTick = false;
+  // H3: no re-show on a new epoch (the buffer is back with the decoder): logged, E2-8's
+  if (m_txGate.engaged && m_txGate.shut && m_txGate.prerollShown &&
+      tick.epoch != m_txGate.prerollEpoch && !m_txGate.prerollLostLogged)
+  {
+    m_txGate.prerollLostLogged = true;
+    CLog::Log(LOGWARNING,
+              "TXGATE pre-roll lost set={} (epoch {} -> {}), re-anchor owed to E2-8",
+              m_txGateGen.load(), m_txGate.prerollEpoch, tick.epoch);
+  }
+#endif
 
   // the frame released at the previous vsync is on screen now
   if (m_presentstep == PRESENT_FRAME && m_presentsource >= 0 &&
@@ -4987,8 +5204,25 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 #if defined(HAS_LIBAMCODEC)
     // 5.V3-4: C's tail takes the frame's decoder (no hand-off to main)
     if (result.geom.renderer)
+    {
+      // 5.E2-6 (D8): the engaged open's first release is not the after-Reset drop
+      const bool startPicture = std::exchange(m_txFirstRelease, false);
       static_cast<CRendererAML*>(m_pRenderer.get())
-          ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown);
+          ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown, startPicture);
+      if (m_txPrerollThisTick)
+      {
+        m_txGate.prerollEpoch = tick.epoch;
+        CLog::Log(LOGINFO, "TXGATE pre-roll shown set={} epoch {} pts {:.3f} shown {}",
+                  m_txGateGen.load(), tick.epoch, result.pts / DVD_TIME_BASE, result.qbufShown);
+      }
+      else if (m_txGate.logFirstAfterOpen)
+      {
+        m_txGate.logFirstAfterOpen = false;
+        CLog::Log(LOGINFO, "TXGATE first after open set={} pts {:.3f} vblank {} shown {}{}",
+                  m_txGateGen.load(), result.pts / DVD_TIME_BASE, tick.vblankNs,
+                  result.qbufShown, startPicture ? " (first release)" : "");
+      }
+    }
     else
 #endif
       m_pRenderer->PresentFrame(m_presentsource);
