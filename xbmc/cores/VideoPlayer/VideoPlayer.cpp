@@ -6238,6 +6238,10 @@ void CVideoPlayer::OnExit()
   else
     CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 
+  // 5.E2-7 (fix verification N-L1): an owed conversion step 2 (OnPlayBackPaused) before the
+  // file's close callbacks, as HEAD's one-pass conversion
+  if (m_txFreezeReal.load() && m_txConvertStep == 1)
+    TxConvertStep2();
   IPlayerCallback *cb = &m_callback;
   CVideoSettings vs = m_processInfo->GetVideoSettings();
   m_outboundEvents->Submit([=]() {
@@ -10844,8 +10848,14 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
   if (!m_txResumeWaitLogged)
   {
     m_txResumeWaitLogged = true;
+    // fix verification N-L2: on a timeline-clock session the reference clock counts the
+    // timekeeper's ticks (CVideoSyncTimeline, GLES GetVideoSync): CVideoSyncAML is not set up, so
+    // no vsync reset exists to wait for; the cause is logged so the gate can tell it apart
     if (noClock)
-      CLog::Log(LOGINFO, "RESUME no vblank clock");
+      CLog::Log(LOGINFO, "RESUME no vblank clock ({})",
+                PRESENTATION::TimelineClockActive().load()
+                    ? "timeline clock: the reference clock counts the timekeeper's ticks"
+                    : "no vsync set up");
     else if (!ready)
       CLog::Log(LOGWARNING, "RESUME vblank bound (setup {}/{}, vblanks {})", vsync.setupFor,
                 vsync.resetReq, vsync.vblanks);
@@ -11010,9 +11020,11 @@ void CVideoPlayer::TxFrozenPass()
               OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
   }
   // r3 N3: another word only counts if it persists to the 1 s fallback (never inside a body)
-  // code review L4: FREEZING is a body in progress only until the body is done
+  // code review L4, fix verification N-M1: FREEZING claimed is W's walk in progress (its fan-out
+  // can outlast 1 s), never "another word"; FREEZING parked only once the body is done
   if (!own ||
-      !(frozenWord || (word.state == WordState::FREEZING && !m_txBodyDone.load())))
+      !(frozenWord ||
+        (word.state == WordState::FREEZING && (!word.sub || !m_txBodyDone.load()))))
   {
     if (!m_txOtherWordTiming)
     {
@@ -11026,10 +11038,22 @@ void CVideoPlayer::TxFrozenPass()
       if (m_txConvertStep == 1)
         TxConvertStep2(); // code review L6
       auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
-      const auto fallback = [this]
+      bool refrozen = false;
+      const auto fallback = [this, ownT, winSystem, &refrozen]
       {
         if (!m_displayLost || !m_txFreezeReal.load())
           return;
+        // fix verification N-M1: never clear while the display is lost or the word is this
+        // player's frozen state again (a re-freeze landed while the fallback waited for the guard)
+        const auto w = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+        const bool ownFrozen =
+            ownT && w.t == ownT && w.state != WordState::NONE &&
+            w.state != WordState::STARTING && w.state != WordState::LEADING;
+        if (ownFrozen || (winSystem && winSystem->IsLostSpanOpen()))
+        {
+          refrozen = true;
+          return;
+        }
         ClearPlayerFreeze(m_txHeldAsPause.load());
         m_lossState = LossState::NONE;
         TxFreezeEnded();
@@ -11037,6 +11061,11 @@ void CVideoPlayer::TxFrozenPass()
       };
       if (winSystem)
         winSystem->RunUnderPlayerGuard(fallback, false);
+      if (refrozen)
+      {
+        m_txOtherWordTiming = false;
+        CLog::Log(LOGINFO, "TXLOSS fallback skipped: frozen again or the display still lost");
+      }
       return;
     }
   }
@@ -11088,20 +11117,35 @@ void CVideoPlayer::TxFrozenPass()
                         (word.state == WordState::LOST || word.state == WordState::CONVERTING ||
                          word.state == WordState::PAUSED);
   std::shared_ptr<CDVDMsg> msg;
-  const auto timeout = own && word.state == WordState::RETURNING ? std::chrono::milliseconds(5)
-                                                                  : std::chrono::milliseconds(50);
-  if (m_messenger.GetFirstOf(
-          msg,
-          [takeOpen](CDVDMsg& m)
-          {
-            return m.IsType(CDVDMsg::PLAYER_DISPLAY_RETURNED) ||
-                   (takeOpen && m.IsType(CDVDMsg::PLAYER_OPENFILE));
-          },
-          timeout) != MSGQ_OK)
-    return;
-  if (!msg->IsType(CDVDMsg::PLAYER_OPENFILE))
+  if (takeOpen && m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) > 0)
   {
-    CLog::Log(LOGINFO, "TXLOSS inbox took Returned");
+    // code review L10, fix verification N-L3: the span re-read under the guard and the next file
+    // taken in the same hold (guard -> queue, W's own order), so a next file never leaves the
+    // queue unless it runs: the other messages keep their order around it
+    if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
+      winSystem->RunUnderPlayerGuard(
+          [this, &msg, ownT]
+          {
+            const auto w =
+                OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+            if (w.t == ownT && w.spanOpen &&
+                (w.state == WordState::LOST || w.state == WordState::CONVERTING ||
+                 w.state == WordState::PAUSED))
+              m_messenger.GetFirstOf(
+                  msg, [](CDVDMsg& m) { return m.IsType(CDVDMsg::PLAYER_OPENFILE); },
+                  std::chrono::milliseconds(0));
+          },
+          false);
+  }
+  if (!msg)
+  {
+    const auto timeout = own && word.state == WordState::RETURNING
+                             ? std::chrono::milliseconds(5)
+                             : std::chrono::milliseconds(50);
+    if (m_messenger.GetFirstOf(
+            msg, [](CDVDMsg& m) { return m.IsType(CDVDMsg::PLAYER_DISPLAY_RETURNED); },
+            timeout) == MSGQ_OK)
+      CLog::Log(LOGINFO, "TXLOSS inbox took Returned");
     return;
   }
   // newest wins, as HEAD's HandleMessages (an older next file is skipped)
@@ -11110,27 +11154,11 @@ void CVideoPlayer::TxFrozenPass()
     CLog::Log(LOGINFO, "TXLOSS inbox took OPENFILE: a newer one is queued, this one dropped");
     return;
   }
-  // code review L10: the span may have closed since the pass read the word: re-read under the
-  // guard; outside a span the next file waits for RESUME, as HEAD's order
-  bool stillSpan = false;
-  if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
-    winSystem->RunUnderPlayerGuard(
-        [&stillSpan, ownT]
-        {
-          const auto w =
-              OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
-          stillSpan = w.t == ownT && w.spanOpen &&
-                      (w.state == WordState::LOST || w.state == WordState::CONVERTING ||
-                       w.state == WordState::PAUSED);
-        },
-        false);
-  if (!stillSpan)
-  {
-    m_messenger.PutBack(msg, 1);
-    CLog::Log(LOGINFO, "TXLOSS inbox put OPENFILE back: the span closed meanwhile");
-    return;
-  }
   CLog::Log(LOGINFO, "TXLOSS inbox took OPENFILE");
+  // fix verification N-L1: an owed conversion step 2 (OnPlayBackPaused) before the next file's
+  // callbacks, as HEAD's one-pass conversion
+  if (m_txConvertStep == 1)
+    TxConvertStep2();
   // row 28: the ABORT CAS first, then HEAD's next file with the clear before Prepare (D7)
   if (const uint32_t wordT = m_txWordT.exchange(0))
     OUTPUT::COutputWorker::Get().WordStop(wordT);
