@@ -2752,8 +2752,12 @@ void CVideoPlayer::ArmStartGate(const char* where)
   m_startGateShut = true;
   // 5.E2-6 (D1, r1 H4): an older picture gate is cleared; the file's first set arms a candidate
   // that RM engages (or not) at the set's first picture
-  if (m_renderManager.ArmTxPictureGate(m_startGateGen, std::string_view(where) == "first set",
-                                       "new set"))
+  // the file's first set (plan §2.3 item 4, E2-1's rule): the first armed set while the streams
+  // are not ready, whatever armed it ("first set", or a disc's first "Blu-ray set" after a
+  // no-video first-play)
+  const bool txFirstSet = !m_txGateSetSeen && !m_State.streamsReady;
+  m_txGateSetSeen = true;
+  if (m_renderManager.ArmTxPictureGate(m_startGateGen, txFirstSet, "new set"))
     TxRestoreDecoderSpeed("new set");
   m_startGateOpenedAt = {};
   m_startGateSince = std::chrono::steady_clock::now();
@@ -3298,6 +3302,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
   m_txShadowSetSeen = false;
+  m_txGateSetSeen = false;
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
   m_CurrentVideo.hint.Clear();

@@ -935,6 +935,8 @@ protected:
   // 5.E2-1's per-open shadow line (log only, P's own): a set of this file was armed already,
   // and the number of opens the shadow would have engaged (T)
   bool m_txShadowSetSeen = false;
+  //! 5.E2-6: a set of this file armed CN's gate (the picture gate's candidate is the first)
+  bool m_txGateSetSeen = false;
   unsigned int m_txShadowSerial = 0;
   void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
