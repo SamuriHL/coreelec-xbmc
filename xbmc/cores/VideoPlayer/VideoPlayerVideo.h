@@ -71,6 +71,8 @@ public:
   bool IsStalled() const override { return m_stalled; }
   void SetStartHeld(bool held) override { m_startHeld = held; }
   void BeginDrain() override;
+  //! 5.E2-7 (R5): P's held predicate for its next draining close (empty: the clock's pause)
+  void SetDrainHeldHook(std::function<EDrainHeld()> hook) { m_drainHeldHook = std::move(hook); }
   void AbortDrain() override;
   bool IsRewindStalled() const override { return m_rewindStalled; }
   bool IsFlushQueued() const override { return m_flushesQueued > 0; }
@@ -168,6 +170,7 @@ protected:
   std::atomic_bool m_startHeld = false;
   CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   std::atomic_bool m_drainStarted{false};
+  std::function<EDrainHeld()> m_drainHeldHook; //!< set and called on P only
   std::atomic_bool m_drainAbort{false};
   std::atomic_bool m_drainFlushed{false}; //!< a flush is queued: the drained stream is gone
   int m_vcNoneRun = 0; //!< E1/phase 0: consecutive VC_NONE from the decoder

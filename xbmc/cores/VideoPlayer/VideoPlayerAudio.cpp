@@ -224,7 +224,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   if (bWait && !m_startGated)
   {
     // a display mode change pauses the clock mid-drain; that is not a stall
-    m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
+    if (m_drainHeldHook)
+      m_messageQueue.WaitUntilEmptyHeld(m_drainHeldHook);
+    else
+      m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
   }
 
   // send abort message to the audio queue

@@ -105,6 +105,17 @@ using namespace std::chrono_literals;
 
 namespace
 {
+//! 5.E2-7 (R5): names the caller of a draining close for P's drain hook, for its scope
+struct CTxDrainSite
+{
+  CTxDrainSite(const char*& slot, const char* site) : m_slot(slot), m_prev(slot) { slot = site; }
+  ~CTxDrainSite() { m_slot = m_prev; }
+  CTxDrainSite(const CTxDrainSite&) = delete;
+  CTxDrainSite& operator=(const CTxDrainSite&) = delete;
+  const char*& m_slot;
+  const char* m_prev;
+};
+
 // 5.E2-3: a P hook's HEAD for the shadow word's skip lines
 OUTPUT::COutputWorker::SWordHead ToWordHead(std::pair<const char*, bool> head)
 {
@@ -1451,7 +1462,10 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   }
   if (!valid)
   {
-    CloseStream(m_CurrentVideo, true);
+    {
+      CTxDrainSite txSite(m_txDrainSite, "OpenDefaultStreams");
+      CloseStream(m_CurrentVideo, true);
+    }
     m_processInfo->ResetVideoCodecInfo();
   }
 
@@ -1472,7 +1486,10 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
 
   if(!valid)
   {
-    CloseStream(m_CurrentAudio, true);
+    {
+      CTxDrainSite txSite(m_txDrainSite, "OpenDefaultStreams");
+      CloseStream(m_CurrentAudio, true);
+    }
     m_processInfo->ResetAudioCodecInfo();
   }
 
@@ -2577,14 +2594,20 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   if (drain && m_CurrentVideo.id >= 0 &&
       m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC && !m_bAbortRequest)
     m_VideoPlayerVideo->BeginDrain();
-  CloseStream(m_CurrentAudio, drain);
+  {
+    CTxDrainSite txSite(m_txDrainSite, "BdSegmentTransition");
+    CloseStream(m_CurrentAudio, drain);
+  }
   // design 4.3 (4a, debug flag): the last picture stays on screen across the
   // decoder reinit, as a reference player's non-seamless join. Not for DV
   // profile 5, whose IPT frame shows wrong without its core path.
   const bool keepFrame = m_keepFrameEnabled && m_CurrentVideo.id >= 0 && !m_bAbortRequest &&
                          m_CurrentVideo.hint.dovi.dv_profile != 5;
   aml_keep_frame_arm(keepFrame);
-  CloseStream(m_CurrentVideo, drain);
+  {
+    CTxDrainSite txSite(m_txDrainSite, "BdSegmentTransition");
+    CloseStream(m_CurrentVideo, drain);
+  }
   // the close is synchronous: an arm the decoder did not take must not reach
   // a later close (a stop blanks)
   aml_keep_frame_arm(false);
@@ -3286,7 +3309,10 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 {
   IDVDStreamPlayer* player = GetStreamPlayer(current.player);
   if (!IsValidStream(current) && (player == NULL || player->IsStalled()))
-    CloseStream(current, true);
+    {
+      CTxDrainSite txSite(m_txDrainSite, "CheckBetterStream");
+      CloseStream(current, true);
+    }
 
   if (IsBetterStream(current, stream))
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
@@ -6145,7 +6171,21 @@ void CVideoPlayer::OnExit()
       break;
   }
 
-  CloseStream(m_CurrentAudio, !m_bAbortRequest);
+  // 5.E2-7 test (transaction_exitfreeze): at a natural end, wait up to 10 s for a freeze before
+  // the closes (the driver unplugs on this line), so the OnExit hook's row is deterministic
+  m_txExitHookLogged = false;
+  if (!m_bAbortRequest && aml_transaction_loss_real() && aml_transaction_hooks().exitFreeze)
+  {
+    CLog::Log(LOGWARNING, "TXLOSS test: exit freeze armed (waiting up to 10 s for a loss)");
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!m_bAbortRequest && !m_displayLost && std::chrono::steady_clock::now() < until)
+      CThread::Sleep(50ms);
+    CLog::Log(LOGWARNING, "TXLOSS test: exit freeze {}", m_displayLost ? "taken" : "not seen");
+  }
+  {
+    CTxDrainSite txSite(m_txDrainSite, "OnExit");
+    CloseStream(m_CurrentAudio, !m_bAbortRequest);
+  }
   // after the audio's close: cleared before it, a queued packet could open the sink in the
   // old mode. The engine's flag is engine-wide, so it is cleared on every exit
   if (m_startGateShut)
@@ -6157,7 +6197,10 @@ void CVideoPlayer::OnExit()
   m_VideoPlayerAudio->SetStartGated(false);
   if (IAE* ae = CServiceBroker::GetActiveAE())
     ae->SetStartGate(false);
-  CloseStream(m_CurrentVideo, !m_bAbortRequest);
+  {
+    CTxDrainSite txSite(m_txDrainSite, "OnExit");
+    CloseStream(m_CurrentVideo, !m_bAbortRequest);
+  }
   // a picture kept at the last join, with no decoder left to replace it
   aml_drop_kept_frame("player exit");
   ReleaseAudioSessionHold();
@@ -8471,7 +8514,15 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
         (current.type == StreamType::VIDEO && current.syncState != IDVDStreamPlayer::SYNC_INSYNC) ||
         m_bAbortRequest)
       bWaitForBuffers = false;
+    // 5.E2-7 (R5, D6): a draining close on a real loss path session gets P's held predicate
+    const bool txHook = bWaitForBuffers && m_txDrainSite && aml_transaction_loss_base() &&
+                        !aml_transaction_skip("drainhook") &&
+                        (current.type == StreamType::AUDIO || current.type == StreamType::VIDEO);
+    if (txHook)
+      TxSetDrainHook(current.type, m_txDrainSite);
     player->CloseStream(bWaitForBuffers);
+    if (txHook)
+      TxSetDrainHook(current.type, nullptr);
   }
 
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
@@ -10773,6 +10824,55 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
   if (done)
     CLog::Log(LOGINFO, "RESUME done T={} e={} -> NONE ({}; speed {})", ownT, eDone, site, speed);
   return done;
+}
+
+void CVideoPlayer::TxSetDrainHook(StreamType type, const char* site)
+{
+  std::function<EDrainHeld()> hook;
+  if (site && std::string_view(site) == "OnExit")
+  {
+    // the file plays out in P's loop: only the last pictures can be held here; a real freeze
+    // ends the held wait at once (no RESUME); the exit's clear follows the closes
+    hook = [this]
+    {
+      if (m_displayLost && m_txFreezeReal.load())
+      {
+        if (!m_txExitHookLogged)
+        {
+          m_txExitHookLogged = true;
+          CLog::Log(LOGINFO, "OnExit hook ended held wait");
+        }
+        return EDrainHeld::END;
+      }
+      return m_clock.IsPaused() ? EDrainHeld::HELD : EDrainHeld::NOT_HELD;
+    };
+  }
+  else if (site)
+  {
+    // the segment closes, OpenDefaultStreams, CheckBetterStream: RESUME runs in the wait, the
+    // guard by try-lock, never a blocking wait here (errata E5)
+    const std::string where = std::string("drain:") + site;
+    hook = [this, where]
+    {
+      if (m_displayLost && m_txFreezeReal.load())
+      {
+        const uint32_t ownT = m_txWordT.load();
+        const auto word =
+            OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+        if (ownT && word.t == ownT &&
+            word.state == OUTPUT::COutputWorker::WordState::RETURNING && !word.spanOpen)
+          TxResume(where.c_str(), true);
+      }
+      return m_clock.IsPaused() ? EDrainHeld::HELD : EDrainHeld::NOT_HELD;
+    };
+  }
+  if (type == StreamType::AUDIO)
+  {
+    if (auto* audio = dynamic_cast<CVideoPlayerAudio*>(m_VideoPlayerAudio.get()))
+      audio->SetDrainHeldHook(std::move(hook));
+  }
+  else if (auto* video = dynamic_cast<CVideoPlayerVideo*>(m_VideoPlayerVideo.get()))
+    video->SetDrainHeldHook(std::move(hook));
 }
 
 void CVideoPlayer::TxFrozenPass()

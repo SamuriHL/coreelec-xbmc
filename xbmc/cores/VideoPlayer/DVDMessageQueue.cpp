@@ -405,6 +405,13 @@ unsigned CDVDMessageQueue::GetPacketCount(CDVDMsg::Message type)
 
 void CDVDMessageQueue::WaitUntilEmpty(const std::function<bool()>& consumerHeld)
 {
+  WaitUntilEmptyHeld(
+      [&consumerHeld]
+      { return consumerHeld && consumerHeld() ? EDrainHeld::HELD : EDrainHeld::NOT_HELD; });
+}
+
+void CDVDMessageQueue::WaitUntilEmptyHeld(const std::function<EDrainHeld()>& consumerHeld)
+{
   {
     std::unique_lock lock(m_section);
     m_drain = true;
@@ -453,7 +460,11 @@ void CDVDMessageQueue::WaitUntilEmpty(const std::function<bool()>& consumerHeld)
     // A consumer held by the player (paused across a display mode change)
     // is not stalled: the playout resumes when the display is back, so
     // neither the stall window nor the ceiling runs while it is held.
-    if (consumerHeld && consumerHeld() && !heldBudget.IsTimePast())
+    const EDrainHeld heldNow = consumerHeld();
+    // 5.E2-7 (R5): P's hook ends a held wait at once (OnExit on a real freeze)
+    if (heldNow == EDrainHeld::END)
+      break;
+    if (heldNow == EDrainHeld::HELD && !heldBudget.IsTimePast())
     {
       const auto heldStart = std::chrono::steady_clock::now();
       std::this_thread::sleep_for(25ms);

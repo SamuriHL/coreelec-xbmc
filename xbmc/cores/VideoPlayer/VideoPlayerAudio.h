@@ -42,6 +42,8 @@ public:
 
   bool OpenStream(CDVDStreamInfo hints) override;
   void CloseStream(bool bWaitForBuffers) override;
+  //! 5.E2-7 (R5): P's held predicate for its next draining close (empty: the clock's pause)
+  void SetDrainHeldHook(std::function<EDrainHeld()> hook) { m_drainHeldHook = std::move(hook); }
 
   void SetSpeed(int speed) override;
   void Flush(bool sync) override;
@@ -204,6 +206,7 @@ protected:
   int m_wakeFd = -1;
   bool m_padPending = false;
   std::atomic_bool m_closeDraining{false};
+  std::function<EDrainHeld()> m_drainHeldHook; //!< set and called on P only
   bool m_startOnPartial = false;
   DVDAudioFrame m_padFrame;
   std::shared_ptr<CDVDMsgGeneralSynchronize> m_pendingSync;

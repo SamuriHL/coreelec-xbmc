@@ -286,7 +286,10 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   {
     BeginDrain();
     // a display mode change pauses the clock mid-drain; that is not a stall
-    m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
+    if (m_drainHeldHook)
+      m_messageQueue.WaitUntilEmptyHeld(m_drainHeldHook);
+    else
+      m_messageQueue.WaitUntilEmpty([this] { return m_pClock->IsPaused(); });
 
     // The queue empties when the drain message is taken, while the segment's
     // last pictures are still inside the decoder: wait for the drain itself.
@@ -296,7 +299,12 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
     {
       if (m_drainAbort || m_messageQueue.ReceivedAbortRequest() || !IsRunning())
         break;
-      if (m_pClock->IsPaused() && !heldBudget.IsTimePast())
+      // 5.E2-7 (R5): P's hook (a RESUME poll, or OnExit's end of a held wait)
+      const EDrainHeld hooked = m_drainHeldHook ? m_drainHeldHook() : EDrainHeld::NOT_HELD;
+      if (hooked == EDrainHeld::END)
+        break;
+      if (m_drainHeldHook ? hooked == EDrainHeld::HELD && !heldBudget.IsTimePast()
+                          : m_pClock->IsPaused() && !heldBudget.IsTimePast())
         timer.Set(3000ms);
       else if (timer.IsTimePast())
       {

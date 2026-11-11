@@ -46,6 +46,14 @@ enum MsgQueueReturnCode
 
 #define MSGQ_IS_ERROR(c)    (c < 0)
 
+//! 5.E2-7 (R5): a draining close's held predicate with a third answer: END leaves the wait at once
+enum class EDrainHeld
+{
+  NOT_HELD,
+  HELD,
+  END,
+};
+
 class CDVDMessageQueue
 {
 public:
@@ -91,6 +99,8 @@ public:
   unsigned GetPacketCount(CDVDMsg::Message type);
   bool ReceivedAbortRequest() { return m_bAbortRequest; }
   void WaitUntilEmpty(const std::function<bool()>& consumerHeld = {});
+  //! 5.E2-7 (R5): as WaitUntilEmpty, with a tri-state held predicate (P's drain hook)
+  void WaitUntilEmptyHeld(const std::function<EDrainHeld()>& held);
 
   // non messagequeue related functions
   // Full when EITHER dimension is exhausted. The data (MB) cap alone lets

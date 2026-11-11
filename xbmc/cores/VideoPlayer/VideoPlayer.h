@@ -967,6 +967,11 @@ protected:
   //! P: the stop's or the next file's clear (D7), or the fallback under another word
   void TxClearAtEnd(const char* why);
   void TxFreezeEnded();
+  //! 5.E2-7 (R5, D6): the caller of the draining close in progress (P only); OnExit's line once
+  const char* m_txDrainSite = nullptr;
+  bool m_txExitHookLogged = false;
+  //! P: installs (site) or clears (nullptr) the held predicate of a stream player's close
+  void TxSetDrainHook(StreamType type, const char* site);
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
   bool m_startGateEnabled = false; //!< start order flag files, read at open
