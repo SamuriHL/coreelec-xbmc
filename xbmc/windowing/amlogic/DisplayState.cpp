@@ -1120,18 +1120,21 @@ void PublishDvMode(unsigned int oldMode, unsigned int mode, DvWriter writer)
     epoch = s.epoch;
   }
   const uint64_t publishes = s_dvPublishes.fetch_add(1) + 1;
+  // 5.E2-7 (D9): owed to B2-8 until its pass for this epoch (the request's epoch, max(e, 1)).
+  // Stored in the post's own section (code review M2): main takes the post under s_postMutex,
+  // so its B2-8 pass for this epoch always comes after the store
+  const bool p533 = (writer & (DV_WRITER_VS10 | DV_WRITER_VS10_FOLLOW)) && aml_transaction_on() &&
+                    !aml_transaction_skip("p533");
   {
     std::unique_lock lock(s_postMutex);
+    if (p533)
+      s_p533Owed = std::max<uint64_t>(epoch, 1);
     s_postedEpoch = epoch;
     s_postedPublishes = publishes;
     s_postedWriters |= writer;
   }
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 dvmode publish epoch={} writer={} mode={}->{} posted", epoch,
             WriterNames(writer), oldMode, mode);
-  // 5.E2-7 (D9): owed to B2-8 until its pass for this epoch (the request's epoch, max(e, 1))
-  if ((writer & (DV_WRITER_VS10 | DV_WRITER_VS10_FOLLOW)) && aml_transaction_on() &&
-      !aml_transaction_skip("p533"))
-    s_p533Owed = std::max<uint64_t>(epoch, 1);
 }
 
 void HandleOutputChanged()
@@ -1179,7 +1182,8 @@ void P533Clear(uint64_t epoch, const char* why)
   uint64_t owed = s_p533Owed.load();
   if (!owed)
     return;
-  if (epoch && owed != epoch)
+  // a pass for a newer epoch covers an older owed one (code review M2, defensive)
+  if (epoch && owed > epoch)
     return;
   if (s_p533Owed.compare_exchange_strong(owed, 0))
     CLog::Log(LOGINFO, "P533 owed epoch {} cleared ({})", owed, why);
