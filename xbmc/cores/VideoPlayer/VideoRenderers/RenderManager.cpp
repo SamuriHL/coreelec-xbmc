@@ -822,6 +822,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
   // make sure any queued frame was fully presented
   {
+    STxLog txLog;
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock(m_presentlock);
 #if defined(HAS_LIBAMCODEC)
@@ -840,7 +841,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       m_txHoldsDecoder = false;
       if (m_presentstep == PRESENT_READY)
         m_presentstep = PRESENT_IDLE;
-      CLog::Log(LOGINFO, "TXGATE configure discard set={}", m_txGateGen.load());
+      txLog.lines.push_back(StringUtils::Format("TXGATE configure discard set={}", m_txGateGen.load()));
     }
 #endif
     XbmcThreads::EndTime<> endtime(5000ms);
@@ -1583,10 +1584,12 @@ void CRenderManager::FrameMove()
 void CRenderManager::BeginFile()
 {
 #if defined(HAS_LIBAMCODEC)
+  if (aml_transaction_on())
   {
     // 5.E2-6: a next file never inherits a gate
+    STxLog txLog;
     std::unique_lock lock(m_presentlock);
-    ClearTxGateLocked("next file");
+    ClearTxGateLocked("next file", txLog);
   }
 #endif
   m_filePicturesFrom = m_picturesAdded.load();
@@ -1806,6 +1809,7 @@ void CRenderManager::UnInit()
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> captureBlit;
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
   std::vector<std::shared_ptr<CBaseRenderer>> retire;
+  STxLog txLog; // 5.E2-6: after the locks
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -1820,7 +1824,7 @@ void CRenderManager::UnInit()
       // V's configure: its wait ends, its swap is refused
       m_closed = true;
 #if defined(HAS_LIBAMCODEC)
-      ClearTxGateLocked("close");
+      ClearTxGateLocked("close", txLog);
 #endif
       m_presentevent.notifyAll();
       retire.swap(m_retire);
@@ -1878,6 +1882,7 @@ void CRenderManager::UnInit()
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
 {
+  STxLog txLog; // 5.E2-6: after the locks
   // 5.V2-4: V writes the renderer under the RM locks
   if (V24On())
   {
@@ -1996,16 +2001,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
           m_free.push_back(i);
       }
 #if defined(HAS_LIBAMCODEC)
-      // 5.E2-6 (r1 M1): a flush before the sync keeps the gate shut; its picture is re-accepted
-      if (m_txGate.engaged && m_txGate.shut && m_txGate.accepted)
-      {
-        m_txGate.accepted = false;
-        m_txGate.prerollShown = false;
-        m_txGate.prerollMismatchLogged = false;
-        m_txHoldsDecoder = false;
-        CLog::Log(LOGINFO, "TXGATE flush set={}: the start picture is re-accepted",
-                  m_txGateGen.load());
-      }
+      // 5.E2-6 (r1 M1, review L3): a flush whose queue is gone re-accepts the start picture
+      if (!kept)
+        TxReacceptLocked("flush", txLog);
 #endif
       // a worker's start picture is gone with the queue
       if (m_forceGen >= 0)
@@ -3492,11 +3490,41 @@ void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const Dec
 
 #if defined(HAS_LIBAMCODEC)
 // 5.E2-6: C's picture side of CN's start gate (docs/phase5_e2_6_impl.md)
-void CRenderManager::ClearTxGateLocked(const char* why)
+CRenderManager::STxLog::~STxLog()
+{
+  for (const std::string& line : lines)
+    CLog::Log(line.find("refused") != std::string::npos ? LOGERROR
+              : line.find("lost") != std::string::npos || line.find("skipped") != std::string::npos
+                  ? LOGWARNING
+                  : LOGINFO,
+              "{}", line);
+}
+
+void CRenderManager::TxLogLocked(std::string line)
+{
+  if (m_txLogSink)
+    m_txLogSink->push_back(std::move(line));
+  else
+    CLog::Log(LOGINFO, "{}", line);
+}
+
+void CRenderManager::TxReacceptLocked(const char* why, STxLog& log)
+{
+  if (!(m_txGate.engaged && m_txGate.shut && m_txGate.accepted))
+    return;
+  m_txGate.accepted = false;
+  m_txGate.prerollShown = false;
+  m_txGate.prerollMismatchLogged = false;
+  m_txHoldsDecoder = false;
+  log.lines.push_back(StringUtils::Format("TXGATE {} set={}: the start picture is re-accepted", why,
+                                          m_txGateGen.load()));
+}
+
+void CRenderManager::ClearTxGateLocked(const char* why, STxLog& log)
 {
   if (m_txGate.engaged || m_txGate.candidate)
-    CLog::Log(LOGINFO, "TXGATE cleared set={} ({}{})", m_txGateGen.load(), why,
-              m_txGate.engaged && m_txGate.shut ? ", shut" : "");
+    log.lines.push_back(StringUtils::Format("TXGATE cleared set={} ({}{})", m_txGateGen.load(), why,
+                                            m_txGate.engaged && m_txGate.shut ? ", shut" : ""));
   m_txGate = {};
   m_txGateGen = 0;
   m_txHoldsDecoder = false;
@@ -3509,16 +3537,17 @@ bool CRenderManager::ArmTxPictureGate(unsigned int gen, bool candidate, const ch
 {
   if (!aml_transaction_on())
     return false;
+  STxLog txLog;
   std::unique_lock lock(m_presentlock);
   // r1 H4: every arm clears an older gate first, so a later (legacy) set is never blocked
   const bool held = m_txGate.engaged && m_txGate.shut && m_txGate.accepted;
   if (m_txGate.engaged || m_txGate.candidate)
-    ClearTxGateLocked(why);
+    ClearTxGateLocked(why, txLog);
   if (candidate)
   {
     m_txGateGen = gen;
     m_txGate.candidate = true;
-    CLog::Log(LOGINFO, "TXGATE candidate set={}", gen);
+    txLog.lines.push_back(StringUtils::Format("TXGATE candidate set={}", gen));
   }
   return held;
 }
@@ -3527,13 +3556,15 @@ bool CRenderManager::OpenTxPictureGate(const char* why)
 {
   if (!aml_transaction_on())
     return false;
+  STxLog txLog;
   std::unique_lock lock(m_presentlock);
   if (m_txGate.candidate)
   {
     // opened before its first picture: never engaged
-    CLog::Log(LOGINFO, "TXGATE legacy set={} (opened before the first picture: {})",
-              m_txGateGen.load(), why);
+    txLog.lines.push_back(StringUtils::Format(
+        "TXGATE legacy set={} (opened before the first picture: {})", m_txGateGen.load(), why));
     m_txGate.candidate = false;
+    m_txGateGen = 0;
     return false;
   }
   if (!m_txGate.engaged || !m_txGate.shut)
@@ -3545,8 +3576,8 @@ bool CRenderManager::OpenTxPictureGate(const char* why)
   // D8: with no pre-roll, the first selection after the open is the first release
   if (!m_txGate.prerollShown)
     m_txFirstRelease = true;
-  CLog::Log(LOGINFO, "TXGATE opened set={} ({}){}", m_txGateGen.load(), why,
-            m_txGate.prerollShown ? "" : ", no pre-roll shown");
+  txLog.lines.push_back(StringUtils::Format("TXGATE opened set={} ({}){}", m_txGateGen.load(), why,
+                                            m_txGate.prerollShown ? "" : ", no pre-roll shown"));
   // the queued pictures are selectable again
   if (!m_queued.empty() && m_presentstep == PRESENT_IDLE)
     m_presentstep = PRESENT_READY;
@@ -3622,6 +3653,8 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
                                      OVERLAY::FrameOverlays* overlays,
                                      bool* txAccepted)
 {
+  // 5.E2-6: written after the lock (review L5)
+  STxLog txLog;
   // the slot's previous overlays are freed after the lock
   OVERLAY::FrameOverlays dropped;
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
@@ -3730,12 +3763,17 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
     else if (!GeometryTickSession())
       legacy = "no geometrytick session";
     if (legacy)
-      CLog::Log(LOGINFO, "TXGATE legacy set={} ({})", m_txGateGen.load(), legacy);
+    {
+      txLog.lines.push_back(
+          StringUtils::Format("TXGATE legacy set={} ({})", m_txGateGen.load(), legacy));
+      // review L4: a legacy set leaves no gate behind
+      m_txGateGen = 0;
+    }
     else
     {
       m_txGate.engaged = true;
       m_txGate.shut = true;
-      CLog::Log(LOGINFO, "TXGATE engaged set={}", m_txGateGen.load());
+      txLog.lines.push_back(StringUtils::Format("TXGATE engaged set={}", m_txGateGen.load()));
     }
   }
   // D2/D4, r2 M1: while engaged and shut no force passes; the first picture queued is the
@@ -3748,9 +3786,10 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
     m_txHoldsDecoder = true;
     if (txAccepted)
       *txAccepted = true;
-    CLog::Log(LOGINFO, "TXGATE accepted set={} pts {:.3f} (C {}, epoch {})", m_txGateGen.load(),
-              picture.pts / DVD_TIME_BASE, CPresentationCoordinator::PublishedStateName(),
-              aml_presenter_epoch());
+    txLog.lines.push_back(StringUtils::Format(
+        "TXGATE accepted set={} pts {:.3f} (C {}, epoch {})", m_txGateGen.load(),
+        picture.pts / DVD_TIME_BASE, CPresentationCoordinator::PublishedStateName(),
+        aml_presenter_epoch()));
   }
   if (txShut)
   {
@@ -4023,8 +4062,8 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
     if (m_forceNext && !m_txGate.forceRefusedLogged)
     {
       m_txGate.forceRefusedLogged = true;
-      CLog::Log(LOGERROR, "TXGATE forced picture refused set={} (force gen {})",
-                m_txGateGen.load(), m_forceGen);
+      TxLogLocked(StringUtils::Format("TXGATE forced picture refused set={} (force gen {})",
+                                      m_txGateGen.load(), m_forceGen));
     }
     if (m_txPrerollDue && m_txGate.accepted && !m_txGate.prerollShown)
     {
@@ -4034,14 +4073,16 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
         if (!m_txGate.prerollMismatchLogged)
         {
           m_txGate.prerollMismatchLogged = true;
-          CLog::Log(LOGWARNING, "TXGATE pre-roll skipped set={}: queue head pts {:.3f} is not the "
-                                "accepted {:.3f}",
-                    m_txGateGen.load(), m_Queue[idx].pts / DVD_TIME_BASE,
-                    m_txGate.acceptedPts / DVD_TIME_BASE);
+          TxLogLocked(StringUtils::Format(
+              "TXGATE pre-roll skipped set={}: queue head pts {:.3f} is not the accepted {:.3f}",
+              m_txGateGen.load(), m_Queue[idx].pts / DVD_TIME_BASE,
+              m_txGate.acceptedPts / DVD_TIME_BASE));
         }
         return;
       }
       m_txGate.prerollShown = true;
+      // review L6: the epoch of the tick that selects it, whatever releases it
+      m_txGate.prerollEpoch = m_txTickEpoch;
       m_txPrerollThisTick = true;
       m_txFirstRelease = true;
       m_presentstep = PRESENT_FLIP;
@@ -4486,8 +4527,14 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
 
 void CRenderManager::DiscardBuffer()
 {
+  STxLog txLog; // 5.E2-6: after the lock
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock2(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-6 (review M1): a seek, a BD jump, VC_FLUSHED/VC_REOPEN discard here: the start picture
+  // is re-accepted
+  TxReacceptLocked("discard", txLog);
+#endif
 
   while(!m_queued.empty())
   {
@@ -4955,6 +5002,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     }
   } refusedLog;
 
+  // 5.E2-6: TXGATE lines after the locks (review L5)
+  STxLog txLog;
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   diagLock = diagClock::now();
@@ -5124,10 +5173,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       tick.epoch != m_txGate.prerollEpoch && !m_txGate.prerollLostLogged)
   {
     m_txGate.prerollLostLogged = true;
-    CLog::Log(LOGWARNING,
-              "TXGATE pre-roll lost set={} (epoch {} -> {}), re-anchor owed to E2-8",
-              m_txGateGen.load(), m_txGate.prerollEpoch, tick.epoch);
+    txLog.lines.push_back(StringUtils::Format(
+        "TXGATE pre-roll lost set={} (epoch {} -> {}), re-anchor owed to E2-8", m_txGateGen.load(),
+        m_txGate.prerollEpoch, tick.epoch));
   }
+  m_txTickEpoch = tick.epoch;
 #endif
 
   // the frame released at the previous vsync is on screen now
@@ -5148,8 +5198,14 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 
   const int skipped = m_QueueSkip;
   const bool forced = m_forceNext;
+#if defined(HAS_LIBAMCODEC)
+  m_txLogSink = &txLog.lines;
+#endif
   if (m_presentstep == PRESENT_READY)
     PrepareNextRender(tick.vblankNs, timing);
+#if defined(HAS_LIBAMCODEC)
+  m_txLogSink = nullptr;
+#endif
   diagPrepare = diagClock::now();
   result.skipped = std::max(0, m_QueueSkip - skipped);
 
@@ -5210,17 +5266,17 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       static_cast<CRendererAML*>(m_pRenderer.get())
           ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown, startPicture);
       if (m_txPrerollThisTick)
-      {
-        m_txGate.prerollEpoch = tick.epoch;
-        CLog::Log(LOGINFO, "TXGATE pre-roll shown set={} epoch {} pts {:.3f} shown {}",
-                  m_txGateGen.load(), tick.epoch, result.pts / DVD_TIME_BASE, result.qbufShown);
-      }
+        txLog.lines.push_back(StringUtils::Format(
+            "TXGATE pre-roll shown set={} epoch {} pts {:.3f} vblank {} shown {}",
+            m_txGateGen.load(), tick.epoch, result.pts / DVD_TIME_BASE, tick.vblankNs,
+            result.qbufShown));
       else if (m_txGate.logFirstAfterOpen)
       {
         m_txGate.logFirstAfterOpen = false;
-        CLog::Log(LOGINFO, "TXGATE first after open set={} pts {:.3f} vblank {} shown {}{}",
-                  m_txGateGen.load(), result.pts / DVD_TIME_BASE, tick.vblankNs,
-                  result.qbufShown, startPicture ? " (first release)" : "");
+        txLog.lines.push_back(StringUtils::Format(
+            "TXGATE first after open set={} pts {:.3f} vblank {} shown {}{}", m_txGateGen.load(),
+            result.pts / DVD_TIME_BASE, tick.vblankNs, result.qbufShown,
+            startPicture ? " (first release)" : ""));
       }
     }
     else

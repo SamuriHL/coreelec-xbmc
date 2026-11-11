@@ -724,8 +724,21 @@ protected:
   bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section
   bool m_txPrerollThisTick = false; //!< C: this tick's flip is the pre-roll
   bool m_txFirstRelease = false; //!< C: the next release is the engaged open's first (no drop)
+  //! 5.E2-6 (review L5): TXGATE lines written after the locks are released (a slow log write
+  //! never holds C or V on m_presentlock)
+  struct STxLog
+  {
+    std::vector<std::string> lines;
+    ~STxLog();
+  };
   //! m_presentlock held: resets the gate (logged with why when it was engaged)
-  void ClearTxGateLocked(const char* why);
+  void ClearTxGateLocked(const char* why, STxLog& log);
+  //! m_presentlock held: a flush or discard before the start: the start picture is re-accepted
+  void TxReacceptLocked(const char* why, STxLog& log);
+  //! m_presentlock held: PrepareNextRender's lines go to PresentTick's deferred log
+  void TxLogLocked(std::string line);
+  std::vector<std::string>* m_txLogSink = nullptr;
+  unsigned int m_txTickEpoch = 0; //!< C: the tick's epoch, for PrepareNextRender's pre-roll
   std::atomic<int> m_forceDoneGen{-1};
   int m_workerWakeFd = -1; // m_presentlock
   int m_presentsource = -1;

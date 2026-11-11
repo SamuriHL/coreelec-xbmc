@@ -156,10 +156,12 @@ protected:
   //! the speed the decoder is given: the stream's, or PAUSE in a display hold
   int CodecSpeed() const;
   //! 5.E2-6: an engaged gate accepted the start picture (D3, D5, D10)
-  void TxStartPictureAccepted(const char* why);
+  void TxStartPictureAccepted(double pts, const char* why);
   //! 5.E2-6 (r2 M1): a re-accept outside SYNC_STARTING: re-sent before the sync, logged after
   void ReportTxReaccept(const VideoPicture& picture);
   bool m_txAcceptedNow = false; //!< V: the picture just output was the accepted start picture
+  double m_txAcceptedPts = DVD_NOPTS_VALUE; //!< its pts as RM accepted it
+  bool m_txDecoderHeld = false; //!< V applied the gate's decoder hold
   bool m_codecSpeedFix = false; //!< 5.C, latched at OpenStream (codecspeed_off)
   int m_speed;
   std::atomic_bool m_stalled = false;

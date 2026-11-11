@@ -6838,7 +6838,12 @@ void CVideoPlayer::HandleMessages()
         m_CurrentAudio.starttime = msg.timestamp;
         m_CurrentAudio.firststarttime = msg.firstTimestamp;
       }
-      if (msg.player == VideoPlayer_VIDEO)
+      // 5.E2-6 (review L2): a re-accept's re-send after the video synced would re-sync: ignored
+      if (msg.player == VideoPlayer_VIDEO && msg.txReaccept &&
+          m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC)
+        CLog::Log(LOGWARNING, "TXGATE re-accept's started ignored: video already synced "
+                              "(re-anchor owed to E2-8)");
+      else if (msg.player == VideoPlayer_VIDEO)
       {
         m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
         m_CurrentVideo.cachetime = msg.cachetime;
@@ -8404,8 +8409,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
   // 5.E2-6 (r1 M6, r2 L3): a stop or next file opens the picture gate before V's drain
-  if (current.type == StreamType::VIDEO)
-    m_renderManager.OpenTxPictureGate("close");
+  if (current.type == StreamType::VIDEO && m_renderManager.OpenTxPictureGate("close"))
+    TxRestoreDecoderSpeed("close");
 
   if(bWaitForBuffers)
     SetCaching(CACHESTATE_DONE);

@@ -100,6 +100,8 @@ struct SStartMsg
   double cachetotal;
   // The worker is still starting and can send an updated timestamp.
   bool timestampPending{false};
+  // 5.E2-6: a re-accepted start picture's re-send; P ignores it once video has synced
+  bool txReaccept{false};
   // audio: the first frame it queued for this start (timestamp is the last)
   double firstTimestamp{DVD_NOPTS_VALUE};
 };

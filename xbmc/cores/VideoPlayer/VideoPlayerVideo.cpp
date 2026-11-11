@@ -699,6 +699,14 @@ void CVideoPlayerVideo::Process()
       m_speed = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
       if (m_pVideoCodec)
         m_pVideoCodec->SetSpeed(CodecSpeed());
+      // 5.E2-6 (review L6): the gate's decoder hold ends with the speed START sends
+      // (a pause queued before START, processed after it, is not the resume)
+      if (m_txDecoderHeld && !m_renderManager.TxHoldsDecoder() &&
+          CodecSpeed() != DVD_PLAYSPEED_PAUSE)
+      {
+        m_txDecoderHeld = false;
+        CLog::Log(LOGINFO, "TXGATE codec speed resume (speed {})", m_speed);
+      }
 
       m_droppingStats.Reset();
     }
@@ -1106,6 +1114,7 @@ void CVideoPlayerVideo::WorkerCancelStart()
     m_renderManager.CancelForce(m_startPendingGen);
   m_startPendingGen = -1;
   m_startPendingMsg.reset();
+  m_txAcceptedNow = false; // 5.E2-6 (review L1)
 }
 
 void CVideoPlayerVideo::WorkerDrainStep(double& frametime, double& pts)
@@ -1466,10 +1475,12 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
       msg.timestamp = hasTimestamp ? (pts + m_renderManager.GetDelay() * 1000 + diCompensation) : DVD_NOPTS_VALUE;
       // 5.E2-6 (D5): an engaged open's start is the accepted picture's own pts, not the guess
-      if (std::exchange(m_txAcceptedNow, false) && hasTimestamp)
+      if (std::exchange(m_txAcceptedNow, false) && hasTimestamp &&
+          m_txAcceptedPts != DVD_NOPTS_VALUE)
       {
+        // review L1: the accepted picture's pts as RM took it (a buffer retry outputs a later one)
         const double today = msg.timestamp;
-        msg.timestamp = m_picture.pts + m_renderManager.GetDelay() * 1000 + diCompensation;
+        msg.timestamp = m_txAcceptedPts + m_renderManager.GetDelay() * 1000 + diCompensation;
         CLog::Log(LOGINFO, "TXGATE started at {:.3f} (today's value {:.3f})",
                   msg.timestamp / DVD_TIME_BASE, today / DVD_TIME_BASE);
       }
@@ -1505,9 +1516,11 @@ int CVideoPlayerVideo::CodecSpeed() const
   return m_speed;
 }
 
-void CVideoPlayerVideo::TxStartPictureAccepted(const char* why)
+void CVideoPlayerVideo::TxStartPictureAccepted(double pts, const char* why)
 {
   m_txAcceptedNow = true;
+  m_txAcceptedPts = pts;
+  m_txDecoderHeld = true;
   m_startPendingGen = -1;
   if (m_pVideoCodec)
   {
@@ -1519,6 +1532,7 @@ void CVideoPlayerVideo::TxStartPictureAccepted(const char* why)
 
 void CVideoPlayerVideo::ReportTxReaccept(const VideoPicture& picture)
 {
+  m_txDecoderHeld = true;
   if (m_pVideoCodec)
     m_pVideoCodec->SetSpeed(CodecSpeed());
   // r2 M3: after V took its RESYNC a re-send would make P re-sync: logged, E2-8 re-anchors
@@ -1532,9 +1546,15 @@ void CVideoPlayerVideo::ReportTxReaccept(const VideoPicture& picture)
   msg.player = VideoPlayer_VIDEO;
   msg.cachetime = DVD_MSEC_TO_TIME(50);
   msg.cachetotal = DVD_MSEC_TO_TIME(100);
+  // review L2: with the DI term the first send has; P ignores it if its video has synced
+  double diCompensation = 0;
+  if (m_processInfo.GetVideoInterlaced() && m_processInfo.IsVideoHwDecoder() &&
+      CSysfsPath{"/sys/class/deinterlace/di0/frame_format"}.Exists())
+    diCompensation = 12 * DVD_TIME_BASE / m_fFrameRate;
   msg.timestamp = picture.pts != DVD_NOPTS_VALUE
-                      ? picture.pts + m_renderManager.GetDelay() * 1000
+                      ? picture.pts + m_renderManager.GetDelay() * 1000 + diCompensation
                       : DVD_NOPTS_VALUE;
+  msg.txReaccept = true;
   CLog::Log(LOGINFO, "TXGATE re-accept before the sync: started re-sent at {:.3f}",
             msg.timestamp / DVD_TIME_BASE);
   m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
@@ -1853,7 +1873,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     // 5.E2-6 (D3): an engaged gate took no force; PLAYER_STARTED goes now, with the accepted
     // picture's own pts (ProcessDecoderOutput), and the decoder holds (D10)
     if (pictureAdded && txAccepted)
-      TxStartPictureAccepted("start picture");
+      TxStartPictureAccepted(pPicture->pts, "start picture");
     else if (pictureAdded)
     {
       m_startPendingGen = gen;
