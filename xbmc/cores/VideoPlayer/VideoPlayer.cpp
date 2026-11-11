@@ -953,6 +953,14 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // codec thread where g_application.CurrentFile() is not yet set.
   aml_dv_detect_set_file(file.GetPath());
   m_testReopenDone = false;
+  // 5.E2-5 (shadow): DECIDE's GUI-side inputs as they stand at the open (main publishes; off
+  // main the last publish stands), kept for the start's ResolveOutput
+  if (aml_transaction_shadow_on())
+  {
+    if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+      DISPLAYSTATE::PublishDecideInputs("open", true);
+    m_decideAtOpen = std::make_unique<DISPLAYSTATE::DecideInputs>(DISPLAYSTATE::GetDecideInputs());
+  }
 
   // real_player: a start is held until the output mode is final (disc session
   // design 3); the debug flag turns it off for A/B runs
@@ -2904,6 +2912,15 @@ void CVideoPlayer::SampleWord()
             OUTPUT::COutputWorker::WordText(value));
 }
 
+// 5.E2-5 (shadow): P's ResolveOutput for the CN set (armed: CN's fullscreen predicate held),
+// from the inputs main published (the root as it stood at the open) and RM's own decision inputs
+void CVideoPlayer::DecideShadow()
+{
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  const bool rootAtOpen = m_decideAtOpen ? m_decideAtOpen->fullScreenRoot : latest.fullScreenRoot;
+  m_renderManager.DecideShadowPlayer(m_startGateGen, latest, rootAtOpen, true);
+}
+
 void CVideoPlayer::CheckStartGate()
 {
   if (!m_startGateShut)
@@ -2911,6 +2928,13 @@ void CVideoPlayer::CheckStartGate()
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
   const State state = m_renderManager.GetModeFirstState(m_startGateGen);
+  // 5.E2-5 (shadow): DECIDE's ResolveOutput on the set's first configure
+  if (state != State::UNCONFIGURED && m_decideShadowGen != m_startGateGen &&
+      aml_transaction_shadow_on())
+  {
+    m_decideShadowGen = m_startGateGen;
+    DecideShadow();
+  }
   // the session's fullscreen video window from its first picture, as the first commit
   // posts it ungated: else the GUI stays up through the mode set and its settle (so also
   // while lost). Once it is active, the commit's own switch does nothing.

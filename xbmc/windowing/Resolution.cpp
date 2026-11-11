@@ -113,7 +113,7 @@ const RESOLUTION_INFO& ResolutionInputs::Info(RESOLUTION res) const
 }
 
 RESOLUTION CResolutionUtils::ChooseBestResolution(
-    const ResolutionInputs& in, float fps, int width, int height, bool is3D)
+    const ResolutionInputs& in, float fps, int width, int height, bool is3D, bool log)
 {
   RESOLUTION res = in.videoResolution;
   float weight = 0.0f;
@@ -126,8 +126,9 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(
     }
   }
 
-  CLog::Log(LOGINFO, "Display resolution ADJUST : {} ({}) (weight: {:.3f})", in.Info(res).strMode,
-            res, weight);
+  if (log)
+    CLog::Log(LOGINFO, "Display resolution ADJUST : {} ({}) (weight: {:.3f})", in.Info(res).strMode,
+              res, weight);
   return res;
 }
 

@@ -19,6 +19,8 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/StereoscopicsManager.h"
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
@@ -1207,6 +1209,85 @@ void LogCounters()
               c.field, n[MATCH], n[DIFF], n[SKIPPED], n[WINDOW_SET], n[WINDOW_RESTORE],
               n[FRAC_HELD], n[FAIL]);
   }
+}
+
+
+// 5.E2-5 (shadow): DECIDE's GUI-side inputs
+namespace
+{
+std::mutex s_decideMutex;
+DecideInputs s_decide;
+std::string s_decideKey;
+std::chrono::steady_clock::time_point s_decideTickAt;
+
+// what makes two takes the same: every input the choice reads, as text
+std::string DecideKey(const DecideInputs& d)
+{
+  std::string key = StringUtils::Format(
+      "v{} d{} s{} n{} w{} a{} f{}{}{} o{} fs{}{}{} u{}", static_cast<int>(d.res.videoResolution),
+      static_cast<int>(d.res.desktopResolution), static_cast<int>(d.res.stereoMode),
+      d.res.resolutionInfoSize, d.res.whitelist.size(), d.res.allowed.size(),
+      d.res.doubleRefreshRate ? 1 : 0, d.res.wholeNumber ? 1 : 0, d.res.pulldown ? 1 : 0,
+      d.res.overrides.size(), d.fullScreenVideo ? 1 : 0, d.fullScreenRoot ? 1 : 0,
+      d.calibrating ? 1 : 0, static_cast<int>(d.userStereo));
+  for (const RESOLUTION r : d.res.whitelist)
+    key += StringUtils::Format(",{}", static_cast<int>(r));
+  for (const auto& [index, info] : d.res.infos)
+    key += StringUtils::Format(";{}:{}x{}@{:.3f}/{}", index, info.iScreenWidth, info.iScreenHeight,
+                               info.fRefreshRate, info.dwFlags);
+  return key;
+}
+} // namespace
+
+void PublishDecideInputs(const char* why, bool force)
+{
+  if (!aml_displaystate_on() || !aml_transaction_shadow_on())
+    return;
+  // main only: GC, the display settings, the settings and the GUI's stereo manager
+  DecideInputs d;
+  d.res = ResolutionInputs::Take();
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  d.fullScreenVideo = gfx.IsFullScreenVideo();
+  d.fullScreenRoot = gfx.IsFullScreenRoot();
+  d.calibrating = gfx.IsCalibrating();
+  if (auto* gui = CServiceBroker::GetGUI())
+    d.userStereo = gui->GetStereoscopicsManager().GetStereoModeByUser();
+  d.at = std::chrono::steady_clock::now();
+  std::string key = DecideKey(d);
+  uint64_t seq;
+  {
+    std::unique_lock lock(s_decideMutex);
+    if (!force && s_decide.seq && key == s_decideKey)
+      return;
+    d.seq = s_decide.seq + 1;
+    seq = d.seq;
+    s_decide = std::move(d);
+    s_decideKey = std::move(key);
+  }
+  // logged after the lock: P's read never waits on a log write
+  const DecideInputs& p = s_decide; // main is the only writer
+  CLog::Log(LOGINFO,
+            "DECIDEINPUTS seq={} ({}): video {} desktop {} stereo {} table {} whitelist {} "
+            "fullscreen video {} root {} calibrating {} user 3D {}",
+            seq, why, static_cast<int>(p.res.videoResolution),
+            static_cast<int>(p.res.desktopResolution), static_cast<int>(p.res.stereoMode),
+            p.res.resolutionInfoSize, p.res.whitelist.size(), p.fullScreenVideo,
+            p.fullScreenRoot, p.calibrating, static_cast<int>(p.userStereo));
+}
+
+void PublishDecideInputsTick()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - s_decideTickAt < std::chrono::milliseconds(250))
+    return;
+  s_decideTickAt = now;
+  PublishDecideInputs("pump");
+}
+
+DecideInputs GetDecideInputs()
+{
+  std::unique_lock lock(s_decideMutex);
+  return s_decide;
 }
 
 } // namespace DISPLAYSTATE

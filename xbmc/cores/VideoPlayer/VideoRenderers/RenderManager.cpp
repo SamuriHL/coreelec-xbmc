@@ -2888,6 +2888,16 @@ void CRenderManager::TagModeFirstConfigure()
   m_modeFirstCfgGen = m_modeFirstGen.load();
   CLog::Log(LOGINFO, "CRenderManager - start gate: set {} configured, {}", m_modeFirstGen.load(),
             m_bTriggerUpdateResolution ? "mode decision due" : "no mode decision due");
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-5 (shadow): main makes no decision for this set
+  if (!m_bTriggerUpdateResolution && aml_transaction_shadow_on())
+  {
+    DecideSide mainSide;
+    mainSide.why = "no mode decision due";
+    mainSide.hdr = static_cast<int>(m_picture.hdrType);
+    DecideShadowRecord(m_modeFirstGen.load(), false, mainSide);
+  }
+#endif
 }
 
 // m_statelock held; gen is the gated set whose configure the decision consumed, or 0
@@ -3068,6 +3078,21 @@ void CRenderManager::UpdateResolution()
             CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm consumed at {:.3f} fps: {}", fps,
                       fracReclock ? "may re-clock"
                                   : (held ? "menu hold, no re-clock" : "refresh switching off"));
+#if defined(HAS_LIBAMCODEC)
+          // 5.E2-5 (shadow): main's decision for a CN set, against P's ResolveOutput
+          if (modeFirstGen && aml_transaction_shadow_on())
+          {
+            DecideSide mainSide;
+            mainSide.decides = true;
+            mainSide.res = res;
+            mainSide.mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(res).strMode;
+            mainSide.frac = fracReclock;
+            mainSide.filmStart = m_startHeld || m_modeFirstGate;
+            mainSide.hdr = static_cast<int>(hdrType);
+            mainSide.note = !mayChooseMode ? "refresh switching off" : held ? "disc hold" : "chosen";
+            DecideShadowRecord(modeFirstGen, false, mainSide);
+          }
+#endif
           CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(hdrType);
           // the tweak before the mode set: with no refresh-change delay the
           // display reset lands the audio inside it, and lands the new tweak
@@ -3134,6 +3159,19 @@ void CRenderManager::UpdateResolution()
           m_reclockArmedAt = std::chrono::steady_clock::now();
           CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm kept for the stereo choice");
         }
+#if defined(HAS_LIBAMCODEC)
+        // 5.E2-5 (shadow): no decision: the set waits for the user's 3D choice
+        if (modeFirstGen && aml_transaction_shadow_on() && !stereoMode.empty() &&
+            playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
+            user_stereo_mode == RenderStereoMode::UNDEFINED)
+        {
+          DecideSide mainSide;
+          mainSide.why = "3D ask";
+          mainSide.ask = true;
+          mainSide.hdr = static_cast<int>(hdrType);
+          DecideShadowRecord(modeFirstGen, false, mainSide);
+        }
+#endif
         // after the mode set: a real change has already run OnLostDisplay
 #if defined(HAS_LIBAMCODEC)
         if (outputDrive)
@@ -3181,6 +3219,183 @@ void CRenderManager::UpdateResolution()
     }
   }
 }
+
+#if defined(HAS_LIBAMCODEC)
+// 5.E2-5 (shadow): DECIDE's ResolveOutput on P, against main's decision
+namespace
+{
+// ChooseHeldResolution from inputs taken earlier, with no side effect (the anchor is read, not
+// set)
+RESOLUTION HeldShadow(
+    const ResolutionInputs& in, float fps, RESOLUTION incumbent, bool is3D, int width, int height)
+{
+  if (fps <= 0.0f)
+    return incumbent;
+  if (!aml_disc_mode_anchored())
+  {
+    if (width <= 0 || height <= 0)
+      return incumbent;
+    return CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, false);
+  }
+  const RESOLUTION_INFO& cur = in.Info(incumbent);
+  const RESOLUTION best = CResolutionUtils::ChooseBestResolution(in, fps, cur.iScreenWidth,
+                                                                 cur.iScreenHeight, is3D, false);
+  const RESOLUTION_INFO& bestInfo = in.Info(best);
+  if (bestInfo.iScreenWidth == cur.iScreenWidth && bestInfo.iScreenHeight == cur.iScreenHeight)
+    return best;
+  return incumbent;
+}
+
+std::string DecideSideText(const CRenderManager::DecideSide& side)
+{
+  if (!side.decides)
+    return StringUtils::Format("none: {} (ask {}, hdr {}){}{}", side.why, side.ask, side.hdr,
+                               side.note.empty() ? "" : " ", side.note);
+  return StringUtils::Format("mode {} {} change {} frac {} film {} hdr {} ({})",
+                             static_cast<int>(side.res), side.mode, side.change, side.frac,
+                             side.filmStart, side.hdr, side.note);
+}
+} // namespace
+
+void CRenderManager::DecideShadowPlayer(unsigned int gen,
+                                        const DISPLAYSTATE::DecideInputs& latest,
+                                        bool rootAtOpen,
+                                        bool cnArmed)
+{
+  // RM's own decision inputs, as main's pass reads them (under m_statelock)
+  float fps;
+  int width, height;
+  std::string stereoMode;
+  StreamHdrType hdrType;
+  bool armed;
+  double armAgeS;
+  {
+    std::unique_lock lock(m_statelock);
+    fps = m_fps;
+    width = m_picture.iWidth;
+    height = m_picture.iHeight;
+    stereoMode = m_picture.stereoMode;
+    hdrType = m_picture.hdrType;
+    armed = m_reclockArmed;
+    armAgeS = armed ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                    m_reclockArmedAt)
+                          .count()
+                    : 0.0;
+  }
+  DecideSide p;
+  p.hdr = static_cast<int>(hdrType);
+  // a CN set's start is held for its decision: the request's film-start origin
+  p.filmStart = cnArmed;
+  if (!latest.seq)
+  {
+    p.why = "no inputs published";
+    DecideShadowRecord(gen, true, p);
+    return;
+  }
+  const auto& mirror = OUTPUT::CSettingsMirror::Get();
+  const int playbackMode = mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE);
+  p.ask = !stereoMode.empty() && playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
+          latest.userStereo == RenderStereoMode::UNDEFINED;
+  const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - latest.at)
+                       .count();
+  p.note = StringUtils::Format("inputs seq {} age {} ms, root at open {}, arm {}{}", latest.seq,
+                               age, rootAtOpen, armed,
+                               armed ? StringUtils::Format(" {:.1f} s", armAgeS) : "");
+  if (!cnArmed || !rootAtOpen)
+  {
+    p.why = "not fullscreen";
+    DecideShadowRecord(gen, true, p);
+    return;
+  }
+  if (p.ask)
+  {
+    p.why = "3D ask";
+    DecideShadowRecord(gen, true, p);
+    return;
+  }
+  // today's UpdateResolution rules: adjustrefreshrate OFF keeps the GUI's mode; the disc mode
+  // hold; the re-clock arm's 12 s expiry
+  const bool mayChooseMode =
+      mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF &&
+      fps > 0.0f;
+  const bool held = mayChooseMode && aml_disc_mode_hold();
+  const bool is3D = !stereoMode.empty();
+  const ResolutionInputs& in = latest.res;
+  RESOLUTION res;
+  if (!mayChooseMode)
+    res = in.videoResolution;
+  else if (aml_disc_mode_hold())
+    res = HeldShadow(in, fps, in.videoResolution, is3D, width, height);
+  else
+    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, false);
+  p.decides = true;
+  p.res = res;
+  p.mode = in.Info(res).strMode;
+  p.change = res != in.videoResolution;
+  p.frac = armed && armAgeS <= 12.0 && mayChooseMode && !held;
+  DecideShadowRecord(gen, true, p);
+}
+
+void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side)
+{
+  std::optional<DecideSide> other;
+  {
+    std::unique_lock lock(m_decideMutex);
+    if (m_decideGen != gen)
+    {
+      m_decideGen = gen;
+      m_decideP.reset();
+      m_decideM.reset();
+    }
+    // a side's first record counts (a retry repeats main's)
+    std::optional<DecideSide>& slot = player ? m_decideP : m_decideM;
+    if (slot)
+      return;
+    slot = side;
+    other = player ? m_decideM : m_decideP;
+  }
+  CLog::Log(LOGINFO, "DECIDE shadow set={} {}: {}", gen, player ? "P" : "main",
+            DecideSideText(side));
+  if (!other)
+    return;
+  const DecideSide& p = player ? side : *other;
+  const DecideSide& m = player ? *other : side;
+  std::vector<std::string> diffs;
+  const std::string_view why(m.why);
+  if (m.decides)
+  {
+    if (!p.decides)
+      diffs.push_back(StringUtils::Format("decides (P none: {}; main {})", p.why, m.mode));
+    else
+    {
+      if (p.res != m.res)
+        diffs.push_back(StringUtils::Format("mode (P {} {}, main {} {})", static_cast<int>(p.res),
+                                            p.mode, static_cast<int>(m.res), m.mode));
+      if (p.frac != m.frac)
+        diffs.push_back(StringUtils::Format("frac (P {}, main {})", p.frac, m.frac));
+      if (p.filmStart != m.filmStart)
+        diffs.push_back(StringUtils::Format("filmStart (P {}, main {})", p.filmStart, m.filmStart));
+    }
+  }
+  else if (why == "no mode decision due")
+  {
+    if (p.decides && p.change)
+      diffs.push_back(StringUtils::Format("change (P {}, main: no mode decision due)", p.mode));
+  }
+  else if (why == "3D ask")
+  {
+    if (!p.ask)
+      diffs.push_back("ask (P no, main yes)");
+  }
+  if (p.hdr != m.hdr)
+    diffs.push_back(StringUtils::Format("hdr (P {}, main {})", p.hdr, m.hdr));
+  if (diffs.empty())
+    CLog::Log(LOGINFO, "DECIDE shadow set={} MATCH", gen);
+  else
+    CLog::Log(LOGWARNING, "DECIDE shadow set={} DIFF {}", gen, StringUtils::Join(diffs, "; "));
+}
+#endif
 
 void CRenderManager::ArmContentReclock(bool now)
 {

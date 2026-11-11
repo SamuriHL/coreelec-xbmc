@@ -13,6 +13,7 @@
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -264,6 +265,26 @@ void PublishNativeGui(bool nativeGui);
 void PublishGuiPlayback();
 //! the published inputs (W's hotplug job, from B3-7b); published false before the start publish
 GuiInputs GetGuiInputs();
+
+// 5.E2-5 (shadow): DECIDE's GUI-side inputs, by value: main publishes them, P's ResolveOutput
+// reads them (docs/phase5_e2_plan.md E2-5). Published under aml_displaystate_on() and
+// aml_transaction_shadow_on() only
+struct DecideInputs
+{
+  ResolutionInputs res; //!< ChooseBestResolution's inputs
+  bool fullScreenVideo = false;
+  bool fullScreenRoot = false;
+  bool calibrating = false;
+  RenderStereoMode userStereo = RenderStereoMode::UNDEFINED; //!< GetStereoModeByUser
+  uint64_t seq = 0; //!< 0: never published
+  std::chrono::steady_clock::time_point at;
+};
+//! main only: takes the inputs; publishes (and logs "DECIDEINPUTS seq=") when they changed, or
+//! always with force
+void PublishDecideInputs(const char* why, bool force = false);
+//! main's pump: PublishDecideInputs at most every 250 ms
+void PublishDecideInputsTick();
+DecideInputs GetDecideInputs();
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);

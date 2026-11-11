@@ -157,12 +157,14 @@ class CResolutionUtils
 {
 public:
   static RESOLUTION ChooseBestResolution(float fps, int width, int height, bool is3D);
-  //! from inputs taken earlier; reads nothing else
+  //! from inputs taken earlier; reads nothing else. log: the "Display resolution ADJUST" line
+  //! (5.E2-5: P's shadow choice logs none, so no log reader counts it as a decision)
   static RESOLUTION ChooseBestResolution(const ResolutionInputs& in,
                                          float fps,
                                          int width,
                                          int height,
-                                         bool is3D);
+                                         bool is3D,
+                                         bool log = true);
   static bool HasWhitelist();
   static void PrintWhitelist();
 

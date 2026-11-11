@@ -51,6 +51,10 @@ class CWinRenderer;
 class CLinuxRenderer;
 class CLinuxRendererGL;
 class CLinuxRendererGLES;
+namespace DISPLAYSTATE
+{
+struct DecideInputs;
+}
 class CRenderManager;
 namespace DISPLAYSTATE
 {
@@ -233,6 +237,31 @@ public:
     UNCHANGED, //!< the set's configure needs no decision
   };
   ModeFirstState GetModeFirstState(unsigned int gen) const;
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-5 (shadow): DECIDE's ResolveOutput on P against main's decision for the same CN set
+  // (docs/phase5_e2_plan.md E2-5): each side's record is logged "DECIDE shadow set=N P|main",
+  // and the second to arrive logs "DECIDE shadow set=N MATCH|DIFF <fields>"
+  struct DecideSide
+  {
+    bool decides = false; //!< main: a mode set was asked for; P: the start would decide
+    const char* why = ""; //!< no decision: "no mode decision due", "3D ask", "not fullscreen"
+    RESOLUTION res = RES_INVALID;
+    std::string mode; //!< the chosen mode's string
+    bool change = false; //!< P: the choice differs from the video resolution it read
+    bool frac = false; //!< fracReclock
+    bool filmStart = false; //!< the request's film-start origin (a start the player holds)
+    int hdr = 0; //!< StreamHdrType
+    bool ask = false; //!< the 3D ASK predicate
+    std::string note; //!< the inputs' provenance (seq, age, arm source)
+  };
+  //! P: ResolveOutput for CN set gen from the published inputs (latest, the root at the open),
+  //! RM's own decision inputs (as main reads them) and the settings mirror. cnArmed: CN's arm
+  //! predicate (fullscreen) for the set
+  void DecideShadowPlayer(unsigned int gen,
+                          const DISPLAYSTATE::DecideInputs& latest,
+                          bool rootAtOpen,
+                          bool cnArmed);
+#endif
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
 
@@ -530,6 +559,14 @@ protected:
   //! the configure's tag by V or main, the decision by main)
   std::atomic_bool m_modeFirstGate{false};
   std::atomic<unsigned int> m_modeFirstGen{0};
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-5 (shadow): the compare slot (a leaf lock; nothing logs under it)
+  void DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side);
+  std::mutex m_decideMutex;
+  unsigned int m_decideGen = 0;
+  std::optional<DecideSide> m_decideP;
+  std::optional<DecideSide> m_decideM;
+#endif
   std::atomic<unsigned int> m_modeFirstCfgGen{0};
   std::atomic<unsigned int> m_modeFirstDecidedGen{0};
   //! a consumed trigger whose count has not landed
