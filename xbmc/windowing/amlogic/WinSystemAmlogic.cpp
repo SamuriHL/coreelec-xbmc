@@ -636,6 +636,20 @@ int64_t CWinSystemAmlogic::DisconnectedForMs() const
          since;
 }
 
+bool CWinSystemAmlogic::RunUnderPlayerGuard(const std::function<void()>& fn, bool tryOnly)
+{
+  std::unique_lock<CCriticalSection> lock(m_resourceSection, std::defer_lock);
+  if (tryOnly)
+  {
+    if (!lock.try_lock())
+      return false;
+  }
+  else
+    lock.lock();
+  fn();
+  return true;
+}
+
 bool CWinSystemAmlogic::HoldIfDisplayLost(IDispResource* resource)
 {
   std::unique_lock<CCriticalSection> lock(m_resourceSection);

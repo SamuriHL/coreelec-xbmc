@@ -24,6 +24,7 @@
 #include "utils/StringUtils.h"
 #include "ServiceBroker.h"
 #include "utils/RegExp.h"
+#include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "platform/linux/SysfsPath.h"
@@ -3019,6 +3020,9 @@ const char* s_transactionReason = "not latched";
 std::atomic<bool> s_transactionLatched{false};
 std::atomic<bool> s_transactionOn{false};
 std::atomic<bool> s_transactionShadowOn{false};
+// 5.E2-7: the real loss path's session predicate (docs/phase5_e2_7_impl.md D1), and why not
+std::atomic<bool> s_transactionLossBase{false};
+const char* s_transactionLossReason = "not latched";
 
 int TransactionHookMs(const char* name)
 {
@@ -3069,6 +3073,8 @@ STransactionHooks ReadTransactionHooks()
   hooks.parkHold = TransactionHookWord("transaction_parkhold");
   hooks.pDemuxDelayMs = TransactionHookMs("transaction_pdemuxdelay");
   hooks.noticeAt = TransactionHookWord("transaction_noticeat");
+  hooks.resumeWaitMs = TransactionHookMs("transaction_resumewait");
+  hooks.exitFreeze = TransactionHookFlag("transaction_exitfreeze");
   return hooks;
 }
 } // namespace
@@ -3135,6 +3141,32 @@ void aml_transaction_latch()
         s_transactionReason = reason;
         s_transactionOn = on;
         s_transactionShadowOn = !off && !shadowOff;
+        // 5.E2-7 (D1): the real loss path also needs keepsink, the coordinator and the tick
+        // owner, read from the same inputs their owners read (ActiveAE INIT, GLES CreateNewWindow)
+        const bool validated = aml_presentation_validated();
+        const bool keepsink =
+            validated && !XFILE::CFile::Exists("special://profile/keepsink_off");
+        const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+        const bool coordinator = settingsComponent && settingsComponent->GetAdvancedSettings() &&
+                                 settingsComponent->GetAdvancedSettings()
+                                     ->m_videoPresentationCoordinator;
+        const bool tickOwner = coordinator && validated &&
+                               !XFILE::CFile::Exists("special://profile/tickowner_off");
+        const char* lossReason;
+        if (!on)
+          lossReason = "transaction off";
+        else if (shadowOff)
+          lossReason = "transaction_shadow_off";
+        else if (!keepsink)
+          lossReason = "keepsink off";
+        else if (!coordinator)
+          lossReason = "coordinator off";
+        else if (!tickOwner)
+          lossReason = "tickowner off";
+        else
+          lossReason = "on";
+        s_transactionLossReason = lossReason;
+        s_transactionLossBase = on && !shadowOff && keepsink && coordinator && tickOwner;
         s_transactionLatched.store(true, std::memory_order_release);
         CLog::Log(LOGINFO,
                   "TRANSACTION {} ({}) matrix=outputworker {}, displaystate {}, outputdrive {}, "
@@ -3150,7 +3182,34 @@ void aml_transaction_latch()
                   aml_geometrytick_validated() ? "listed SoC" : "not listed", onOff(timeline),
                   files, optIn ? "present" : "absent", off ? "present" : "absent",
                   onOff(s_transactionShadowOn.load()));
+        // 5.E2-7: the loss path's own line (the line above is E2-1's, unchanged)
+        CLog::Log(LOGINFO,
+                  "TRANSACTION real loss path {} ({}): keepsink {}, coordinator {}, tickowner {}, "
+                  "skip resume {}",
+                  s_transactionLossBase.load() && !aml_transaction_skip("resume") ? "on" : "off",
+                  s_transactionLossBase.load() && aml_transaction_skip("resume")
+                      ? "transaction_skip resume"
+                      : lossReason,
+                  onOff(keepsink), onOff(coordinator), onOff(tickOwner),
+                  aml_transaction_skip("resume") ? "yes" : "no");
       });
+}
+
+bool aml_transaction_loss_base()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) &&
+         s_transactionLossBase.load(std::memory_order_relaxed);
+}
+
+bool aml_transaction_loss_real()
+{
+  return aml_transaction_loss_base() && !aml_transaction_skip("resume");
+}
+
+const char* aml_transaction_loss_reason()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) ? s_transactionLossReason
+                                                              : "not latched";
 }
 
 bool aml_transaction_on()

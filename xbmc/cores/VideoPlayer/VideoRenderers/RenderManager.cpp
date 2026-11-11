@@ -767,6 +767,9 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   }
 
   // check if something has changed
+  // 5.E2-7 (L-9): which term asked for the reconfigure; the terms keep HEAD's order and
+  // short-circuit
+  const char* changeReason = nullptr;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -777,9 +780,19 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       return true;
     }
 
-    if (m_pRenderer != nullptr && m_picture.IsSameParams(picture) && m_orientation == orientation &&
-        m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture) &&
-        !(TestForceSwap() && m_testForceSwap.exchange(false)))
+    if (m_pRenderer == nullptr)
+      changeReason = "renderer";
+    else if (!m_picture.IsSameParams(picture))
+      changeReason = "params";
+    else if (m_orientation != orientation)
+      changeReason = "orientation";
+    else if (m_NumberBuffers != buffers)
+      changeReason = "buffers";
+    else if (m_pRenderer->ConfigChanged(picture))
+      changeReason = "ConfigChanged";
+    else if (TestForceSwap() && m_testForceSwap.exchange(false))
+      changeReason = "forceswap";
+    if (!changeReason)
     {
       if (m_fps != fps)
       {
@@ -819,6 +832,11 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
             "{:4.2f}. hdrType: {}.",
             picture.iWidth, picture.iHeight, picture.iDisplayWidth, picture.iDisplayHeight, fps,
             hdrStr.empty() ? "none" : hdrStr);
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-7 (L-9): the gates count reconfigures without debug logging (shadow sessions only)
+  if (aml_transaction_shadow_on())
+    CLog::Log(LOGINFO, "RM configure change {} ({})", ++m_configureChanges, changeReason);
+#endif
 
   // make sure any queued frame was fully presented
   {

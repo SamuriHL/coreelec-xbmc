@@ -99,6 +99,12 @@ public:
   //! Ends a Pause(true) as ScheduleResumeAt when it was taken at normal
   //! speed; otherwise, or off the grid, resumes at once as Pause(false).
   bool UnpauseAt(double clock, double maxStep, double lead, int64_t& startNs, double& startClock);
+  //! 5.E2-7: the speed a resume resumes to, in one locked read: the speed recorded during a
+  //! Pause(true) (m_speedAfterPause is current only then), else the caller's
+  int GetResumeSpeed(int callerSpeed) const;
+  //! 5.E2-7 (unused until E2-9): resume from where the clock stands, on the grid, `lead` seconds
+  //! from now; a Pause(true) is first turned into a speed hold without letting the clock run
+  bool ScheduleResumeInPlace(double lead, int64_t& startNs, double& startClock);
   //! A start on the running clock for a stream that joins it (an audio track
   //! switch, design 15.34): the audio output lands its first sample at a vblank
   //! `lead` seconds from now. false if the clock is held or a resume pending.

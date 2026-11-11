@@ -136,6 +136,9 @@ public:
   int64_t DisconnectedForMs() const;
   //! calls the resource's OnLostDisplay() when a span is open; true if it did
   bool HoldIfDisplayLost(IDispResource* resource);
+  //! 5.E2-7: runs fn under the player-call guard (m_resourceSection), the lock W holds across
+  //! each call into a player; tryOnly: false (fn not run) when the guard is busy
+  bool RunUnderPlayerGuard(const std::function<void()>& fn, bool tryOnly);
 protected:
   //! no display reset inside an open span while the output is disconnected
   bool DisplayResetAllowed() const;

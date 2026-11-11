@@ -59,6 +59,7 @@ public:
     PLAYER_DISPLAY_LOST,            // the display is lost: pause, keeping audio from this pts
     PLAYER_AUDIO_RELAND,            // land the audio anew with this audio offset
     PLAYER_START_GATE,              // no-op: wakes the audio player to read its start gate
+    PLAYER_DISPLAY_RETURNED,        // 5.E2-7: a real freeze's reset on W: wakes P for its RESUME
 
     // demuxer related messages
     DEMUXER_PACKET,                 // data packet

@@ -13,6 +13,18 @@
 
 #include <cstdint>
 
+//! 5.E2-7 (RESUME's vblank wait): the display resets this vsync took (each aborts it so the
+//! reference clock re-runs Setup), the reset count its last successful Setup started under, the
+//! vblanks counted since that Setup, and whether an instance is set up now (registered)
+struct SAmlVsyncResetState
+{
+  uint64_t resetReq = 0;
+  uint64_t setupFor = 0;
+  uint64_t vblanks = 0;
+  bool registered = false;
+};
+SAmlVsyncResetState AmlVsyncResetState();
+
 class CVideoSyncAML : public CVideoSync, IDispResource
 {
 public:

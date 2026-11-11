@@ -211,6 +211,50 @@ MsgQueueReturnCode CDVDMessageQueue::GetControl(std::shared_ptr<CDVDMsg>& pMsg, 
   return MSGQ_TIMEOUT;
 }
 
+MsgQueueReturnCode CDVDMessageQueue::GetFirstOf(std::shared_ptr<CDVDMsg>& pMsg,
+                                                const std::function<bool(CDVDMsg&)>& accept,
+                                                std::chrono::milliseconds timeout)
+{
+  std::unique_lock lock(m_section);
+
+  if (!m_bInitialized)
+    return MSGQ_NOT_INITIALIZED;
+
+  const XbmcThreads::EndTime<std::chrono::microseconds> endTime{timeout};
+  while (!m_bAbortRequest)
+  {
+    // the back of each list is its oldest message (Put inserts at the front)
+    for (std::list<DVDMessageListItem>* msgs : {&m_prioMessages, &m_messages})
+    {
+      for (auto it = msgs->rbegin(); it != msgs->rend(); ++it)
+      {
+        if (!it->message || !accept(*it->message))
+          continue;
+        if (it->message->IsType(CDVDMsg::DEMUXER_PACKET) && it->priority == 0)
+        {
+          DemuxPacket* packet =
+              std::static_pointer_cast<CDVDMsgDemuxerPacket>(it->message)->GetPacket();
+          if (packet)
+            m_iDataSize -= packet->iSize;
+        }
+        pMsg = std::move(it->message);
+        msgs->erase(std::next(it).base());
+        UpdateTimeBack();
+        return MSGQ_OK;
+      }
+    }
+    if (timeout == 0ms)
+      return MSGQ_TIMEOUT;
+    // reset before the wait, so an unaccepted message already queued cannot keep it set
+    m_hEvent.Reset();
+    lock.unlock();
+    if (!m_hEvent.Wait(endTime.GetTimeLeft()))
+      return MSGQ_TIMEOUT;
+    lock.lock();
+  }
+  return MSGQ_ABORT;
+}
+
 MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
                                          std::chrono::milliseconds timeout,
                                          int& priority)

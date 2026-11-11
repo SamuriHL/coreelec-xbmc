@@ -304,6 +304,27 @@ bool CDVDClock::UnpauseAt(
   return false;
 }
 
+int CDVDClock::GetResumeSpeed(int callerSpeed) const
+{
+  std::unique_lock lock(m_critSection);
+  return m_paused ? m_speedAfterPause : callerSpeed;
+}
+
+bool CDVDClock::ScheduleResumeInPlace(double lead, int64_t& startNs, double& startClock)
+{
+  {
+    std::unique_lock lock(m_critSection);
+    if (m_paused)
+    {
+      // records the hold's speed (DC SetSpeedAt while m_paused), then leaves Pause(true) with the
+      // clock still held at m_pauseClock: ScheduleResume refuses while m_paused
+      SetSpeed(DVD_PLAYSPEED_PAUSE);
+      m_paused = false;
+    }
+  }
+  return ScheduleResume(DVD_PLAYSPEED_NORMAL, lead, startNs, startClock, true);
+}
+
 bool CDVDClock::IsPaused() const
 {
   std::unique_lock lock(m_critSection);

@@ -19,6 +19,7 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <time.h>
@@ -62,6 +63,13 @@ constexpr double RATE_CONFIRM_AGREE = 0.0001;
 
 // CLOCK_MONOTONIC (the DRM vblank timestamps) -> CurrentHostCounter()
 // (CLOCK_MONOTONIC_RAW), read back to back so no vblank read latency is in it
+// 5.E2-7: RESUME's vblank wait reads these (atomics: written by the announcing thread under the
+// player guard, the reference clock thread's Setup/Run/Cleanup)
+std::atomic<uint64_t> g_resetReq{0};
+std::atomic<uint64_t> g_setupFor{0};
+std::atomic<uint64_t> g_vblanksSinceSetup{0};
+std::atomic<bool> g_registered{false};
+
 int64_t MonotonicToHostOffset()
 {
   struct timespec mono = {};
@@ -70,6 +78,16 @@ int64_t MonotonicToHostOffset()
   return host - (static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec);
 }
 } // namespace
+
+SAmlVsyncResetState AmlVsyncResetState()
+{
+  SAmlVsyncResetState state;
+  state.resetReq = g_resetReq.load();
+  state.setupFor = g_setupFor.load();
+  state.vblanks = g_vblanksSinceSetup.load();
+  state.registered = g_registered.load();
+  return state;
+}
 
 CVideoSyncAML::CVideoSyncAML(CVideoReferenceClock *clock)
 : CVideoSync(clock)
@@ -83,6 +101,8 @@ CVideoSyncAML::~CVideoSyncAML()
 
 bool CVideoSyncAML::Setup()
 {
+  // 5.E2-7: the resets this Setup answers (read before m_abort is cleared)
+  const uint64_t setupFor = g_resetReq.load();
   m_abort = false;
   m_measureAnchorSeq = 0;
   m_measureAnchorNs = 0;
@@ -154,6 +174,9 @@ bool CVideoSyncAML::Setup()
 
   CLog::Log(LOGINFO, "CVideoSyncAML: using DRM vblank (fd:{} crtc:{} seq:{})",
             m_fd, m_crtcId, m_sequence);
+  g_vblanksSinceSetup = 0;
+  g_setupFor = setupFor;
+  g_registered = true;
   return true;
 }
 
@@ -195,6 +218,7 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
 
     m_refClock->UpdateClock(static_cast<int>(sequence - m_sequence), m_offset + ns);
     m_sequence = sequence;
+    g_vblanksSinceSetup.fetch_add(1);
 
     // Rate-honesty check: the vblank timestamps are hardware time, so
     // (sequence delta / time delta) is the panel's true refresh rate. If it
@@ -281,6 +305,7 @@ void CVideoSyncAML::Run(CEvent& stopEvent)
 void CVideoSyncAML::Cleanup()
 {
   CLog::Log(LOGDEBUG, "CVideoSyncAML: cleaning up");
+  g_registered = false;
   // m_fd is borrowed from the win system's DRM device — do not close it.
   m_fd = -1;
   CServiceBroker::GetWinSystem()->Unregister(this);
@@ -340,6 +365,7 @@ float CVideoSyncAML::GetFps()
 
 void CVideoSyncAML::OnResetDisplay()
 {
+  g_resetReq.fetch_add(1);
   // A display/mode change moves the CRTC timing; abort so the reference clock
   // re-runs Setup and re-anchors the vblank sequence. The measured rate
   // belongs to the old mode — discard it.

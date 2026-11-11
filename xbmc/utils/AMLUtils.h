@@ -477,6 +477,13 @@ const char* aml_transaction_reason();
 bool aml_transaction_shadow_on();
 //! transaction_skip "<substep>[,<substep>]": true for a listed 5.E2 sub-step (bisect only)
 bool aml_transaction_skip(const std::string& substep);
+//! 5.E2-7 (docs/phase5_e2_7_impl.md D1): the transaction on with its shadows, keepsink, the
+//! coordinator and the tick owner; the session predicate of E2-7's own skips (drainhook, l2)
+bool aml_transaction_loss_base();
+//! TxLossReal(): the base and no transaction_skip resume (the real word, RESUME, the clears)
+bool aml_transaction_loss_real();
+//! why the base is off ("on" when it is on)
+const char* aml_transaction_loss_reason();
 //! 5.E2's test hooks (plan §9), read with the latch; all off by default and unused in E2-1
 struct STransactionHooks
 {
@@ -496,6 +503,8 @@ struct STransactionHooks
   std::string parkHold; //!< transaction_parkhold novideo (E2-13)
   int pDemuxDelayMs = 0; //!< transaction_pdemuxdelay <ms> (E2-13)
   std::string noticeAt; //!< transaction_noticeat owed|posted (E2-13)
+  int resumeWaitMs = 0; //!< transaction_resumewait <ms>: RESUME's vblank wait held (E2-7)
+  bool exitFreeze = false; //!< transaction_exitfreeze: OnExit waits for a freeze (E2-7)
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();

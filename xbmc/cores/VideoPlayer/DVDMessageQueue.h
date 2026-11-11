@@ -78,6 +78,13 @@ public:
    * is not a demuxer packet, ahead of queued replays; no wait
    */
   MsgQueueReturnCode GetControl(std::shared_ptr<CDVDMsg>& pMsg, int& priority);
+  /**
+   * 5.E2-7: the oldest message (priority messages first) the predicate accepts, leaving every
+   * other message in place and in its order; waits up to timeout for one (every put wakes it)
+   */
+  MsgQueueReturnCode GetFirstOf(std::shared_ptr<CDVDMsg>& pMsg,
+                                const std::function<bool(CDVDMsg&)>& accept,
+                                std::chrono::milliseconds timeout);
 
   int GetDataSize() const { return m_iDataSize; }
   double GetTimeSize() const;
