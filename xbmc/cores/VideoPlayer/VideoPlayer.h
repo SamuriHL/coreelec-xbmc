@@ -927,6 +927,12 @@ protected:
   void PublishHoldOnDisplayLoss();
   //! a display gone for 15 s becomes an ordinary pause (user ruling Q6)
   void ConvertLostDisplayToPause();
+  //! 5.E2-7 (C2): the conversion's halves (speeds; callback and PVR), the reset's body and the
+  //! PLAYER_OPENFILE branch, each moved out unchanged
+  void ConvertToPauseSpeeds();
+  void ConvertToPauseCallbacks();
+  void ClearPlayerFreeze(bool heldAsPause);
+  void HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg);
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
   bool m_startGateEnabled = false; //!< start order flag files, read at open

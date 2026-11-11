@@ -3568,6 +3568,21 @@ void CVideoPlayer::ConvertLostDisplayToPause()
   // as a user pause (SetSpeed and PLAYER_SETSPEED), without a hold point: the
   // output's audio was already taken back at the loss. The return waits for
   // these steps only; the callbacks and the PVR come after
+  ConvertToPauseSpeeds();
+  expected = LossState::CONVERTING;
+  if (!m_lossState.compare_exchange_strong(expected, LossState::PAUSED))
+    CLog::Log(LOGERROR, "VideoPlayer: the display came back during the pause conversion");
+  // an ordinary pause: disc time (BD-J and HDMV timers) runs through it
+  m_discTime.SetDisplayLost(false);
+  if (wordT)
+    OUTPUT::COutputWorker::Get().WordPaused(wordT, ToWordHead(WordHeadNow(LossState::PAUSED)));
+  ConvertToPauseCallbacks();
+}
+
+// 5.E2-7 (C2): the conversion's two halves, moved out unchanged so the real path's two P steps
+// (docs/phase5_e2_7_impl.md D3) run the same code
+void CVideoPlayer::ConvertToPauseSpeeds()
+{
   m_processInfo->SetNewSpeed(0);
   m_processInfo->SetSpeed(0.0f);
   m_processInfo->SetFrameAdvance(false);
@@ -3579,13 +3594,10 @@ void CVideoPlayer::ConvertLostDisplayToPause()
   m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
-  expected = LossState::CONVERTING;
-  if (!m_lossState.compare_exchange_strong(expected, LossState::PAUSED))
-    CLog::Log(LOGERROR, "VideoPlayer: the display came back during the pause conversion");
-  // an ordinary pause: disc time (BD-J and HDMV timers) runs through it
-  m_discTime.SetDisplayLost(false);
-  if (wordT)
-    OUTPUT::COutputWorker::Get().WordPaused(wordT, ToWordHead(WordHeadNow(LossState::PAUSED)));
+}
+
+void CVideoPlayer::ConvertToPauseCallbacks()
+{
   IPlayerCallback* cb = &m_callback;
   m_outboundEvents->Submit([=]() { cb->OnPlayBackPaused(); });
   if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
@@ -6221,6 +6233,62 @@ void CVideoPlayer::OnExit()
   });
 }
 
+// 5.E2-7 (C2): HandleMessages' PLAYER_OPENFILE branch, moved out unchanged so a frozen player
+// can take a next file (docs/phase5_e2_7_impl.md D3, D7)
+void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
+{
+  CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
+
+  IPlayerCallback *cb = &m_callback;
+  CFileItem fileItem(m_item);
+  UpdateFileItemStreamDetails(fileItem, UpdateStreamDetails::UPDATE_IF_FLAGGED);
+  CVideoSettings vs = m_processInfo->GetVideoSettings();
+  m_outboundEvents->Submit([=]() {
+    cb->StoreVideoSettings(fileItem, vs);
+  });
+
+  CBookmark bookmark;
+  bookmark.totalTimeInSeconds = 0;
+  bookmark.timeInSeconds = 0;
+  if (m_State.startTime == 0)
+  {
+    bookmark.totalTimeInSeconds = m_State.timeMax / 1000;
+    bookmark.timeInSeconds = m_State.time / 1000;
+  }
+  bookmark.player = m_name;
+  bookmark.playerState = GetPlayerState();
+  m_outboundEvents->Submit([=]() {
+    cb->OnPlayerCloseFile(fileItem, bookmark);
+  });
+
+  m_item = msg.GetItem();
+  m_playerOptions = msg.GetOptions();
+
+  m_processInfo->SetPlayTimes(0,0,0,0);
+
+  m_outboundEvents->Submit([this]() {
+    m_callback.OnPlayBackStarted(m_item);
+  });
+
+  FlushBuffers(DVD_NOPTS_VALUE, true, true);
+  m_renderManager.ArmTestStall("nextfile");
+  m_renderManager.Flush(false, false);
+  m_renderManager.BeginFile();
+  m_pDemuxer.reset();
+  m_pSubtitleDemuxer.reset();
+  m_subtitleDemuxerMap.clear();
+  m_pCCDemuxer.reset();
+  m_discTime.End();
+  m_pInputBluray.reset();
+  if (m_pInputStream.use_count() > 1)
+    throw std::runtime_error("m_pInputStream reference count is greater than 1");
+  m_pInputStream.reset();
+
+  m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NONE);
+
+  Prepare(true);
+}
+
 void CVideoPlayer::HandleMessages()
 {
   std::shared_ptr<CDVDMsg> pMsg = nullptr;
@@ -6230,56 +6298,7 @@ void CVideoPlayer::HandleMessages()
     if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
     {
-      CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
-
-      IPlayerCallback *cb = &m_callback;
-      CFileItem fileItem(m_item);
-      UpdateFileItemStreamDetails(fileItem, UpdateStreamDetails::UPDATE_IF_FLAGGED);
-      CVideoSettings vs = m_processInfo->GetVideoSettings();
-      m_outboundEvents->Submit([=]() {
-        cb->StoreVideoSettings(fileItem, vs);
-      });
-
-      CBookmark bookmark;
-      bookmark.totalTimeInSeconds = 0;
-      bookmark.timeInSeconds = 0;
-      if (m_State.startTime == 0)
-      {
-        bookmark.totalTimeInSeconds = m_State.timeMax / 1000;
-        bookmark.timeInSeconds = m_State.time / 1000;
-      }
-      bookmark.player = m_name;
-      bookmark.playerState = GetPlayerState();
-      m_outboundEvents->Submit([=]() {
-        cb->OnPlayerCloseFile(fileItem, bookmark);
-      });
-
-      m_item = msg.GetItem();
-      m_playerOptions = msg.GetOptions();
-
-      m_processInfo->SetPlayTimes(0,0,0,0);
-
-      m_outboundEvents->Submit([this]() {
-        m_callback.OnPlayBackStarted(m_item);
-      });
-
-      FlushBuffers(DVD_NOPTS_VALUE, true, true);
-      m_renderManager.ArmTestStall("nextfile");
-      m_renderManager.Flush(false, false);
-      m_renderManager.BeginFile();
-      m_pDemuxer.reset();
-      m_pSubtitleDemuxer.reset();
-      m_subtitleDemuxerMap.clear();
-      m_pCCDemuxer.reset();
-      m_discTime.End();
-      m_pInputBluray.reset();
-      if (m_pInputStream.use_count() > 1)
-        throw std::runtime_error("m_pInputStream reference count is greater than 1");
-      m_pInputStream.reset();
-
-      m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NONE);
-
-      Prepare(true);
+      HandleOpenFile(pMsg);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
@@ -10389,6 +10408,16 @@ void CVideoPlayer::OnResetDisplay()
   const bool heldAsPause = state == LossState::PAUSED;
 
   CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
+  ClearPlayerFreeze(heldAsPause);
+  m_lossState = LossState::NONE;
+  if (wordT)
+    OUTPUT::COutputWorker::Get().WordReturned(wordT, ToWordHead(WordHeadNow(LossState::NONE)));
+}
+
+// 5.E2-7 (C2): the reset's body, moved out of OnResetDisplay unchanged (docs/phase5_e2_7_impl.md
+// D4 step 3); OnResetDisplay calls it as before
+void CVideoPlayer::ClearPlayerFreeze(bool heldAsPause)
+{
   // resume like a user resume: from the picture on screen, at a vblank, the
   // audio (its sink just reopened) landing there instead of joining a clock
   // already running; the players resume after, so their first audio finds
@@ -10465,9 +10494,6 @@ void CVideoPlayer::OnResetDisplay()
   // menu black: no new video frame is presented, so the retained overlay is
   // never re-composed - repost it from the player thread (Process loop)
   m_repostDiscOverlays = true;
-  m_lossState = LossState::NONE;
-  if (wordT)
-    OUTPUT::COutputWorker::Get().WordReturned(wordT, ToWordHead(WordHeadNow(LossState::NONE)));
 }
 
 void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update)
