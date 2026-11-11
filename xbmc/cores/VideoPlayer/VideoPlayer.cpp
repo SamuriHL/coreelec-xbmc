@@ -6127,10 +6127,13 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
-  // 5.E2-3: the shadow word's stop
+  // 5.E2-3: the shadow word's stop. 5.E2-7 (code review M1): on a real loss path session at a
+  // natural end the stop's CAS comes after the two draining closes, so a loss inside them is a
+  // real freeze whose held wait the OnExit hook ends; transaction_off keeps it here
+  const bool txLateStop = !m_bAbortRequest && aml_transaction_loss_real();
   if (aml_transaction_shadow_on())
   {
-    if (const uint32_t wordT = m_txWordT.exchange(0))
+    if (const uint32_t wordT = txLateStop ? 0 : m_txWordT.exchange(0))
       OUTPUT::COutputWorker::Get().WordStop(wordT);
     OUTPUT::COutputWorker::Get().ShadowStartPhase(this, OUTPUT::COutputWorker::StartPhase::NONE,
                                                   0, "stop");
@@ -6200,6 +6203,12 @@ void CVideoPlayer::OnExit()
   {
     CTxDrainSite txSite(m_txDrainSite, "OnExit");
     CloseStream(m_CurrentVideo, !m_bAbortRequest);
+  }
+  if (txLateStop)
+  {
+    // the ABORT CAS (row 28) before the exit's clear below (D7)
+    if (const uint32_t wordT = m_txWordT.exchange(0))
+      OUTPUT::COutputWorker::Get().WordStop(wordT);
   }
   // a picture kept at the last join, with no decoder left to replace it
   aml_drop_kept_frame("player exit");
