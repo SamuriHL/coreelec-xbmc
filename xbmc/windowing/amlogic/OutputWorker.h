@@ -148,18 +148,38 @@ public:
   //! own loss state. The new T, or 0 when the CAS failed
   uint32_t WordOpen(uint32_t ownT, WordState mirror);
   //! the FREEZE body begins (OnLostDisplay past its early returns); newcomer: on P (row 29)
-  void WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head);
+  bool WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head);
   //! the FREEZE body done, the player's state LOST
-  void WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& head);
+  bool WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& head);
   //! P's conversion to a pause (row 18's two steps)
-  void WordConverting(uint32_t ownT, const SWordHead& head);
-  void WordPaused(uint32_t ownT, const SWordHead& head);
+  bool WordConverting(uint32_t ownT, const SWordHead& head);
+  bool WordPaused(uint32_t ownT, const SWordHead& head);
   //! the display reset: the player's state RETURNING (rows 16, 20, 21+22, chosen from HEAD's
   //! state after the spin, headFrom), then NONE (row 23)
   void WordReturning(uint32_t ownT, WordState headFrom, const SWordHead& head);
   void WordReturned(uint32_t ownT, const SWordHead& head);
   //! P's stop (row 28)
   void WordStop(uint32_t ownT);
+
+  // 5.E2-7: the word real for freezes outside starts (docs/phase5_e2_7_impl.md D1-D4). Called only
+  // on a real freeze (aml_transaction_loss_real); every W call runs under the player guard.
+  //! W, a walk meeting a player that still carries a real freeze, at FREEZING claimed (the span's
+  //! claim), RETURNING or RESET_OWED: parked then LOST by CAS steps, no body, no e change (rows
+  //! 12, 14; errata E6 as proposed). from: the state it started at. True when the word is LOST
+  bool WordRefreeze(uint32_t ownT, WordState& from);
+  //! W, the reset of a real freeze: LOST/PAUSED with the span -> RETURNING (row 20), LOST without
+  //! -> RETURNING (row 16), CONVERTING -> RESET_OWED (row 21). from: the state before; returns the
+  //! state after (NONE when no row applied)
+  WordState WordReturnReal(uint32_t ownT, WordState& from);
+  //! P, conversion step 2 meeting W's reset: RESET_OWED -> RETURNING (row 22)
+  bool WordResetOwedReturning(uint32_t ownT);
+  //! P, RESUME's end: RETURNING -> NONE expecting exactly the word read under the guard, e
+  //! included; a change of e alone is retried (row 23). lostTo: the word found otherwise
+  bool WordResumeDone(uint32_t ownT, uint64_t read, std::string& lostTo);
+  //! W, a real session's commit: e+1 before the first link write (draft42:104), and the result
+  //! logged after it
+  void WordCommitAhead();
+  void WordCommitResult(bool committed, bool notConnected);
 
   // 5.E2-4: W's request lists as a shadow (design §8.10; docs/phase5_e2_plan.md E2-4). Requests
   // (lanes 4 and 5: MIDPLAY and SETTINGS) take one id counter at their post, with their origin and

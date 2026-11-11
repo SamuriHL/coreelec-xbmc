@@ -933,6 +933,40 @@ protected:
   void ConvertToPauseCallbacks();
   void ClearPlayerFreeze(bool heldAsPause);
   void HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg);
+  // 5.E2-7: the real loss path (docs/phase5_e2_7_impl.md D1-D4, D7). m_txFreezeReal: this
+  // freeze is real (stored before the mark, cleared at every clear); m_txBodyDone: its FREEZE
+  // body (or re-freeze) has finished under the guard; m_txVsyncRecord: the vsync resets taken
+  // when the freeze began or last re-froze; m_txHeldAsPause: the reset found it converted
+  std::atomic_bool m_txFreezeReal{false};
+  std::atomic_bool m_txBodyDone{false};
+  std::atomic<uint64_t> m_txVsyncRecord{0};
+  std::atomic_bool m_txHeldAsPause{false};
+  //! P only: conversion step 1 done; RESUME's wait; the other-word timer; logged-once marks
+  int m_txConvertStep = 0;
+  bool m_txResumeWaiting = false;
+  bool m_txResumeWaitLogged = false;
+  std::chrono::steady_clock::time_point m_txResumeWaitSince;
+  bool m_txOtherWordTiming = false;
+  std::chrono::steady_clock::time_point m_txOtherWordSince;
+  bool m_txClockErrLogged = false;
+  bool m_txSpanRefusedLogged = false;
+  uint64_t m_txSkipLogged = 0;
+  int m_txStateLogged = -1;
+  //! P: HandleOpenFile clears the freeze before Prepare (a next file taken in a span)
+  bool m_txClearBeforePrepare = false;
+  //! W, under the guard: a walk meeting a player with a real freeze (D2b); true when re-frozen
+  bool TxRefreeze();
+  //! W, under the guard: a real freeze's reset, the word's CAS and P's wake (D2d)
+  void TxResetReal();
+  //! P: one pass of the frozen states (D3)
+  void TxFrozenPass();
+  //! P: conversion step 2, its effects on whatever word it reads (r3 N1)
+  void TxConvertStep2();
+  //! P: RESUME (D4); tryGuard from the drain hook; true when done
+  bool TxResume(const char* site, bool tryGuard);
+  //! P: the stop's or the next file's clear (D7), or the fallback under another word
+  void TxClearAtEnd(const char* why);
+  void TxFreezeEnded();
   bool m_heldStartEnabled = false; //!< E1 flag file, read at open
   bool m_scheduledStart = false; //!< design §15 step 2.2 flag file, read at open
   bool m_startGateEnabled = false; //!< start order flag files, read at open

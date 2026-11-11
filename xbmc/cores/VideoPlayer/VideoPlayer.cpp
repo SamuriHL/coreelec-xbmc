@@ -63,6 +63,7 @@
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
+#include "windowing/amlogic/VideoSyncAML.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
@@ -3640,6 +3641,12 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      // 5.E2-7 (D3): a real freeze's states; P keeps its stop, a next file in a span and the wake
+      if (m_txFreezeReal.load(std::memory_order_acquire))
+      {
+        TxFrozenPass();
+        continue;
+      }
       ConvertLostDisplayToPause();
       // nor can a menu page waiting for its picture
       if (m_menuPageWaiting)
@@ -6204,6 +6211,10 @@ void CVideoPlayer::OnExit()
   m_subtitleDemuxerMap.clear();
   m_pCCDemuxer.reset();
   m_discTime.End();
+  // 5.E2-7 (D7): a real freeze ends here, after the closes and the disc time's end (the ABORT
+  // CAS came first, at the top)
+  if (m_txFreezeReal.load())
+    TxClearAtEnd("stop");
   m_pInputBluray.reset();
   aml_set_disc_mode_hold(false);
   aml_set_disc_mode_anchored(false);
@@ -6285,6 +6296,14 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   m_pInputStream.reset();
 
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NONE);
+
+  // 5.E2-7 (D7): a next file taken in a span: the freeze cleared after the flush and the disc
+  // time's end, before the open (whose newcomer freeze takes the span again, row 29)
+  if (m_txClearBeforePrepare)
+  {
+    m_txClearBeforePrepare = false;
+    TxClearAtEnd("next file");
+  }
 
   Prepare(true);
 }
@@ -10318,7 +10337,13 @@ void CVideoPlayer::OnLostDisplay()
   // one hold however often the loss is announced (a disconnect, then the
   // reconnect's mode set)
   if (m_displayLost)
+  {
+    // 5.E2-7 (D2b): a walk meeting a real freeze whose word it would strand re-freezes it by CAS
+    // steps (no body: the freeze is still in force)
+    if (m_txFreezeReal.load())
+      TxRefreeze();
     return;
+  }
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (winSystem && winSystem->IsLostSpanOpen() && !m_holdOnDisplayLoss)
   {
@@ -10343,14 +10368,39 @@ void CVideoPlayer::OnLostDisplay()
     else
       holdFrom += m_clock.GetAudioOffset();
   }
+  // 5.E2-7 (D1): real when the session's predicate holds and this freeze's word step can apply
+  // (NONE, or the span's claim, for this player's T); stored before the mark, which P reads first
+  bool txReal = false;
+  const char* txLegacyWhy = nullptr;
+  if (wordT && aml_transaction_loss_real())
+  {
+    const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+    using WordState = OUTPUT::COutputWorker::WordState;
+    txReal = word.t == wordT &&
+             (word.state == WordState::NONE || (word.state == WordState::FREEZING && !word.sub));
+  }
+  if (txReal)
+  {
+    m_txVsyncRecord = AmlVsyncResetState().resetReq;
+    m_txBodyDone = false;
+    m_txHeldAsPause = false;
+    m_txFreezeReal.store(true, std::memory_order_release);
+  }
   // 5.E2-2: the mark first, before the stream players are held and the clock pauses, so no P
   // reader (CheckHeldStart, CN's gate, the play press, the caching end, the offset landing)
   // schedules a resume or lands an offset inside the freeze; m_lossState goes LOST below, and
   // ConvertLostDisplayToPause retries its CAS on LOST (docs/phase5_e2_plan.md E2-2)
   m_displayLost = true;
   // after the mark, off the window E2-2 narrowed (E2-3 review L3)
-  if (wordT)
-    OUTPUT::COutputWorker::Get().WordFreezeBody(wordT, newcomer, ToWordHead(WordHeadNow(LossState::NONE)));
+  if (wordT && !OUTPUT::COutputWorker::Get().WordFreezeBody(
+                   wordT, newcomer, ToWordHead(WordHeadNow(LossState::NONE))) &&
+      txReal)
+  {
+    // the word moved between the read and the CAS: HEAD's freeze and reset for this one
+    txReal = false;
+    m_txFreezeReal = false;
+    txLegacyWhy = "the body's word step did not apply";
+  }
   if (audioInited)
   {
     m_VideoPlayerAudio->SendMessage(
@@ -10365,6 +10415,15 @@ void CVideoPlayer::OnLostDisplay()
   m_discTime.SetDisplayLost(true);
   if (wordT)
     OUTPUT::COutputWorker::Get().WordFrozen(wordT, newcomer, ToWordHead(WordHeadNow(LossState::LOST)));
+  if (!txReal && aml_transaction_on())
+  {
+    if (!txLegacyWhy)
+      txLegacyWhy = !wordT                         ? "no word"
+                    : !aml_transaction_loss_base() ? aml_transaction_loss_reason()
+                    : aml_transaction_skip("resume") ? "transaction_skip resume"
+                                                     : "word not NONE";
+    CLog::Log(LOGINFO, "TXLOSS legacy ({}) T={}", txLegacyWhy, wordT);
+  }
   {
     // gate (§18.24): the next frame is never behind the held clock
     double front = DVD_NOPTS_VALUE;
@@ -10376,6 +10435,13 @@ void CVideoPlayer::OnLostDisplay()
     m_lostMaxStep = out ? step : 0.0;
     m_lostFront = out ? front : DVD_NOPTS_VALUE;
   }
+  if (txReal)
+  {
+    const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+    CLog::Log(LOGINFO, "TXLOSS real ({}) T={} e={}", newcomer ? "newcomer" : "body", wordT, word.e);
+    // r3 N3: the frozen checks are armed only now, the body done under the guard
+    m_txBodyDone.store(true, std::memory_order_release);
+  }
   // Causes https://github.com/xbmc/xbmc/issues/15447
   // FlushRenderer();
 }
@@ -10384,6 +10450,12 @@ void CVideoPlayer::OnResetDisplay()
 {
   if (!m_displayLost)
     return;
+  // 5.E2-7 (D2d): a real freeze's reset is the word's CAS and P's wake; P runs RESUME
+  if (m_txFreezeReal.load())
+  {
+    TxResetReal();
+    return;
+  }
 
   // a conversion to a pause on the player thread finishes first
   LossState state = LossState::LOST;
@@ -10494,6 +10566,344 @@ void CVideoPlayer::ClearPlayerFreeze(bool heldAsPause)
   // menu black: no new video frame is presented, so the retained overlay is
   // never re-composed - repost it from the player thread (Process loop)
   m_repostDiscOverlays = true;
+}
+
+// 5.E2-7: the real loss path (docs/phase5_e2_7_impl.md D2-D4, D7, r3 amendments)
+bool CVideoPlayer::TxRefreeze()
+{
+  const uint32_t wordT = m_txWordT.load();
+  if (!wordT)
+    return false;
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  // r3 L1: only where the walk would strand the word; elsewhere HEAD's silent return
+  if (word.t != wordT ||
+      !((word.state == WordState::FREEZING && !word.sub) ||
+        (word.state == WordState::RETURNING && !word.spanOpen) ||
+        word.state == WordState::RESET_OWED))
+    return false;
+  // r2 M2: HEAD's loss line, which p5f_check pairs with each unplug
+  CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
+  CLog::Log(LOGINFO, "TXLOSS re-freeze ({}) T={} e={}",
+            OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)), wordT, word.e);
+  m_txBodyDone = false;
+  WordState from = WordState::NONE;
+  const bool lost = OUTPUT::COutputWorker::Get().WordRefreeze(wordT, from);
+  if (lost)
+    m_lossState = LossState::LOST;
+  // r3 N2: RESUME waits for the setup after this freeze's own reset
+  m_txVsyncRecord = AmlVsyncResetState().resetReq;
+  m_txBodyDone.store(true, std::memory_order_release);
+  return lost;
+}
+
+void CVideoPlayer::TxResetReal()
+{
+  CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
+  const uint32_t wordT = m_txWordT.load();
+  if (wordT)
+  {
+    using WordState = OUTPUT::COutputWorker::WordState;
+    WordState from = WordState::NONE;
+    const WordState to = OUTPUT::COutputWorker::Get().WordReturnReal(wordT, from);
+    if (to == WordState::RETURNING)
+    {
+      m_txHeldAsPause = from == WordState::PAUSED;
+      m_lossState = LossState::RETURNING;
+    }
+  }
+  // a wake only: RESUME reads the word under the guard (r2 M4)
+  m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RETURNED), 1);
+}
+
+void CVideoPlayer::TxFreezeEnded()
+{
+  m_txFreezeReal = false;
+  m_txBodyDone = false;
+  m_txHeldAsPause = false;
+  m_txConvertStep = 0;
+  m_txResumeWaiting = false;
+  m_txResumeWaitLogged = false;
+  m_txOtherWordTiming = false;
+  m_txClockErrLogged = false;
+  m_txSpanRefusedLogged = false;
+  m_txSkipLogged = 0;
+  m_txStateLogged = -1;
+}
+
+void CVideoPlayer::TxClearAtEnd(const char* why)
+{
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  const auto clear = [this, why]
+  {
+    if (!m_displayLost || !m_txFreezeReal.load())
+      return;
+    // the clock's part (i) at a stop or next file (draft42:107): released, disc time from 0; the
+    // fixed part's stream messages so no stream stays display-held (errata E7 as proposed)
+    m_clock.Pause(false);
+    m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
+    m_displayLost = false;
+    m_discTime.SetDisplayLost(false);
+    m_renderManager.SetDisplayLost(false);
+    m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_DISPLAY_RESET), 1);
+    m_lossState = LossState::NONE;
+    TxFreezeEnded();
+    CLog::Log(LOGINFO, "TXLOSS clear ({})", why);
+  };
+  if (winSystem)
+    winSystem->RunUnderPlayerGuard(clear, false);
+  else
+    clear();
+}
+
+void CVideoPlayer::TxConvertStep2()
+{
+  m_txConvertStep = 0;
+  const uint32_t ownT = m_txWordT.load();
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  if (ownT && word.t == ownT && word.state == WordState::CONVERTING)
+  {
+    if (OUTPUT::COutputWorker::Get().WordPaused(ownT, ToWordHead(WordHeadNow(LossState::PAUSED))))
+      m_lossState = LossState::PAUSED;
+  }
+  else if (ownT && word.t == ownT && word.state == WordState::RESET_OWED)
+  {
+    if (OUTPUT::COutputWorker::Get().WordResetOwedReturning(ownT))
+    {
+      m_txHeldAsPause = true;
+      m_lossState = LossState::RETURNING;
+    }
+  }
+  else
+    CLog::Log(LOGINFO, "TXLOSS conversion step 2 on {} (its effects only)",
+              OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
+  // r3 N1: HEAD's effects whatever the word (HEAD submits them even after a failed CAS)
+  m_discTime.SetDisplayLost(false);
+  ConvertToPauseCallbacks();
+}
+
+bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
+{
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem)
+    return false;
+  const uint32_t ownT = m_txWordT.load();
+  const auto now = std::chrono::steady_clock::now();
+  if (!m_txResumeWaiting)
+  {
+    m_txResumeWaiting = true;
+    m_txResumeWaitLogged = false;
+    m_txResumeWaitSince = now;
+  }
+  // step 1: two vblanks after the vsync's re-setup for this freeze's reset, read under the guard
+  // so the reset's fan-out (which bumps the vsync's count) has finished
+  SAmlVsyncResetState vsync;
+  if (!winSystem->RunUnderPlayerGuard([&vsync] { vsync = AmlVsyncResetState(); }, tryGuard))
+    return false;
+  const auto waited =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - m_txResumeWaitSince);
+  const std::chrono::milliseconds hold{aml_transaction_hooks().resumeWaitMs};
+  if (waited < hold)
+    return false;
+  const uint64_t record = m_txVsyncRecord.load();
+  // a reset this vsync took: wait for the Setup answering it; none (the vsync not set up when
+  // the reset fanned out): no vblank clock unless one has been set up since
+  const bool noClock = vsync.resetReq == record && !vsync.registered;
+  const bool ready =
+      noClock || (vsync.resetReq == record
+                      ? vsync.vblanks >= 2
+                      : vsync.registered && vsync.setupFor == vsync.resetReq && vsync.vblanks >= 2);
+  if (!ready && waited - hold < std::chrono::milliseconds(200))
+    return false;
+  if (!m_txResumeWaitLogged)
+  {
+    m_txResumeWaitLogged = true;
+    if (noClock)
+      CLog::Log(LOGINFO, "RESUME no vblank clock");
+    else if (!ready)
+      CLog::Log(LOGWARNING, "RESUME vblank bound (setup {}/{}, vblanks {})", vsync.setupFor,
+                vsync.resetReq, vsync.vblanks);
+    else
+      CLog::Log(LOGINFO, "RESUME wait {} ms (setup {}/{}, vblanks {})", waited.count(),
+                vsync.setupFor, vsync.resetReq, vsync.vblanks);
+  }
+  // steps 2-5 under the guard: the re-read, the clear, the CAS to NONE
+  bool done = false;
+  uint64_t skipped = 0;
+  uint32_t eDone = 0;
+  int speed = DVD_PLAYSPEED_NORMAL;
+  const bool ran = winSystem->RunUnderPlayerGuard(
+      [&]
+      {
+        const uint64_t value = OUTPUT::COutputWorker::Get().LoadWord();
+        const auto word = OUTPUT::COutputWorker::UnpackWord(value);
+        if (!ownT || word.t != ownT ||
+            word.state != OUTPUT::COutputWorker::WordState::RETURNING || word.spanOpen)
+        {
+          skipped = value;
+          return;
+        }
+        speed = m_clock.GetResumeSpeed(m_playSpeed);
+        ClearPlayerFreeze(m_txHeldAsPause.load());
+        m_lossState = LossState::NONE;
+        std::string lostTo;
+        if (!OUTPUT::COutputWorker::Get().WordResumeDone(ownT, value, lostTo))
+          CLog::Log(LOGERROR, "RESUME CAS lost to {}", lostTo);
+        m_messenger.Flush(CDVDMsg::PLAYER_DISPLAY_RETURNED);
+        eDone = word.e;
+        TxFreezeEnded();
+        done = true;
+      },
+      tryGuard);
+  if (!ran)
+    return false;
+  if (skipped)
+  {
+    if (skipped != m_txSkipLogged)
+    {
+      m_txSkipLogged = skipped;
+      CLog::Log(LOGINFO, "RESUME skipped (word {})", OUTPUT::COutputWorker::WordText(skipped));
+    }
+    m_txResumeWaiting = false;
+    return false;
+  }
+  if (done)
+    CLog::Log(LOGINFO, "RESUME done T={} e={} -> NONE ({}; speed {})", ownT, eDone, site, speed);
+  return done;
+}
+
+void CVideoPlayer::TxFrozenPass()
+{
+  const auto now = std::chrono::steady_clock::now();
+  // as HEAD's sleep branch: nor can a menu page or a boundary start progress while frozen
+  if (m_menuPageWaiting)
+    m_menuPageWaitSince = now;
+  if (m_boundaryStartWaitSince != std::chrono::steady_clock::time_point{})
+    m_boundaryStartWaitSince = now;
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const uint32_t ownT = m_txWordT.load();
+  // r3 N1: step 2 follows step 1 on the next pass, whatever the word
+  if (m_txConvertStep == 1)
+    TxConvertStep2();
+  auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  const bool own = ownT && word.t == ownT;
+  const bool frozenWord = own && (word.state == WordState::LOST ||
+                                  word.state == WordState::CONVERTING ||
+                                  word.state == WordState::PAUSED ||
+                                  word.state == WordState::RESET_OWED ||
+                                  word.state == WordState::RETURNING);
+  if (own && static_cast<int>(word.state) != m_txStateLogged)
+  {
+    m_txStateLogged = static_cast<int>(word.state);
+    CLog::Log(LOGINFO, "TXLOSS state {}",
+              OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
+  }
+  // r3 N3: another word only counts if it persists to the 1 s fallback (never inside a body)
+  if (!own || !(frozenWord || word.state == WordState::FREEZING))
+  {
+    if (!m_txOtherWordTiming)
+    {
+      m_txOtherWordTiming = true;
+      m_txOtherWordSince = now;
+    }
+    else if (now - m_txOtherWordSince >= std::chrono::seconds(1))
+    {
+      CLog::Log(LOGERROR, "TXLOSS frozen under {} (T={}) for 1 s: cleared as HEAD's reset would",
+                OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)), ownT);
+      auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+      const auto fallback = [this]
+      {
+        if (!m_displayLost || !m_txFreezeReal.load())
+          return;
+        ClearPlayerFreeze(m_txHeldAsPause.load());
+        m_lossState = LossState::NONE;
+        TxFreezeEnded();
+        CLog::Log(LOGINFO, "TXLOSS clear (fallback)");
+      };
+      if (winSystem)
+        winSystem->RunUnderPlayerGuard(fallback, false);
+      return;
+    }
+  }
+  else
+    m_txOtherWordTiming = false;
+  // r3 N3 / r2 M1: the clock stays held while frozen (checked only once the body is done)
+  if (frozenWord && m_txBodyDone.load(std::memory_order_acquire) && !m_txClockErrLogged &&
+      !m_clock.IsPaused())
+  {
+    m_txClockErrLogged = true;
+    CLog::Log(LOGERROR, "TXLOSS clock running while frozen (word {})",
+              OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
+  }
+  if (own && word.state == WordState::LOST && word.spanOpen && m_txConvertStep == 0)
+  {
+    // step 1 of the conversion, gated by its word CAS (r3 L6)
+    auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+    if (winSystem && winSystem->DisconnectedForMs() >= 15000 &&
+        m_playSpeed != DVD_PLAYSPEED_PAUSE && CanPause() &&
+        OUTPUT::COutputWorker::Get().WordConverting(ownT,
+                                                    ToWordHead(WordHeadNow(LossState::LOST))))
+    {
+      m_lossState = LossState::CONVERTING;
+      CLog::Log(LOGINFO, "VideoPlayer: display lost for {} ms, now an ordinary pause",
+                winSystem->DisconnectedForMs());
+      ConvertToPauseSpeeds();
+      m_txConvertStep = 1;
+    }
+  }
+  if (!(own && word.state == WordState::RETURNING))
+    m_txResumeWaiting = false; // a re-freeze restarts RESUME's wait at its next return
+  else
+  {
+    if (word.spanOpen)
+    {
+      if (!m_txSpanRefusedLogged)
+      {
+        m_txSpanRefusedLogged = true;
+        CLog::Log(LOGERROR, "RESUME refused: the span is open (word {})",
+                  OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
+      }
+    }
+    else if (TxResume("loop", false))
+      return;
+  }
+  // the inbox: the wake, and a next file only in a span (D3, r3 L2); the rest stays queued for
+  // HandleMessages after RESUME, HEAD's order
+  const bool takeOpen = own && word.spanOpen &&
+                        (word.state == WordState::LOST || word.state == WordState::CONVERTING ||
+                         word.state == WordState::PAUSED);
+  std::shared_ptr<CDVDMsg> msg;
+  const auto timeout = own && word.state == WordState::RETURNING ? std::chrono::milliseconds(5)
+                                                                  : std::chrono::milliseconds(50);
+  if (m_messenger.GetFirstOf(
+          msg,
+          [takeOpen](CDVDMsg& m)
+          {
+            return m.IsType(CDVDMsg::PLAYER_DISPLAY_RETURNED) ||
+                   (takeOpen && m.IsType(CDVDMsg::PLAYER_OPENFILE));
+          },
+          timeout) != MSGQ_OK)
+    return;
+  if (!msg->IsType(CDVDMsg::PLAYER_OPENFILE))
+  {
+    CLog::Log(LOGINFO, "TXLOSS inbox took Returned");
+    return;
+  }
+  // newest wins, as HEAD's HandleMessages (an older next file is skipped)
+  if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) > 0)
+  {
+    CLog::Log(LOGINFO, "TXLOSS inbox took OPENFILE: a newer one is queued, this one dropped");
+    return;
+  }
+  CLog::Log(LOGINFO, "TXLOSS inbox took OPENFILE");
+  // row 28: the ABORT CAS first, then HEAD's next file with the clear before Prepare (D7)
+  if (const uint32_t wordT = m_txWordT.exchange(0))
+    OUTPUT::COutputWorker::Get().WordStop(wordT);
+  m_txClearBeforePrepare = true;
+  HandleOpenFile(msg);
 }
 
 void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update)

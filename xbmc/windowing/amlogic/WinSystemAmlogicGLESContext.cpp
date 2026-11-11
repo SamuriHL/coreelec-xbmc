@@ -1348,6 +1348,11 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (!lostFirst)
     lostWalk();
 
+  // 5.E2-7 (D2a): on a real loss path session the commit's e+1 comes before the first link
+  // write (draft42:104), a failed commit bumped too
+  const bool wordAhead = aml_transaction_loss_real();
+  if (wordAhead)
+    OUTPUT::COutputWorker::Get().WordCommitAhead();
   const bool committed = display->set_native_resolution(
       res, job.fbName, job.stereo, force_mode_switch, hotplug_mode_switch, frac_reclock,
       job.hotplug && !routing && OUTPUT::LinkRequestOn());
@@ -1372,8 +1377,10 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // where main took the time after its commit job: the delay counts from here
   job.modeSetAt = std::chrono::steady_clock::now();
   // 5.E2-3: the shadow word's epoch, after the park and the delay's mark (E2-3 review L3)
-  if (aml_transaction_shadow_on() && committed)
+  if (!wordAhead && aml_transaction_shadow_on() && committed)
     OUTPUT::COutputWorker::Get().WordCommitted(notConnected);
+  if (wordAhead)
+    OUTPUT::COutputWorker::Get().WordCommitResult(committed, notConnected);
   job.commitMs = sinceStart();
 
   if (committed)

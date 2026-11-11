@@ -295,9 +295,11 @@ void COutputWorker::WordLoss(bool walk)
             n.sub = false;
             return Apply(n, "8", note);
           case RESET_OWED:
-            break;
+            // 5.E2-7: row 22's loss rule (only the real path stores RESET_OWED): the reset is
+            // no longer owed; P finishes its conversion step as from CONVERTING
+            n.state = CONVERTING;
+            return Apply(n, "22", "loss while the reset is owed");
         }
-        // nothing in E2-3 stores RESET_OWED
         return Apply(n, "unreachable", note);
       });
 }
@@ -379,9 +381,9 @@ uint32_t COutputWorker::WordOpen(uint32_t ownT, WordState mirror)
   return opened ? t : 0;
 }
 
-void COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head)
+bool COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head)
 {
-  WordApply(
+  return WordApply(
       [=](const SWord& w)
       {
         const char* row = newcomer ? "29" : "11+12";
@@ -400,9 +402,9 @@ void COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead
       &head);
 }
 
-void COutputWorker::WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& head)
+bool COutputWorker::WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& head)
 {
-  WordApply(
+  return WordApply(
       [=](const SWord& w)
       {
         const char* row = newcomer ? "29" : "14";
@@ -416,9 +418,9 @@ void COutputWorker::WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& he
       &head);
 }
 
-void COutputWorker::WordConverting(uint32_t ownT, const SWordHead& head)
+bool COutputWorker::WordConverting(uint32_t ownT, const SWordHead& head)
 {
-  WordApply(
+  return WordApply(
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::LOST)
@@ -430,9 +432,9 @@ void COutputWorker::WordConverting(uint32_t ownT, const SWordHead& head)
       &head);
 }
 
-void COutputWorker::WordPaused(uint32_t ownT, const SWordHead& head)
+bool COutputWorker::WordPaused(uint32_t ownT, const SWordHead& head)
 {
-  WordApply(
+  return WordApply(
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::CONVERTING)
@@ -504,6 +506,136 @@ void COutputWorker::WordStop(uint32_t ownT)
       });
 }
 
+
+// 5.E2-7: the real word's own steps (docs/phase5_e2_7_impl.md D2, D3, D4)
+bool COutputWorker::WordRefreeze(uint32_t ownT, WordState& from)
+{
+  using enum WordState;
+  from = UnpackWord(LoadWord()).state;
+  const bool parked = WordApply(
+      [ownT](const SWord& w)
+      {
+        if (w.t != ownT)
+          return Skip("12", WordOwned("FREEZING claimed, RETURNING or RESET_OWED", ownT));
+        SWord n = w;
+        n.state = FREEZING;
+        n.sub = true;
+        if (w.state == FREEZING && !w.sub)
+          return Apply(n, "12", "re-freeze: the player still frozen, no body");
+        if ((w.state == RETURNING && !w.spanOpen) || w.state == RESET_OWED)
+          return Apply(n, "E6", "a walk while RESUME is owed: re-freeze, no body, no e change");
+        return Skip("12", WordOwned("FREEZING claimed, RETURNING or RESET_OWED", ownT));
+      });
+  if (!parked)
+    return false;
+  return WordApply(
+      [ownT](const SWord& w)
+      {
+        if (w.t != ownT || w.state != FREEZING || !w.sub)
+          return Skip("14", WordOwned("FREEZING parked", ownT));
+        SWord n = w;
+        n.state = LOST;
+        n.sub = false;
+        return Apply(n, "14", "re-freeze done (the freeze still in force)");
+      });
+}
+
+COutputWorker::WordState COutputWorker::WordReturnReal(uint32_t ownT, WordState& from)
+{
+  using enum WordState;
+  WordState to = NONE;
+  from = NONE;
+  WordApply(
+      [ownT, &from, &to](const SWord& w)
+      {
+        from = w.state;
+        to = NONE;
+        if (w.t != ownT)
+          return Skip("20", WordOwned("LOST, CONVERTING or PAUSED", ownT));
+        SWord n = w;
+        n.spanOpen = false;
+        if (w.state == CONVERTING)
+        {
+          n.state = to = RESET_OWED;
+          return Apply(n, "21", "a real freeze's reset while P converts");
+        }
+        if (w.state == LOST || w.state == PAUSED)
+        {
+          n.state = to = RETURNING;
+          return Apply(n, w.spanOpen ? "20" : "16", "a real freeze's reset: RESUME owed to P");
+        }
+        return Skip("20", WordOwned("LOST, CONVERTING or PAUSED", ownT));
+      });
+  return to;
+}
+
+bool COutputWorker::WordResetOwedReturning(uint32_t ownT)
+{
+  return WordApply(
+      [ownT](const SWord& w)
+      {
+        if (w.t != ownT || w.state != WordState::RESET_OWED)
+          return Skip("22", WordOwned("RESET_OWED", ownT));
+        SWord n = w;
+        n.state = WordState::RETURNING;
+        return Apply(n, "22", "conversion step done, RESUME follows");
+      });
+}
+
+bool COutputWorker::WordResumeDone(uint32_t ownT, uint64_t read, std::string& lostTo)
+{
+  constexpr int TRIES = 4;
+  for (int attempt = 1; attempt <= TRIES; ++attempt)
+  {
+    SWord n = UnpackWord(read);
+    n.state = WordState::NONE;
+    const uint64_t desired = PackWord(n);
+    uint64_t found = read;
+    if (m_word.compare_exchange_strong(found, desired, std::memory_order_acq_rel))
+    {
+      CLog::Log(LOGINFO, "WORD {} -> {} (row 23) RESUME's end{}", WordText(read), WordText(desired),
+                attempt > 1 ? StringUtils::Format(" (try {})", attempt) : std::string());
+      return true;
+    }
+    // under the guard only an unguarded commit can move the word: e alone
+    SWord was = UnpackWord(read);
+    SWord now = UnpackWord(found);
+    was.e = now.e;
+    if (PackWord(was) != found)
+    {
+      lostTo = WordText(found);
+      return false;
+    }
+    CLog::Log(LOGINFO, "WORD race (row 23) retried: expected {} found {} (e only)", WordText(read),
+              WordText(found));
+    read = found;
+  }
+  lostTo = WordText(LoadWord());
+  return false;
+}
+
+void COutputWorker::WordCommitAhead()
+{
+  WordApply(
+      [](const SWord& w)
+      {
+        SWord n = w;
+        n.e = (w.e + 1) & WORD_E_MASK;
+        const char* note = "commit, before the link write";
+        if (!w.f)
+          return Apply(n, "27", note);
+        if (WordHeldState(w.state))
+          return Apply(n, w.spanOpen ? "19" : "15", note);
+        return Apply(n, ROW_NOT_HELD, note);
+      });
+}
+
+void COutputWorker::WordCommitResult(bool committed, bool notConnected)
+{
+  CLog::Log(LOGINFO, "WORD commit result: {} (e bumped before the link write) word {}",
+            !committed ? "failed" : notConnected ? "not-committed" : "committed",
+            WordText(LoadWord()));
+}
 
 // 5.E2-4: W's request lists as a shadow (design §8.10)
 namespace

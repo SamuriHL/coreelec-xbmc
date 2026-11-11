@@ -1920,11 +1920,16 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
         {
           if (shadowBefore)
             shadowBefore();
+          // 5.E2-7 (D2a): on a real loss path session the commit's e+1 comes before the first
+          // link write (draft42:104), a failed commit bumped too
+          const bool wordAhead = aml_transaction_loss_real();
+          if (wordAhead)
+            OUTPUT::COutputWorker::Get().WordCommitAhead();
           *committed = display->set_native_resolution(res, name, stereo, force, hotplug, frac);
           if (shadowAfter)
             shadowAfter(*committed, display->aml_set_not_connected());
           // 5.E2-3: the shadow word's epoch, logged after the park (E2-3 review L3)
-          const bool wordCommit = aml_transaction_shadow_on() && *committed;
+          const bool wordCommit = !wordAhead && aml_transaction_shadow_on() && *committed;
           const bool wordNotConnected = wordCommit && display->aml_set_not_connected();
           OUTPUT::TestStopAt("4");
           if (*committed)
@@ -1943,6 +1948,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
           OUTPUT::TestStopAt("6");
           if (wordCommit)
             OUTPUT::COutputWorker::Get().WordCommitted(wordNotConnected);
+          if (wordAhead)
+            OUTPUT::COutputWorker::Get().WordCommitResult(
+                *committed, *committed && display->aml_set_not_connected());
         });
     ret = *committed;
     if (ret && !commitTiming)
