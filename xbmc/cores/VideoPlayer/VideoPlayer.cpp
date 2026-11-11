@@ -2936,7 +2936,16 @@ void CVideoPlayer::SampleWord()
   }
   if (pair == m_wordSampleLogged)
     return;
-  if (own && !agree && now - m_wordSampleSince < 200ms)
+  // 5.E2-7 (e27u p5f x finding): the span's claim (row 11, FREEZING claimed) stands through the
+  // whole lost walk, and the player's body runs after the earlier listeners; with keepsink off
+  // ActiveAE's DISPLAYLOST closes its sink first (~200 ms), past the 200 ms tolerance, though
+  // nothing disagrees: the body is still to come. That pair (HEAD's NONE, or RETURNING for a
+  // re-freeze) gets the walk's own bound (ActiveAE's 5 s sync, + 1 s); a claim never parked still
+  // logs DISAGREE after it
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const bool claimPending = own && word.state == WordState::FREEZING && !word.sub &&
+                            (head == LossState::NONE || head == LossState::RETURNING);
+  if (own && !agree && now - m_wordSampleSince < (claimPending ? 6000ms : 200ms))
     return;
   m_wordSampleLogged = pair;
   CLog::Log(own && !agree ? LOGWARNING : LOGINFO, "WORD sample {} T={} lossState={} word {}",
