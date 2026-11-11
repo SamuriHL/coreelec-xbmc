@@ -21,6 +21,7 @@ struct SAmlVsyncResetState
   uint64_t resetReq = 0;
   uint64_t setupFor = 0;
   uint64_t vblanks = 0;
+  uint64_t setups = 0; //!< successful Setups so far (code review L7)
   bool registered = false;
 };
 SAmlVsyncResetState AmlVsyncResetState();

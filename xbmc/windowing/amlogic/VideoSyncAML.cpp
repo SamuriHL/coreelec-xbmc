@@ -68,6 +68,7 @@ constexpr double RATE_CONFIRM_AGREE = 0.0001;
 std::atomic<uint64_t> g_resetReq{0};
 std::atomic<uint64_t> g_setupFor{0};
 std::atomic<uint64_t> g_vblanksSinceSetup{0};
+std::atomic<uint64_t> g_setups{0};
 std::atomic<bool> g_registered{false};
 
 int64_t MonotonicToHostOffset()
@@ -85,6 +86,7 @@ SAmlVsyncResetState AmlVsyncResetState()
   state.resetReq = g_resetReq.load();
   state.setupFor = g_setupFor.load();
   state.vblanks = g_vblanksSinceSetup.load();
+  state.setups = g_setups.load();
   state.registered = g_registered.load();
   return state;
 }
@@ -101,9 +103,10 @@ CVideoSyncAML::~CVideoSyncAML()
 
 bool CVideoSyncAML::Setup()
 {
-  // 5.E2-7: the resets this Setup answers (read before m_abort is cleared)
-  const uint64_t setupFor = g_resetReq.load();
   m_abort = false;
+  // 5.E2-7: the resets this Setup answers, read after m_abort is cleared (code review L7): a
+  // reset landing after this read sets m_abort again, so Run ends and a new Setup answers it
+  const uint64_t setupFor = g_resetReq.load();
   m_measureAnchorSeq = 0;
   m_measureAnchorNs = 0;
   m_pendingMeasuredFps = 0.0;
@@ -176,6 +179,7 @@ bool CVideoSyncAML::Setup()
             m_fd, m_crtcId, m_sequence);
   g_vblanksSinceSetup = 0;
   g_setupFor = setupFor;
+  g_setups.fetch_add(1);
   g_registered = true;
   return true;
 }

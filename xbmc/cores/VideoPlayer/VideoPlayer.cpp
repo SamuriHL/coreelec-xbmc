@@ -10447,7 +10447,7 @@ void CVideoPlayer::OnLostDisplay()
   }
   if (txReal)
   {
-    m_txVsyncRecord = AmlVsyncResetState().resetReq;
+    TxRecordVsync();
     m_txBodyDone = false;
     m_txHeldAsPause = false;
     m_txFreezeReal.store(true, std::memory_order_release);
@@ -10658,9 +10658,18 @@ bool CVideoPlayer::TxRefreeze()
   if (lost)
     m_lossState = LossState::LOST;
   // r3 N2: RESUME waits for the setup after this freeze's own reset
-  m_txVsyncRecord = AmlVsyncResetState().resetReq;
+  TxRecordVsync();
   m_txBodyDone.store(true, std::memory_order_release);
   return lost;
+}
+
+void CVideoPlayer::TxRecordVsync()
+{
+  const SAmlVsyncResetState vsync = AmlVsyncResetState();
+  m_txVsyncRecord = vsync.resetReq;
+  m_txSetupRecord = vsync.setups;
+  m_txVsyncWasRegistered = vsync.registered;
+  m_txVsyncGen.fetch_add(1, std::memory_order_release);
 }
 
 void CVideoPlayer::TxResetReal()
@@ -10695,6 +10704,7 @@ void CVideoPlayer::TxFreezeEnded()
   m_txSpanRefusedLogged = false;
   m_txSkipLogged = 0;
   m_txStateLogged = -1;
+  m_txResumeClockErrLogged = false;
 }
 
 void CVideoPlayer::TxClearAtEnd(const char* why)
@@ -10758,11 +10768,15 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
     return false;
   const uint32_t ownT = m_txWordT.load();
   const auto now = std::chrono::steady_clock::now();
-  if (!m_txResumeWaiting)
+  // code review M3: the wait belongs to the record it started under; a re-freeze (a new record,
+  // in the loop or inside a drain) restarts it
+  const uint64_t gen = m_txVsyncGen.load(std::memory_order_acquire);
+  if (!m_txResumeWaiting || gen != m_txResumeGen)
   {
     m_txResumeWaiting = true;
     m_txResumeWaitLogged = false;
     m_txResumeWaitSince = now;
+    m_txResumeGen = gen;
   }
   // step 1: two vblanks after the vsync's re-setup for this freeze's reset, read under the guard
   // so the reset's fan-out (which bumps the vsync's count) has finished
@@ -10775,13 +10789,18 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
   if (waited < hold)
     return false;
   const uint64_t record = m_txVsyncRecord.load();
-  // a reset this vsync took: wait for the Setup answering it; none (the vsync not set up when
-  // the reset fanned out): no vblank clock unless one has been set up since
-  const bool noClock = vsync.resetReq == record && !vsync.registered;
-  const bool ready =
-      noClock || (vsync.resetReq == record
-                      ? vsync.vblanks >= 2
-                      : vsync.registered && vsync.setupFor == vsync.resetReq && vsync.vblanks >= 2);
+  // a reset this vsync took: wait for the Setup answering it. None taken: no vblank clock only if
+  // none was set up at the freeze either; a vsync that stopped during the loss (set up at the
+  // freeze, not now) is waited for until a newer Setup has run (code review L7)
+  const bool wasRegistered = m_txVsyncWasRegistered.load();
+  const bool noClock = vsync.resetReq == record && !vsync.registered && !wasRegistered;
+  bool ready;
+  if (noClock)
+    ready = true;
+  else if (vsync.resetReq != record)
+    ready = vsync.registered && vsync.setupFor == vsync.resetReq && vsync.vblanks >= 2;
+  else // the same Setup running through (as HEAD), or a newer one after a stop: two vblanks of it
+    ready = vsync.registered && vsync.vblanks >= 2;
   if (!ready && waited - hold < std::chrono::milliseconds(200))
     return false;
   if (!m_txResumeWaitLogged)
@@ -10793,17 +10812,25 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
       CLog::Log(LOGWARNING, "RESUME vblank bound (setup {}/{}, vblanks {})", vsync.setupFor,
                 vsync.resetReq, vsync.vblanks);
     else
-      CLog::Log(LOGINFO, "RESUME wait {} ms (setup {}/{}, vblanks {})", waited.count(),
-                vsync.setupFor, vsync.resetReq, vsync.vblanks);
+      CLog::Log(LOGINFO, "RESUME wait {} ms (setup {}/{}, vblanks {}, setups {} since {})",
+                waited.count(), vsync.setupFor, vsync.resetReq, vsync.vblanks, vsync.setups,
+                m_txSetupRecord.load());
   }
   // steps 2-5 under the guard: the re-read, the clear, the CAS to NONE
   bool done = false;
+  bool regen = false;
   uint64_t skipped = 0;
   uint32_t eDone = 0;
   int speed = DVD_PLAYSPEED_NORMAL;
   const bool ran = winSystem->RunUnderPlayerGuard(
       [&]
       {
+        // code review M3: a re-freeze and a new reset between step 1 and here: wait again
+        if (m_txVsyncGen.load(std::memory_order_acquire) != gen)
+        {
+          regen = true;
+          return;
+        }
         const uint64_t value = OUTPUT::COutputWorker::Get().LoadWord();
         const auto word = OUTPUT::COutputWorker::UnpackWord(value);
         if (!ownT || word.t != ownT ||
@@ -10811,6 +10838,13 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
         {
           skipped = value;
           return;
+        }
+        // code review L9: D3's clock check at RESUME's step 2 as well
+        if (!m_clock.IsPaused() && !m_txResumeClockErrLogged)
+        {
+          m_txResumeClockErrLogged = true;
+          CLog::Log(LOGERROR, "TXLOSS clock running while frozen (at RESUME, word {})",
+                    OUTPUT::COutputWorker::WordText(value));
         }
         speed = m_clock.GetResumeSpeed(m_playSpeed);
         ClearPlayerFreeze(m_txHeldAsPause.load());
@@ -10826,6 +10860,12 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
       tryGuard);
   if (!ran)
     return false;
+  if (regen)
+  {
+    CLog::Log(LOGINFO, "RESUME wait restarted: a re-freeze between its steps");
+    m_txResumeWaiting = false;
+    return false;
+  }
   if (skipped)
   {
     if (skipped != m_txSkipLogged)

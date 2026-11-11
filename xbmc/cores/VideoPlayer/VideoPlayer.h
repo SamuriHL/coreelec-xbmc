@@ -940,6 +940,14 @@ protected:
   std::atomic_bool m_txFreezeReal{false};
   std::atomic_bool m_txBodyDone{false};
   std::atomic<uint64_t> m_txVsyncRecord{0};
+  //! code review M3, L7: the record's other halves and its generation (bumped after each record,
+  //! W under the guard); RESUME's wait restarts whenever the generation moves
+  std::atomic<uint64_t> m_txSetupRecord{0};
+  std::atomic_bool m_txVsyncWasRegistered{false};
+  std::atomic<uint64_t> m_txVsyncGen{0};
+  uint64_t m_txResumeGen = 0; //!< P: the record generation RESUME's wait started under
+  bool m_txResumeClockErrLogged = false;
+  void TxRecordVsync();
   std::atomic_bool m_txHeldAsPause{false};
   //! P only: conversion step 1 done; RESUME's wait; the other-word timer; logged-once marks
   int m_txConvertStep = 0;
