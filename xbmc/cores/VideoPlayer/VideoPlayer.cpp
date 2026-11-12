@@ -2926,8 +2926,9 @@ void CVideoPlayer::SampleWord()
   const LossState head = m_lossState.load();
   const bool own = word.t == ownT;
   const bool agree = own && static_cast<uint8_t>(word.state) == WordMirror(head);
-  const int pair = own ? (static_cast<int>(word.state) << 4 | static_cast<int>(head))
-                       : (0x100 | static_cast<int>(head));
+  const int pair = own ? (word.sub << 8 | static_cast<int>(word.state) << 4 |
+                          static_cast<int>(head))
+                       : (0x1000 | static_cast<int>(head));
   const auto now = std::chrono::steady_clock::now();
   if (pair != m_wordSamplePair)
   {
