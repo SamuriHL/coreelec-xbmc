@@ -955,6 +955,22 @@ protected:
   //! freeze (0 where VPA writes 0 or nothing), recorded by the FREEZE body under the guard,
   //! before m_txBodyDone; the frozen inbox writes it into an empty hold (r3 N-L1)
   std::atomic<double> m_txLossHoldFrom{0.0};
+  //! the audio offset in force at the same moment (D6's log)
+  std::atomic<double> m_txLossOffset{0.0};
+  //! P only, the frozen inbox (D1-D6): a take in progress (the SETSPEED deviations key on it);
+  //! its hold write (kept: a value was already there); per-freeze counts and logged-once marks
+  bool m_txInboxTaking = false;
+  bool m_txInboxHoldKept = false;
+  double m_txInboxHoldValue = 0.0;
+  bool m_txInboxPauseTaken = false;
+  bool m_txInboxFrontLogged = false;
+  int m_txInboxTook = 0;
+  std::vector<std::string> m_txInboxHeldLogged;
+  bool TxInbox() const;
+  //! P: the inbox's takes for one frozen pass
+  void TxInboxPass();
+  //! nullptr when a GUI action may be taken while frozen (D5), else why it is held
+  const char* TxInboxGuiHold(const CAction& action);
   //! P only: conversion step 1 done; RESUME's wait; the other-word timer; logged-once marks
   int m_txConvertStep = 0;
   bool m_txResumeWaiting = false;

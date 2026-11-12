@@ -7004,8 +7004,11 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
   const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
   const int speed = msg->GetSpeed();
 
-  // correct our current clock, as it would start going wrong otherwise
-  if (m_State.timestamp > 0)
+  // correct our current clock, as it would start going wrong otherwise; 5.E2-7b (D3 (b)): no
+  // time passes on a held picture
+  if (m_State.timestamp > 0 && m_txInboxTaking)
+    m_State.timestamp = m_clock.GetAbsoluteClock();
+  else if (m_State.timestamp > 0)
   {
     double offset;
     offset = m_clock.GetAbsoluteClock() - m_State.timestamp;
@@ -7074,14 +7077,32 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
   // scheduled resume
   double holdFrom = 0.0;
   double holdStep = 0.0;
-  if (!(speed == DVD_PLAYSPEED_PAUSE && m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
-        m_scheduledStart && !m_pInputStream->IsRealtime() &&
-        m_renderManager.GetResumePts(holdFrom, holdStep)))
-    holdFrom = 0.0;
-  // the audio heard with that picture is offset from it
+  if (m_txInboxTaking)
+  {
+    // 5.E2-7b (D3 (a), r3 N-L1): while frozen the cut is the loss's, VPA's own value when it
+    // wrote one, else the freeze's record (0 for a pause failing HEAD's terms)
+    m_txInboxHoldValue = m_clock.GetHoldFrom();
+    m_txInboxHoldKept = m_txInboxHoldValue != 0.0;
+    if (!m_txInboxHoldKept)
+    {
+      if (speed != DVD_PLAYSPEED_PAUSE ||
+          (m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL && m_scheduledStart &&
+           !m_pInputStream->IsRealtime()))
+        m_txInboxHoldValue = m_txLossHoldFrom.load();
+      m_clock.SetHoldFrom(m_txInboxHoldValue);
+    }
+  }
   else
-    holdFrom += m_clock.GetAudioOffset();
-  m_clock.SetHoldFrom(holdFrom);
+  {
+    if (!(speed == DVD_PLAYSPEED_PAUSE && m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
+          m_scheduledStart && !m_pInputStream->IsRealtime() &&
+          m_renderManager.GetResumePts(holdFrom, holdStep)))
+      holdFrom = 0.0;
+    // the audio heard with that picture is offset from it
+    else
+      holdFrom += m_clock.GetAudioOffset();
+    m_clock.SetHoldFrom(holdFrom);
+  }
   // a held start stays paused: the release applies the speed
   if (m_startHeld)
   {
@@ -10478,6 +10499,7 @@ void CVideoPlayer::OnLostDisplay()
                                m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL
                            ? holdFrom
                            : 0.0;
+    m_txLossOffset = m_clock.GetAudioOffset();
     m_txBodyDone = false;
     m_txHeldAsPause = false;
     m_txFreezeReal.store(true, std::memory_order_release);
@@ -10763,6 +10785,13 @@ void CVideoPlayer::TxFreezeEnded()
   m_txSkipLogged = 0;
   m_txStateLogged = -1;
   m_txResumeClockErrLogged = false;
+  if (aml_transaction_inbox() && (m_txInboxTook || !m_txInboxHeldLogged.empty()))
+    CLog::Log(LOGINFO, "TXLOSS inbox summary: took {}, held {}", m_txInboxTook,
+              m_txInboxHeldLogged.size());
+  m_txInboxTook = 0;
+  m_txInboxHeldLogged.clear();
+  m_txInboxFrontLogged = false;
+  m_txInboxPauseTaken = false;
 }
 
 void CVideoPlayer::TxClearAtEnd(const char* why)
@@ -10892,6 +10921,7 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
   uint64_t skipped = 0;
   uint32_t eDone = 0;
   int speed = DVD_PLAYSPEED_NORMAL;
+  const bool pauseTaken = m_txInboxPauseTaken;
   const bool ran = winSystem->RunUnderPlayerGuard(
       [&]
       {
@@ -10917,7 +10947,8 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
                     OUTPUT::COutputWorker::WordText(value));
         }
         speed = m_clock.GetResumeSpeed(m_playSpeed);
-        ClearPlayerFreeze(m_txHeldAsPause.load());
+        ClearPlayerFreeze(m_txHeldAsPause.load() &&
+                          m_clock.GetResumeSpeed(m_playSpeed) == DVD_PLAYSPEED_PAUSE);
         m_lossState = LossState::NONE;
         std::string lostTo;
         if (!OUTPUT::COutputWorker::Get().WordResumeDone(ownT, value, lostTo))
@@ -10948,6 +10979,12 @@ bool CVideoPlayer::TxResume(const char* site, bool tryGuard)
   }
   if (done)
     CLog::Log(LOGINFO, "RESUME done T={} e={} -> NONE ({}; speed {})", ownT, eDone, site, speed);
+  // 5.E2-7b (D6): the loss's cut used the offset in force then
+  if (done && pauseTaken && speed == DVD_PLAYSPEED_PAUSE &&
+      m_clock.GetAudioOffset() != m_txLossOffset.load())
+    CLog::Log(LOGINFO, "RESUME held, offset moved {:+.0f} -> {:+.0f} ms",
+              m_txLossOffset.load() * 1000.0 / DVD_TIME_BASE,
+              m_clock.GetAudioOffset() * 1000.0 / DVD_TIME_BASE);
   return done;
 }
 
@@ -11015,6 +11052,159 @@ void CVideoPlayer::TxResendPause(IDVDStreamPlayer* player, bool lostAtSend, cons
             stream);
 }
 
+bool CVideoPlayer::TxInbox() const
+{
+  return m_txFreezeReal.load() && aml_transaction_inbox();
+}
+
+namespace
+{
+std::string TxMsgName(CDVDMsg::Message type)
+{
+  switch (type)
+  {
+    case CDVDMsg::PLAYER_DISPLAY_RETURNED:
+      return "PLAYER_DISPLAY_RETURNED";
+    case CDVDMsg::PLAYER_AVCHANGE:
+      return "PLAYER_AVCHANGE";
+    case CDVDMsg::PLAYER_REPORT_STATE:
+      return "PLAYER_REPORT_STATE";
+    case CDVDMsg::PLAYER_SETSPEED:
+      return "PLAYER_SETSPEED";
+    case CDVDMsg::GENERAL_GUI_ACTION:
+      return "GENERAL_GUI_ACTION";
+    case CDVDMsg::PLAYER_STARTED:
+      return "PLAYER_STARTED";
+    case CDVDMsg::PLAYER_OPENFILE:
+      return "PLAYER_OPENFILE";
+    case CDVDMsg::PLAYER_SEEK:
+      return "PLAYER_SEEK";
+    case CDVDMsg::PLAYER_SEEK_CHAPTER:
+      return "PLAYER_SEEK_CHAPTER";
+    case CDVDMsg::GENERAL_FLUSH:
+      return "GENERAL_FLUSH";
+    case CDVDMsg::GENERAL_SYNCHRONIZE:
+      return "GENERAL_SYNCHRONIZE";
+    case CDVDMsg::DEMUXER_RESET:
+      return "DEMUXER_RESET";
+    case CDVDMsg::PLAYER_SET_STATE:
+      return "PLAYER_SET_STATE";
+    default:
+      return "type " + std::to_string(static_cast<int>(type));
+  }
+}
+} // namespace
+
+const char* CVideoPlayer::TxInboxGuiHold(const CAction& action)
+{
+  if (!m_pInputStream || !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+    return m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ? "DVD" : "other";
+  const int id = action.GetID();
+  if (id == ACTION_SHOW_VIDEOMENU || id == ACTION_PREVIOUS_MENU || id == ACTION_NAV_BACK)
+    return "menu call";
+  auto* bd = static_cast<CDVDInputStreamBluray*>(m_pInputStream.get());
+  if (!bd->IsHdmvMenuTitle())
+    return "BD-J";
+  if (m_dvd.state == DVDSTATE_STILL && m_dvd.iDVDStillTime != 0ms)
+    return "still";
+  if (!bd->IsInMenu())
+    return "other";
+  switch (id)
+  {
+    case ACTION_MOVE_LEFT:
+    case ACTION_MOVE_RIGHT:
+    case ACTION_MOVE_UP:
+    case ACTION_MOVE_DOWN:
+    case ACTION_SELECT_ITEM:
+    case ACTION_NEXT_ITEM:
+    case ACTION_PREV_ITEM:
+      return nullptr;
+    default:
+      return id >= REMOTE_0 && id <= REMOTE_9 ? nullptr : "other";
+  }
+}
+
+void CVideoPlayer::TxInboxPass()
+{
+  // D2: a take never overtakes; the passed-over messages run after RESUME, at HEAD's moment
+  const auto start = std::chrono::steady_clock::now();
+  for (int n = 0; n < 8 && !m_bAbortRequest && std::chrono::steady_clock::now() - start < 20ms;
+       ++n)
+  {
+    const bool listFront = !m_txInboxFrontLogged;
+    std::string front;
+    const char* why = nullptr;
+    const auto pass = [listFront, &front](CDVDMsg& m)
+    {
+      const bool passed = m.IsType(CDVDMsg::PLAYER_DISPLAY_RETURNED) ||
+                          m.IsType(CDVDMsg::PLAYER_AVCHANGE) ||
+                          m.IsType(CDVDMsg::PLAYER_REPORT_STATE);
+      if (passed && listFront)
+        front += (front.empty() ? "" : ",") + TxMsgName(m.GetMessageType());
+      return passed;
+    };
+    const auto accept = [this, &why](CDVDMsg& m)
+    {
+      if (m.IsType(CDVDMsg::PLAYER_SETSPEED))
+        return true;
+      if (!m.IsType(CDVDMsg::GENERAL_GUI_ACTION))
+        return false;
+      why = TxInboxGuiHold(static_cast<CDVDMsgType<CAction>&>(m).m_value);
+      return why == nullptr;
+    };
+    std::shared_ptr<CDVDMsg> msg;
+    CDVDMsg::Message frontType = CDVDMsg::NONE;
+    const bool took = m_messenger.GetFrontIf(msg, accept, pass, frontType) == MSGQ_OK;
+    const CDVDMsg::Message first = took ? msg->GetMessageType() : frontType;
+    if (listFront && first != CDVDMsg::NONE)
+      front += (front.empty() ? "" : ",") + TxMsgName(first);
+    if (listFront && !front.empty())
+    {
+      m_txInboxFrontLogged = true;
+      CLog::Log(LOGINFO, "TXLOSS inbox front {}", front);
+    }
+    if (!took)
+    {
+      if (frontType != CDVDMsg::NONE)
+      {
+        std::string held = TxMsgName(frontType);
+        if (why)
+          held += std::string(" (") + why + ")";
+        if (std::find(m_txInboxHeldLogged.begin(), m_txInboxHeldLogged.end(), held) ==
+            m_txInboxHeldLogged.end())
+        {
+          m_txInboxHeldLogged.push_back(held);
+          CLog::Log(LOGINFO, "TXLOSS inbox held behind {}", held);
+        }
+      }
+      return;
+    }
+    ++m_txInboxTook;
+    m_txInboxTaking = true;
+    if (msg->IsType(CDVDMsg::PLAYER_SETSPEED))
+    {
+      const int speed = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(msg)->GetSpeed();
+      HandleSetSpeed(msg);
+      m_txInboxTaking = false;
+      if (speed == DVD_PLAYSPEED_PAUSE)
+        m_txInboxPauseTaken = true;
+      CLog::Log(LOGINFO,
+                "TXLOSS inbox took SETSPEED {} (word {}; resumes at {}; holdFrom {} {:.3f} ms)",
+                speed, OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::Get().LoadWord()),
+                m_clock.GetResumeSpeed(m_playSpeed), m_txInboxHoldKept ? "kept" : "set",
+                m_txInboxHoldValue / 1000.0);
+    }
+    else
+    {
+      const CAction action = std::static_pointer_cast<CDVDMsgType<CAction>>(msg)->m_value;
+      OnAction(action);
+      m_txInboxTaking = false;
+      CLog::Log(LOGINFO, "TXLOSS inbox took GUI_ACTION {} (word {})", action.GetID(),
+                OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::Get().LoadWord()));
+    }
+  }
+}
+
 void CVideoPlayer::TxFrozenPass()
 {
   const auto now = std::chrono::steady_clock::now();
@@ -11076,7 +11266,8 @@ void CVideoPlayer::TxFrozenPass()
           refrozen = true;
           return;
         }
-        ClearPlayerFreeze(m_txHeldAsPause.load());
+        ClearPlayerFreeze(m_txHeldAsPause.load() &&
+                          m_clock.GetResumeSpeed(m_playSpeed) == DVD_PLAYSPEED_PAUSE);
         m_lossState = LossState::NONE;
         TxFreezeEnded();
         CLog::Log(LOGINFO, "TXLOSS clear (fallback)");
@@ -11101,6 +11292,10 @@ void CVideoPlayer::TxFrozenPass()
     CLog::Log(LOGERROR, "TXLOSS clock running while frozen (word {})",
               OUTPUT::COutputWorker::WordText(OUTPUT::COutputWorker::PackWord(word)));
   }
+  // 5.E2-7b (D1): the inbox before the conversion and RESUME read the speed
+  if (frozenWord && m_txConvertStep == 0 && m_txBodyDone.load(std::memory_order_acquire) &&
+      TxInbox())
+    TxInboxPass();
   if (own && word.state == WordState::LOST && word.spanOpen && m_txConvertStep == 0)
   {
     // step 1 of the conversion, gated by its word CAS (r3 L6)
