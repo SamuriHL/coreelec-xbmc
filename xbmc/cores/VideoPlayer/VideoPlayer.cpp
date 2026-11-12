@@ -7080,9 +7080,13 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
   if (m_txInboxTaking)
   {
     // 5.E2-7b (D3 (a), r3 N-L1): while frozen the cut is the loss's, VPA's own value when it
-    // wrote one, else the freeze's record (0 for a pause failing HEAD's terms)
+    // wrote one, else the freeze's record (0 for a pause failing HEAD's terms). A value already
+    // there at the freeze (an offset reland's, an earlier freeze's) is not this freeze's, unless
+    // it is this picture's own cut (a paused picture VPA cut again, its play in flight)
     m_txInboxHoldValue = m_clock.GetHoldFrom();
-    m_txInboxHoldKept = m_txInboxHoldValue != 0.0;
+    m_txInboxHoldKept = m_txInboxHoldValue != 0.0 &&
+                        (m_txInboxHoldValue != m_txLossHoldBefore.load() ||
+                         m_txInboxHoldValue == m_txLossPicture.load());
     if (!m_txInboxHoldKept)
     {
       if (speed != DVD_PLAYSPEED_PAUSE ||
@@ -10500,6 +10504,8 @@ void CVideoPlayer::OnLostDisplay()
                            ? holdFrom
                            : 0.0;
     m_txLossOffset = m_clock.GetAudioOffset();
+    m_txLossHoldBefore = m_clock.GetHoldFrom();
+    m_txLossPicture = audioInited && holdFrom != DVD_NOPTS_VALUE ? holdFrom : 0.0;
     m_txBodyDone = false;
     m_txHeldAsPause = false;
     m_txFreezeReal.store(true, std::memory_order_release);
@@ -11099,6 +11105,7 @@ const char* CVideoPlayer::TxInboxGuiHold(const CAction& action)
 {
   if (!m_pInputStream || !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
     return m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ? "DVD" : "other";
+#if defined(HAVE_LIBBLURAY)
   const int id = action.GetID();
   if (id == ACTION_SHOW_VIDEOMENU || id == ACTION_PREVIOUS_MENU || id == ACTION_NAV_BACK)
     return "menu call";
@@ -11122,6 +11129,9 @@ const char* CVideoPlayer::TxInboxGuiHold(const CAction& action)
     default:
       return id >= REMOTE_0 && id <= REMOTE_9 ? nullptr : "other";
   }
+#else
+  return "other";
+#endif
 }
 
 void CVideoPlayer::TxInboxPass()

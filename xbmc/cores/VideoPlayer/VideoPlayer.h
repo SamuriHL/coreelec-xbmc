@@ -957,6 +957,10 @@ protected:
   std::atomic<double> m_txLossHoldFrom{0.0};
   //! the audio offset in force at the same moment (D6's log)
   std::atomic<double> m_txLossOffset{0.0};
+  //! the clock's hold value found at the same moment, before VPA's write for this freeze
+  std::atomic<double> m_txLossHoldBefore{0.0};
+  //! the picture's cut at the loss whatever the speed (0 without audio or a picture)
+  std::atomic<double> m_txLossPicture{0.0};
   //! P only, the frozen inbox (D1-D6): a take in progress (the SETSPEED deviations key on it);
   //! its hold write (kept: a value was already there); per-freeze counts and logged-once marks
   bool m_txInboxTaking = false;
