@@ -933,6 +933,8 @@ protected:
   void ConvertToPauseCallbacks();
   void ClearPlayerFreeze(bool heldAsPause);
   void HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg);
+  //! 5.E2-7b (C1): HandleMessages' PLAYER_SETSPEED branch, moved out unchanged
+  void HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg);
   // 5.E2-7: the real loss path (docs/phase5_e2_7_impl.md D1-D4, D7). m_txFreezeReal: this
   // freeze is real (stored before the mark, cleared at every clear); m_txBodyDone: its FREEZE
   // body (or re-freeze) has finished under the guard; m_txVsyncRecord: the vsync resets taken
@@ -949,6 +951,10 @@ protected:
   bool m_txResumeClockErrLogged = false;
   void TxRecordVsync();
   std::atomic_bool m_txHeldAsPause{false};
+  //! 5.E2-7b (docs/phase5_e2_7b_impl.md D3 (a)): the take-back value VPA writes for this real
+  //! freeze (0 where VPA writes 0 or nothing), recorded by the FREEZE body under the guard,
+  //! before m_txBodyDone; the frozen inbox writes it into an empty hold (r3 N-L1)
+  std::atomic<double> m_txLossHoldFrom{0.0};
   //! P only: conversion step 1 done; RESUME's wait; the other-word timer; logged-once marks
   int m_txConvertStep = 0;
   bool m_txResumeWaiting = false;

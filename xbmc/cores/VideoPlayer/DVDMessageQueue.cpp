@@ -255,6 +255,47 @@ MsgQueueReturnCode CDVDMessageQueue::GetFirstOf(std::shared_ptr<CDVDMsg>& pMsg,
   return MSGQ_ABORT;
 }
 
+MsgQueueReturnCode CDVDMessageQueue::GetFrontIf(std::shared_ptr<CDVDMsg>& pMsg,
+                                                const std::function<bool(CDVDMsg&)>& accept,
+                                                const std::function<bool(CDVDMsg&)>& pass,
+                                                CDVDMsg::Message& frontType)
+{
+  std::unique_lock lock(m_section);
+  frontType = CDVDMsg::NONE;
+
+  if (!m_bInitialized)
+    return MSGQ_NOT_INITIALIZED;
+  if (m_bAbortRequest)
+    return MSGQ_ABORT;
+
+  // Get's order: the priority list first, then the normal list; the back of each is its oldest
+  for (std::list<DVDMessageListItem>* msgs : {&m_prioMessages, &m_messages})
+  {
+    for (auto it = msgs->rbegin(); it != msgs->rend(); ++it)
+    {
+      if (!it->message || pass(*it->message))
+        continue;
+      if (!accept(*it->message))
+      {
+        frontType = it->message->GetMessageType();
+        return MSGQ_TIMEOUT;
+      }
+      if (it->message->IsType(CDVDMsg::DEMUXER_PACKET) && it->priority == 0)
+      {
+        DemuxPacket* packet =
+            std::static_pointer_cast<CDVDMsgDemuxerPacket>(it->message)->GetPacket();
+        if (packet)
+          m_iDataSize -= packet->iSize;
+      }
+      pMsg = std::move(it->message);
+      msgs->erase(std::next(it).base());
+      UpdateTimeBack();
+      return MSGQ_OK;
+    }
+  }
+  return MSGQ_TIMEOUT;
+}
+
 MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
                                          std::chrono::milliseconds timeout,
                                          int& priority)

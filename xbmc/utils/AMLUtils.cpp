@@ -3023,6 +3023,8 @@ std::atomic<bool> s_transactionShadowOn{false};
 // 5.E2-7: the real loss path's session predicate (docs/phase5_e2_7_impl.md D1), and why not
 std::atomic<bool> s_transactionLossBase{false};
 const char* s_transactionLossReason = "not latched";
+// 5.E2-7b: the frozen inbox's session predicate (docs/phase5_e2_7b_impl.md D1, r3 N-L2)
+std::atomic<bool> s_transactionInbox{false};
 
 int TransactionHookMs(const char* name)
 {
@@ -3167,6 +3169,16 @@ void aml_transaction_latch()
           lossReason = "on";
         s_transactionLossReason = lossReason;
         s_transactionLossBase = on && !shadowOff && keepsink && coordinator && tickOwner;
+        // 5.E2-7b (r3 N-L2): the codec term read once here, not per frozen pass (it stats a file)
+        const bool codecSpeedFix = aml_codec_speed_fix();
+        const bool inboxSkipped =
+            std::find(s_transactionSkip.begin(), s_transactionSkip.end(), "inbox") !=
+            s_transactionSkip.end();
+        const bool resumeSkipped =
+            std::find(s_transactionSkip.begin(), s_transactionSkip.end(), "resume") !=
+            s_transactionSkip.end();
+        s_transactionInbox = s_transactionLossBase.load() && !resumeSkipped && !inboxSkipped &&
+                             codecSpeedFix;
         s_transactionLatched.store(true, std::memory_order_release);
         CLog::Log(LOGINFO,
                   "TRANSACTION {} ({}) matrix=outputworker {}, displaystate {}, outputdrive {}, "
@@ -3192,6 +3204,15 @@ void aml_transaction_latch()
                       : lossReason,
                   onOff(keepsink), onOff(coordinator), onOff(tickOwner),
                   aml_transaction_skip("resume") ? "yes" : "no");
+        // 5.E2-7b: the inbox's own line, on transaction sessions only (transaction_off keeps
+        // E2-7's latch lines exactly)
+        if (on)
+          CLog::Log(LOGINFO, "TRANSACTION inbox {} ({})", s_transactionInbox.load() ? "on" : "off",
+                    s_transactionInbox.load()      ? "the real loss path, codec speed fix on"
+                    : !s_transactionLossBase.load() ? lossReason
+                    : resumeSkipped                 ? "transaction_skip resume"
+                    : inboxSkipped                  ? "transaction_skip inbox"
+                                                    : "no codec speed fix");
       });
 }
 
@@ -3204,6 +3225,12 @@ bool aml_transaction_loss_base()
 bool aml_transaction_loss_real()
 {
   return aml_transaction_loss_base() && !aml_transaction_skip("resume");
+}
+
+bool aml_transaction_inbox()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) &&
+         s_transactionInbox.load(std::memory_order_relaxed);
 }
 
 const char* aml_transaction_loss_reason()

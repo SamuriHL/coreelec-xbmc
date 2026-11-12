@@ -6831,101 +6831,7 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
-      const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
-      const int speed = msg->GetSpeed();
-
-      // correct our current clock, as it would start going wrong otherwise
-      if (m_State.timestamp > 0)
-      {
-        double offset;
-        offset = m_clock.GetAbsoluteClock() - m_State.timestamp;
-        offset *= m_playSpeed / DVD_PLAYSPEED_NORMAL;
-        offset = DVD_TIME_TO_MSEC(offset);
-        if (offset > 1000)
-          offset = 1000;
-        if (offset < -1000)
-          offset = -1000;
-        m_State.time += offset;
-        m_State.timestamp = m_clock.GetAbsoluteClock();
-      }
-
-      if (speed != DVD_PLAYSPEED_PAUSE && m_playSpeed != DVD_PLAYSPEED_PAUSE && speed != m_playSpeed)
-      {
-        m_callback.OnPlayBackSpeedChanged(speed / DVD_PLAYSPEED_NORMAL);
-        m_processInfo->SeekFinished(0);
-      }
-
-      if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) && speed != m_playSpeed)
-      {
-        std::shared_ptr<CInputStreamPVRBase> pvrinputstream = std::static_pointer_cast<CInputStreamPVRBase>(m_pInputStream);
-        pvrinputstream->Pause(speed == 0);
-      }
-
-      const bool isTempoSpeed = msg->IsTempo();
-      assert(!(isTempoSpeed &&
-               !m_processInfo->IsTempoAllowed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL)));
-
-      const bool wasFFRW =
-          (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE &&
-           !m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL));
-
-      // Seek when returning to normal 1.0x or tempo play from FF/RW
-      // back from RW: clock is not in sync with current pts
-      // back from FF: fill the empty audio queue to avoid no audio
-      if ((speed == DVD_PLAYSPEED_NORMAL || isTempoSpeed) && wasFFRW)
-      {
-        double iTime = m_VideoPlayerVideo->GetCurrentPts();
-        if (iTime == DVD_NOPTS_VALUE)
-          iTime = m_clock.GetClock();
-        iTime = (iTime + m_State.time_offset) / 1000;
-
-        CDVDMsgPlayerSeek::CMode mode;
-        mode.time = iTime;
-        mode.backward = m_playSpeed < 0;
-        mode.accurate = true;
-        mode.trickplay = true;
-        mode.sync = true;
-        mode.restore = false;
-        m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
-      }
-
-      if (isTempoSpeed)
-        m_processInfo->SetTempo(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
-      else
-        m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
-
-      m_processInfo->SetFrameAdvance(false);
-
-      m_playSpeed = speed;
-
-      m_caching = CACHESTATE_DONE;
-      m_cachingStall = false;
-      // design §16.22: a user pause keeps the audio not yet heard, for the
-      // scheduled resume
-      double holdFrom = 0.0;
-      double holdStep = 0.0;
-      if (!(speed == DVD_PLAYSPEED_PAUSE && m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
-            m_scheduledStart && !m_pInputStream->IsRealtime() &&
-            m_renderManager.GetResumePts(holdFrom, holdStep)))
-        holdFrom = 0.0;
-      // the audio heard with that picture is offset from it
-      else
-        holdFrom += m_clock.GetAudioOffset();
-      m_clock.SetHoldFrom(holdFrom);
-      // a held start stays paused: the release applies the speed
-      if (m_startHeld)
-      {
-        CLog::Log(LOGINFO, "VideoPlayer: speed {} kept for the release of the held start", speed);
-        continue;
-      }
-      // live streams keep resuming at once (not testable here)
-      if (!(m_streamPlayerSpeed == DVD_PLAYSPEED_PAUSE && speed == DVD_PLAYSPEED_NORMAL &&
-            !isTempoSpeed && m_scheduledStart && !m_displayLost &&
-            !m_pInputStream->IsRealtime() && ScheduleUserResume()))
-        m_clock.SetSpeed(speed);
-      m_VideoPlayerAudio->SetSpeed(speed);
-      m_VideoPlayerVideo->SetSpeed(speed);
-      m_streamPlayerSpeed = speed;
+      HandleSetSpeed(pMsg);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_FRAME_ADVANCE))
     {
@@ -7089,6 +6995,107 @@ void CVideoPlayer::SetCaching(ECacheState state)
   m_caching = state;
 
   m_clock.SetSpeedAdjust(0);
+}
+
+// 5.E2-7b (C1): HandleMessages' PLAYER_SETSPEED branch, moved out unchanged (its `continue`
+// is this `return`), so the frozen inbox runs the same code (docs/phase5_e2_7b_impl.md D3)
+void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
+{
+  const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
+  const int speed = msg->GetSpeed();
+
+  // correct our current clock, as it would start going wrong otherwise
+  if (m_State.timestamp > 0)
+  {
+    double offset;
+    offset = m_clock.GetAbsoluteClock() - m_State.timestamp;
+    offset *= m_playSpeed / DVD_PLAYSPEED_NORMAL;
+    offset = DVD_TIME_TO_MSEC(offset);
+    if (offset > 1000)
+      offset = 1000;
+    if (offset < -1000)
+      offset = -1000;
+    m_State.time += offset;
+    m_State.timestamp = m_clock.GetAbsoluteClock();
+  }
+
+  if (speed != DVD_PLAYSPEED_PAUSE && m_playSpeed != DVD_PLAYSPEED_PAUSE && speed != m_playSpeed)
+  {
+    m_callback.OnPlayBackSpeedChanged(speed / DVD_PLAYSPEED_NORMAL);
+    m_processInfo->SeekFinished(0);
+  }
+
+  if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) && speed != m_playSpeed)
+  {
+    std::shared_ptr<CInputStreamPVRBase> pvrinputstream = std::static_pointer_cast<CInputStreamPVRBase>(m_pInputStream);
+    pvrinputstream->Pause(speed == 0);
+  }
+
+  const bool isTempoSpeed = msg->IsTempo();
+  assert(!(isTempoSpeed &&
+           !m_processInfo->IsTempoAllowed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL)));
+
+  const bool wasFFRW =
+      (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE &&
+       !m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL));
+
+  // Seek when returning to normal 1.0x or tempo play from FF/RW
+  // back from RW: clock is not in sync with current pts
+  // back from FF: fill the empty audio queue to avoid no audio
+  if ((speed == DVD_PLAYSPEED_NORMAL || isTempoSpeed) && wasFFRW)
+  {
+    double iTime = m_VideoPlayerVideo->GetCurrentPts();
+    if (iTime == DVD_NOPTS_VALUE)
+      iTime = m_clock.GetClock();
+    iTime = (iTime + m_State.time_offset) / 1000;
+
+    CDVDMsgPlayerSeek::CMode mode;
+    mode.time = iTime;
+    mode.backward = m_playSpeed < 0;
+    mode.accurate = true;
+    mode.trickplay = true;
+    mode.sync = true;
+    mode.restore = false;
+    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+  }
+
+  if (isTempoSpeed)
+    m_processInfo->SetTempo(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
+  else
+    m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
+
+  m_processInfo->SetFrameAdvance(false);
+
+  m_playSpeed = speed;
+
+  m_caching = CACHESTATE_DONE;
+  m_cachingStall = false;
+  // design §16.22: a user pause keeps the audio not yet heard, for the
+  // scheduled resume
+  double holdFrom = 0.0;
+  double holdStep = 0.0;
+  if (!(speed == DVD_PLAYSPEED_PAUSE && m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
+        m_scheduledStart && !m_pInputStream->IsRealtime() &&
+        m_renderManager.GetResumePts(holdFrom, holdStep)))
+    holdFrom = 0.0;
+  // the audio heard with that picture is offset from it
+  else
+    holdFrom += m_clock.GetAudioOffset();
+  m_clock.SetHoldFrom(holdFrom);
+  // a held start stays paused: the release applies the speed
+  if (m_startHeld)
+  {
+    CLog::Log(LOGINFO, "VideoPlayer: speed {} kept for the release of the held start", speed);
+    return;
+  }
+  // live streams keep resuming at once (not testable here)
+  if (!(m_streamPlayerSpeed == DVD_PLAYSPEED_PAUSE && speed == DVD_PLAYSPEED_NORMAL &&
+        !isTempoSpeed && m_scheduledStart && !m_displayLost &&
+        !m_pInputStream->IsRealtime() && ScheduleUserResume()))
+    m_clock.SetSpeed(speed);
+  m_VideoPlayerAudio->SetSpeed(speed);
+  m_VideoPlayerVideo->SetSpeed(speed);
+  m_streamPlayerSpeed = speed;
 }
 
 void CVideoPlayer::SetPlaySpeed(int speed)
@@ -10465,6 +10472,12 @@ void CVideoPlayer::OnLostDisplay()
   if (txReal)
   {
     TxRecordVsync();
+    // 5.E2-7b (D3 (a)): VPA's own rule (VPA's PLAYER_DISPLAY_LOST): the picture's pts only for a
+    // stream player at 1x; m_streamPlayerSpeed is the speed VPA was last sent
+    m_txLossHoldFrom = audioInited && holdFrom != DVD_NOPTS_VALUE &&
+                               m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL
+                           ? holdFrom
+                           : 0.0;
     m_txBodyDone = false;
     m_txHeldAsPause = false;
     m_txFreezeReal.store(true, std::memory_order_release);

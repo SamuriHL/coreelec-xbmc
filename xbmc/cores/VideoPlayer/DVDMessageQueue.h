@@ -93,6 +93,17 @@ public:
   MsgQueueReturnCode GetFirstOf(std::shared_ptr<CDVDMsg>& pMsg,
                                 const std::function<bool(CDVDMsg&)>& accept,
                                 std::chrono::milliseconds timeout);
+  /**
+   * 5.E2-7b: the frozen inbox's take (docs/phase5_e2_7b_impl.md D2): in Get's order, passes over
+   * the messages `pass` matches (left in place) and takes the first other message only if `accept`
+   * holds, so a take never overtakes a message left queued. Otherwise takes nothing and reports
+   * that message's type in frontType (CDVDMsg::NONE when nothing but passed messages is queued).
+   * No wait
+   */
+  MsgQueueReturnCode GetFrontIf(std::shared_ptr<CDVDMsg>& pMsg,
+                                const std::function<bool(CDVDMsg&)>& accept,
+                                const std::function<bool(CDVDMsg&)>& pass,
+                                CDVDMsg::Message& frontType);
 
   int GetDataSize() const { return m_iDataSize; }
   double GetTimeSize() const;

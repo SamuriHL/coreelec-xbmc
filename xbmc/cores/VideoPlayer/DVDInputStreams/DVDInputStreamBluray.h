@@ -176,6 +176,9 @@ public:
   // packets at demux time (CheckContinuity menu-wrap correction) - the
   // presented state lags by the deferral window and would miss wraps there
   bool IsInMenuDemux() const { return m_menu || m_hasOverlay; }
+  //! 5.E2-7b: an HDMV (not BD-J) title is playing; the player thread's frozen inbox takes menu
+  //! moves only on these (docs/phase5_e2_7b_impl.md D5). Read on the player thread
+  bool IsHdmvMenuTitle() const { return m_title && !m_title->bdj; }
   // True while playing menu-incidental video (FirstPlay bumper, top menu,
   // or any segment with a menu/overlay up) - used by the disc-session DV
   // latch to VS10-map such segments into the DV output.
