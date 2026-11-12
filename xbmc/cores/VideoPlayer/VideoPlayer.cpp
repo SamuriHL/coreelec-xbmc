@@ -11157,7 +11157,15 @@ void CVideoPlayer::TxInboxPass()
     const auto accept = [this, &why](CDVDMsg& m)
     {
       if (m.IsType(CDVDMsg::PLAYER_SETSPEED))
-        return true;
+      {
+        // the reset's resume is scheduled only at normal speed (CDVDClock::UnpauseAt): a tempo
+        // or a seek speed taken here would return unscheduled; it runs after RESUME instead
+        const int speed = static_cast<CDVDMsgPlayerSetSpeed&>(m).GetSpeed();
+        if (speed == DVD_PLAYSPEED_PAUSE || speed == DVD_PLAYSPEED_NORMAL)
+          return true;
+        why = "not pause or play";
+        return false;
+      }
       if (!m.IsType(CDVDMsg::GENERAL_GUI_ACTION))
         return false;
       why = TxInboxGuiHold(static_cast<CDVDMsgType<CAction>&>(m).m_value);
