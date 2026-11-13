@@ -222,6 +222,15 @@ public:
   bool OpenTxPictureGate(const char* why);
   //! V's CodecSpeed: the decoder is held paused (an engaged, shut gate with its picture accepted)
   bool TxHoldsDecoder() const { return m_txHoldsDecoder.load(); }
+  //! 5.E2-8a (D3, D1): P, an engaged start. Graphics withheld from OPEN to START or the exit
+  //! (GraphicsWithheld's own clause, not E1's m_startHeld); the bound (13 s, not counted while
+  //! the display is lost) is armed at CN's opening and re-armed at E1's hold
+  void SetTxStartHeld(bool held);
+  void ArmTxStartHeldBound();
+  //! P: the set it engaged; RM's first-picture legacy verdict for that set is published for P
+  void SetTxEngagedGen(unsigned int gen) { m_txEngagedGen = gen; }
+  //! P: the engaged set RM gave a legacy verdict for (0 = none)
+  unsigned int TxLegacyVerdict() const { return m_txLegacyVerdict.load(); }
   //! 5.V2-7 (MC-41): with the presenter, a picture carries its overlays to AddVideoPicture
   //! instead of AddOverlay, and the buffer calls leave the overlay lock alone
   bool OverlaysTravel() const;
@@ -725,6 +734,11 @@ protected:
   } m_txGate;
   std::atomic<unsigned int> m_txGateGen{0};
   std::atomic_bool m_txHoldsDecoder{false};
+  std::atomic_bool m_txStartHeld{false};
+  std::atomic<int64_t> m_txStartHeldSince{0}; //!< steady_clock rep; 0 = bound not armed
+  std::atomic_bool m_txStartHeldBoundLogged{false};
+  std::atomic<unsigned int> m_txEngagedGen{0};
+  std::atomic<unsigned int> m_txLegacyVerdict{0};
   bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section
   bool m_txPrerollThisTick = false; //!< C: this tick's flip is the pre-roll
   bool m_txFirstRelease = false; //!< C: the next release is the engaged open's first (no drop)

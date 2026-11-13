@@ -61,6 +61,8 @@ void CDiscTimeOwner::Begin(bool enabled)
               DISCONNECT_ALLOWANCE;
   m_startHeld = false;
   m_heldExpired = false;
+  m_txHeld = false;
+  m_txExpired = false;
   m_runAtNs = 0;
   // the playback open (bd_disc_clock_start) left the clock running
   m_frozen = false;
@@ -78,6 +80,8 @@ void CDiscTimeOwner::End()
   m_active = false;
   m_startHeld = false;
   m_heldExpired = false;
+  m_txHeld = false;
+  m_txExpired = false;
   m_runAtNs = 0;
   m_frozen = false;
 }
@@ -109,6 +113,20 @@ void CDiscTimeOwner::SetStartHeld(bool held, int64_t runAtNs)
   Evaluate(held ? "start held" : "start released");
 }
 
+void CDiscTimeOwner::SetTxHeld(bool held, int64_t runAtNs)
+{
+  std::unique_lock lock(m_lock);
+  if (!held && !m_txHeld)
+    return;
+  m_txHeld = held;
+  m_txExpired = false;
+  if (held)
+    m_txSince = std::chrono::steady_clock::now();
+  else if (runAtNs > 0)
+    m_runAtNs = runAtNs;
+  Evaluate(held ? "start transaction held" : "start transaction released");
+}
+
 void CDiscTimeOwner::CheckBounds()
 {
   std::unique_lock lock(m_lock);
@@ -132,6 +150,15 @@ void CDiscTimeOwner::CheckBounds()
     m_heldExpired = true;
     expired = true;
   }
+  // 5.E2-8a (D3): the same cap for the transaction's hold, not counted while lost
+  if (m_txHeld && !m_txExpired && (!m_displayLost || m_lostExpired) &&
+      now - m_txSince > HELD_CAP)
+  {
+    CLog::Log(LOGERROR, "TXHOLD disc time bound: held for over {} s, disc time runs",
+              std::chrono::duration_cast<std::chrono::seconds>(HELD_CAP).count());
+    m_txExpired = true;
+    expired = true;
+  }
   if (expired)
     Evaluate("cap");
 }
@@ -140,7 +167,8 @@ void CDiscTimeOwner::Evaluate(const char* why)
 {
   if (!m_active)
     return;
-  const bool freeze = (m_displayLost && !m_lostExpired) || (m_startHeld && !m_heldExpired);
+  const bool freeze = (m_displayLost && !m_lostExpired) || (m_startHeld && !m_heldExpired) ||
+                      (m_txHeld && !m_txExpired);
   if (freeze)
   {
     if (!m_frozen)
@@ -176,6 +204,9 @@ void CDiscTimeOwner::Write(bool running, int64_t atNs, const char* why)
   CLog::Log(LOGINFO, "DISCDIAG TEMP owner: {} at {} ({}; lost {}{}, held {}{})",
             running ? "RUN" : "FREEZE", atNs, why, m_displayLost, m_lostExpired ? " expired" : "",
             m_startHeld, m_heldExpired ? " expired" : "");
+  if (m_txHeld || m_txExpired)
+    CLog::Log(LOGINFO, "DISCDIAG TEMP owner: start transaction held {}{}", m_txHeld,
+              m_txExpired ? " expired" : "");
 #if defined(HAVE_LIBBLURAY) && defined(BD_DISC_CLOCK)
   bd_disc_clock_set(running ? 1 : 0, atNs);
 #endif

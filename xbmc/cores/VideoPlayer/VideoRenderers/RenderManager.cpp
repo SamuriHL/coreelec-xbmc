@@ -2266,6 +2266,19 @@ bool CRenderManager::GraphicsWithheld()
 {
   if (!CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
     return false;
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-8a (D3): an engaged start's graphics, from OPEN
+  if (aml_transaction_on() && m_txStartHeld)
+  {
+    const int64_t since = m_txStartHeldSince.load();
+    if (since == 0 || m_displayLost ||
+        std::chrono::steady_clock::now().time_since_epoch().count() - since <
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(13s).count())
+      return true;
+    if (!m_txStartHeldBoundLogged.exchange(true))
+      CLog::Log(LOGERROR, "TXHOLD graphics bound: withheld for over 13 s, graphics shown");
+  }
+#endif
   // a held start shows its first picture still: the graphics come with the
   // moving picture, as the sound does (design 13.ab)
   if (m_startHeld)
@@ -3566,6 +3579,23 @@ void CRenderManager::ClearTxGateLocked(const char* why, STxLog& log)
   m_txFirstRelease = false;
 }
 
+void CRenderManager::SetTxStartHeld(bool held)
+{
+  m_txStartHeldSince = 0;
+  m_txStartHeldBoundLogged = false;
+  m_txStartHeld = held;
+  if (!held)
+  {
+    m_txEngagedGen = 0;
+    m_txLegacyVerdict = 0;
+  }
+}
+
+void CRenderManager::ArmTxStartHeldBound()
+{
+  m_txStartHeldSince = std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
 bool CRenderManager::ArmTxPictureGate(unsigned int gen, bool candidate, const char* why)
 {
   if (!aml_transaction_on())
@@ -3795,10 +3825,15 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
       legacy = "no worker start picture";
     else if (!GeometryTickSession())
       legacy = "no geometrytick session";
+    else if (!aml_transaction_hooks().forceLegacy.empty() && m_txGateGen == m_txEngagedGen)
+      legacy = "forced (transaction_forcelegacy)";
     if (legacy)
     {
       txLog.lines.push_back(
           StringUtils::Format("TXGATE legacy set={} ({})", m_txGateGen.load(), legacy));
+      // 5.E2-8a (D1): P's engaged set ends to legacy on this verdict
+      if (m_txGateGen != 0 && m_txGateGen == m_txEngagedGen)
+        m_txLegacyVerdict = m_txGateGen.load();
       // review L4: a legacy set leaves no gate behind
       m_txGateGen = 0;
     }

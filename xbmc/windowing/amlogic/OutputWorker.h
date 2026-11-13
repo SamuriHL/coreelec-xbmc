@@ -123,6 +123,7 @@ public:
     const char* row = "";
     const char* note = nullptr;
     std::string expected; //!< SKIP: the word the row needs
+    const char* explained = nullptr; //!< SKIP: why the miss is expected (logged at INFO)
   };
   //! a P hook's HEAD: its m_lossState now, and whether HEAD already left the state this hook
   //! mirrors (a skip is then explained)
@@ -160,6 +161,11 @@ public:
   void WordReturned(uint32_t ownT, const SWordHead& head);
   //! P's stop (row 28)
   void WordStop(uint32_t ownT);
+  //! 5.E2-8a (D2): P, an engaged start at CN's "output mode decided" opening: NONE{own T}, no
+  //! span -> STARTING. False when the word is anything else (the open goes legacy)
+  bool WordStarting(uint32_t ownT);
+  //! 5.E2-8a (D2): P, the start's START point or its exit: STARTING{own T} -> NONE
+  void WordStartDone(uint32_t ownT, const char* why);
 
   // 5.E2-7: the word real for freezes outside starts (docs/phase5_e2_7_impl.md D1-D4). Called only
   // on a real freeze (aml_transaction_loss_real); every W call runs under the player guard.

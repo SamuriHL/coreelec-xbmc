@@ -3077,6 +3077,8 @@ STransactionHooks ReadTransactionHooks()
   hooks.noticeAt = TransactionHookWord("transaction_noticeat");
   hooks.resumeWaitMs = TransactionHookMs("transaction_resumewait");
   hooks.exitFreeze = TransactionHookFlag("transaction_exitfreeze");
+  hooks.forceLegacy = TransactionHookWord("transaction_forcelegacy");
+  hooks.lossAt = TransactionHookWord("transaction_lossat");
   return hooks;
 }
 } // namespace

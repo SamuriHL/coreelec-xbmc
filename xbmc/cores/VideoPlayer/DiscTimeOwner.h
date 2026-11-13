@@ -18,7 +18,7 @@
  * Disc time (BD-J and HDMV timers) runs at 1x and freezes only for an output
  * change: from a display loss or a held start until the start instant that
  * ends it. The target is level-triggered from the inputs:
- * (displayLost || startHeld) ? FROZEN at now : RUN at max(now, T0). T0 comes
+ * (displayLost || startHeld || txHeld) ? FROZEN at now : RUN at max(now, T0). T0 comes
  * only from the release of a real hold and from a display reset's scheduled
  * resume. An input that outlives its cap is ignored (ERROR) until it changes.
  *
@@ -37,6 +37,9 @@ public:
   void SetDisplayLost(bool lost, int64_t runAtNs = 0);
   //! a real held start (never a no-hold scheduled start) and its release
   void SetStartHeld(bool held, int64_t runAtNs = 0);
+  //! 5.E2-8a (D3): an engaged start's hold, from CN's "output mode decided" opening to START (or
+  //! the exit). held again re-arms its cap (E1's hold began later). Unset unless engaged
+  void SetTxHeld(bool held, int64_t runAtNs = 0);
   void CheckBounds();
 
 private:
@@ -49,6 +52,9 @@ private:
   bool m_startHeld = false;
   bool m_lostExpired = false;
   bool m_heldExpired = false;
+  bool m_txHeld = false;
+  bool m_txExpired = false;
+  std::chrono::steady_clock::time_point m_txSince;
   std::chrono::steady_clock::time_point m_lostSince;
   std::chrono::steady_clock::time_point m_heldSince;
   std::chrono::milliseconds m_lostCap{0};

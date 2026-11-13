@@ -509,6 +509,11 @@ struct STransactionHooks
   std::string noticeAt; //!< transaction_noticeat owed|posted (E2-13)
   int resumeWaitMs = 0; //!< transaction_resumewait <ms>: RESUME's vblank wait held (E2-7)
   bool exitFreeze = false; //!< transaction_exitfreeze: OnExit waits for a freeze (E2-7)
+  //! transaction_forcelegacy "before|aftersync": RM's first-picture verdict forced to legacy for
+  //! the engaged set, read by P before CN's opening or after the sync commit (E2-8a D8 item 8)
+  std::string forceLegacy;
+  //! transaction_lossat "decided": a fake_plug loss right after the word's STARTING (E2-8a D8 6)
+  std::string lossAt;
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();

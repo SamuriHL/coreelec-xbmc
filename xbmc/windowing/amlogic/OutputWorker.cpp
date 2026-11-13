@@ -196,9 +196,10 @@ bool COutputWorker::WordApply(const std::function<SWordStep(const SWord&)>& deci
     {
       // a precondition miss, not a race: HEAD's state beside it says whether HEAD moved on too
       const bool moved = head && head->moved;
-      CLog::Log(moved ? LOGINFO : LOGWARNING, "WORD skip (row {}): expected {} found {}{} ({})",
-                step.row, step.expected, WordText(old), headText,
-                moved ? "HEAD moved on" : "unexplained");
+      const char* why = step.explained ? step.explained : moved ? "HEAD moved on" : "unexplained";
+      CLog::Log(moved || step.explained ? LOGINFO : LOGWARNING,
+                "WORD skip (row {}): expected {} found {}{} ({})", step.row, step.expected,
+                WordText(old), headText, why);
       return false;
     }
     const uint64_t desired = PackWord(step.next);
@@ -252,6 +253,16 @@ bool WordHeldState(COutputWorker::WordState state)
 }
 
 constexpr const char* ROW_NOT_HELD = "none (HEAD: player not held)";
+
+// 5.E2-8a (D2b): HEAD's freeze hooks meet the player's own STARTING when a loss falls between
+// CN's opening and START; HEAD's freeze runs there until E2-11, so the miss is expected
+Step SkipOwn(const COutputWorker::SWord& w, uint32_t ownT, const char* row, std::string expected)
+{
+  Step step = Skip(row, std::move(expected));
+  if (w.t == ownT && w.state == COutputWorker::WordState::STARTING)
+    step.explained = "STARTING: HEAD's freeze before E2-11";
+  return step;
+}
 } // namespace
 
 void COutputWorker::WordLoss(bool walk)
@@ -389,7 +400,7 @@ bool COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead
         const char* row = newcomer ? "29" : "11+12";
         if (w.t != ownT ||
             !(w.state == WordState::NONE || (w.state == WordState::FREEZING && !w.sub)))
-          return Skip(row, WordOwned("NONE or FREEZING claimed", ownT));
+          return SkipOwn(w, ownT, row, WordOwned("NONE or FREEZING claimed", ownT));
         SWord n = w;
         n.state = WordState::FREEZING;
         n.sub = true;
@@ -409,7 +420,7 @@ bool COutputWorker::WordFrozen(uint32_t ownT, bool newcomer, const SWordHead& he
       {
         const char* row = newcomer ? "29" : "14";
         if (w.t != ownT || w.state != WordState::FREEZING || !w.sub)
-          return Skip(row, WordOwned("FREEZING parked", ownT));
+          return SkipOwn(w, ownT, row, WordOwned("FREEZING parked", ownT));
         SWord n = w;
         n.state = WordState::LOST;
         n.sub = false;
@@ -424,7 +435,7 @@ bool COutputWorker::WordConverting(uint32_t ownT, const SWordHead& head)
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::LOST)
-          return Skip("18", WordOwned("LOST", ownT));
+          return SkipOwn(w, ownT, "18", WordOwned("LOST", ownT));
         SWord n = w;
         n.state = WordState::CONVERTING;
         return Apply(n, "18", "conversion begins");
@@ -438,7 +449,7 @@ bool COutputWorker::WordPaused(uint32_t ownT, const SWordHead& head)
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::CONVERTING)
-          return Skip("18", WordOwned("CONVERTING", ownT));
+          return SkipOwn(w, ownT, "18", WordOwned("CONVERTING", ownT));
         SWord n = w;
         n.state = WordState::PAUSED;
         return Apply(n, "18", "conversion done");
@@ -458,7 +469,7 @@ void COutputWorker::WordReturning(uint32_t ownT, WordState headFrom, const SWord
         else if (headFrom == WordState::LOST && !w.spanOpen)
           row = "16";
         if (w.t != ownT || !WordHeldState(w.state))
-          return Skip(row, WordOwned("LOST, CONVERTING or PAUSED", ownT));
+          return SkipOwn(w, ownT, row, WordOwned("LOST, CONVERTING or PAUSED", ownT));
         SWord n = w;
         n.state = WordState::RETURNING;
         n.spanOpen = false;
@@ -477,7 +488,7 @@ void COutputWorker::WordReturned(uint32_t ownT, const SWordHead& head)
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::RETURNING)
-          return Skip("23", WordOwned("RETURNING", ownT));
+          return SkipOwn(w, ownT, "23", WordOwned("RETURNING", ownT));
         SWord n = w;
         n.state = WordState::NONE;
         return Apply(n, "23", "the reset's resume");
@@ -506,6 +517,34 @@ void COutputWorker::WordStop(uint32_t ownT)
       });
 }
 
+
+bool COutputWorker::WordStarting(uint32_t ownT)
+{
+  return WordApply(
+      [=](const SWord& w)
+      {
+        if (w.t != ownT || w.state != WordState::NONE || w.spanOpen)
+          return Skip("DECIDE (main)", WordOwned("NONE without a span", ownT));
+        SWord n = w;
+        n.state = WordState::STARTING;
+        n.sub = false;
+        return Apply(n, "DECIDE (main)", "output mode decided");
+      });
+}
+
+void COutputWorker::WordStartDone(uint32_t ownT, const char* why)
+{
+  WordApply(
+      [=](const SWord& w)
+      {
+        // not expected (row 9 keeps STARTING through a loss): logged unexplained
+        if (w.t != ownT || w.state != WordState::STARTING)
+          return Skip("START", WordOwned("STARTING", ownT));
+        SWord n = w;
+        n.state = WordState::NONE;
+        return Apply(n, "START", why);
+      });
+}
 
 // 5.E2-7: the real word's own steps (docs/phase5_e2_7_impl.md D2, D3, D4)
 bool COutputWorker::WordRefreeze(uint32_t ownT, WordState& from)
