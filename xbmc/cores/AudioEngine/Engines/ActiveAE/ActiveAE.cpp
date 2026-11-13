@@ -3440,6 +3440,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                     "starting as before",
                     stream->m_schedEpoch, (buf->landNs - stream->m_schedNs) / 1e6);
           m_sink.AbandonStart(stream->m_schedEpoch);
+          stream->m_pClock->ScheduledStartDone(stream->m_schedEpoch);
           stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
           buf->landNs = 0;
           buf->landEpoch = 0;
