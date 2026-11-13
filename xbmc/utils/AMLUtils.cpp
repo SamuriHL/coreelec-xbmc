@@ -3079,6 +3079,8 @@ STransactionHooks ReadTransactionHooks()
   hooks.exitFreeze = TransactionHookFlag("transaction_exitfreeze");
   hooks.forceLegacy = TransactionHookWord("transaction_forcelegacy");
   hooks.lossAt = TransactionHookWord("transaction_lossat");
+  hooks.capForce = TransactionHookFlag("transaction_capforce");
+  hooks.audioFullForce = TransactionHookFlag("transaction_audiofullforce");
   return hooks;
 }
 } // namespace

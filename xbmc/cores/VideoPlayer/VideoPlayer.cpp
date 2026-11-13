@@ -2806,6 +2806,9 @@ void CVideoPlayer::ArmStartGate(const char* where)
     {
       m_txEngaged = true;
       m_txEngagedGen = m_startGateGen;
+      const STransactionHooks hooks = aml_transaction_hooks();
+      m_txCapForce = hooks.capForce;
+      m_txAudioFullForce = hooks.audioFullForce;
       m_renderManager.SetTxStartHeld(true);
       m_renderManager.SetTxEngagedGen(m_startGateGen);
       CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
@@ -3136,7 +3139,9 @@ void CVideoPlayer::CheckStartGate()
   }
   if (m_displayLost)
     return;
-  if (state == State::DECIDED || state == State::UNCHANGED)
+  // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
+  if ((state == State::DECIDED || state == State::UNCHANGED) &&
+      !(TxOpen() && (m_txCapForce || m_txAudioFullForce)))
   {
     // 5.E2-8a (D2, D3): the engaged start's word and disc time, before the gate opens
     if (TxOpen() && !TxDecided(state == State::DECIDED))
@@ -3148,8 +3153,9 @@ void CVideoPlayer::CheckStartGate()
   const auto now = std::chrono::steady_clock::now();
   // a full audio queue stops the reads, and a video decoder that needs more input
   // never configures (Sync's audioFullVideoStarving)
-  if (state == State::UNCONFIGURED && m_CurrentAudio.id >= 0 &&
-      !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10)
+  if ((TxOpen() && m_txAudioFullForce) ||
+      (state == State::UNCONFIGURED && m_CurrentAudio.id >= 0 &&
+       !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10))
   {
     if (m_startGateStarveSince == std::chrono::steady_clock::time_point{})
       m_startGateStarveSince = now;
@@ -3506,6 +3512,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txEngaged = m_txWordStarting = m_txDiscHeld = false;
   m_txStarted = m_txExited = m_txSyncPassed = false;
   m_txEngagedGen = 0;
+  m_txCapForce = m_txAudioFullForce = false;
   m_txLossAtUntil = {};
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};

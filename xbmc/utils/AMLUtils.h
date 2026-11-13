@@ -514,6 +514,10 @@ struct STransactionHooks
   std::string forceLegacy;
   //! transaction_lossat "decided": a fake_plug loss right after the word's STARTING (E2-8a D8 6)
   std::string lossAt;
+  //! transaction_capforce: CN ignores the decision for the engaged set, so its 12 s cap fires
+  bool capForce = false;
+  //! transaction_audiofullforce: CN's audio-full bound condition held for the engaged set
+  bool audioFullForce = false;
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();
