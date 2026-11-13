@@ -2883,8 +2883,6 @@ const char* CVideoPlayer::TxEngageRefusal(const char* where)
     return "skip start";
   if (aml_transaction_skip("gate"))
     return "skip gate";
-  if (!m_txWordT.load())
-    return "no word";
   for (const char* f : {"disctime_off", "streamsplit_video_off", "vconfigure_skip",
                         "geometrytick_skip", "outputdrive_skip"})
     if (XFILE::CFile::Exists(std::string("special://profile/") + f))
@@ -3512,7 +3510,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txEngaged = m_txWordStarting = m_txDiscHeld = false;
   m_txStarted = m_txExited = m_txSyncPassed = false;
   m_txEngagedGen = 0;
-  m_txCapForce = m_txAudioFullForce = false;
+  m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
   m_txLossAtUntil = {};
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
@@ -3851,6 +3849,8 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      if (TxOpen())
+        m_txLostSinceArm = true;
       // 5.E2-7 (D3): a real freeze's states; P keeps its stop, a next file in a span and the wake
       if (m_txFreezeReal.load(std::memory_order_acquire))
       {
@@ -3983,6 +3983,14 @@ void CVideoPlayer::Process()
     // 5.E2-8a (D1, r2 M4): RM's late verdict, read outside HEAD's freeze
     if (TxOpen())
       TxCheckVerdict("loop");
+    // code review L3: the holds' bounds do not count a loss inside the open start
+    if (TxOpen() && m_txWordStarting && m_txLostSinceArm)
+    {
+      m_txLostSinceArm = false;
+      if (m_txDiscHeld)
+        m_discTime.SetTxHeld(true);
+      m_renderManager.ArmTxStartHeldBound();
+    }
     CheckHeldStart();
     CheckStartGate();
     m_discTime.CheckBounds();
@@ -6715,6 +6723,7 @@ void CVideoPlayer::HandleMessages()
 
       const auto FinishChapterSeek = [this, &offset, &start, &newChapter, &seekDone, beforeSeek]()
       {
+        m_txFlushCaller = "chapter seek";
         FlushBuffers(start, true, true);
         if (start != DVD_NOPTS_VALUE)
         {
@@ -7014,6 +7023,7 @@ void CVideoPlayer::HandleMessages()
       if (m_pDemuxer)
       {
         m_pDemuxer->SetProgram(msg->m_value);
+        m_txFlushCaller = "set program";
         FlushBuffers(DVD_NOPTS_VALUE, false, true);
       }
     }
@@ -7038,6 +7048,7 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
+      m_txFlushCaller = "GENERAL_FLUSH";
       FlushBuffers(DVD_NOPTS_VALUE, true, true);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
@@ -9485,6 +9496,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         else
         {
           bool sync = !IsInMenuInternal();
+          m_txFlushCaller = "DVDNAV hop";
           FlushBuffers(DVD_NOPTS_VALUE, false, sync);
           m_dvd.syncClock = true;
           m_dvd.state = DVDSTATE_NORMAL;

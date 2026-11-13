@@ -1035,6 +1035,7 @@ protected:
   unsigned int m_txEngagedGen = 0;
   bool m_txCapForce = false; //!< transaction_capforce, read at the engage
   bool m_txAudioFullForce = false; //!< transaction_audiofullforce, read at the engage
+  bool m_txLostSinceArm = false; //!< a loss inside the open start: its bounds re-armed after it
   std::chrono::steady_clock::time_point m_txLossAtUntil{}; //!< transaction_lossat's window
   const char* m_txFlushCaller = nullptr; //!< D5: the next FlushBuffers' caller, for the exit line
   const char* TxEngageRefusal(const char* where);

@@ -3584,11 +3584,10 @@ void CRenderManager::SetTxStartHeld(bool held)
   m_txStartHeldSince = 0;
   m_txStartHeldBoundLogged = false;
   m_txStartHeld = held;
+  // code review L4: a verdict from an earlier open never reaches this one
+  m_txLegacyVerdict = 0;
   if (!held)
-  {
     m_txEngagedGen = 0;
-    m_txLegacyVerdict = 0;
-  }
 }
 
 void CRenderManager::ArmTxStartHeldBound()
