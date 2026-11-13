@@ -2535,6 +2535,9 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     return;
   }
 
+  // 5.E2-8a (D5): a non-seamless segment transition before START
+  if (TxOpen())
+    EndTransactionToLegacy("segment transition");
   CloseDemuxer();
 
   m_syncStartPtsWait.reset();
@@ -2550,6 +2553,7 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     // tail on title->menu); flush (don't close) the stream players so the
     // running decoders survive for reattach
     CLog::Log(LOGINFO, "VideoPlayer: next stream, discarding abandoned stream remainder");
+    m_txFlushCaller = "keepalive";
     FlushBuffers(DVD_NOPTS_VALUE, false, true);
     return;
   }
@@ -2717,6 +2721,13 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
   m_clock.SetStartHeld(aml_presentation_validated());
   m_VideoPlayerVideo->SetStartHeld(true);
   m_renderManager.SetStartHeld(true);
+  // 5.E2-8a (D3, r2 M1): the transaction's bounds count from E1's hold too
+  if (TxOpen())
+  {
+    if (m_txDiscHeld)
+      m_discTime.SetTxHeld(true);
+    m_renderManager.ArmTxStartHeldBound();
+  }
   CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {}{})",
             m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions,
             decisions ? ", read with the pending test" : "");
@@ -2735,6 +2746,9 @@ void CVideoPlayer::CheckHeldStart()
 
 void CVideoPlayer::ArmStartGate(const char* where)
 {
+  // 5.E2-8a (D5): a later set while the engaged start is open ends it first
+  if (TxOpen())
+    EndTransactionToLegacy("later set");
   bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
 #if defined(HAVE_LIBBLURAY)
   // a menu disc dictates its streams: none may be open yet
@@ -2783,6 +2797,21 @@ void CVideoPlayer::ArmStartGate(const char* where)
   m_txGateSetSeen = true;
   if (m_renderManager.ArmTxPictureGate(m_startGateGen, txFirstSet, "new set"))
     TxRestoreDecoderSpeed("new set");
+  // 5.E2-8a (D1): P's verdict for the file's first set; graphics are held from here
+  if (txFirstSet && aml_transaction_loss_base())
+  {
+    if (const char* refused = TxEngageRefusal(where))
+      CLog::Log(LOGINFO, "TXSTART set={} legacy-open ({}; {})", m_startGateGen, refused, where);
+    else
+    {
+      m_txEngaged = true;
+      m_txEngagedGen = m_startGateGen;
+      m_renderManager.SetTxStartHeld(true);
+      m_renderManager.SetTxEngagedGen(m_startGateGen);
+      CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
+                startFullScreen ? "requested" : "gui");
+    }
+  }
   m_startGateOpenedAt = {};
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
@@ -2839,6 +2868,115 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
   else
     CLog::Log(LOGINFO, "TRANSACTION shadow set={} T={} legacy-open ({}; {})", set,
               m_txShadowSerial, why, where);
+}
+
+// 5.E2-8a (D1): why the file's first set cannot engage (nullptr: it engages). The session's
+// term (aml_transaction_loss_base) is tested by the caller first: the word exists only with it
+const char* CVideoPlayer::TxEngageRefusal(const char* where)
+{
+  if (!m_scheduledStart)
+    return "scheduled start off";
+  if (aml_transaction_skip("start"))
+    return "skip start";
+  if (aml_transaction_skip("gate"))
+    return "skip gate";
+  if (!m_txWordT.load())
+    return "no word";
+  for (const char* f : {"disctime_off", "streamsplit_video_off", "vconfigure_skip",
+                        "geometrytick_skip", "outputdrive_skip"})
+    if (XFILE::CFile::Exists(std::string("special://profile/") + f))
+      return f;
+  return nullptr;
+}
+
+bool CVideoPlayer::TxDecided(bool modeDecided)
+{
+  if (!m_txWordStarting)
+  {
+    if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load()))
+    {
+      EndTransactionToLegacy("word at the decision");
+      return true;
+    }
+    m_txWordStarting = true;
+    CLog::Log(LOGINFO, "TXSTART set={} T={} STARTING ({})", m_startGateGen, m_txWordT.load(),
+              modeDecided ? "output mode decided" : "no mode decision needed");
+    // r1 H4: the start-time timers cannot fire while CN's gate is shut (the sync pass is gated)
+    CLog::Log(LOGINFO, "TXHOLD timers quiet since OPEN (defer {}, caching state {})",
+              m_syncStartDeferred ? "armed" : "not", static_cast<int>(m_caching));
+    // design §8.1: disc time held from the decision, not from OPEN
+    if (modeDecided)
+    {
+      m_txDiscHeld = true;
+      m_discTime.SetTxHeld(true);
+    }
+    m_renderManager.ArmTxStartHeldBound();
+    if (aml_transaction_hooks().lossAt == "decided")
+    {
+      m_txLossAtUntil = std::chrono::steady_clock::now() + 3s;
+      CLog::Log(LOGWARNING, "TXTEST lossat decided: CN's opening held 3 s for a loss");
+    }
+  }
+  // transaction_lossat: the gate stays shut (the word STARTING) until the window ends
+  return m_txLossAtUntil == std::chrono::steady_clock::time_point{} ||
+         std::chrono::steady_clock::now() >= m_txLossAtUntil;
+}
+
+void CVideoPlayer::TxStartPoint(const char* point)
+{
+  if (m_txWordStarting)
+    OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), point);
+  m_txStarted = true;
+  CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
+            point);
+}
+
+void CVideoPlayer::TxStartRelease(int64_t discRunNs)
+{
+  if (m_txDiscHeld)
+    m_discTime.SetTxHeld(false, discRunNs);
+  m_txDiscHeld = false;
+  m_renderManager.SetTxStartHeld(false);
+}
+
+void CVideoPlayer::TxCheckVerdict(const char* where)
+{
+  const unsigned int verdict = m_renderManager.TxLegacyVerdict();
+  if (!verdict)
+    return;
+  // transaction_forcelegacy aftersync: the verdict is read only once the sync commit is held
+  if (aml_transaction_hooks().forceLegacy == "aftersync" && !m_txSyncPassed)
+    return;
+  if (verdict != m_txEngagedGen)
+  {
+    CLog::Log(LOGINFO, "TXSTART renderer verdict for set {} ignored (engaged set {})", verdict,
+              m_txEngagedGen);
+    return;
+  }
+  CLog::Log(LOGINFO, "TXSTART renderer legacy verdict read at {}", where);
+  EndTransactionToLegacy("renderer legacy");
+}
+
+void CVideoPlayer::EndTransactionToLegacy(const char* site)
+{
+  if (!TxOpen())
+    return;
+  // the undo list (plan E2-8a, review r3 H-3), in order
+  if (m_txWordStarting)
+    OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), "ended to legacy");
+  m_renderManager.SetTxStartHeld(false);
+  if (m_txDiscHeld)
+    m_discTime.SetTxHeld(false);
+  m_txDiscHeld = false;
+  // undo 4: E2-6 parity, the legacy release opens C's gate. Undo 6 cannot apply while main
+  // decides: the engaged sync commit is START, a scheduled release, or E1's hold
+  if (m_txSyncPassed && !m_startHeld)
+    CLog::Log(LOGWARNING, "TRANSACTION undo 6 not applicable (sync passed, no E1 hold)");
+  m_txExited = true;
+  m_txLossAtUntil = {};
+  const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
+  CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
+            m_txEngagedGen, *caller ? " caller=" : "", caller);
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
@@ -2925,7 +3063,11 @@ void CVideoPlayer::SampleWord()
   const auto word = OUTPUT::COutputWorker::UnpackWord(value);
   const LossState head = m_lossState.load();
   const bool own = word.t == ownT;
-  const bool agree = own && static_cast<uint8_t>(word.state) == WordMirror(head);
+  // 5.E2-8a (D2b): the open start's own STARTING agrees with HEAD's state until START or the exit
+  const bool startAgree = own && word.state == OUTPUT::COutputWorker::WordState::STARTING &&
+                          m_txWordStarting && TxOpen();
+  const bool agree =
+      startAgree || (own && static_cast<uint8_t>(word.state) == WordMirror(head));
   const int pair = own ? (word.sub << 8 | static_cast<int>(word.state) << 4 |
                           static_cast<int>(head))
                        : (0x1000 | static_cast<int>(head));
@@ -2950,7 +3092,8 @@ void CVideoPlayer::SampleWord()
     return;
   m_wordSampleLogged = pair;
   CLog::Log(own && !agree ? LOGWARNING : LOGINFO, "WORD sample {} T={} lossState={} word {}",
-            !own ? "other T" : agree ? "agree" : "DISAGREE", ownT, LossStateName(head),
+            !own ? "other T" : startAgree ? "agree (start)" : agree ? "agree" : "DISAGREE", ownT,
+            LossStateName(head),
             OUTPUT::COutputWorker::WordText(value));
 }
 
@@ -2993,14 +3136,13 @@ void CVideoPlayer::CheckStartGate()
   }
   if (m_displayLost)
     return;
-  if (state == State::DECIDED)
+  if (state == State::DECIDED || state == State::UNCHANGED)
   {
-    OpenStartGate("output mode decided", false);
-    return;
-  }
-  if (state == State::UNCHANGED)
-  {
-    OpenStartGate("no mode decision needed", false);
+    // 5.E2-8a (D2, D3): the engaged start's word and disc time, before the gate opens
+    if (TxOpen() && !TxDecided(state == State::DECIDED))
+      return;
+    OpenStartGate(state == State::DECIDED ? "output mode decided" : "no mode decision needed",
+                  false);
     return;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -3013,6 +3155,8 @@ void CVideoPlayer::CheckStartGate()
       m_startGateStarveSince = now;
     else if (now - m_startGateStarveSince >= 1s)
     {
+      if (TxOpen())
+        EndTransactionToLegacy("audio-full bound");
       OpenStartGate("audio queue full before the first picture", true);
       return;
     }
@@ -3020,7 +3164,11 @@ void CVideoPlayer::CheckStartGate()
   else
     m_startGateStarveSince = {};
   if (now - m_startGateSince > 12s)
+  {
+    if (TxOpen())
+      EndTransactionToLegacy("12 s cap");
     OpenStartGate("no mode decision in 12s", true);
+  }
 }
 
 void CVideoPlayer::OpenStartGate(const char* why, bool bound)
@@ -3079,6 +3227,13 @@ void CVideoPlayer::TxRestoreDecoderSpeed(const char* why)
 
 void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
+  // 5.E2-8a (D4): START on the word (a flush release is an exit, taken at FlushBuffers' entry)
+  if (TxOpen())
+  {
+    TxCheckVerdict("release");
+    if (TxOpen())
+      TxStartPoint(why);
+  }
   // 5.E2-6 (D7): START opens the picture gate, before V's speed below re-applies CodecSpeed()
   m_renderManager.OpenTxPictureGate(why);
   const double held =
@@ -3121,6 +3276,14 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   m_renderManager.SetStartHeld(false);
   m_VideoPlayerAudio->SetSpeed(m_playSpeed);
   m_VideoPlayerVideo->SetSpeed(m_playSpeed);
+  // 5.E2-8a (D4): the transaction's holds end with E1's, at the schedule's T0
+  if (m_txStarted && m_txEngaged && !m_txExited)
+    TxStartRelease(discRunNs);
+  // D4's predicate: a release after the sync commit sends onAVStarted (an engaged start held
+  // by E1, or the legacy release after the exit)
+  if (m_txEngaged && m_txSyncPassed && std::string_view(why) != "flush" &&
+      !m_State.streamsReady)
+    SignalStreamsReady();
   // The players start with the clock, so their stall grace does too. Armed at
   // sync instead, it had run out during a hold through a TV relock (about 6 s),
   // and the stall check took the scheduled lead for a stall: it started
@@ -3340,6 +3503,10 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_State.Clear();
   m_txShadowSetSeen = false;
   m_txGateSetSeen = false;
+  m_txEngaged = m_txWordStarting = m_txDiscHeld = false;
+  m_txStarted = m_txExited = m_txSyncPassed = false;
+  m_txEngagedGen = 0;
+  m_txLossAtUntil = {};
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
   m_CurrentVideo.hint.Clear();
@@ -3741,6 +3908,9 @@ void CVideoPlayer::Process()
       // the disc's graphics until it starts one (see Prepare)
       if (const int waitState = DiscWaitState(true))
       {
+        // 5.E2-8a (D5): a BD-J screen with no playlist (1) before START
+        if (waitState == 1 && TxOpen())
+          EndTransactionToLegacy("no-playlist screen");
         // a screen with no playlist: no picture will come for a waiting page
         if (m_menuPageWaiting)
         {
@@ -3803,6 +3973,9 @@ void CVideoPlayer::Process()
 
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
+    // 5.E2-8a (D1, r2 M4): RM's late verdict, read outside HEAD's freeze
+    if (TxOpen())
+      TxCheckVerdict("loop");
     CheckHeldStart();
     CheckStartGate();
     m_discTime.CheckBounds();
@@ -4614,7 +4787,10 @@ void CVideoPlayer::HandlePlaySpeed()
             if (m_VideoPlayerAudio->AcceptsData() && m_VideoPlayerVideo->AcceptsData())
               SetCaching(CACHESTATE_FULL);
             else
+            {
+              m_txFlushCaller = "realtime stall";
               FlushBuffers(DVD_NOPTS_VALUE, false, true);
+            }
           }
         }
         else
@@ -4630,6 +4806,7 @@ void CVideoPlayer::HandlePlaySpeed()
                    m_VideoPlayerAudio->GetLevel() == 0)
           {
             CLog::Log(LOGDEBUG,"CVideoPlayer::HandlePlaySpeed - audio stream stalled, triggering re-sync");
+            m_txFlushCaller = "audio stall resync";
             FlushBuffers(DVD_NOPTS_VALUE, true, true);
             CDVDMsgPlayerSeek::CMode mode;
             mode.time = (int)GetUpdatedTime();
@@ -5028,6 +5205,16 @@ void CVideoPlayer::HandlePlaySpeed()
         SetCaching(CACHESTATE_DONE);
         // 5.E2-6 (r1 H2, r2 M2): a start the sync leaves unheld (a pause or FF in the start, a
         // realtime first set) opens the picture gate here; the decoder's speed is restored
+        // 5.E2-8a (D4): an unheld sync commit is the engaged start's START point
+        if (TxOpen())
+        {
+          TxCheckVerdict("sync");
+          if (TxOpen())
+          {
+            TxStartPoint("sync, start not held");
+            TxStartRelease(0);
+          }
+        }
         if (m_renderManager.OpenTxPictureGate("sync, start not held"))
           TxRestoreDecoderSpeed("sync, start not held");
         // 5.E2-4: an unheld start's window ends at its sync (E2-4 review H1)
@@ -5041,8 +5228,14 @@ void CVideoPlayer::HandlePlaySpeed()
       if (!scheduleStart)
         m_syncTimer.Set(3000ms);
 
+      // 5.E2-8a (D4): an engaged start sends onAVStarted at START; held by E1, at its release
       if (!m_State.streamsReady)
-        SignalStreamsReady();
+      {
+        if (!m_txEngaged || m_txExited || m_txStarted)
+          SignalStreamsReady();
+        else
+          m_txSyncPassed = true;
+      }
       }
     }
     else
@@ -5059,6 +5252,7 @@ void CVideoPlayer::HandlePlaySpeed()
         m_firstPictureWaitSince = {};
         m_firstPictureWaitExpired = false;
         CLog::Log(LOGWARNING, "VideoPlayer::Sync - stream player video does not start, flushing buffers");
+        m_txFlushCaller = "sync video no start";
         FlushBuffers(DVD_NOPTS_VALUE, true, true);
         m_syncStuckArmed = false;
       }
@@ -5089,6 +5283,7 @@ void CVideoPlayer::HandlePlaySpeed()
                     SYNC_STUCK_TIMEOUT.count(), m_VideoPlayerAudio->GetLevel(),
                     static_cast<int>(m_CurrentAudio.syncState));
           m_syncStuckArmed = false;
+          m_txFlushCaller = "sync stuck";
           FlushBuffers(DVD_NOPTS_VALUE, true, true);
         }
       }
@@ -6139,6 +6334,9 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
+  // 5.E2-8a (D5): a stop before START, ahead of the word's stop and the closes
+  if (TxOpen())
+    EndTransactionToLegacy("stop");
   // 5.E2-3: the shadow word's stop. 5.E2-7 (code review M1): on a real loss path session at a
   // natural end the stop's CAS comes after the two draining closes, so a loss inside them is a
   // real freeze whose held wait the OnExit hook ends; transaction_off keeps it here
@@ -6318,6 +6516,9 @@ void CVideoPlayer::OnExit()
 // can take a next file (docs/phase5_e2_7_impl.md D3, D7)
 void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
 {
+  // 5.E2-8a (D5): a next file before the engaged start's START
+  if (TxOpen())
+    EndTransactionToLegacy("next file");
   CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
 
   IPlayerCallback *cb = &m_callback;
@@ -6457,6 +6658,7 @@ void CVideoPlayer::HandleMessages()
         m_State.dts = start;
         m_State.lastSeek = m_clock.GetAbsoluteClock();
 
+        m_txFlushCaller = "user seek";
         FlushBuffers(start, msg.GetAccurate(), msg.GetSync());
         CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::HandleMessages: flush buffers: dts:{:.3f} lastSeek:{:.3f} clock:{:.3f}", start / 1000000., m_State.lastSeek / 1000000.0, m_clock.GetClock() / 1000000.0);
       }
@@ -6469,6 +6671,7 @@ void CVideoPlayer::HandleMessages()
 
         m_State.dts = start;
 
+        m_txFlushCaller = "failed seek";
         FlushBuffers(start, false, true);
         if (m_playSpeed != DVD_PLAYSPEED_PAUSE)
         {
@@ -8692,6 +8895,10 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  // 5.E2-8a (D5): a flush before START ends the engaged start (re-PRIME is E2-9's)
+  if (TxOpen())
+    EndTransactionToLegacy("flush");
+  m_txFlushCaller = nullptr;
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
   ClearPendingElPackets();

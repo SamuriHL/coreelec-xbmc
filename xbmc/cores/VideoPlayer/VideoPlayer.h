@@ -1025,6 +1025,24 @@ protected:
   bool m_txShadowSetSeen = false;
   //! 5.E2-6: a set of this file armed CN's gate (the picture gate's candidate is the first)
   bool m_txGateSetSeen = false;
+  // 5.E2-8a (docs/phase5_e2_8a_impl.md): this file's start transaction, reset in Prepare
+  bool m_txEngaged = false; //!< D1: P's verdict at the first set's arm
+  bool m_txWordStarting = false; //!< D2: the word took STARTING at CN's opening
+  bool m_txDiscHeld = false; //!< D3: disc time held from CN's "output mode decided" opening
+  bool m_txStarted = false; //!< D4: a START point ran
+  bool m_txExited = false; //!< D5: ended to legacy
+  bool m_txSyncPassed = false; //!< D4: the sync commit passed without sending onAVStarted
+  unsigned int m_txEngagedGen = 0;
+  std::chrono::steady_clock::time_point m_txLossAtUntil{}; //!< transaction_lossat's window
+  const char* m_txFlushCaller = nullptr; //!< D5: the next FlushBuffers' caller, for the exit line
+  const char* TxEngageRefusal(const char* where);
+  //! D2/D3 at CN's decided or unchanged opening; false while transaction_lossat holds the opening
+  bool TxDecided(bool modeDecided);
+  void TxStartPoint(const char* point);
+  void TxStartRelease(int64_t discRunNs);
+  void TxCheckVerdict(const char* where);
+  void EndTransactionToLegacy(const char* site);
+  bool TxOpen() const { return m_txEngaged && !m_txStarted && !m_txExited; }
   unsigned int m_txShadowSerial = 0;
   void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
