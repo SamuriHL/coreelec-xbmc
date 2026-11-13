@@ -10754,6 +10754,13 @@ void CVideoPlayer::OnLostDisplay()
                     : !aml_transaction_loss_base() ? aml_transaction_loss_reason()
                     : aml_transaction_skip("resume") ? "transaction_skip resume"
                                                      : "word not NONE";
+    // 5.E2-8a (D6): a loss between CN's opening and START meets the start's own STARTING
+    if (wordT && std::string_view(txLegacyWhy) == "word not NONE")
+    {
+      const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+      if (word.t == wordT && word.state == OUTPUT::COutputWorker::WordState::STARTING)
+        txLegacyWhy = "word STARTING, before E2-11";
+    }
     CLog::Log(LOGINFO, "TXLOSS legacy ({}) T={}", txLegacyWhy, wordT);
   }
   {
