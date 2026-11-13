@@ -3324,6 +3324,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       // the clock was changed before the start landed: start as before
       CLog::Log(LOGINFO, "ActiveAE - scheduled start {} cancelled", stream->m_schedEpoch);
       m_sink.AbandonStart(stream->m_schedEpoch);
+      stream->m_pClock->ScheduledStartDone(stream->m_schedEpoch);
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
     else if (m_sink.GetCommittedStart() != stream->m_schedEpoch &&
@@ -3334,6 +3335,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGWARNING, "ActiveAE - scheduled start {} did not land, starting as before",
                 stream->m_schedEpoch);
       m_sink.AbandonStart(stream->m_schedEpoch);
+      stream->m_pClock->ScheduledStartDone(stream->m_schedEpoch);
       stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
     }
     else if (m_sink.GetCommittedStart() == stream->m_schedEpoch &&
@@ -3347,6 +3349,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       stream->m_resumeSyncTargetValid = false;
       stream->m_captureAfterSinkReopen = true;
       CLog::Log(LOGINFO, "ActiveAE - scheduled start {} committed", stream->m_schedEpoch);
+      stream->m_pClock->ScheduledStartDone(stream->m_schedEpoch);
     }
     else
     {

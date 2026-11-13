@@ -6382,7 +6382,7 @@ void CVideoPlayer::HandleMessages()
 {
   std::shared_ptr<CDVDMsg> pMsg = nullptr;
 
-  while (m_messenger.Get(pMsg, 0ms) == MSGQ_OK)
+  while (!TxSpeedWaits() && m_messenger.Get(pMsg, 0ms) == MSGQ_OK)
   {
     if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
@@ -11057,6 +11057,41 @@ void CVideoPlayer::TxResendPause(IDVDStreamPlayer* player, bool lostAtSend, cons
   player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
   CLog::Log(LOGINFO, "L2 resend GENERAL_PAUSE(true) ({}): the display was lost during the open",
             stream);
+}
+
+bool CVideoPlayer::TxSpeedWaits()
+{
+  int speed = DVD_PLAYSPEED_NORMAL;
+  CDVDMsg::Message front = CDVDMsg::NONE;
+  // with no audio stream nothing lands, and nothing reports
+  if (aml_transaction_inbox() && m_CurrentAudio.id >= 0 && m_clock.IsScheduledStartOpen())
+  {
+    std::shared_ptr<CDVDMsg> msg;
+    const auto peek = [&speed](CDVDMsg& m)
+    {
+      if (m.IsType(CDVDMsg::PLAYER_SETSPEED))
+        speed = static_cast<CDVDMsgPlayerSetSpeed&>(m).GetSpeed();
+      return false;
+    };
+    m_messenger.GetFrontIf(msg, peek, [](CDVDMsg&) { return false; }, front);
+  }
+  const bool wait = front == CDVDMsg::PLAYER_SETSPEED && speed != DVD_PLAYSPEED_PAUSE &&
+                    speed != DVD_PLAYSPEED_NORMAL;
+  const auto now = std::chrono::steady_clock::now();
+  if (wait && !m_txSpeedWaiting)
+  {
+    m_txSpeedWaiting = true;
+    m_txSpeedWaitSince = now;
+    CLog::Log(LOGINFO, "SPEED waits for the scheduled start: {}", speed);
+  }
+  else if (!wait && m_txSpeedWaiting)
+  {
+    m_txSpeedWaiting = false;
+    CLog::Log(LOGINFO, "SPEED wait over after {} ms",
+              std::chrono::duration_cast<std::chrono::milliseconds>(now - m_txSpeedWaitSince)
+                  .count());
+  }
+  return wait;
 }
 
 bool CVideoPlayer::TxInbox() const

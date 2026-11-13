@@ -517,6 +517,23 @@ bool CDVDClock::GetPendingStart(int64_t& startNs, double& startClock)
   return false;
 }
 
+void CDVDClock::ScheduledStartDone(unsigned int epoch)
+{
+  std::unique_lock lock(m_critSection);
+  m_scheduleDoneEpoch = epoch;
+}
+
+bool CDVDClock::IsScheduledStartOpen() const
+{
+  std::unique_lock lock(m_critSection);
+  if (!m_scheduleValid || m_scheduleDoneEpoch == m_scheduleEpoch)
+    return false;
+  struct timespec mono = {};
+  clock_gettime(CLOCK_MONOTONIC, &mono);
+  return static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec <=
+         m_scheduleNs + 1200000000LL;
+}
+
 void CDVDClock::ApplyScheduledResume(int64_t current)
 {
   if (!m_resumeAt || current < m_resumeAt)

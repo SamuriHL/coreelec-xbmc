@@ -36,6 +36,8 @@ public:
   {
     return false;
   }
+  //! the scheduled start `epoch` committed, was cancelled, or did not land
+  virtual void ScheduledStartDone(unsigned int epoch) {}
   //! a user pause (design §16.22): the pts in ms from which the output keeps
   //! what it has not played, for the resume; 0: none
   virtual double GetHoldFrom() { return 0.0; }

@@ -73,6 +73,7 @@ public:
   bool IsClockPhasePending() override;
   double GetClockPhase() override;
   bool GetScheduledStart(int64_t& startNs, double& startClockMs, unsigned int& epoch) override;
+  void ScheduledStartDone(unsigned int epoch) override;
   double GetHoldFrom() override;
 
   CAEStreamInfo::DataType GetPassthroughStreamType(AVCodecID codecId, int samplerate, int profile);

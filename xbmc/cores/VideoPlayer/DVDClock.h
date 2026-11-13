@@ -111,6 +111,11 @@ public:
   bool ScheduleJoin(double lead, int64_t& startNs, double& startClock);
   //! the scheduled resume, while no writer has changed the clock since
   bool GetScheduledStart(int64_t& startNs, double& startClock, unsigned int& epoch) const;
+  //! ActiveAE: the scheduled start `epoch` committed, was cancelled, or did not land
+  void ScheduledStartDone(unsigned int epoch);
+  //! a scheduled start the audio has not committed or given up yet (bounded: its instant + 1.2 s,
+  //! past ActiveAE's own "did not land"); a speed change now would cancel it
+  bool IsScheduledStartOpen() const;
   //! the player holds the clock for a start (it then resumes or schedules it)
   void SetStartHeld(bool held);
   //! a user pause: the pts of the first frame not yet released, from which the
@@ -194,4 +199,5 @@ protected:
   int64_t m_scheduleNs = 0;
   double m_scheduleClock = 0.0;
   unsigned int m_scheduleEpoch = 0;
+  unsigned int m_scheduleDoneEpoch = 0;
 };

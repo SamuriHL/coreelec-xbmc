@@ -451,6 +451,12 @@ bool CAudioSinkAE::GetScheduledStart(int64_t& startNs, double& startClockMs, uns
   return true;
 }
 
+void CAudioSinkAE::ScheduledStartDone(unsigned int epoch)
+{
+  if (m_pClock)
+    m_pClock->ScheduledStartDone(epoch);
+}
+
 double CAudioSinkAE::GetClockSpeed()
 {
   if (m_pClock)

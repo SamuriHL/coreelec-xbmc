@@ -973,6 +973,11 @@ protected:
   bool TxInbox() const;
   //! P: the inbox's takes for one frozen pass
   void TxInboxPass();
+  //! D10 (E27B-2): a front PLAYER_SETSPEED other than pause or play waits while the clock's
+  //! scheduled start is open (it would cancel it); HEAD's order, nothing passes it
+  bool TxSpeedWaits();
+  std::chrono::steady_clock::time_point m_txSpeedWaitSince{};
+  bool m_txSpeedWaiting = false;
   //! nullptr when a GUI action may be taken while frozen (D5), else why it is held
   const char* TxInboxGuiHold(const CAction& action);
   //! P only: conversion step 1 done; RESUME's wait; the other-word timer; logged-once marks
