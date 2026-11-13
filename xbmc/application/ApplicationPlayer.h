@@ -39,6 +39,12 @@ public:
   // player management
   void ClosePlayer();
   void ResetPlayer();
+
+  /*!
+   * \brief Read the audio and video stream indices from the player again
+   */
+  void OnStreamChange();
+
   std::string GetCurrentPlayer() const;
   float GetPlaySpeed() const;
   float GetPlayTempo() const;

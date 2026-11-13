@@ -493,6 +493,7 @@ void CApplicationPlayerCallback::OnAVChange()
   CLog::LogF(LOGDEBUG, "call");
 
   CServiceBroker::GetGUI()->GetStereoscopicsManager().OnStreamChange();
+  CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->OnStreamChange();
 
   CGUIMessage msg(GUI_MSG_PLAYBACK_AVCHANGE, 0, 0);
   CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);

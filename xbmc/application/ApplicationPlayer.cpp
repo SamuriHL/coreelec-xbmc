@@ -55,6 +55,12 @@ void CApplicationPlayer::ResetPlayer()
   m_pPlayer.reset();
 }
 
+void CApplicationPlayer::OnStreamChange()
+{
+  m_audioStreamUpdate.SetExpired();
+  m_videoStreamUpdate.SetExpired();
+}
+
 void CApplicationPlayer::CloseFile(bool reopen)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
