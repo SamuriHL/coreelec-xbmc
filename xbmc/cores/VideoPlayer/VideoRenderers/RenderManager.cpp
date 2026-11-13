@@ -2271,6 +2271,9 @@ bool CRenderManager::GraphicsWithheld()
   if (aml_transaction_on() && m_txStartHeld)
   {
     const int64_t since = m_txStartHeldSince.load();
+    // code review N1: the lost time is not counted, up to the frame the display is back
+    if (since != 0 && m_displayLost)
+      m_txStartHeldSince = std::chrono::steady_clock::now().time_since_epoch().count();
     if (since == 0 || m_displayLost ||
         std::chrono::steady_clock::now().time_since_epoch().count() - since <
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(13s).count())
