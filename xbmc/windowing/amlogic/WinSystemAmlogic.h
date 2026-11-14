@@ -143,6 +143,10 @@ public:
   //! 5.E2-7: runs fn under the player-call guard (m_resourceSection), the lock W holds across
   //! each call into a player; tryOnly: false (fn not run) when the guard is busy
   bool RunUnderPlayerGuard(const std::function<void()>& fn, bool tryOnly);
+  //! 5.E2-8b D4 step 7, P: the Start job (state QUEUED, P's CAS done) on W's START lane, never
+  //! inline; false when W does not run it (no worker, or no Restore inputs latched yet). Public
+  //! from E2-8b C4: the player posts it
+  virtual bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& job) { return false; }
 protected:
   //! no display reset inside an open span while the output is disconnected
   bool DisplayResetAllowed() const;
@@ -252,9 +256,6 @@ protected:
   }
   //! main, MessagePump: the queued replies, unless an apply or a GC set is on main's stack
   virtual void ApplyHotplugReplies() {}
-  //! 5.E2-8b D4 step 7, P: the Start job (state QUEUED, P's CAS done) on W's START lane, never
-  //! inline; false when W does not run it (no worker, or no Restore inputs latched yet)
-  virtual bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& job) { return false; }
   //! 5.E2-8b D5 step 4, W: the film's committed row while an engaged start's commit is the
   //! last commit and main has not answered its adopt (a Restore's target then)
   virtual std::optional<DISPLAYSTATE::ModeFacts> StartCommitRow() { return std::nullopt; }

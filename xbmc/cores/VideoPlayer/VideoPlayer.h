@@ -38,6 +38,15 @@
 #include <utility>
 #include <vector>
 
+namespace DISPLAYSTATE
+{
+struct SStartJob;
+enum class StartSettleKind;
+enum class StartAdoptForm;
+} // namespace DISPLAYSTATE
+//! 5.E2-8b: P's receiver of a Start job's replies (VideoPlayer.cpp)
+class CTxStartSink;
+
 struct SPlayerState
 {
   SPlayerState() { Clear(); }
@@ -1044,8 +1053,64 @@ protected:
   void TxStartPoint(const char* point);
   void TxStartRelease(int64_t discRunNs);
   void TxCheckVerdict(const char* where);
-  void EndTransactionToLegacy(const char* site);
+  //! 5.E2-8b D8: how / need are the site's two columns (a job not past its drop CAS, or never
+  //! posted / a job past it); unused on an open main decides (no Start job)
+  void EndTransactionToLegacy(const char* site,
+                              CRenderManager::TxHow how = CRenderManager::TxHow::RERAISE,
+                              CRenderManager::TxNeed need = CRenderManager::TxNeed::JOB_OK);
   bool TxOpen() const { return m_txEngaged && !m_txStarted && !m_txExited; }
+  // 5.E2-8b (docs/phase5_e2_8b_impl.md): the engaged start decided on P, main shut out. Reset in
+  // Prepare; every read behind m_txJob (an engaged open not under transaction_skip decide)
+  enum class TxStep
+  {
+    NONE, //!< not decided yet
+    WAIT_GUI, //!< D4 step 7: decided, the post waits while a GUI set is in flight
+    POSTED, //!< the Start job is on W
+  };
+  //! D2: the open's Start job (null: main decides this open)
+  std::shared_ptr<DISPLAYSTATE::SStartJob> m_txJob;
+  std::unique_ptr<CTxStartSink> m_txSink;
+  TxStep m_txStep = TxStep::NONE;
+  bool m_txOpenPending = false; //!< D2: engaged before Prepare's WordOpen: OPEN after it
+  bool m_txWordOpened = false; //!< Prepare's WordOpen ran for this file
+  bool m_txFullScreen = false; //!< D2: the arm's computed fullscreen term
+  bool m_txRootAtOpen = false;
+  uint64_t m_txExitsAtOpen = 0; //!< D2: GC's fullscreen-exit counter at OpenFile
+  uint64_t m_txOpenInputsSeq = 0; //!< D2: OpenFile's DECIDE inputs publish (0: none)
+  //! D2: the open message's snapshot (OpenFile, on main), taken by the open
+  uint64_t m_txMsgInputsSeq = 0;
+  uint64_t m_txMsgExits = 0;
+  uint64_t m_txGuiSetSnap = 0; //!< D4 step 7: the guiSet notice counter before P's CAS
+  CRenderManager::STxNotice m_txJobFacts; //!< D3: RM's facts DECIDE read (the newest notice)
+  bool m_txJobFactsSet = false;
+  bool m_txGuiWaitLogged = false;
+  bool m_txCapLogged = false;
+  //! D6: the job's replies, taken from P's messenger
+  bool m_txOutputDone = false;
+  std::optional<DISPLAYSTATE::StartSettleKind> m_txSettle;
+  std::optional<DISPLAYSTATE::StartAdoptForm> m_txAdopt;
+  //! D6's backstop: from the post, paused while P is lost
+  std::chrono::steady_clock::time_point m_txPostedAt{};
+  std::chrono::steady_clock::time_point m_txLostAt{};
+  std::chrono::steady_clock::duration m_txLostPaused{};
+  //! D5b (r13 L3): the gen of an exit whose outcome may be unresolved, for RM::TxFileEnded
+  unsigned int m_txEndedGen = 0;
+  //! D2 at the engage, or after WordOpen (the open's T)
+  void TxOpenStart();
+  //! D4: DECIDE at the set's first configure
+  void TxDecide();
+  //! D4 step 7: the Dekker step and the post
+  void TxTryPost();
+  //! D3, D4, D6, D9: one CheckStartGate pass of an engaged start decided on P
+  void TxStartGatePass(CRenderManager::ModeFirstState state);
+  //! D6: the replies, CN's opener and the backstop
+  void TxRepliesPass();
+  //! HandleMessages: PLAYER_TX_REPLY
+  void TxOnReply(CDVDMsg& msg);
+  //! D3: a notice after the post against the job's facts
+  bool TxNoticeSame(const CRenderManager::STxNotice& notice) const;
+  //! D5b: the job's sink cleared and TxOpenJob released (stop, next file, destruction)
+  void TxReleaseJob(const char* why);
   unsigned int m_txShadowSerial = 0;
   void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread

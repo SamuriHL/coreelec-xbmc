@@ -12,6 +12,7 @@
 #include "cores/IPlayer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <string.h>
 #include <string>
 
@@ -60,6 +61,7 @@ public:
     PLAYER_AUDIO_RELAND,            // land the audio anew with this audio offset
     PLAYER_START_GATE,              // no-op: wakes the audio player to read its start gate
     PLAYER_DISPLAY_RETURNED,        // 5.E2-7: a real freeze's reset on W: wakes P for its RESUME
+    PLAYER_TX_REPLY,                // 5.E2-8b: a Start job's reply (W's, main's adopt) for P
 
     // demuxer related messages
     DEMUXER_PACKET,                 // data packet
@@ -274,6 +276,10 @@ public:
   {
     CFileItem m_item;
     CPlayerOptions m_options;
+    //! 5.E2-8b D2: OpenFile's forced DECIDE inputs publish (0: none) and GC's fullscreen-exit
+    //! counter, both taken on main at the open
+    uint64_t m_txInputsSeq = 0;
+    uint64_t m_txExits = 0;
   };
 
   explicit CDVDMsgOpenFile(const FileParams &params)
@@ -284,6 +290,7 @@ public:
 
   CFileItem& GetItem() { return m_params.m_item; }
   CPlayerOptions& GetOptions() { return m_params.m_options; }
+  const FileParams& GetParams() const { return m_params; }
 
 private:
 

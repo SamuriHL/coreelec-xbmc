@@ -856,6 +856,99 @@ void CVideoPlayer::DestroyPlayers()
   m_players_created = false;
 }
 
+namespace
+{
+// 5.E2-8b D5, D6: one Start job reply, carried to P on its messenger (PLAYER_TX_REPLY)
+struct STxReply
+{
+  enum class Kind
+  {
+    OUTPUT_DONE,
+    SETTLE_DONE,
+    ADOPTED,
+  } kind = Kind::OUTPUT_DONE;
+  uint64_t T = 0;
+  bool committed = false;
+  uint64_t seq = 0;
+  DISPLAYSTATE::StartSettleKind settle = DISPLAYSTATE::StartSettleKind::DONE;
+  DISPLAYSTATE::StartAdoptForm form = DISPLAYSTATE::StartAdoptForm::FAILED;
+};
+
+CRenderManager::TxAnswer ToTxAnswer(DISPLAYSTATE::StartAnswer answer)
+{
+  using A = DISPLAYSTATE::StartAnswer;
+  using R = CRenderManager::TxAnswer;
+  switch (answer)
+  {
+    case A::ADOPTED:
+      return R::ADOPTED;
+    case A::BEHIND:
+      return R::BEHIND;
+    case A::BEHIND_GUI:
+      return R::BEHIND_GUI;
+    case A::FAILED:
+      return R::FAILED;
+    case A::FAILED_SET:
+      return R::FAILED_SET;
+    case A::RECOVERING:
+      return R::RECOVERING;
+    case A::RECOVERED:
+      return R::RECOVERED;
+  }
+  return R::FAILED;
+}
+} // namespace
+
+// 5.E2-8b D5 (lifetime): P's receiver of its Start jobs' replies. Each call runs under the job's
+// sink mutex, on W (sometimes inside m_resourceSection) or on main: it only queues on P's
+// messenger, never waits; the adopt answer goes to RM on main's stack, as D5b says
+class CTxStartSink : public DISPLAYSTATE::IStartJobSink
+{
+public:
+  CTxStartSink(CDVDMessageQueue& messenger, CRenderManager& renderManager)
+    : m_messenger(messenger), m_renderManager(renderManager)
+  {
+  }
+  void OnOutputDone(const DISPLAYSTATE::SOutputDone& reply) override
+  {
+    STxReply r;
+    r.kind = STxReply::Kind::OUTPUT_DONE;
+    r.T = reply.T;
+    r.committed = reply.committed;
+    r.seq = reply.seq;
+    Put(r);
+  }
+  void OnSettleDone(const DISPLAYSTATE::SSettleDone& reply) override
+  {
+    STxReply r;
+    r.kind = STxReply::Kind::SETTLE_DONE;
+    r.T = reply.T;
+    r.settle = reply.kind;
+    Put(r);
+  }
+  bool OnAdoptAnswer(unsigned int gen, DISPLAYSTATE::StartAnswer answer) override
+  {
+    return m_renderManager.TxAdoptAnswer(gen, ToTxAnswer(answer));
+  }
+  void OnTxAdopted(const DISPLAYSTATE::STxAdopted& reply) override
+  {
+    // r2 N-L6: queued behind the answer's PLAYER_AVCHANGE (both at priority 0, in order)
+    STxReply r;
+    r.kind = STxReply::Kind::ADOPTED;
+    r.T = reply.T;
+    r.form = reply.form;
+    Put(r);
+  }
+
+private:
+  void Put(const STxReply& r)
+  {
+    m_messenger.Put(std::make_shared<CDVDMsgType<STxReply>>(CDVDMsg::PLAYER_TX_REPLY, r));
+  }
+  CDVDMessageQueue& m_messenger;
+  CRenderManager& m_renderManager;
+};
+
 CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   : IPlayer(callback),
     CThread("VideoPlayer"),
@@ -933,6 +1026,8 @@ CVideoPlayer::~CVideoPlayer()
     system->Unregister(this);
 
   CloseFile();
+  // 5.E2-8b D5 (lifetime): the sink cleared (OnExit did, unless the thread never ran)
+  TxReleaseJob("player destroyed");
   if (m_renderLoopHandle)
   {
     // waits at most for main's call of this player's own FrameMove
@@ -965,10 +1060,18 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // codec thread where g_application.CurrentFile() is not yet set.
   aml_dv_detect_set_file(file.GetPath());
   m_testReopenDone = false;
+  // 5.E2-8b D2 (r4 L4): GC's fullscreen-exit counter at the open, so a Back between here and the
+  // engage counts
+  const uint64_t txExits = DISPLAYSTATE::FullScreenExits();
+  uint64_t txInputsSeq = 0;
   // 5.E2-5 (shadow): DECIDE's GUI-side inputs as they stand at the open; main's pump re-publishes
   // changes until P reads them at the set's first configure (off main the last publish stands)
   if (DISPLAYSTATE::DecideShadowOn() && CServiceBroker::GetAppMessenger()->IsProcessThread())
+  {
     DISPLAYSTATE::PublishDecideInputs("open", true, true);
+    // 5.E2-8b D2 (r4 M1, r5 L3): the forced publish's seq travels with the open to P
+    txInputsSeq = DISPLAYSTATE::GetDecideInputs().seq;
+  }
 
   // real_player: a start is held until the output mode is final (disc session
   // design 3); the debug flag turns it off for A/B runs
@@ -1023,6 +1126,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     params.m_item = file;
     params.m_options = options;
     params.m_item.SetMimeTypeForInternetFile();
+    params.m_txInputsSeq = txInputsSeq;
+    params.m_txExits = txExits;
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
 
     return true;
@@ -1030,6 +1135,10 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 
   m_item = file;
   m_playerOptions = options;
+  // 5.E2-8b D2: the first open's snapshot goes with its options, before P's thread exists
+  // E2-8b NOTE: no open message on a first open: written as m_playerOptions is, before Create()
+  m_txMsgInputsSeq = txInputsSeq;
+  m_txMsgExits = txExits;
 
   m_processInfo->SetPlayTimes(0,0,0,0);
   m_bAbortRequest = false;
@@ -2800,7 +2909,15 @@ void CVideoPlayer::ArmStartGate(const char* where)
   // 5.E2-8a (D1): P's verdict for the file's first set; graphics are held from here
   if (txFirstSet && aml_transaction_loss_base())
   {
-    if (const char* refused = TxEngageRefusal(where))
+    const char* refused = TxEngageRefusal(where);
+    // 5.E2-8b D1/D2: P decides the start unless transaction_skip decide (E2-8a's start); its
+    // DECIDE reads the inputs main publishes at OpenFile, so without the publish no engage
+    // E2-8b NOTE: D2's "TRANSACTION legacy-open (no decide inputs)" is logged in E2-8a's refusal
+    // form, "TXSTART set=N legacy-open (no decide inputs; <where>)"
+    const bool decideOnP = !aml_transaction_skip("decide");
+    if (!refused && decideOnP && !DISPLAYSTATE::DecideShadowOn())
+      refused = "no decide inputs";
+    if (refused)
       CLog::Log(LOGINFO, "TXSTART set={} legacy-open ({}; {})", m_startGateGen, refused, where);
     else
     {
@@ -2813,6 +2930,20 @@ void CVideoPlayer::ArmStartGate(const char* where)
       m_renderManager.SetTxEngagedGen(m_startGateGen);
       CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
                 startFullScreen ? "requested" : "gui");
+      // 5.E2-8b D2: main shut out and the Start job created, at the engage when the open's T
+      // exists, else right after Prepare's WordOpen (no configure can run before it)
+      // E2-8b NOTE: the first file's arm comes before WordOpen (E2-8a code review H1), and the
+      // job's T is fixed before TxOpenJob publishes it; the shut follows by a few statements
+      m_txEndedGen = 0;
+      if (decideOnP)
+      {
+        // r3 L3: the arm's fullscreen term, always true on an engaged open
+        m_txFullScreen = true;
+        if (m_txWordOpened)
+          TxOpenStart();
+        else
+          m_txOpenPending = true;
+      }
     }
   }
   m_startGateOpenedAt = {};
@@ -2901,17 +3032,23 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
     }
     m_txWordStarting = true;
     CLog::Log(LOGINFO, "TXSTART set={} T={} STARTING ({})", m_startGateGen, m_txWordT.load(),
-              modeDecided ? "output mode decided" : "no mode decision needed");
+              m_txJob ? (modeDecided ? "transaction settle done" : "transaction no change")
+              : modeDecided ? "output mode decided"
+                            : "no mode decision needed");
     // r1 H4: the start-time timers cannot fire while CN's gate is shut (the sync pass is gated)
     CLog::Log(LOGINFO, "TXHOLD timers quiet since OPEN (defer {}, caching state {})",
               m_syncStartDeferred ? "armed" : "not", static_cast<int>(m_caching));
-    // design §8.1: disc time held from the decision, not from OPEN
-    if (modeDecided)
+    // design §8.1: disc time held from the decision, not from OPEN. 5.E2-8b D6 (r2 N-M2): on P's
+    // start DECIDE held it and armed the bound (D4 step 5); this step is the word's only
+    if (!m_txJob)
     {
-      m_txDiscHeld = true;
-      m_discTime.SetTxHeld(true);
+      if (modeDecided)
+      {
+        m_txDiscHeld = true;
+        m_discTime.SetTxHeld(true);
+      }
+      m_renderManager.ArmTxStartHeldBound();
     }
-    m_renderManager.ArmTxStartHeldBound();
     if (aml_transaction_hooks().lossAt == "decided")
     {
       m_txLossAtUntil = std::chrono::steady_clock::now() + 3s;
@@ -2930,6 +3067,19 @@ void CVideoPlayer::TxStartPoint(const char* point)
   m_txStarted = true;
   CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
             point);
+  // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
+  if (m_txJob)
+  {
+    m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::NONE,
+                               CRenderManager::TxNeed::NONE);
+    DISPLAYSTATE::ClearTxOpenJob(m_txJob);
+    m_txEndedGen = 0;
+    // the job's tweak: ReleaseHeldStart's ApplyAudioOffset lands RM's tweak, composed from W's
+    // committed mode (the job's)
+    // E2-8b NOTE: P does not write the tweak; the job's value is logged against RM's read
+    CLog::Log(LOGINFO, "TXSTART T={} tweak job {:.1f} ms, landed {:.1f} ms", m_txJob->T,
+              m_txJob->tweakMs, m_renderManager.GetLatencyTweak());
+  }
 }
 
 void CVideoPlayer::TxStartRelease(int64_t discRunNs)
@@ -2958,10 +3108,38 @@ void CVideoPlayer::TxCheckVerdict(const char* where)
   EndTransactionToLegacy("renderer legacy");
 }
 
-void CVideoPlayer::EndTransactionToLegacy(const char* site)
+void CVideoPlayer::EndTransactionToLegacy(const char* site,
+                                          CRenderManager::TxHow how,
+                                          CRenderManager::TxNeed need)
 {
   if (!TxOpen())
     return;
+  // 5.E2-8b D8: the race, then main let back in (the exit's first step after the CAS)
+  if (m_txJob)
+  {
+    using State = DISPLAYSTATE::StartJobState;
+    using Need = CRenderManager::TxNeed;
+    bool past = false;
+    if (need == Need::LEFT && m_txStep == TxStep::POSTED)
+      past = true; // r9 M1: a fullscreen exit after the post never drops the job
+    else if (m_txJob->state.load() == State::NOT_POSTED)
+      m_txJob->Cas({State::NOT_POSTED}, State::DROPPED); // never posted: nothing to log
+    else if (!DISPLAYSTATE::StartJobDropForExit(*m_txJob, site))
+      past = m_txJob->state.load() == State::COMMITTED;
+    if (past && need == Need::NONE)
+    {
+      // E2-8b NOTE: every site past the drop CAS names its need; none named reads as job-ok
+      CLog::Log(LOGWARNING, "TXSTART T={} ended ({}) past its drop CAS with no need: job-ok",
+                m_txJob->T, site);
+      need = Need::JOB_OK;
+    }
+    // r13 L3: kept for RM::TxFileEnded at a later stop or next file
+    m_txEndedGen = m_txEngagedGen;
+    m_renderManager.TxOpenMain(m_txEngagedGen, past ? CRenderManager::TxHow::NONE : how,
+                               past ? need : Need::NONE);
+    DISPLAYSTATE::ClearTxOpenJob(m_txJob);
+    m_txStep = TxStep::NONE;
+  }
   // the undo list (plan E2-8a, review r3 H-3), in order
   if (m_txWordStarting)
     OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), "ended to legacy");
@@ -2978,6 +3156,275 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site)
   const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
   CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
             m_txEngagedGen, *caller ? " caller=" : "", caller);
+}
+
+// 5.E2-8b D2: OPEN on an engaged start P decides. The job is created with the open's T and
+// published (null -> job); main is shut out under RM's m_statelock
+void CVideoPlayer::TxOpenStart()
+{
+  m_txOpenPending = false;
+  auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
+  job->T = m_txWordT.load();
+  job->gen = m_txEngagedGen;
+  // r2 N-M4: another player's job is replaced only after its own exit or START released it
+  if (!DISPLAYSTATE::PublishTxOpenJob(job))
+  {
+    // E2-8b NOTE: D2 names no fallback; this start keeps E2-8a's (main decides), as skip decide
+    CLog::Log(LOGWARNING, "TXSTART set={} T={} decision on main (another start job is open)",
+              m_txEngagedGen, job->T);
+    return;
+  }
+  if (!m_txSink)
+    m_txSink = std::make_unique<CTxStartSink>(m_messenger, m_renderManager);
+  m_txJob = std::move(job);
+  m_txStep = TxStep::NONE;
+  m_txRootAtOpen = DISPLAYSTATE::FullScreenRoot();
+  // r5 L3: the open message's snapshot (OpenFile on main), not read from main here
+  m_txExitsAtOpen = m_txMsgExits;
+  m_txOpenInputsSeq = m_txMsgInputsSeq;
+  m_renderManager.TxShutMain(m_txEngagedGen, m_txJob->T);
+  CLog::Log(LOGINFO,
+            "TXSTART set={} T={} OPEN: decision on P (inputs seq {}, fullscreen exits {}, root {})",
+            m_txEngagedGen, m_txJob->T, m_txOpenInputsSeq, m_txExitsAtOpen,
+            m_txRootAtOpen ? 1 : 0);
+}
+
+void CVideoPlayer::TxReleaseJob(const char* why)
+{
+  if (!m_txJob)
+    return;
+  // D5 (lifetime): no reply reaches this player after it; never waits on what W holds (the
+  // sink's calls only queue)
+  m_txJob->ClearSink();
+  if (DISPLAYSTATE::ClearTxOpenJob(m_txJob))
+    CLog::Log(LOGINFO, "TXSTART T={} start job released ({})", m_txJob->T, why);
+  m_txJob.reset();
+}
+
+// 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7 (no wait for the fullscreen window)
+void CVideoPlayer::TxDecide()
+{
+  using How = CRenderManager::TxHow;
+  using Need = CRenderManager::TxNeed;
+  // step 1: a fullscreen exit since OPEN (r4 M2: main does nothing while windowed, RM:3038)
+  if (DISPLAYSTATE::FullScreenExits() != m_txExitsAtOpen)
+  {
+    EndTransactionToLegacy("fullscreen exit", How::RERAISE, Need::LEFT);
+    return;
+  }
+  // D2 (r4 M1): main's open publishes the inputs forced; an open not made through OpenFile
+  // carries none
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs(true);
+  if (!m_txOpenInputsSeq || latest.seq < m_txOpenInputsSeq)
+  {
+    CLog::Log(LOGINFO, "TXSTART set={} inputs seq {} at the open, {} published", m_txEngagedGen,
+              m_txOpenInputsSeq, latest.seq);
+    EndTransactionToLegacy("inputs stale", How::RERAISE, Need::JOB_OK);
+    return;
+  }
+  // step 2 (ResolveStart logs main's "Display resolution ADJUST" lines itself)
+  CRenderManager::SStartResolve r =
+      m_renderManager.ResolveStart(m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen);
+  // step 3: D1's exclusions
+  if (r.exclusion)
+  {
+    EndTransactionToLegacy(r.exclusion, How::RERAISE, Need::JOB_OK);
+    return;
+  }
+  // step 4: the arm consumed (today's "consumed ... may re-clock" line), nothing counted
+  m_renderManager.TxTakeArm(m_txEngagedGen, r);
+  // step 5 (r2 N-M2): disc time held from DECIDE, the 13 s bounds armed
+  m_txDiscHeld = true;
+  m_discTime.SetTxHeld(true);
+  m_renderManager.ArmTxStartHeldBound();
+  // the request, by value (D5)
+  DISPLAYSTATE::SStartJob& job = *m_txJob;
+  job.res = r.info;
+  job.resIndex = static_cast<int>(r.res);
+  job.stereo = r.stereo;
+  job.hdrType = r.hdrType;
+  job.fullScreen = m_txFullScreen;
+  job.fracRequest = r.frac;
+  job.filmStart = r.filmStart;
+  job.tweakMs = r.tweakMs;
+  if (!m_txJobFactsSet)
+  {
+    // E2-8b NOTE: the shut configure always leaves a notice before DECIDE; without one the
+    // job's facts are DECIDE's fps and hdr only (a size of 0 is not compared)
+    m_txJobFacts = {};
+    m_txJobFacts.fps = r.fps;
+    m_txJobFacts.hdrType = r.hdrType;
+    m_txJobFactsSet = true;
+  }
+  // step 6
+  CLog::Log(LOGINFO, "DECIDE start set={} T={} {} frac={} hdr={} tweak={:.1f} (P)",
+            m_txEngagedGen, job.T, r.info.strMode, r.frac ? 1 : 0, static_cast<int>(r.hdrType),
+            r.tweakMs);
+  // step 7
+  TxTryPost();
+}
+
+// 5.E2-8b D4 step 7 (r4 H1, r5 M1): P posts only while no GUI set is in flight. GC counts its set
+// in, then CASes QUEUED|PARKING -> DROPPED; P CASes NOT_POSTED -> QUEUED, then re-reads the count
+void CVideoPlayer::TxTryPost()
+{
+  using How = CRenderManager::TxHow;
+  using Need = CRenderManager::TxNeed;
+  DISPLAYSTATE::SStartJob& job = *m_txJob;
+  if (const int n = DISPLAYSTATE::GuiSetsInFlight())
+  {
+    m_txStep = TxStep::WAIT_GUI;
+    if (!std::exchange(m_txGuiWaitLogged, true))
+      CLog::Log(LOGINFO, "DECIDE start T={} waits: {} GUI set(s) in flight", job.T, n);
+    return;
+  }
+  // r6 L3: the guiSet notice counter before the CAS
+  m_txGuiSetSnap = DISPLAYSTATE::ReadGuiSetNotice(0).seq;
+  if (!DISPLAYSTATE::StartJobQueue(job))
+  {
+    // GC drops only QUEUED|PARKING: a QUEUED left by an earlier step was dropped
+    EndTransactionToLegacy("gui set", How::RERAISE, Need::FRESH);
+    return;
+  }
+  if (DISPLAYSTATE::GuiSetsInFlight())
+  {
+    if (!DISPLAYSTATE::StartJobUnqueue(job))
+    {
+      // GC won the CAS: no post, D8's `gui set` row (not committed)
+      EndTransactionToLegacy("gui set", How::RERAISE, Need::FRESH);
+      return;
+    }
+    m_txStep = TxStep::WAIT_GUI;
+    return;
+  }
+  // r12 L4: a Back during the wait is step 1's exit
+  if (DISPLAYSTATE::FullScreenExits() != m_txExitsAtOpen)
+  {
+    EndTransactionToLegacy("fullscreen exit", How::RERAISE, Need::LEFT);
+    return;
+  }
+  if (m_txGuiWaitLogged)
+    CLog::Log(LOGINFO, "DECIDE start T={} posts after the GUI set(s)", job.T);
+  // registered at the post (D5 lifetime); PostIfRunning: never run inline on P (r3 L2)
+  job.SetSink(m_txSink.get());
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem || !winSystem->PostStartJob(m_txJob))
+  {
+    EndTransactionToLegacy("no worker", How::RERAISE, Need::JOB_OK);
+    return;
+  }
+  m_txStep = TxStep::POSTED;
+  m_txPostedAt = std::chrono::steady_clock::now();
+  m_txLostAt = {};
+  m_txLostPaused = {};
+}
+
+void CVideoPlayer::TxOnReply(CDVDMsg& msg)
+{
+  const STxReply r = static_cast<CDVDMsgType<STxReply>&>(msg).m_value;
+  const char* what = r.kind == STxReply::Kind::OUTPUT_DONE   ? "output done"
+                     : r.kind == STxReply::Kind::SETTLE_DONE ? "settle done"
+                                                             : "adopted";
+  // D5 (lifetime): a reply for an ended start is logged only
+  if (!m_txJob || r.T != m_txJob->T || !TxOpen() || m_txStep != TxStep::POSTED)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} {} after the start ended: logged", r.T, what);
+    return;
+  }
+  switch (r.kind)
+  {
+    case STxReply::Kind::OUTPUT_DONE:
+      // D5 step 4: C's pre-roll term for the shut gen (committed or no-change: the output is final)
+      m_txOutputDone = true;
+      m_renderManager.SetTxOutputDone(m_txEngagedGen);
+      break;
+    case STxReply::Kind::SETTLE_DONE:
+      m_txSettle = r.settle;
+      break;
+    case STxReply::Kind::ADOPTED:
+      m_txAdopt = r.form;
+      break;
+  }
+}
+
+bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice) const
+{
+  // a parameterless trigger (GC's, a settings change): root, fullscreen, stereo
+  if (std::string_view(notice.kind) == "trigger")
+    return DISPLAYSTATE::FullScreenRoot() == m_txRootAtOpen &&
+           CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() == m_txFullScreen &&
+           notice.stereoMode == m_txJobFacts.stereoMode;
+  // E2-8b NOTE: "fps class" read as the same rate within 0.05 % (23.976 = 23.98, not 24)
+  const float a = notice.fps;
+  const float b = m_txJobFacts.fps;
+  const bool sameFps = std::abs(a - b) <= 0.0005f * std::max(a, b);
+  const bool sameSize = (!m_txJobFacts.width && !m_txJobFacts.height) ||
+                        (notice.width == m_txJobFacts.width && notice.height == m_txJobFacts.height);
+  return sameFps && sameSize && notice.hdrType == m_txJobFacts.hdrType &&
+         notice.stereoMode == m_txJobFacts.stereoMode;
+}
+
+// 5.E2-8b: one CheckStartGate pass of the open start P decides (not lost)
+void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
+{
+  // D9's read order: RM's notices first, then the exit counter, then the replies
+  std::vector<CRenderManager::STxNotice> notices = m_renderManager.TakeTxNotices();
+  if (m_txStep != TxStep::POSTED)
+  {
+    // D3: before the post every notice is folded (DECIDE reads RM's current facts)
+    for (const CRenderManager::STxNotice& n : notices)
+    {
+      CLog::Log(LOGINFO, "NOTICE folded {}", n.kind);
+      m_txJobFacts = n;
+      m_txJobFactsSet = true;
+    }
+    if (m_txStep == TxStep::NONE && state != CRenderManager::ModeFirstState::UNCONFIGURED)
+      TxDecide();
+    else if (m_txStep == TxStep::WAIT_GUI)
+      TxTryPost();
+    return;
+  }
+  TxRepliesPass();
+}
+
+// 5.E2-8b D6: CN opens on SettleDone{done|no-change|not-armed} and main's adopt answer
+// {adopted|behind-gui}, both counted by D5b's provisional row; the backstop from the post
+void CVideoPlayer::TxRepliesPass()
+{
+  using Settle = DISPLAYSTATE::StartSettleKind;
+  using Form = DISPLAYSTATE::StartAdoptForm;
+  const bool settleOk = m_txSettle && (*m_txSettle == Settle::DONE ||
+                                       *m_txSettle == Settle::NO_CHANGE ||
+                                       *m_txSettle == Settle::NOT_ARMED);
+  const bool adoptOk = m_txAdopt && (*m_txAdopt == Form::ADOPTED || *m_txAdopt == Form::BEHIND_GUI);
+  // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
+  if (settleOk && adoptOk && !(m_txCapForce || m_txAudioFullForce))
+  {
+    if (!TxDecided(*m_txSettle != Settle::NO_CHANGE))
+      return;
+    OpenStartGate(*m_txSettle == Settle::NO_CHANGE ? "transaction no change"
+                                                   : "transaction settle done",
+                  false);
+    return;
+  }
+  if (m_txSettle && m_txAdopt)
+    return;
+  // the backstop (r2 N-H3, r3 M3, r4 L5): 15 s from the post, paused while lost, 30 s in all
+  const auto now = std::chrono::steady_clock::now();
+  const auto all = now - m_txPostedAt;
+  if (all - m_txLostPaused <= 15s && all <= 30s)
+    return;
+  const bool answer = !m_txAdopt;
+  CLog::Log(LOGERROR, "TXSTART T={} start reply missing ({})", m_txJob->T,
+            !m_txSettle && !m_txAdopt ? "settle, adopt"
+            : !m_txSettle            ? "settle"
+                                     : "adopt");
+  const unsigned int gen = m_txEngagedGen;
+  EndTransactionToLegacy("backstop", CRenderManager::TxHow::RERAISE,
+                         CRenderManager::TxNeed::JOB_OK);
+  // D5b: the backstop's answer is `failed` when main's is missing
+  if (answer)
+    m_renderManager.TxAdoptAnswer(gen, CRenderManager::TxAnswer::FAILED);
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
@@ -3116,13 +3563,17 @@ void CVideoPlayer::CheckStartGate()
     return;
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
-  const State state = m_renderManager.GetModeFirstState(m_startGateGen);
-  // 5.E2-5 (shadow): DECIDE's ResolveOutput on the set's first configure
+  State state = m_renderManager.GetModeFirstState(m_startGateGen);
+  // 5.E2-8b: an engaged start P decides (its job open)
+  const bool txP = TxOpen() && m_txJob;
+  // 5.E2-5 (shadow): DECIDE's ResolveOutput on the set's first configure (5.E2-8b: P's own
+  // DECIDE takes the inputs instead)
   if (state != State::UNCONFIGURED && m_decideShadowGen != m_startGateGen &&
       DISPLAYSTATE::DecideShadowOn())
   {
     m_decideShadowGen = m_startGateGen;
-    DecideShadow();
+    if (!txP)
+      DecideShadow();
   }
   // the session's fullscreen video window from its first picture, as the first commit
   // posts it ungated: else the GUI stays up through the mode set and its settle (so also
@@ -3137,9 +3588,25 @@ void CVideoPlayer::CheckStartGate()
   }
   if (m_displayLost)
     return;
+  if (txP)
+  {
+    // D6's backstop does not count a loss (the main loop stamps its start)
+    if (m_txLostAt != std::chrono::steady_clock::time_point{})
+    {
+      m_txLostPaused += std::chrono::steady_clock::now() - m_txLostAt;
+      m_txLostAt = {};
+    }
+    TxStartGatePass(state);
+    if (!m_startGateShut)
+      return;
+    // ended to legacy in this pass: RM's state from here, as legacy reads it
+    if (!TxOpen())
+      state = m_renderManager.GetModeFirstState(m_startGateGen);
+  }
   // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
+  // 5.E2-8b D6: on P's open start RM's DECIDED/UNCHANGED do not open CN
   if ((state == State::DECIDED || state == State::UNCHANGED) &&
-      !(TxOpen() && (m_txCapForce || m_txAudioFullForce)))
+      !(TxOpen() && (m_txCapForce || m_txAudioFullForce || m_txJob)))
   {
     // 5.E2-8a (D2, D3): the engaged start's word and disc time, before the gate opens
     if (TxOpen() && !TxDecided(state == State::DECIDED))
@@ -3512,6 +3979,17 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
   m_txLossAtUntil = {};
+  // 5.E2-8b: the last open's job is released by its stop or next file; P's start state reset
+  TxReleaseJob("next open");
+  m_txStep = TxStep::NONE;
+  m_txOpenPending = m_txWordOpened = m_txFullScreen = m_txRootAtOpen = false;
+  m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
+  m_txJobFacts = {};
+  m_txJobFactsSet = m_txGuiWaitLogged = m_txCapLogged = m_txOutputDone = false;
+  m_txSettle.reset();
+  m_txAdopt.reset();
+  m_txPostedAt = m_txLostAt = {};
+  m_txLostPaused = {};
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
   m_CurrentVideo.hint.Clear();
@@ -3748,6 +4226,11 @@ void CVideoPlayer::Prepare(bool nextFile)
     m_wordSamplePair = -1;
     m_wordSampleLogged = -1;
   }
+  m_txWordOpened = true;
+  // 5.E2-8b D2: the first set's OPEN, with the open's T
+  if (m_txOpenPending && TxOpen())
+    TxOpenStart();
+  m_txOpenPending = false;
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (winSystem && winSystem->HoldIfDisplayLost(this))
     CLog::Log(LOGINFO, "VideoPlayer: started while the display is lost, held until it is back");
@@ -3851,6 +4334,10 @@ void CVideoPlayer::Process()
     {
       if (TxOpen())
         m_txLostSinceArm = true;
+      // 5.E2-8b D6: the backstop is paused while P is lost
+      if (TxOpen() && m_txJob && m_txStep == TxStep::POSTED &&
+          m_txLostAt == std::chrono::steady_clock::time_point{})
+        m_txLostAt = std::chrono::steady_clock::now();
       // 5.E2-7 (D3): a real freeze's states; P keeps its stop, a next file in a span and the wake
       if (m_txFreezeReal.load(std::memory_order_acquire))
       {
@@ -3984,7 +4471,7 @@ void CVideoPlayer::Process()
     if (TxOpen())
       TxCheckVerdict("loop");
     // code review L3: the holds' bounds do not count a loss inside the open start
-    if (TxOpen() && m_txWordStarting && m_txLostSinceArm)
+    if (TxOpen() && (m_txWordStarting || (m_txJob && m_txDiscHeld)) && m_txLostSinceArm)
     {
       m_txLostSinceArm = false;
       if (m_txDiscHeld)
@@ -6352,6 +6839,8 @@ void CVideoPlayer::OnExit()
   // 5.E2-8a (D5): a stop before START, ahead of the word's stop and the closes
   if (TxOpen())
     EndTransactionToLegacy("stop");
+  // 5.E2-8b D5 (lifetime): the job's sink cleared at the player's exit
+  TxReleaseJob("stop");
   // 5.E2-3: the shadow word's stop. 5.E2-7 (code review M1): on a real loss path session at a
   // natural end the stop's CAS comes after the two draining closes, so a loss inside them is a
   // real freeze whose held wait the OnExit hook ends; transaction_off keeps it here
@@ -6534,6 +7023,7 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   // 5.E2-8a (D5): a next file before the engaged start's START
   if (TxOpen())
     EndTransactionToLegacy("next file");
+  TxReleaseJob("next file");
   CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
 
   IPlayerCallback *cb = &m_callback;
@@ -6560,6 +7050,9 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
 
   m_item = msg.GetItem();
   m_playerOptions = msg.GetOptions();
+  // 5.E2-8b D2: the open message's snapshot
+  m_txMsgInputsSeq = msg.GetParams().m_txInputsSeq;
+  m_txMsgExits = msg.GetParams().m_txExits;
 
   m_processInfo->SetPlayTimes(0,0,0,0);
 
@@ -7138,6 +7631,9 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_UPDATE_STREAM_DETAILS))
       m_updateStreamDetails = true;
+    // 5.E2-8b D6: a Start job's reply, acted on at CheckStartGate (D9's order)
+    else if (pMsg->IsType(CDVDMsg::PLAYER_TX_REPLY))
+      TxOnReply(*pMsg);
   }
 }
 
@@ -11342,6 +11838,8 @@ std::string TxMsgName(CDVDMsg::Message type)
       return "PLAYER_DISPLAY_RETURNED";
     case CDVDMsg::PLAYER_AVCHANGE:
       return "PLAYER_AVCHANGE";
+    case CDVDMsg::PLAYER_TX_REPLY:
+      return "PLAYER_TX_REPLY";
     case CDVDMsg::PLAYER_REPORT_STATE:
       return "PLAYER_REPORT_STATE";
     case CDVDMsg::PLAYER_SETSPEED:
@@ -11415,9 +11913,12 @@ void CVideoPlayer::TxInboxPass()
     const char* why = nullptr;
     const auto pass = [listFront, &front](CDVDMsg& m)
     {
+      // 5.E2-8b: a Start job's reply runs after RESUME (CN waits while lost), never holding the
+      // inbox's takes behind it
       const bool passed = m.IsType(CDVDMsg::PLAYER_DISPLAY_RETURNED) ||
                           m.IsType(CDVDMsg::PLAYER_AVCHANGE) ||
-                          m.IsType(CDVDMsg::PLAYER_REPORT_STATE);
+                          m.IsType(CDVDMsg::PLAYER_REPORT_STATE) ||
+                          m.IsType(CDVDMsg::PLAYER_TX_REPLY);
       if (passed && listFront)
         front += (front.empty() ? "" : ",") + TxMsgName(m.GetMessageType());
       return passed;

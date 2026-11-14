@@ -1272,6 +1272,22 @@ void SetInStartAdopt(bool in)
   s_inStartAdopt = in;
 }
 
+// E2-8b C6: stubs (C6 adds GC's counter, its in-flight scope and the guiSet notice)
+uint64_t FullScreenExits()
+{
+  return 0;
+}
+
+int GuiSetsInFlight()
+{
+  return 0;
+}
+
+GuiSetNotice ReadGuiSetNotice(uint64_t since)
+{
+  return {};
+}
+
 void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH)
 {
   if (!OUTPUT::HotplugWorkerOn() || !Active())

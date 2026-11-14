@@ -426,6 +426,24 @@ std::shared_ptr<SStartJob> TxOpenJob();
 bool InStartAdopt();
 void SetInStartAdopt(bool in);
 
+// 5.E2-8b C4: GC's facts P's DECIDE reads (docs/phase5_e2_8b_impl.md D2, D4 step 7, D9).
+// E2-8b C6: stubs until C6 writes them (no GC side yet: every read is "nothing happened")
+//! E2-8b C6: GC's fullscreen-exit counter (atomic, no lock), bumped right after
+//! SetFullScreenVideo computes `exiting`, before its desktop set or trigger
+uint64_t FullScreenExits();
+//! E2-8b C6: GC's mode sets in flight (SetVideoResolutionInternal's scope, until its job's
+//! reply is applied or W reports the job ended); seq_cst, read by P's Dekker step
+int GuiSetsInFlight();
+//! E2-8b C6: the guiSet notice a GUI set bumps while TxOpenJob is open (not Back's own
+//! desktop set): seq the newest notice's number (0: none), preActivation when any notice
+//! after `since` was tagged pre-activation (GetActiveWindow() != WINDOW_FULLSCREEN_VIDEO)
+struct GuiSetNotice
+{
+  uint64_t seq = 0;
+  bool preActivation = false;
+};
+GuiSetNotice ReadGuiSetNotice(uint64_t since);
+
 // 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
 // the GUI/OSD encoding at its next render pass
 //! the switch: ModeSetsOnW and no outputdrive_skip "B2-8", latched at its first read after W runs
