@@ -304,6 +304,9 @@ public:
   //! E2-8b test (transaction_noticeat): P raises a notice, RM's facts (trigger) or others
   //! (changed: an fps notice 1 fps off RM's)
   void TxTestNotice(bool changed);
+  //! E2-8b test (displaystate_mainstall "straddle <ms>", code review A-L2): main, OpenFile before
+  //! P's engage: the trigger raised once, so main's held pass can straddle OPEN
+  void TxTestStraddleRaise();
   //! 5.V2-7 (MC-41): with the presenter, a picture carries its overlays to AddVideoPicture
   //! instead of AddOverlay, and the buffer calls leave the overlay lock alone
   bool OverlaysTravel() const;

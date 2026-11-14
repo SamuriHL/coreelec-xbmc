@@ -1128,6 +1128,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     params.m_item.SetMimeTypeForInternetFile();
     params.m_txInputsSeq = txInputsSeq;
     params.m_txExits = txExits;
+    // 5.E2-8b test (displaystate_mainstall straddle, code review A-L2): main's pass straddles OPEN
+    m_renderManager.TxTestStraddleRaise();
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
 
     return true;
@@ -1145,6 +1147,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_error = false;
   m_bCloseRequest = false;
   m_renderManager.PreInit();
+  // 5.E2-8b test (displaystate_mainstall straddle, code review A-L2), after PreInit's reset
+  m_renderManager.TxTestStraddleRaise();
 
   Create();
   m_messenger.Init();

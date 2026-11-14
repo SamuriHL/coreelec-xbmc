@@ -100,8 +100,8 @@ bool HeldStartPendingWindow()
 
 // test: special://profile/displaystate_mainstall holds "<after-set|framemove|straddle> <ms>"; main
 // sleeps there, after an RM-decided mode set, at the top of every FrameMove, or in UpdateResolution
-// before its consume lock (5.E2-8b: a pass held across OPEN). True when it slept
-bool TestMainStall(const char* where)
+// before its consume lock (5.E2-8b: a pass held across OPEN)
+const std::pair<std::string, int>& MainStallConfig()
 {
   static const auto stall = []
   {
@@ -123,9 +123,22 @@ bool TestMainStall(const char* where)
     }
     return result;
   }();
-  if (stall.second <= 0 || stall.first != where)
+  return stall;
+}
+
+// the hook names where (without its sleep)
+bool TestMainStallAt(const char* where)
+{
+  const auto& stall = MainStallConfig();
+  return stall.second > 0 && stall.first == where;
+}
+
+// true when it slept
+bool TestMainStall(const char* where)
+{
+  if (!TestMainStallAt(where))
     return false;
-  std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
+  std::this_thread::sleep_for(std::chrono::milliseconds(MainStallConfig().second));
   return true;
 }
 
@@ -263,6 +276,11 @@ const char* RendererKind(const CBaseRenderer* renderer)
 }
 #else
 bool TestMainStall(const char*)
+{
+  return false;
+}
+
+bool TestMainStallAt(const char*)
 {
   return false;
 }
@@ -3181,6 +3199,8 @@ void CRenderManager::HandBackTxLocked(STxResolution& r, bool rmRetry)
     {
       m_rmRetry = true;
       r.note = " (rm retry, frac arm restored)";
+      // code review B-H1 (c): main's own failed set logs its retry so (RM's rm-retry raise)
+      CLog::Log(LOGINFO, "OUTPUTDRIVE rm retry (start job failed)");
     }
     else
       r.note = " (frac arm restored)";
@@ -3216,6 +3236,9 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
       CountTxStartLocked(r, "count-only");
       m_txCommitInFlight = false;
     }
+    else if (a == TxAnswer::BEHIND || a == TxAnswer::FAILED || a == TxAnswer::FAILED_SET ||
+             a == TxAnswer::RECOVERING)
+      r.action = "wait"; // code review B-H1 (b): the wait cells are logged
     return;
   }
   const bool adopted = a == TxAnswer::ADOPTED || a == TxAnswer::RECOVERED;
@@ -3237,7 +3260,10 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
   {
     case TxNeed::LEFT:
       if (a == TxAnswer::RECOVERING)
+      {
+        r.action = "wait";
         return;
+      }
       if (adopted || a == TxAnswer::BEHIND)
         CountTxStartLocked(r, adopted ? "count" : "count-only");
       else
@@ -3247,7 +3273,10 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
       return;
     case TxNeed::JOB_OK:
       if (a == TxAnswer::RECOVERING)
+      {
+        r.action = "wait";
         return;
+      }
       if (adopted)
         CountTxStartLocked(r, "count");
       else
@@ -3268,7 +3297,10 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
       return;
     case TxNeed::GUI_OWN:
       if (a == TxAnswer::RECOVERING)
+      {
+        r.action = "wait";
         return;
+      }
       CountTxStartLocked(r, adopted ? "count" : "count-only");
       m_txCommitInFlight = false;
       return;
@@ -3472,6 +3504,17 @@ bool CRenderManager::TxRaiseOwed(const char* why)
   return true;
 }
 
+void CRenderManager::TxTestStraddleRaise()
+{
+  if (!TestMainStallAt("straddle"))
+    return;
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  const bool raised = RaiseTriggerLocked("trigger");
+  CLog::Log(LOGWARNING, "TXTEST straddle: main's trigger raised at OpenFile{}",
+            raised ? "" : " (a notice: main is shut out)");
+}
+
 void CRenderManager::TxTestNotice(bool changed)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -3605,6 +3648,9 @@ void CRenderManager::UpdateResolution()
           stereoMode = m_picture.stereoMode;
           hdrType = m_picture.hdrType;
           m_bTriggerUpdateResolution = false;
+          // E2-8b (code review A-L3): a hand-back's trigger is consumed here; TxFileEnded drops
+          // only one still owed
+          m_txOutcome.handedBack = false;
           modeFirstGen = ModeFirstTagged() ? m_modeFirstGen.load() : 0;
           m_modeFirstInFlight = true;
 #if defined(HAS_LIBAMCODEC)
