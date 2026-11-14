@@ -1056,8 +1056,8 @@ protected:
   //! 5.E2-8b D8: how / need are the site's two columns (a job not past its drop CAS, or never
   //! posted / a job past it); unused on an open main decides (no Start job)
   void EndTransactionToLegacy(const char* site,
-                              CRenderManager::TxHow how = CRenderManager::TxHow::RERAISE,
-                              CRenderManager::TxNeed need = CRenderManager::TxNeed::JOB_OK);
+                              CRenderManager::TxHow how,
+                              CRenderManager::TxNeed need);
   bool TxOpen() const { return m_txEngaged && !m_txStarted && !m_txExited; }
   // 5.E2-8b (docs/phase5_e2_8b_impl.md): the engaged start decided on P, main shut out. Reset in
   // Prepare; every read behind m_txJob (an engaged open not under transaction_skip decide)
@@ -1084,7 +1084,7 @@ protected:
   CRenderManager::STxNotice m_txJobFacts; //!< D3: RM's facts DECIDE read (the newest notice)
   bool m_txJobFactsSet = false;
   bool m_txGuiWaitLogged = false;
-  bool m_txCapLogged = false;
+  bool m_txBoundMetCommit = false; //!< D8: CN's cap or audio-full bound met a committed job
   //! D6: the job's replies, taken from P's messenger
   bool m_txOutputDone = false;
   std::optional<DISPLAYSTATE::StartSettleKind> m_txSettle;
@@ -1109,6 +1109,8 @@ protected:
   void TxOnReply(CDVDMsg& msg);
   //! D3: a notice after the post against the job's facts
   bool TxNoticeSame(const CRenderManager::STxNotice& notice) const;
+  //! D8: the cap / audio-full row; false when the committed job is not ended
+  bool TxBoundEnds(const char* site);
   //! D5b: the job's sink cleared and TxOpenJob released (stop, next file, destruction)
   void TxReleaseJob(const char* why);
   unsigned int m_txShadowSerial = 0;

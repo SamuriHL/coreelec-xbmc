@@ -2646,7 +2646,8 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
 
   // 5.E2-8a (D5): a non-seamless segment transition before START
   if (TxOpen())
-    EndTransactionToLegacy("segment transition");
+    EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
+                           CRenderManager::TxNeed::LATER);
   CloseDemuxer();
 
   m_syncStartPtsWait.reset();
@@ -2857,7 +2858,11 @@ void CVideoPlayer::ArmStartGate(const char* where)
 {
   // 5.E2-8a (D5): a later set while the engaged start is open ends it first
   if (TxOpen())
-    EndTransactionToLegacy("later set");
+    EndTransactionToLegacy("later set", CRenderManager::TxHow::OWED, CRenderManager::TxNeed::LATER);
+  // 5.E2-8b D8 (r2 N-L8): a KEEPALIVE reuse later set never configures: the owed mark of the
+  // start this file ended raises at its arm
+  if (m_txEndedGen && m_bdStreamReuseVideo)
+    m_renderManager.TxRaiseOwed("keepalive later set");
   bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
 #if defined(HAVE_LIBBLURAY)
   // a menu disc dictates its streams: none may be open yet
@@ -3027,7 +3032,8 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
   {
     if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load()))
     {
-      EndTransactionToLegacy("word at the decision");
+      EndTransactionToLegacy("word at the decision", CRenderManager::TxHow::RERAISE,
+                             CRenderManager::TxNeed::JOB_OK);
       return true;
     }
     m_txWordStarting = true;
@@ -3105,7 +3111,9 @@ void CVideoPlayer::TxCheckVerdict(const char* where)
     return;
   }
   CLog::Log(LOGINFO, "TXSTART renderer legacy verdict read at {}", where);
-  EndTransactionToLegacy("renderer legacy");
+  // 5.E2-8b D8: before the post a reraise; at the release (committed) job-ok
+  EndTransactionToLegacy("renderer legacy", CRenderManager::TxHow::RERAISE,
+                         CRenderManager::TxNeed::JOB_OK);
 }
 
 void CVideoPlayer::EndTransactionToLegacy(const char* site,
@@ -3384,7 +3392,84 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
       TxTryPost();
     return;
   }
+  using How = CRenderManager::TxHow;
+  using Need = CRenderManager::TxNeed;
+  // D9: the guiSet notice with RM's, then GC's exit counter (it is bumped before Back's trigger
+  // and desktop set, so a Back racing these reads is seen as the exit)
+  const DISPLAYSTATE::GuiSetNotice gui = DISPLAYSTATE::ReadGuiSetNotice(m_txGuiSetSnap);
+  const auto exitPending = [this]
+  { return DISPLAYSTATE::FullScreenExits() != m_txExitsAtOpen; };
+  // r11 M1: a fullscreen exit outranks `gui set` and `input changed`; the job is never dropped
+  const auto endLeft = [&](size_t from)
+  {
+    for (size_t i = from; i < notices.size(); ++i)
+      CLog::Log(LOGINFO, "NOTICE folded {} (fullscreen exit)", notices[i].kind);
+    EndTransactionToLegacy("fullscreen exit", How::RERAISE, Need::LEFT);
+  };
+  if (exitPending())
+  {
+    endLeft(0);
+    return;
+  }
+  if (gui.seq > m_txGuiSetSnap)
+  {
+    if (exitPending())
+    {
+      endLeft(0);
+      return;
+    }
+    // D9: not committed -> reraise (GC dropped the job); committed -> fresh or gui-own by the tag
+    CLog::Log(LOGINFO, "TXSTART T={} GUI set after the post ({}-activation)", m_txJob->T,
+              gui.preActivation ? "pre" : "post");
+    EndTransactionToLegacy("gui set", How::RERAISE,
+                           gui.preActivation ? Need::FRESH : Need::GUI_OWN);
+    return;
+  }
+  // D3: after the post a notice is compared with the job's facts; nothing is replayed
+  for (size_t i = 0; i < notices.size(); ++i)
+  {
+    const CRenderManager::STxNotice& n = notices[i];
+    if (TxNoticeSame(n))
+    {
+      CLog::Log(LOGINFO, "NOTICE same {}", n.kind);
+      continue;
+    }
+    // r12 L4: the exit counter re-read before acting on `input changed`
+    if (exitPending())
+    {
+      endLeft(i);
+      return;
+    }
+    CLog::Log(LOGINFO,
+              "TXSTART T={} notice {} differs: fps {:.3f}/{:.3f} size {}x{}/{}x{} hdr {}/{} "
+              "stereo '{}'/'{}'",
+              m_txJob->T, n.kind, n.fps, m_txJobFacts.fps, n.width, n.height, m_txJobFacts.width,
+              m_txJobFacts.height, static_cast<int>(n.hdrType),
+              static_cast<int>(m_txJobFacts.hdrType), n.stereoMode, m_txJobFacts.stereoMode);
+    EndTransactionToLegacy("input changed", How::RERAISE, Need::FRESH);
+    return;
+  }
   TxRepliesPass();
+}
+
+// 5.E2-8b D8: CN's cap and audio-full bound end a start whose job is not past its drop CAS
+// (reraise, the gate opened by the caller); a committed job is not ended: D6 opens CN, the
+// backstop bounds it
+bool CVideoPlayer::TxBoundEnds(const char* site)
+{
+  if (!TxOpen())
+    return true;
+  using State = DISPLAYSTATE::StartJobState;
+  if (m_txJob && m_txStep == TxStep::POSTED &&
+      !DISPLAYSTATE::StartJobDropForExit(*m_txJob, site) &&
+      m_txJob->state.load() == State::COMMITTED)
+  {
+    if (!std::exchange(m_txBoundMetCommit, true))
+      CLog::Log(LOGINFO, "TXSTART T={} {}: the job is committed, not ended", m_txJob->T, site);
+    return false;
+  }
+  EndTransactionToLegacy(site, CRenderManager::TxHow::RERAISE, CRenderManager::TxNeed::JOB_OK);
+  return true;
 }
 
 // 5.E2-8b D6: CN opens on SettleDone{done|no-change|not-armed} and main's adopt answer
@@ -3398,13 +3483,56 @@ void CVideoPlayer::TxRepliesPass()
                                        *m_txSettle == Settle::NOT_ARMED);
   const bool adoptOk = m_txAdopt && (*m_txAdopt == Form::ADOPTED || *m_txAdopt == Form::BEHIND_GUI);
   // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
-  if (settleOk && adoptOk && !(m_txCapForce || m_txAudioFullForce))
+  // E2-8b NOTE: a forced bound that met a committed job (not ended, D8) lets D6 open it
+  if (settleOk && adoptOk && (!(m_txCapForce || m_txAudioFullForce) || m_txBoundMetCommit))
   {
     if (!TxDecided(*m_txSettle != Settle::NO_CHANGE))
       return;
     OpenStartGate(*m_txSettle == Settle::NO_CHANGE ? "transaction no change"
                                                    : "transaction settle done",
                   false);
+    return;
+  }
+  // D8: every other reply ends the start; the job is past its drop CAS (job-ok), except a job GC
+  // dropped (`gui set`, not committed)
+  if (m_txSettle && !settleOk)
+  {
+    using How = CRenderManager::TxHow;
+    using Need = CRenderManager::TxNeed;
+    switch (*m_txSettle)
+    {
+      case Settle::DROPPED:
+        EndTransactionToLegacy("gui set", How::RERAISE, Need::FRESH);
+        return;
+      case Settle::FAILED:
+        // the rm-retry flag rides on main's answer (FAILED_SET)
+        EndTransactionToLegacy("failed", How::RERAISE, Need::JOB_OK);
+        return;
+      case Settle::FAILED_PARK:
+        EndTransactionToLegacy("failed-park", How::RERAISE, Need::JOB_OK);
+        return;
+      case Settle::SUPERSEDED:
+        EndTransactionToLegacy("superseded", How::RERAISE, Need::JOB_OK);
+        return;
+      case Settle::CANCELLED:
+        EndTransactionToLegacy("cancelled", How::RERAISE, Need::JOB_OK);
+        return;
+      case Settle::STOPPING:
+        EndTransactionToLegacy("stopping", How::RERAISE, Need::JOB_OK);
+        return;
+      default:
+        break;
+    }
+  }
+  if (m_txAdopt && !adoptOk)
+  {
+    // r9 L3: job-ok on behind and failed; a recovering answer (main's catch posted its recovery
+    // set) gets no TxAdopted for RECOVERED: P ends job-ok, RM holds CN (commit-in-flight) until
+    // the recovery set's reply counts (testbench/e28b_outcome_model.py: job-ok x recovering)
+    EndTransactionToLegacy(*m_txAdopt == Form::BEHIND   ? "adopt behind"
+                           : *m_txAdopt == Form::FAILED ? "adopt failed"
+                                                        : "adopt recovering",
+                           CRenderManager::TxHow::RERAISE, CRenderManager::TxNeed::JOB_OK);
     return;
   }
   if (m_txSettle && m_txAdopt)
@@ -3626,8 +3754,9 @@ void CVideoPlayer::CheckStartGate()
       m_startGateStarveSince = now;
     else if (now - m_startGateStarveSince >= 1s)
     {
-      if (TxOpen())
-        EndTransactionToLegacy("audio-full bound");
+      // 5.E2-8b D8: a committed Start job is not ended (D6 opens CN; the backstop bounds it)
+      if (!TxBoundEnds("audio-full bound"))
+        return;
       OpenStartGate("audio queue full before the first picture", true);
       return;
     }
@@ -3636,8 +3765,8 @@ void CVideoPlayer::CheckStartGate()
     m_startGateStarveSince = {};
   if (now - m_startGateSince > 12s)
   {
-    if (TxOpen())
-      EndTransactionToLegacy("12 s cap");
+    if (!TxBoundEnds("12 s cap"))
+      return;
     OpenStartGate("no mode decision in 12s", true);
   }
 }
@@ -3985,7 +4114,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txOpenPending = m_txWordOpened = m_txFullScreen = m_txRootAtOpen = false;
   m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
   m_txJobFacts = {};
-  m_txJobFactsSet = m_txGuiWaitLogged = m_txCapLogged = m_txOutputDone = false;
+  m_txJobFactsSet = m_txGuiWaitLogged = m_txBoundMetCommit = m_txOutputDone = false;
   m_txSettle.reset();
   m_txAdopt.reset();
   m_txPostedAt = m_txLostAt = {};
@@ -4404,7 +4533,8 @@ void CVideoPlayer::Process()
       {
         // 5.E2-8a (D5): a BD-J screen with no playlist (1) before START
         if (waitState == 1 && TxOpen())
-          EndTransactionToLegacy("no-playlist screen");
+          EndTransactionToLegacy("no-playlist screen", CRenderManager::TxHow::OWED,
+                                 CRenderManager::TxNeed::LATER);
         // a screen with no playlist: no picture will come for a waiting page
         if (m_menuPageWaiting)
         {
@@ -6837,8 +6967,15 @@ void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
   // 5.E2-8a (D5): a stop before START, ahead of the word's stop and the closes
+  // 5.E2-8b D5b (r10 L3, r12 M2): a stop after an earlier exit: RM drops what the ended start
+  // still owes (need none-needed, commit-in-flight, a hand-back trigger)
+  const unsigned int txEndedGen = TxOpen() ? 0 : m_txEndedGen;
   if (TxOpen())
-    EndTransactionToLegacy("stop");
+    EndTransactionToLegacy("stop", CRenderManager::TxHow::NONE,
+                           CRenderManager::TxNeed::NONE_NEEDED);
+  if (txEndedGen)
+    m_renderManager.TxFileEnded(txEndedGen);
+  m_txEndedGen = 0;
   // 5.E2-8b D5 (lifetime): the job's sink cleared at the player's exit
   TxReleaseJob("stop");
   // 5.E2-3: the shadow word's stop. 5.E2-7 (code review M1): on a real loss path session at a
@@ -7021,8 +7158,14 @@ void CVideoPlayer::OnExit()
 void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
 {
   // 5.E2-8a (D5): a next file before the engaged start's START
+  // 5.E2-8b D5b: a next file after an earlier exit, before BeginFile clears RM's record
+  const unsigned int txEndedGen = TxOpen() ? 0 : m_txEndedGen;
   if (TxOpen())
-    EndTransactionToLegacy("next file");
+    EndTransactionToLegacy("next file", CRenderManager::TxHow::NONE,
+                           CRenderManager::TxNeed::NONE_NEEDED);
+  if (txEndedGen)
+    m_renderManager.TxFileEnded(txEndedGen);
+  m_txEndedGen = 0;
   TxReleaseJob("next file");
   CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
 
@@ -9411,7 +9554,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   // 5.E2-8a (D5): a flush before START ends the engaged start (re-PRIME is E2-9's)
   if (TxOpen())
-    EndTransactionToLegacy("flush");
+    EndTransactionToLegacy("flush", CRenderManager::TxHow::RERAISE, CRenderManager::TxNeed::JOB_OK);
   m_txFlushCaller = nullptr;
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
