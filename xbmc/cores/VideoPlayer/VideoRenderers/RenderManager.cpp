@@ -812,7 +812,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_fps = fps;
         m_pictureDuration = 0.0;
         m_pRenderer->SetFps(fps);
-        m_bTriggerUpdateResolution = true;
+        RaiseTriggerLocked("fps");
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         {
           // PrepareNextRender publishes under m_presentlock
@@ -1111,7 +1111,7 @@ bool CRenderManager::Configure()
 
     m_bRenderGUI = true;
     m_videostarted = std::chrono::steady_clock::now();
-    m_bTriggerUpdateResolution = true;
+    RaiseTriggerLocked("configure");
     TagModeFirstConfigure();
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
@@ -1228,7 +1228,7 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
 
       m_bRenderGUI = true;
       m_videostarted = std::chrono::steady_clock::now();
-      m_bTriggerUpdateResolution = true;
+      RaiseTriggerLocked("configure");
       TagModeFirstConfigure();
       m_presentstep = PRESENT_IDLE;
       m_presentpts = DVD_NOPTS_VALUE;
@@ -1651,6 +1651,18 @@ void CRenderManager::BeginFile()
       CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm dropped (new file)");
     m_reclockPending = false;
     m_reclockArmed = false;
+    // E2-8b D5b: the last file's start outcome
+    if (m_txShutGen)
+    {
+      // E2-8b NOTE: every exit lets main back in before BeginFile; a shut left here is cleared
+      CLog::Log(LOGWARNING, "TXSTART set={} still shut at the next file: main let back in",
+                m_txShutGen.load());
+      m_txShutGen = 0;
+    }
+    m_txOutcome = {};
+    m_txCommitInFlight = false;
+    m_txArmTaken = {};
+    m_txOwedDecision = false;
 #if defined(HAS_LIBAMCODEC)
     // 5.B2-5b: a retry of the last file's set is not this file's
     if (m_rmRetry)
@@ -2959,6 +2971,9 @@ CRenderManager::ModeFirstState CRenderManager::GetModeFirstState(unsigned int ge
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  // E2-8b D5b: a committed start's outcome unresolved
+  if (m_txCommitInFlight)
+    return ModeFirstState::PENDING;
   if (m_modeFirstCfgGen != gen)
     return ModeFirstState::UNCONFIGURED;
   if (m_modeFirstDecidedGen == gen)
@@ -2974,6 +2989,13 @@ void CRenderManager::TagModeFirstConfigure()
   if (!m_modeFirstGate || m_modeFirstCfgGen.load() == m_modeFirstGen.load())
     return;
   m_modeFirstCfgGen = m_modeFirstGen.load();
+  // E2-8b D3: no main-side shadow record for a shut gen
+  if (m_txShutGen && m_txShutGen.load() == m_modeFirstGen.load())
+  {
+    CLog::Log(LOGINFO, "CRenderManager - start gate: set {} configured, decision on P",
+              m_modeFirstGen.load());
+    return;
+  }
   CLog::Log(LOGINFO, "CRenderManager - start gate: set {} configured, {}", m_modeFirstGen.load(),
             m_bTriggerUpdateResolution ? "mode decision due" : "no mode decision due");
 #if defined(HAS_LIBAMCODEC)
@@ -3008,6 +3030,414 @@ void CRenderManager::CountModeFirstDecision(unsigned int gen)
   m_modeFirstDecidedGen = gen;
   CLog::Log(LOGINFO, "CRenderManager - start gate: set {} mode decision counted ({})", gen,
             m_resolutionDecisions.load());
+}
+
+// 5.E2-8b: the engaged start's decision on P (docs/phase5_e2_8b_impl.md)
+namespace
+{
+const char* TxNeedName(CRenderManager::TxNeed need)
+{
+  using N = CRenderManager::TxNeed;
+  switch (need)
+  {
+    case N::NONE:
+      return "open";
+    case N::NONE_NEEDED:
+      return "none-needed";
+    case N::JOB_OK:
+      return "job-ok";
+    case N::FRESH:
+      return "fresh";
+    case N::GUI_OWN:
+      return "gui-own";
+    case N::LATER:
+      return "later";
+    case N::LEFT:
+      return "left";
+  }
+  return "?";
+}
+
+const char* TxAnswerName(CRenderManager::TxAnswer answer)
+{
+  using A = CRenderManager::TxAnswer;
+  switch (answer)
+  {
+    case A::NONE:
+      return "none";
+    case A::ADOPTED:
+      return "adopted";
+    case A::BEHIND:
+      return "behind";
+    case A::BEHIND_GUI:
+      return "behind-gui";
+    case A::FAILED:
+    case A::FAILED_SET:
+      return "failed";
+    case A::RECOVERING:
+      return "recovering";
+    case A::RECOVERED:
+      return "recovered";
+  }
+  return "?";
+}
+} // namespace
+
+// m_statelock held. E2-8b D3: shut, the raise is P's notice (the facts after the write)
+bool CRenderManager::RaiseTriggerLocked(const char* kind)
+{
+  if (m_txShutGen)
+  {
+    // P takes them every pass; a burst keeps the newest
+    if (m_txNotices.size() >= 16)
+      m_txNotices.erase(m_txNotices.begin());
+    m_txNotices.push_back({kind, m_fps, static_cast<int>(m_picture.iWidth),
+                           static_cast<int>(m_picture.iHeight), m_picture.stereoMode,
+                           m_picture.hdrType});
+    return false;
+  }
+  m_bTriggerUpdateResolution = true;
+  // E2-8b D8: the owed decision is the new gen's first configure
+  if (m_txOwedDecision && std::strcmp(kind, "configure") == 0)
+  {
+    m_txOwedDecision = false;
+    CLog::Log(LOGINFO, "TXSTART owed decision raised (configure)");
+  }
+  return true;
+}
+
+void CRenderManager::TxShutMain(unsigned int gen, uint64_t T)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  m_txShutGen = gen;
+  m_txNotices.clear();
+  if (m_bTriggerUpdateResolution)
+  {
+    m_bTriggerUpdateResolution = false;
+    CLog::Log(LOGINFO, "NOTICE folded (open, trigger was set)");
+  }
+  m_txOwedDecision = false;
+  m_txOutputGen = 0;
+  m_txOutcome = {};
+  m_txOutcome.gen = gen;
+  m_txOutcome.T = T;
+  m_txCommitInFlight = false;
+  m_txArmTaken = {};
+  CLog::Log(LOGINFO, "TXSTART set={} T={} main shut out", gen, T);
+}
+
+// m_statelock held
+void CRenderManager::RestoreTxArmLocked(const char* why)
+{
+  if (!m_txArmTaken.taken)
+    return;
+  m_txArmTaken.taken = false;
+  // its original time: the 12 s expiry runs on, as legacy's rm retry keeps it
+  m_reclockArmed = true;
+  m_reclockArmedAt = m_txArmTaken.at;
+  CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm restored ({})", why);
+}
+
+// m_statelock held: D5b's "count"
+void CRenderManager::CountTxStartLocked(STxResolution& r, const char* action)
+{
+  if (m_txOutcome.counted)
+  {
+    r.action = "nothing";
+    r.note = " (counted already)";
+    return;
+  }
+  m_txOutcome.counted = true;
+  ++m_resolutionDecisions;
+  m_sessionModeDecided = true;
+#if defined(HAS_LIBAMCODEC)
+  if (m_txOutcome.anchor)
+    aml_set_disc_mode_anchored(true);
+#endif
+  CountModeFirstDecision(m_txOutcome.gen);
+  r.action = action;
+  r.post = true;
+}
+
+// m_statelock held: D5b's "hand back" (main decides; its pass posts its own VideoParamsChange)
+void CRenderManager::HandBackTxLocked(STxResolution& r, bool rmRetry)
+{
+  m_bTriggerUpdateResolution = true;
+  m_txOutcome.handedBack = true;
+  if (!r.action)
+    r.action = "hand back";
+  // a failed Start job: nothing reached the wire, so the arm goes back, and legacy's failed set
+  // posted VideoParamsChange before its retry (Plan vs code 6)
+  if (m_txOutcome.answer == TxAnswer::FAILED_SET)
+  {
+    RestoreTxArmLocked("start job failed");
+    r.post = true;
+    if (rmRetry)
+    {
+      m_rmRetry = true;
+      r.note = " (rm retry, frac arm restored)";
+    }
+    else
+      r.note = " (frac arm restored)";
+  }
+}
+
+void CRenderManager::LogTxOutcomeLocked(const STxResolution& r) const
+{
+  if (!r.action)
+    return;
+  CLog::Log(LOGINFO, "TXSTART outcome T={} need={} answer={} -> {}{}", m_txOutcome.T,
+            TxNeedName(m_txOutcome.need), TxAnswerName(m_txOutcome.answer), r.action, r.note);
+}
+
+// m_statelock held. E2-8b D5b's table, cell by cell as testbench/e28b_outcome_model.py's
+// RM.resolve() (code-review item 8)
+void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
+{
+  SStartOutcome& o = m_txOutcome;
+  const TxAnswer a = o.answer;
+  if (a == TxAnswer::NONE || o.closed)
+    return;
+  if (!o.exited)
+  {
+    // provisional (the start open): behind / failed wait for P's job-ok exit; recovering waits
+    if (a == TxAnswer::ADOPTED && !o.counted)
+    {
+      CountTxStartLocked(r, "count");
+      m_txCommitInFlight = false;
+    }
+    else if (a == TxAnswer::BEHIND_GUI && !o.counted)
+    {
+      CountTxStartLocked(r, "count-only");
+      m_txCommitInFlight = false;
+    }
+    return;
+  }
+  const bool adopted = a == TxAnswer::ADOPTED || a == TxAnswer::RECOVERED;
+  const TxNeed n = o.need;
+  if (n == TxNeed::NONE_NEEDED)
+  {
+    m_txCommitInFlight = false;
+    r.action = "nothing";
+    return;
+  }
+  if (a == TxAnswer::BEHIND_GUI &&
+      (n == TxNeed::JOB_OK || n == TxNeed::GUI_OWN || n == TxNeed::LEFT))
+  {
+    CountTxStartLocked(r, "count-only");
+    m_txCommitInFlight = false;
+    return;
+  }
+  switch (n)
+  {
+    case TxNeed::LEFT:
+      if (a == TxAnswer::RECOVERING)
+        return;
+      if (adopted || a == TxAnswer::BEHIND)
+        CountTxStartLocked(r, adopted ? "count" : "count-only");
+      else
+        // failed: main decides when fullscreen again (legacy's rm retry, bounded by the cap)
+        HandBackTxLocked(r, true);
+      m_txCommitInFlight = false;
+      return;
+    case TxNeed::JOB_OK:
+      if (a == TxAnswer::RECOVERING)
+        return;
+      if (adopted)
+        CountTxStartLocked(r, "count");
+      else
+        HandBackTxLocked(r, true);
+      m_txCommitInFlight = false;
+      return;
+    case TxNeed::FRESH:
+      // the count stands withdrawn (its VideoParamsChange was posted); also before recovered
+      if (o.counted)
+      {
+        o.counted = false;
+        if (m_modeFirstDecidedGen == o.gen)
+          m_modeFirstDecidedGen = 0;
+        r.action = "withdraw+hand back";
+      }
+      HandBackTxLocked(r, false);
+      m_txCommitInFlight = false;
+      return;
+    case TxNeed::GUI_OWN:
+      if (a == TxAnswer::RECOVERING)
+        return;
+      CountTxStartLocked(r, adopted ? "count" : "count-only");
+      m_txCommitInFlight = false;
+      return;
+    case TxNeed::LATER:
+      m_txCommitInFlight = false;
+      r.action = "nothing";
+      return;
+    case TxNeed::NONE:
+    case TxNeed::NONE_NEEDED:
+      return;
+  }
+}
+
+// m_statelock held. The model's RM.recovered()
+void CRenderManager::RecoveredTxOutcomeLocked(STxResolution& r)
+{
+  SStartOutcome& o = m_txOutcome;
+  if (o.answer != TxAnswer::RECOVERING)
+  {
+    CLog::Log(LOGINFO, "TXSTART set={} T={} recovered after {}: logged", o.gen, o.T,
+              TxAnswerName(o.answer));
+    return;
+  }
+  o.answer = TxAnswer::RECOVERED;
+  m_txCommitInFlight = false;
+  // stop / next / later: nothing for the gen; fresh: its own hand-back is the decision
+  if (o.exited &&
+      (o.need == TxNeed::NONE_NEEDED || o.need == TxNeed::LATER || o.need == TxNeed::FRESH))
+  {
+    r.action = "nothing";
+    return;
+  }
+  CountTxStartLocked(r, "count");
+}
+
+void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
+{
+  STxResolution r;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    const unsigned int shut = m_txShutGen.exchange(0);
+    SStartOutcome& o = m_txOutcome;
+    const bool mine = gen != 0 && o.gen == gen;
+    if (shut && shut != gen)
+      CLog::Log(LOGWARNING, "TXSTART set={} main let back in for set {}", shut, gen);
+    if (need == TxNeed::NONE)
+    {
+      if (mine)
+        o.closed = true;
+      const char* what = "none";
+      if (how == TxHow::RERAISE)
+      {
+        RestoreTxArmLocked("reraise");
+        m_bTriggerUpdateResolution = true;
+        if (mine)
+          o.handedBack = true;
+        what = "reraise";
+      }
+      else if (how == TxHow::OWED)
+      {
+        // r7 L2: a trigger already raised since is the decision
+        if (m_bTriggerUpdateResolution)
+          what = "owed (dropped: trigger set)";
+        else
+        {
+          m_txOwedDecision = true;
+          what = "owed";
+        }
+      }
+      CLog::Log(LOGINFO, "TXSTART set={} T={} main let back in: {}", gen, mine ? o.T : 0, what);
+    }
+    else if (!mine || o.exited || o.closed)
+      CLog::Log(LOGINFO, "TXSTART set={} need={}: no open record (logged)", gen,
+                TxNeedName(need));
+    else
+    {
+      o.exited = true;
+      o.need = need;
+      // r11 H1: set by the exit for any job past its drop CAS whose outcome is unresolved
+      if (o.answer == TxAnswer::NONE || o.answer == TxAnswer::RECOVERING)
+        m_txCommitInFlight = true;
+      ResolveTxOutcomeLocked(r);
+      LogTxOutcomeLocked(r);
+    }
+  }
+  if (r.post)
+    m_playerPort->VideoParamsChange();
+}
+
+bool CRenderManager::TxAdoptAnswer(unsigned int gen, TxAnswer form)
+{
+  STxResolution r;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    SStartOutcome& o = m_txOutcome;
+    if (!gen || o.gen != gen)
+    {
+      CLog::Log(LOGINFO, "TXSTART set={} answer {}: no record (ended, logged)", gen,
+                TxAnswerName(form));
+      return false;
+    }
+    if (form == TxAnswer::RECOVERED)
+      RecoveredTxOutcomeLocked(r);
+    else if (o.answer != TxAnswer::NONE || o.closed)
+    {
+      CLog::Log(LOGINFO, "TXSTART set={} T={} answer {} after {}{}: logged", gen, o.T,
+                TxAnswerName(form), TxAnswerName(o.answer), o.closed ? " (closed)" : "");
+      return false;
+    }
+    else
+    {
+      o.answer = form;
+      ResolveTxOutcomeLocked(r);
+    }
+    LogTxOutcomeLocked(r);
+  }
+  if (r.post)
+    m_playerPort->VideoParamsChange();
+  return r.post;
+}
+
+void CRenderManager::TxFileEnded(unsigned int gen)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  SStartOutcome& o = m_txOutcome;
+  if (!gen || o.gen != gen)
+  {
+    CLog::Log(LOGINFO, "TXSTART set={} file ended: no record", gen);
+    return;
+  }
+  if (o.exited && o.need == TxNeed::NONE_NEEDED)
+    return;
+  const bool trigger = o.handedBack && m_bTriggerUpdateResolution;
+  if (trigger)
+    m_bTriggerUpdateResolution = false;
+  const TxNeed was = o.need;
+  o.exited = true;
+  o.need = TxNeed::NONE_NEEDED;
+  m_txCommitInFlight = false;
+  m_rmRetry = false;
+  m_resolutionInFlight = false;
+  CLog::Log(LOGINFO, "TXSTART file ended T={} set={} need={} answer={}{}", o.T, gen,
+            TxNeedName(was), TxAnswerName(o.answer),
+            trigger ? ": hand-back trigger dropped" : "");
+}
+
+void CRenderManager::SetTxOutputDone(unsigned int gen)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  m_txOutputGen = gen;
+}
+
+bool CRenderManager::TxRaiseOwed(const char* why)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (!m_txOwedDecision)
+    return false;
+  m_txOwedDecision = false;
+  const bool raised = RaiseTriggerLocked("owed");
+  CLog::Log(LOGINFO, "TXSTART owed decision {} ({})", raised ? "raised" : "a notice", why);
+  return true;
+}
+
+std::vector<CRenderManager::STxNotice> CRenderManager::TakeTxNotices()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  return std::exchange(m_txNotices, {});
 }
 
 #if defined(HAS_LIBAMCODEC)
@@ -3096,6 +3526,16 @@ void CRenderManager::UpdateResolution()
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);
           CMainHold hold("UpdateResolution");
+          // E2-8b D3: P decides an engaged start
+          if (const unsigned int shut = m_txShutGen.load())
+          {
+            if (m_txShutLoggedGen != shut)
+            {
+              m_txShutLoggedGen = shut;
+              CLog::Log(LOGINFO, "UpdateResolution shut out (transaction set {})", shut);
+            }
+            return;
+          }
           fps = m_fps;
           width = m_picture.iWidth;
           height = m_picture.iHeight;
@@ -3287,10 +3727,11 @@ void CRenderManager::UpdateResolution()
           // 5.B2-5b (r2 N5): a failed set is not a decision. The trigger is raised again once,
           // with the in-flight flag kept, so the held start waits for the retry's reply (or
           // the 12 s cap); the retry's result counts, whatever it is
-          if (setFailed && OUTPUT::ModeSetsOnW() && !m_rmRetry)
+          // E2-8b NOTE: shut out after this pass consumed (a pass straddling OPEN), the retry
+          // raise is a notice and the failed set counts, as a second failure would
+          if (setFailed && OUTPUT::ModeSetsOnW() && !m_rmRetry && RaiseTriggerLocked("rm-retry"))
           {
             m_rmRetry = true;
-            m_bTriggerUpdateResolution = true;
             // the same request: the re-clock it consumed goes with it
             if (fracArmed)
               m_reclockArmed = true;
@@ -3671,7 +4112,7 @@ void CRenderManager::PromoteReclockArm()
   m_reclockArmed = true;
   m_reclockArmedAt = std::chrono::steady_clock::now();
   m_videostarted = m_reclockArmedAt;
-  m_bTriggerUpdateResolution = true;
+  RaiseTriggerLocked("reclock");
   CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm promoted at {:.3f} fps", m_fps);
 }
 
@@ -3688,7 +4129,7 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
     m_picture.stereoMode = stereomode;
   }
   m_videostarted = std::chrono::steady_clock::now();
-  m_bTriggerUpdateResolution = true;
+  RaiseTriggerLocked(width ? "trigger-params" : "trigger");
 }
 
 void CRenderManager::ToggleDebug()
@@ -5227,10 +5668,16 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   // order) with the display state; "committed" = the set's mode decision done or none due
   bool txCommitted = false;
   if (const unsigned int txGen = m_txGateGen.load())
-    txCommitted = m_modeFirstCfgGen == txGen &&
-                  (m_modeFirstDecidedGen == txGen ||
-                   !(m_bTriggerUpdateResolution || m_modeFirstInFlight || m_resolutionInFlight)) &&
-                  !m_displayLost;
+  {
+    // E2-8b D5: a shut gen is committed when W's OutputDone reached P
+    if (txGen == m_txShutGen.load())
+      txCommitted = m_txOutputGen == txGen && !m_displayLost;
+    else
+      txCommitted = m_modeFirstCfgGen == txGen &&
+                    (m_modeFirstDecidedGen == txGen ||
+                     !(m_bTriggerUpdateResolution || m_modeFirstInFlight || m_resolutionInFlight)) &&
+                    !m_displayLost;
+  }
 #endif
 
   MAINCOUPLING_ACCESSOR("RM m_presentlock");

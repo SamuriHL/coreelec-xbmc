@@ -231,6 +231,68 @@ public:
   void SetTxEngagedGen(unsigned int gen) { m_txEngagedGen = gen; }
   //! P: the engaged set RM gave a legacy verdict for (0 = none)
   unsigned int TxLegacyVerdict() const { return m_txLegacyVerdict.load(); }
+  // 5.E2-8b: the engaged start decided on P, main shut out (docs/phase5_e2_8b_impl.md). Every
+  // call below is a no-op on a not-engaged open (m_txShutGen 0, no outcome record)
+  //! E2-8b D8: an exit's `how` for a job not past its drop CAS (or never posted)
+  enum class TxHow
+  {
+    NONE,
+    RERAISE, //!< the trigger set, m_videostarted kept, the frac arm restored
+    OWED, //!< the owed mark: the new gen's first configure (or a KEEPALIVE arm) raises
+  };
+  //! E2-8b D5b: an exit's `need` for a job past its drop CAS (NONE: not past it, or START)
+  enum class TxNeed
+  {
+    NONE,
+    NONE_NEEDED,
+    JOB_OK,
+    FRESH,
+    GUI_OWN,
+    LATER,
+    LEFT,
+  };
+  //! E2-8b D5b: the adopt's answer. FAILED_SET = the table's `failed` for a Start job whose own
+  //! set failed (kind FAILED/FAILED_PARK, nothing on the wire): its hand-back restores the frac
+  //! arm, sets the rm-retry flag and posts one VideoParamsChange (Plan vs code 6)
+  enum class TxAnswer
+  {
+    NONE,
+    ADOPTED,
+    BEHIND,
+    BEHIND_GUI,
+    FAILED,
+    FAILED_SET,
+    RECOVERING,
+    RECOVERED,
+  };
+  //! E2-8b D3: a trigger raised while main is shut out: the facts RM holds after the write
+  struct STxNotice
+  {
+    const char* kind = ""; //!< fps, configure, reclock, trigger, trigger-params, rm-retry, owed
+    float fps = 0.0f;
+    int width = 0;
+    int height = 0;
+    std::string stereoMode;
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  };
+  //! E2-8b D2: P at the engage: main's UpdateResolution shut out for gen, the trigger folded,
+  //! the start's outcome record opened (T: the word's, for the TXSTART lines)
+  void TxShutMain(unsigned int gen, uint64_t T);
+  //! E2-8b D8/D7: P's exit (its first step after the CAS) or START: main let back in; `how` for
+  //! a job not past its drop CAS (need NONE), else D5b's need (and commit-in-flight)
+  void TxOpenMain(unsigned int gen, TxHow how, TxNeed need);
+  //! E2-8b D5/D5b: every adopt form (main, after GC's set, outside the gfx lock) and P's
+  //! backstop (FAILED). True when it posted VideoParamsChange (the caller posts none)
+  bool TxAdoptAnswer(unsigned int gen, TxAnswer form);
+  //! E2-8b D5b: P, a stop or next file after an exit (the gen P kept from it)
+  void TxFileEnded(unsigned int gen);
+  //! E2-8b D5: W's OutputDone reached P: C's pre-roll term for the shut gen
+  void SetTxOutputDone(unsigned int gen);
+  //! E2-8b D8: P, a KEEPALIVE later set's arm (it never configures): the owed mark raised.
+  //! True when one was owed
+  bool TxRaiseOwed(const char* why);
+  //! E2-8b D3: P each CheckStartGate pass: the notices since the last take, oldest first
+  std::vector<STxNotice> TakeTxNotices();
   //! 5.V2-7 (MC-41): with the presenter, a picture carries its overlays to AddVideoPicture
   //! instead of AddOverlay, and the buffer calls leave the overlay lock alone
   bool OverlaysTravel() const;
@@ -615,6 +677,49 @@ protected:
   }
   void TagModeFirstConfigure();
   void CountModeFirstDecision(unsigned int gen);
+  //! E2-8b D3 (m_statelock held): every trigger raise. Shut: a notice, no trigger (false)
+  bool RaiseTriggerLocked(const char* kind);
+  //! E2-8b D5b: one engaged start's outcome (m_statelock)
+  struct SStartOutcome
+  {
+    unsigned int gen = 0; //!< 0: no record
+    uint64_t T = 0;
+    bool exited = false; //!< an exit wrote need (past the drop CAS)
+    bool closed = false; //!< START, or an exit of a job not past its drop CAS
+    TxNeed need = TxNeed::NONE;
+    TxAnswer answer = TxAnswer::NONE;
+    bool counted = false;
+    bool handedBack = false; //!< RM set the trigger for main (hand-back or reraise)
+    bool anchor = false; //!< the count sets the disc-mode anchor (the start's choice, D4)
+  } m_txOutcome;
+  //! E2-8b D5b: one table step's effect, applied after m_statelock
+  struct STxResolution
+  {
+    const char* action = nullptr; //!< logged as the TXSTART outcome line's action
+    std::string note;
+    bool post = false; //!< VideoParamsChange
+  };
+  //! E2-8b D5b (m_statelock held): the table once both inputs are known (the provisional row
+  //! with the start open); testbench/e28b_outcome_model.py's resolve()
+  void ResolveTxOutcomeLocked(STxResolution& r);
+  //! E2-8b D5b (m_statelock held): the recovery set's reply (the model's recovered())
+  void RecoveredTxOutcomeLocked(STxResolution& r);
+  void CountTxStartLocked(STxResolution& r, const char* action);
+  void HandBackTxLocked(STxResolution& r, bool rmRetry);
+  void LogTxOutcomeLocked(const STxResolution& r) const;
+  //! E2-8b D4/D8 (m_statelock held): the frac arm DECIDE took, back with its original time
+  void RestoreTxArmLocked(const char* why);
+  std::atomic<unsigned int> m_txShutGen{0}; //!< written under m_statelock; 0 = main decides
+  unsigned int m_txShutLoggedGen = 0; //!< main: the shut-out line once per gen
+  bool m_txOwedDecision = false; //!< m_statelock: D8's owed mark
+  std::atomic<unsigned int> m_txOutputGen{0}; //!< m_statelock: W's OutputDone reached P
+  std::atomic_bool m_txCommitInFlight{false}; //!< m_statelock: D5b's inflight
+  std::vector<STxNotice> m_txNotices; //!< m_statelock
+  struct
+  {
+    bool taken = false;
+    std::chrono::steady_clock::time_point at;
+  } m_txArmTaken; //!< m_statelock: DECIDE's arm take (E2-8b D4 step 4)
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   bool m_overlayVisible = false; //!< render thread: at the last GUI pass
   //! from a start the clock had yet to make until its display phase is measured:
