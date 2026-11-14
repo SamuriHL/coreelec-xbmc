@@ -1021,6 +1021,257 @@ bool FullScreenRoot()
   return s_fullScreenRoot.load();
 }
 
+const char* StartJobStateName(StartJobState state)
+{
+  switch (state)
+  {
+    case StartJobState::NOT_POSTED:
+      return "not-posted";
+    case StartJobState::QUEUED:
+      return "queued";
+    case StartJobState::PARKING:
+      return "parking";
+    case StartJobState::COMMITTED:
+      return "committed";
+    case StartJobState::DROPPED:
+      return "dropped";
+  }
+  return "?";
+}
+
+const char* StartSettleKindName(StartSettleKind kind)
+{
+  switch (kind)
+  {
+    case StartSettleKind::DONE:
+      return "done";
+    case StartSettleKind::NO_CHANGE:
+      return "no-change";
+    case StartSettleKind::NOT_ARMED:
+      return "not-armed";
+    case StartSettleKind::SUPERSEDED:
+      return "superseded";
+    case StartSettleKind::CANCELLED:
+      return "cancelled";
+    case StartSettleKind::STOPPING:
+      return "stopping";
+    case StartSettleKind::FAILED:
+      return "failed";
+    case StartSettleKind::FAILED_PARK:
+      return "failed-park";
+    case StartSettleKind::DROPPED:
+      return "dropped";
+  }
+  return "?";
+}
+
+const char* StartAdoptFormName(StartAdoptForm form)
+{
+  switch (form)
+  {
+    case StartAdoptForm::ADOPTED:
+      return "adopted";
+    case StartAdoptForm::BEHIND:
+      return "behind";
+    case StartAdoptForm::BEHIND_GUI:
+      return "behind-gui";
+    case StartAdoptForm::FAILED:
+      return "failed";
+    case StartAdoptForm::RECOVERING:
+      return "recovering";
+  }
+  return "?";
+}
+
+namespace
+{
+const char* StartAnswerName(StartAnswer answer)
+{
+  switch (answer)
+  {
+    case StartAnswer::ADOPTED:
+      return "adopted";
+    case StartAnswer::BEHIND:
+      return "behind";
+    case StartAnswer::BEHIND_GUI:
+      return "behind-gui";
+    case StartAnswer::FAILED:
+      return "failed";
+    case StartAnswer::FAILED_SET:
+      return "failed (its set)";
+    case StartAnswer::RECOVERING:
+      return "recovering";
+    case StartAnswer::RECOVERED:
+      return "recovered";
+  }
+  return "?";
+}
+} // namespace
+
+bool SStartJob::Cas(std::initializer_list<StartJobState> from,
+                    StartJobState to,
+                    StartJobState* found)
+{
+  StartJobState now = state.load();
+  while (true)
+  {
+    bool allowed = false;
+    for (const StartJobState f : from)
+      allowed = allowed || f == now;
+    if (!allowed)
+    {
+      if (found)
+        *found = now;
+      return false;
+    }
+    if (state.compare_exchange_weak(now, to))
+    {
+      if (found)
+        *found = to;
+      return true;
+    }
+  }
+}
+
+void SStartJob::SetSink(IStartJobSink* sink)
+{
+  std::unique_lock lock(m_sinkMutex);
+  m_sink = sink;
+}
+
+void SStartJob::ClearSink()
+{
+  std::unique_lock lock(m_sinkMutex);
+  m_sink = nullptr;
+}
+
+void SStartJob::OutputDone(bool committed, uint64_t seq)
+{
+  CLog::Log(LOGINFO, "TXSTART output done T={} {} seq={}", T, committed ? "committed" : "no-change",
+            seq);
+  std::unique_lock lock(m_sinkMutex);
+  if (m_sink)
+    m_sink->OnOutputDone({T, committed, seq});
+  else
+    CLog::Log(LOGINFO, "TXSTART T={} output done: no sink (the player has exited)", T);
+}
+
+void SStartJob::SettleDone(StartSettleKind kind)
+{
+  if (m_settleReplied.exchange(true))
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} settle {} after the final reply: logged", T,
+              StartSettleKindName(kind));
+    return;
+  }
+  const uint32_t e =
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).e;
+  CLog::Log(LOGINFO, "TXSTART settle done T={} kind={}", T, StartSettleKindName(kind));
+  std::unique_lock lock(m_sinkMutex);
+  if (m_sink)
+    m_sink->OnSettleDone({T, e, kind});
+  else
+    CLog::Log(LOGINFO, "TXSTART T={} settle done: no sink (the player has exited)", T);
+}
+
+bool SStartJob::AdoptAnswer(StartAnswer answer)
+{
+  adoptPending = false;
+  std::unique_lock lock(m_sinkMutex);
+  if (!m_sink)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} set={} answer {}: no sink (the player has exited)", T, gen,
+              StartAnswerName(answer));
+    return false;
+  }
+  return m_sink->OnAdoptAnswer(gen, answer);
+}
+
+void SStartJob::TxAdopted(StartAdoptForm form)
+{
+  CLog::Log(LOGINFO, "TXSTART adopted T={} {}", T, StartAdoptFormName(form));
+  std::unique_lock lock(m_sinkMutex);
+  if (m_sink)
+    m_sink->OnTxAdopted({T, form});
+}
+
+bool StartJobQueue(SStartJob& job)
+{
+  return job.Cas({StartJobState::NOT_POSTED}, StartJobState::QUEUED);
+}
+
+bool StartJobUnqueue(SStartJob& job)
+{
+  return job.Cas({StartJobState::QUEUED}, StartJobState::NOT_POSTED);
+}
+
+bool StartJobDropForGuiSet(SStartJob& job, const char* by)
+{
+  StartJobState found;
+  if (!job.Cas({StartJobState::QUEUED, StartJobState::PARKING}, StartJobState::DROPPED, &found))
+    return false;
+  CLog::Log(LOGINFO, "TXSTART job T={} dropped ({})", job.T, by);
+  return true;
+}
+
+bool StartJobDropForExit(SStartJob& job, const char* by)
+{
+  StartJobState found;
+  if (!job.Cas({StartJobState::NOT_POSTED, StartJobState::QUEUED, StartJobState::PARKING},
+               StartJobState::DROPPED, &found))
+    return false;
+  CLog::Log(LOGINFO, "TXSTART job T={} dropped ({})", job.T, by);
+  return true;
+}
+
+namespace
+{
+std::mutex s_txOpenJobMutex;
+std::shared_ptr<SStartJob> s_txOpenJob;
+bool s_inStartAdopt = false;
+} // namespace
+
+bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job)
+{
+  std::shared_ptr<SStartJob> open;
+  {
+    std::unique_lock lock(s_txOpenJobMutex);
+    if (!s_txOpenJob)
+    {
+      s_txOpenJob = job;
+      return true;
+    }
+    open = s_txOpenJob;
+  }
+  CLog::Log(LOGINFO, "TXSTART job T={}: not published, T={} still open", job->T, open->T);
+  return false;
+}
+
+bool ClearTxOpenJob(const std::shared_ptr<SStartJob>& job)
+{
+  std::unique_lock lock(s_txOpenJobMutex);
+  if (!job || s_txOpenJob != job)
+    return false;
+  s_txOpenJob.reset();
+  return true;
+}
+
+std::shared_ptr<SStartJob> TxOpenJob()
+{
+  std::unique_lock lock(s_txOpenJobMutex);
+  return s_txOpenJob;
+}
+
+bool InStartAdopt()
+{
+  return s_inStartAdopt;
+}
+
+void SetInStartAdopt(bool in)
+{
+  s_inStartAdopt = in;
+}
+
 void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH)
 {
   if (!OUTPUT::HotplugWorkerOn() || !Active())

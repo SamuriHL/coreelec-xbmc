@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -170,8 +171,21 @@ private:
                                                  RenderStereoMode stereo,
                                                  StreamHdrType hdrType,
                                                  bool nativeGUI);
-  //! W's backups from main's after a set
+  //! W's backups from main's after a set, unless W's Start job wrote newer ones (E2-8b D5)
   void NoteDriveShadowBackups();
+  //! main, 5.E2-8b D5: every reply main applies (any form): its commit sequence and run ordinal
+  void NoteAppliedReply(const SDriveJob& job);
+  //! main: the newest commit sequence among the replies applied
+  uint64_t m_appliedCommitSeq{0};
+  //! main, D5b: the applied set with the largest run ordinal, for the latest test and behind-gui
+  struct SAppliedSet
+  {
+    uint64_t runOrdinal{0};
+    bool own{false};
+    bool originRm{false};
+    bool hotplug{false};
+    bool postActivation{false};
+  } m_appliedSet;
   //! the shadow of a set that ran main's mode set job, logged when the set is done
   std::shared_ptr<SDriveShadow> m_driveShadow;
 
@@ -206,6 +220,8 @@ private:
     //! 5.V2-1: since when the reset is due but waits on main's flags, and which ones held it
     std::chrono::steady_clock::time_point waitsMainSince{};
     unsigned int waitsMain{0};
+    //! 5.E2-8b: the Start job whose SETTLE this is (its final reply at the SETTLE's end)
+    std::shared_ptr<DISPLAYSTATE::SStartJob> start;
   };
   //! W: the "SETTLE ... waits main" line of a wait that ends here
   void SettleWaitsMainEnds();
@@ -265,6 +281,38 @@ private:
   uint64_t m_lastFailedEpoch{0};
   //! main: the reply whose deferral was logged
   uint64_t m_deferLogged{0};
+
+  // 5.E2-8b: the Start job (docs/phase5_e2_8b_impl.md D4 step 7, D5, D5b)
+  bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start) override;
+  std::optional<DISPLAYSTATE::ModeFacts> StartCommitRow() override;
+  //! W: the job on Lane::START, built as RunRestoreOnW builds its set
+  void RunStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start);
+  //! W, a Start job's commit result: its backups, m_wStartCommit, OutputDone
+  void StartCommitted(SDriveJob& job, bool committed);
+  //! main: one Start reply (O1, in run-ordinal order with the hotplug replies)
+  void ApplyStartReply(const std::shared_ptr<SDriveJob>& job);
+  //! main: the reply of a set that may be the Start adopt's recovery set (answered at a clear pump)
+  void NoteStartRecoveryReply(const SDriveJob& job, bool created);
+  //! W queues, main pops (m_replyMutex)
+  std::deque<std::shared_ptr<SDriveJob>> m_startReplies;
+  uint64_t m_startDeferLogged{0};
+  //! W only: the last Start job's commit (valid while nothing has committed since)
+  struct
+  {
+    uint64_t commitSeq{0};
+    DISPLAYSTATE::ModeFacts row;
+    std::weak_ptr<DISPLAYSTATE::SStartJob> job;
+    bool logged{false};
+  } m_wStartCommit;
+  //! main: the recovery set an adopt's throw posted, by its reserved drive id (r9 L4)
+  struct
+  {
+    uint64_t id{0};
+    bool taken{false}; //!< a set took the id
+    bool answerDue{false}; //!< its reply was applied: answered at the next clear pump
+    bool recovered{false};
+    std::shared_ptr<DISPLAYSTATE::SStartJob> job;
+  } m_startRecovery;
   // W's Restore inputs, fixed at the hotplug's start on W (LatchRestoreInputs)
   std::string m_wFbName;
   uint32_t m_wUiFormat{0};

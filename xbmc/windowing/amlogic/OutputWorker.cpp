@@ -731,6 +731,9 @@ const char* RequestOrigin(const char* name)
     return "vs10";
   if (job == "hdr conversion" || job == "gui sink peak" || job == "vsvdb setting")
     return "setting";
+  // 5.E2-8b: DECIDE's Start job (lane 3)
+  if (job == "start job")
+    return "start-decision";
   if (job == "mode set")
   {
     // posted on main, where RM's scope is counted
@@ -746,7 +749,8 @@ const char* RequestOrigin(const char* name)
 
 void COutputWorker::TagRequestLocked(Lane lane, Job& job)
 {
-  if ((lane != Lane::MIDPLAY && lane != Lane::SETTINGS) || !aml_transaction_shadow_on())
+  if ((lane != Lane::MIDPLAY && lane != Lane::SETTINGS && lane != Lane::START) ||
+      !aml_transaction_shadow_on())
     return;
   job.origin = RequestOrigin(job.name);
   if (!job.origin)
@@ -1447,6 +1451,21 @@ uint64_t NextDriveId()
   // one id space for every poster (O2): main only until B3-7b, so today's request numbers
   static std::atomic<uint64_t> s_driveIds{0};
   return ++s_driveIds;
+}
+
+namespace
+{
+std::atomic<uint64_t> s_commitSeq{0};
+} // namespace
+
+uint64_t NextCommitSeq()
+{
+  return ++s_commitSeq;
+}
+
+uint64_t CommitSeq()
+{
+  return s_commitSeq.load();
 }
 
 DriveReply LastDriveReply(uint64_t& seq)

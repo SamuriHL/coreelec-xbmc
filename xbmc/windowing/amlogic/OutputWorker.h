@@ -373,6 +373,10 @@ void NoteDriveReply(DriveReply reply);
 //! requests take it (today's only poster, so today's sequence)
 uint64_t NextDriveId();
 DriveReply LastDriveReply(uint64_t& seq);
+//! 5.E2-8b D5 step 4: W's commit sequence, bumped by every set of any lane that reaches its
+//! commit (a failed commit too); a set that does not records the current value
+uint64_t NextCommitSeq();
+uint64_t CommitSeq();
 //! main: a request built inside this scope is the render manager's (origin=rm, r1 M4); startHeld:
 //! the player holds a start for this decision (5.B2-6: a film start, Q6)
 class CDriveOriginRm

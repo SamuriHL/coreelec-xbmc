@@ -978,6 +978,7 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::Mo
     CLog::Log(LOGINFO, "HOTPLUG job {}: hotplug after W stop: dropped", reply.replyId);
     return;
   }
+  reply.runOrdinal = OUTPUT::COutputWorker::Get().JobsStarted();
   try
   {
     HotplugJob(reply, retry, recover);
@@ -1004,6 +1005,8 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::Mo
             m_lostOpen ? 1 : 0, reply.parkMs, reply.parkRetried ? 1 : 0, reply.modes,
             reply.hasTable ? static_cast<int>(reply.table.size()) : -1,
             reply.restoreJob ? "yes" : "no");
+  if (!reply.restoreJob)
+    reply.commitSeq = OUTPUT::CommitSeq();
   std::unique_lock lock(m_replyMutex);
   m_replies.push_back(std::move(reply));
 }
@@ -1297,10 +1300,14 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
                 rows[target].strId);
   }
   std::optional<size_t> videoRow;
-  if (m_wVideoMode)
+  // 5.E2-8b D5 step 4: after an engaged start's commit and before main's adopt (GC's video row is
+  // still the GUI's), the film's committed row; the record stays for after it
+  const std::optional<DISPLAYSTATE::ModeFacts> startRow = StartCommitRow();
+  const std::optional<DISPLAYSTATE::ModeFacts>& videoMode = startRow ? startRow : m_wVideoMode;
+  if (videoMode)
   {
     for (size_t i = 0; i < rows.size(); ++i)
-      if (SameMode(rows[i], m_wVideoMode->strId, m_wVideoMode->refresh, m_wVideoMode->dwFlags))
+      if (SameMode(rows[i], videoMode->strId, videoMode->refresh, videoMode->dwFlags))
       {
         target = i;
         videoRow = i;
@@ -1369,7 +1376,7 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   if (m_wVideoMode)
   {
     const bool pending = m_wVideoModeReply != 0;
-    reply.videoMode = (videoRow && target == *videoRow) || (recovered && pending);
+    reply.videoMode = (!startRow && videoRow && target == *videoRow) || (recovered && pending);
     m_wVideoModeReply = reply.videoMode ? reply.replyId : 0;
   }
   // step 8: the unpark at the hold's end, then the reply

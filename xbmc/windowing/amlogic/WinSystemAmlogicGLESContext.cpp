@@ -141,6 +141,12 @@ struct SDriveJob
   Backups result;
   std::chrono::steady_clock::time_point modeSetAt{};
   int64_t parkMs{-1}, offMs{-1}, lostMs{-1}, commitMs{-1}, engageMs{-1};
+  // 5.E2-8b (docs/phase5_e2_8b_impl.md D5, D5b)
+  std::shared_ptr<DISPLAYSTATE::SStartJob> start; //!< the Start job this set runs, else null
+  bool own{false}; //!< main's own set (SetFullScreenOnW's post)
+  bool postActivation{false}; //!< own: WINDOW_FULLSCREEN_VIDEO was active at the set's start
+  uint64_t runOrdinal{0}; //!< W's run ordinal (JobsStarted inside the job)
+  uint64_t commitSeq{0}; //!< s_commitSeq at the commit result, else the value at its end
 
   // the hand-over: main waits, bounded; a reply it gave up on goes to the late list
   std::mutex mutex;
@@ -170,6 +176,9 @@ struct ShadowBackups
 std::mutex s_shadowMutex;
 ShadowBackups s_shadowBackups;
 uint64_t s_shadowBackupsVersion{0}; // 0: not seeded
+// 5.E2-8b D5: the commit sequence the backups are as new as (W's Start job writes them at its
+// commit; main writes only while the replies it applied are at least as new)
+uint64_t s_shadowBackupsSeq{0};
 uint64_t s_shadowSets{0};
 uint64_t s_shadowMatch{0};
 uint64_t s_shadowDiff{0};
@@ -908,8 +917,18 @@ std::shared_ptr<SDriveShadow> CWinSystemAmlogicGLESContext::BeginDriveShadow(
 void CWinSystemAmlogicGLESContext::NoteDriveShadowBackups()
 {
   std::unique_lock lock(s_shadowMutex);
+  if (m_appliedCommitSeq < s_shadowBackupsSeq)
+    return;
   s_shadowBackups = {m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI, m_bWindowCreated};
   ++s_shadowBackupsVersion;
+  s_shadowBackupsSeq = m_appliedCommitSeq;
+}
+
+void CWinSystemAmlogicGLESContext::NoteAppliedReply(const SDriveJob& job)
+{
+  m_appliedCommitSeq = std::max(m_appliedCommitSeq, job.commitSeq);
+  if (job.runOrdinal >= m_appliedSet.runOrdinal)
+    m_appliedSet = {job.runOrdinal, job.own, job.originRm, job.hotplug, job.postActivation};
 }
 
 bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_INFO& res)
@@ -952,7 +971,21 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
 
   // the request, read on main as CreateNewWindow reads it (r2 N2: W reads no CSettings)
   auto job = std::make_shared<SDriveJob>();
-  job->id = OUTPUT::NextDriveId();
+  // 5.E2-8b D5b (r9 L4): the recovery set of a Start adopt's throw takes the id reserved for it
+  const char* origin = OUTPUT::CurrentRequestOrigin();
+  if (m_startRecovery.id && !m_startRecovery.taken && origin &&
+      std::string_view(origin) == "recovery")
+  {
+    job->id = m_startRecovery.id;
+    m_startRecovery.taken = true;
+  }
+  else
+    job->id = OUTPUT::NextDriveId();
+  job->own = true;
+  // D5b: how main tells behind-gui (never from the window at the adopt)
+  if (CServiceBroker::GetGUI())
+    job->postActivation =
+        CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO;
   job->res = res;
   job->resIndex = OUTPUT::DriveResolution();
   job->fbName = m_framebuffer_name;
@@ -1080,6 +1113,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
     if (m_wHotplug)
       NoteDriveShadowBackups();
   }
+  if (!gaveUp)
+    NoteStartRecoveryReply(*job, created);
   if (!created)
     return false;
 
@@ -1093,6 +1128,7 @@ bool CWinSystemAmlogicGLESContext::SupersededOnW(const SDriveJob& job)
   // this set's job and its handler; then that job's reply rebuilds, at C's current epoch
   if (!m_wHotplug || !job.tornDown || job.uiEpoch == m_coordinator->UiEpoch())
     return false;
+  NoteAppliedReply(job);
   m_driveApplied = std::max(m_driveApplied, job.id);
   m_hdrType = job.result.hdrType;
   m_stereo_mode = job.result.stereo;
@@ -1115,7 +1151,11 @@ void CWinSystemAmlogicGLESContext::ReportDriveSet(
             "OUTPUTDRIVE set request={} ledger={} origin={} reply={} handler={} park={} park_ms={} "
             "off_ms={} lost_ms={} commit_ms={} engage_ms={} wait_ms={} handler_ms={} "
             "uiepoch={} off={} guiLocked {}{}",
-            job.id, job.ledgerSet, job.originRm ? "rm" : job.hotplug ? "hotplug" : "main",
+            job.id, job.ledgerSet,
+            job.start      ? "start"
+            : job.originRm ? "rm"
+            : job.hotplug  ? "hotplug"
+                           : "main",
             OUTPUT::DriveReplyName(job.kind), created ? "ok" : "failed",
             job.unparked ? "unacked" : job.parkRetried ? "retried" : "acked", job.parkMs,
             job.offMs, job.lostMs, job.commitMs, job.engageMs, waitMs, handlerMs, job.uiEpoch,
@@ -1158,6 +1198,19 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   CAMLDisplay* const display = m_amlDisplay.get();
   const RESOLUTION_INFO& res = job.res;
   job.result = job.backups;
+  // 5.E2-8b D5: this job's run ordinal (W bumped it at the dequeue); a set that returns before
+  // its commit, or throws, carries the commit sequence current at its end
+  job.runOrdinal = OUTPUT::COutputWorker::Get().JobsStarted();
+  struct SCommitSeqAtEnd
+  {
+    explicit SCommitSeqAtEnd(SDriveJob& job) : m_job(job) {}
+    ~SCommitSeqAtEnd()
+    {
+      if (!m_job.commitSeq)
+        m_job.commitSeq = OUTPUT::CommitSeq();
+    }
+    SDriveJob& m_job;
+  } commitSeqAtEnd(job);
 
   // the decision (GLES CreateNewWindow), from the request and W's own reads (D1)
   const int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
@@ -1221,6 +1274,13 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window{}",
               __FUNCTION__, heldFrac ? " (held 1000/1001 clock)" : "");
+    // 5.E2-8b D5 step 2: a Start job commits here, before its hold and DV engage
+    if (job.start && !job.start->Cas({DISPLAYSTATE::StartJobState::PARKING},
+                                     DISPLAYSTATE::StartJobState::COMMITTED))
+    {
+      job.kind = OUTPUT::DriveReply::DROPPED;
+      return;
+    }
     // D7: parked only for a disc engage the set carries (today's engage runs parked); no
     // not-ready, no lost walk
     const bool dvPicture = job.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
@@ -1233,6 +1293,11 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     }
     WIRECLASS::CWireClassProbe::Get().Notify("no mode set", WIRECLASS::FromHdrType(job.hdrType));
     job.kind = OUTPUT::DriveReply::DONE_NO_CHANGE;
+    if (job.start)
+    {
+      job.commitSeq = OUTPUT::CommitSeq();
+      job.start->OutputDone(false, job.commitSeq);
+    }
     return;
   }
 
@@ -1248,6 +1313,15 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
               job.id);
     job.parkRetried = true;
     hold.Rewait(500);
+  }
+  // 5.E2-8b D5 step 3: a Start job a GUI set or P's exit dropped during its park is released
+  // here: C skipped its UI commits while held, no plane went off
+  if (job.start && !job.start->Cas({DISPLAYSTATE::StartJobState::PARKING},
+                                   DISPLAYSTATE::StartJobState::COMMITTED))
+  {
+    CLog::Log(LOGINFO, "PARK released (start job dropped) T={} request {}", job.start->T, job.id);
+    job.kind = OUTPUT::DriveReply::DROPPED;
+    return;
   }
   job.parkMs = sinceStart();
   OUTPUT::TestStopAt("1");
@@ -1360,6 +1434,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
   const bool notConnected = committed && display->aml_set_not_connected();
+  // 5.E2-8b D5 step 4: every set that reaches its commit, a failed one too
+  job.commitSeq = OUTPUT::NextCommitSeq();
   OUTPUT::TestStopAt("4");
   if (committed)
   {
@@ -1395,11 +1471,14 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   job.kind = !committed      ? OUTPUT::DriveReply::FAILED
              : notConnected ? OUTPUT::DriveReply::NOT_COMMITTED
                             : OUTPUT::DriveReply::DONE;
+  if (job.start)
+    StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
 }
 
 bool CWinSystemAmlogicGLESContext::ApplyDriveReply(SDriveJob& job)
 {
+  NoteAppliedReply(job);
   m_driveApplied = std::max(m_driveApplied, job.id);
   // W's backups into main's members (main writes its own, r1 M9)
   m_hdrType = job.result.hdrType;
@@ -1604,6 +1683,8 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
   settle.armed = false;
   ++settle.gen;
   m_resetPending = false;
+  if (const auto start = std::exchange(settle.start, nullptr))
+    start->SettleDone(DISPLAYSTATE::StartSettleKind::SUPERSEDED);
 }
 
 void CWinSystemAmlogicGLESContext::SettleWaitsMainEnds()
@@ -1629,6 +1710,8 @@ void CWinSystemAmlogicGLESContext::SettleCancel(const char* why)
   settle.armed = false;
   ++settle.gen;
   m_resetPending = false;
+  if (const auto start = std::exchange(settle.start, nullptr))
+    start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
 }
 
 void CWinSystemAmlogicGLESContext::SettleHandlerFailed(const SDriveJob& job)
@@ -1650,11 +1733,35 @@ void CWinSystemAmlogicGLESContext::SettleHandlerFailed(const SDriveJob& job)
 
 void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
 {
+  // 5.E2-8b D5 step 5: a Start job's final reply from each return that arms nothing
+  const auto startSettle = [&job](DISPLAYSTATE::StartSettleKind kind)
+  {
+    if (job.start)
+      job.start->SettleDone(kind);
+  };
+  const auto unarmed = [&job]
+  {
+    switch (job.kind)
+    {
+      case OUTPUT::DriveReply::DONE_NO_CHANGE:
+        return DISPLAYSTATE::StartSettleKind::NO_CHANGE;
+      case OUTPUT::DriveReply::FAILED:
+        return DISPLAYSTATE::StartSettleKind::FAILED;
+      case OUTPUT::DriveReply::FAILED_PARK:
+        return DISPLAYSTATE::StartSettleKind::FAILED_PARK;
+      default:
+        return DISPLAYSTATE::StartSettleKind::NOT_ARMED;
+    }
+  };
   // no park: a no-change or a failed decision; an armed SETTLE stays, as today's timer
   if (!job.armDelay)
+  {
+    startSettle(unarmed());
     return;
+  }
   if (job.kind == OUTPUT::DriveReply::FAILED)
   {
+    startSettle(DISPLAYSTATE::StartSettleKind::FAILED);
     // Q9 (a): presentation stays not ready and nothing resets until a set succeeds
     CLog::Log(LOGERROR,
               "LEDGER owed after failed set set={} lost {} (request {}): no reset until a set "
@@ -1673,7 +1780,10 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   if (gatesOnW)
     m_settleCommitted = job.id;
   if (job.delay <= 0 && !lockWait && !atOnce)
+  {
+    startSettle(unarmed());
     return;
+  }
 
   SSettle& settle = m_settle;
   SettleWaitsMainEnds();
@@ -1688,11 +1798,14 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   settle.atOnce = atOnce;
   settle.lockedReads = 0;
   settle.unreadableLogged = false;
+  settle.start = job.start;
   if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle",
                                               std::chrono::milliseconds(0),
                                               [this, gen] { SettleCheck(gen); }))
   {
     settle.armed = false;
+    settle.start.reset();
+    startSettle(DISPLAYSTATE::StartSettleKind::STOPPING);
     if (gatesOnW)
     {
       // only at Kodi's exit (the player is closed first): main resets at no delay
@@ -1818,6 +1931,8 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     // 5.E2-4: SettleDone{T, e} (shadow)
     if (aml_transaction_shadow_on())
       OUTPUT::COutputWorker::Get().ShadowSettleDone(settle.request);
+    if (const auto start = std::exchange(settle.start, nullptr))
+      start->SettleDone(DISPLAYSTATE::StartSettleKind::DONE);
     OUTPUT::TestStopAt("8");
     return;
   }
@@ -1835,8 +1950,13 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
   // past it
   if (!locked && since <= cap)
     next = std::min(next, cap + 1ms - since);
-  OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle", next,
-                                         [this, gen] { SettleCheck(gen); });
+  if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle", next,
+                                              [this, gen] { SettleCheck(gen); }))
+  {
+    // W is stopping: this SETTLE ends unreset
+    if (const auto start = std::exchange(settle.start, nullptr))
+      start->SettleDone(DISPLAYSTATE::StartSettleKind::STOPPING);
+  }
 }
 
 bool CWinSystemAmlogicGLESContext::MessagePump()
@@ -1853,6 +1973,8 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
   for (const auto& job : late)
   {
     GUISNAPSHOT::NoteModeSeq(job->modeSeq);
+    // 5.E2-8b D5: W ran it, so it counts for the latest test and the backups' freshness
+    NoteAppliedReply(*job);
     if (job->id != m_drivePosted)
     {
       CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
@@ -1903,6 +2025,7 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     if (m_wHotplug)
       NoteDriveShadowBackups();
     DISPLAYSTATE::GcSetEnds(created);
+    NoteStartRecoveryReply(*job, created);
     ReportDriveSet(*job, created, -1,
                    std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - start)
@@ -1984,6 +2107,7 @@ void CWinSystemAmlogicGLESContext::RunRestoreOnW(SHotplugReply& reply,
   }
   if (OUTPUT::SettleOnW())
     SettleAfterJob(*job);
+  reply.commitSeq = job->commitSeq;
   reply.restoreJob = job;
 }
 
@@ -2021,30 +2145,63 @@ CWinSystemAmlogicGLESContext::RestoreForm CWinSystemAmlogicGLESContext::HotplugR
 
 void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
 {
+  // 5.E2-8b D5b (r9 L4): the Start adopt's recovery set's reply, answered at a clear pump
+  if (m_startRecovery.answerDue && !m_applyingReply && DISPLAYSTATE::GcSetDepth() == 0)
+  {
+    const auto recovery = std::exchange(m_startRecovery, {});
+    if (recovery.recovered)
+      recovery.job->AdoptAnswer(DISPLAYSTATE::StartAnswer::RECOVERED);
+    else
+      CLog::Log(LOGERROR,
+                "TXSTART T={} recovery set request {} failed: no answer (CN's cap bounds it)",
+                recovery.job->T, recovery.id);
+  }
   while (true)
   {
     SHotplugReply reply;
+    std::shared_ptr<SDriveJob> start;
     {
       std::unique_lock lock(m_replyMutex);
-      if (m_replies.empty())
+      if (m_replies.empty() && m_startReplies.empty())
         return;
       // O1: never inside an apply or a GC set; the reply waits, untouched, for a clear pump
       if (m_applyingReply || DISPLAYSTATE::GcSetDepth() > 0)
       {
-        const uint64_t id = m_replies.front().replyId;
+        const uint64_t id = m_replies.empty() ? 0 : m_replies.front().replyId;
+        const uint64_t startId = m_startReplies.empty() ? 0 : m_startReplies.front()->id;
         lock.unlock();
-        if (id != m_deferLogged)
+        const char* where = m_applyingReply ? "inside an apply" : "inside a GC set";
+        if (id && id != m_deferLogged)
         {
           m_deferLogged = id;
-          CLog::Log(LOGINFO, "HOTPLUG reply {} apply deferred ({})", id,
-                    m_applyingReply ? "inside an apply" : "inside a GC set");
+          CLog::Log(LOGINFO, "HOTPLUG reply {} apply deferred ({})", id, where);
+        }
+        if (startId && startId != m_startDeferLogged)
+        {
+          m_startDeferLogged = startId;
+          CLog::Log(LOGINFO, "TXSTART reply request {} apply deferred ({})", startId, where);
         }
         return;
       }
-      reply = std::move(m_replies.front());
-      m_replies.pop_front();
+      // D5: of the two fronts, the one W ran first; neither waits for a reply not yet queued
+      if (!m_startReplies.empty() &&
+          (m_replies.empty() || m_startReplies.front()->runOrdinal < m_replies.front().runOrdinal))
+      {
+        start = std::move(m_startReplies.front());
+        m_startReplies.pop_front();
+      }
+      else
+      {
+        reply = std::move(m_replies.front());
+        m_replies.pop_front();
+      }
       // before the gate opens: P5-9's timer on W sees a reply in hand
       m_applyingReply = true;
+    }
+    if (start)
+    {
+      ApplyStartReply(start);
+      continue;
     }
     // the take (HEAD's m_hotplugPending clear): the presentation gate opens here
     if (reply.upTo > m_poppedReceipt)
@@ -2086,6 +2243,11 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
   // 5.V3-3: RunRestoreOnW finished the job before the reply was queued under m_replyMutex
   if (job)
     GUISNAPSHOT::NoteModeSeq(job->modeSeq);
+  // 5.E2-8b D5: before any backups write below (a reply with no Restore: no set, no ordinal)
+  if (job)
+    NoteAppliedReply(*job);
+  else
+    m_appliedCommitSeq = std::max(m_appliedCommitSeq, reply.commitSeq);
   const RestoreForm form = job ? HotplugRestoreForm(*job) : RestoreForm::NOT_TORN_DOWN;
   // HEAD's not-ready per kind (r2 N1): every event's, then the set that re-readies
   const bool notReady = reply.kind == Kind::LOSS || reply.kind == Kind::LOSS_CAPSFAIL ||
@@ -2299,6 +2461,365 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
     }
     NoteDriveShadowBackups();
   }
+}
+
+bool CWinSystemAmlogicGLESContext::PostStartJob(
+    const std::shared_ptr<DISPLAYSTATE::SStartJob>& start)
+{
+  // W's Restore inputs are latched at main's first pump after W's start (StartHotplugOnW); only
+  // then does main apply Start replies (ApplyHotplugReplies)
+  if (!m_wHotplug)
+  {
+    CLog::Log(LOGINFO, "TXSTART job T={} not posted: the hotplug on W is not live", start->T);
+    return false;
+  }
+  if (start->state != DISPLAYSTATE::StartJobState::QUEUED)
+  {
+    CLog::Log(LOGERROR, "TXSTART job T={} not posted: state {}", start->T,
+              DISPLAYSTATE::StartJobStateName(start->state));
+    return false;
+  }
+  if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::START, "start job",
+                                                  [this, start] { RunStartJob(start); }))
+  {
+    CLog::Log(LOGINFO, "TXSTART job T={} not posted: W not running", start->T);
+    return false;
+  }
+  CLog::Log(LOGINFO, "TXSTART job T={} posted (P) set={} {} @ {:.3f} hdr={} frac={}", start->T,
+            start->gen, start->res.strId, start->res.fRefreshRate,
+            static_cast<int>(start->hdrType), start->fracRequest ? 1 : 0);
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::RunStartJob(
+    const std::shared_ptr<DISPLAYSTATE::SStartJob>& start)
+{
+  using State = DISPLAYSTATE::StartJobState;
+  using Settle = DISPLAYSTATE::StartSettleKind;
+  // D5 step 1
+  if (!start->Cas({State::QUEUED}, State::PARKING))
+  {
+    start->SettleDone(Settle::DROPPED);
+    return;
+  }
+  auto job = std::make_shared<SDriveJob>();
+  job->start = start;
+  job->lane = OUTPUT::Lane::START;
+  const auto queueReply = [this, &job]
+  {
+    std::unique_lock lock(m_replyMutex);
+    m_startReplies.push_back(job);
+  };
+  // W stopping drains its queue: the job is discarded unrun, and main answers failed (D5b)
+  if (!OUTPUT::COutputWorker::Get().Active())
+  {
+    if (!start->Cas({State::PARKING}, State::COMMITTED))
+    {
+      start->SettleDone(Settle::DROPPED);
+      return;
+    }
+    CLog::Log(LOGINFO, "TXSTART job T={} discarded unrun: W is stopping", start->T);
+    job->runOrdinal = OUTPUT::COutputWorker::Get().JobsStarted();
+    job->commitSeq = OUTPUT::CommitSeq();
+    job->kind = OUTPUT::DriveReply::FAILED;
+    start->ran = false;
+    start->adoptPending = true;
+    start->SettleDone(Settle::STOPPING);
+    queueReply();
+    return;
+  }
+
+  // RunRestoreOnW's build: no CSettings, no CDisplaySettings and no GC on W
+  ShadowBackups backups;
+  {
+    std::unique_lock lock(s_shadowMutex);
+    backups = s_shadowBackups;
+  }
+  job->id = OUTPUT::NextDriveId();
+  job->res = start->res;
+  job->resIndex = start->resIndex;
+  job->fbName = m_wFbName;
+  job->fullScreen = start->fullScreen;
+  job->stereo = start->stereo;
+  job->hdrType = start->hdrType;
+  job->nativeGUI = backups.nativeGUI;
+  job->fracRequest = start->fracRequest;
+  job->filmStart = start->filmStart;
+  job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
+  job->uiFormat = m_wUiFormat;
+  job->backups = {backups.hdrType, backups.stereo, backups.fullScreen, backups.nativeGUI,
+                  backups.windowCreated};
+  job->coordinator = m_wCoordinator;
+  job->graphicsPlane = m_wGraphicsPlane;
+  job->guiLocked = -1;
+  start->ran = true;
+  start->adoptPending = true;
+  try
+  {
+    RunModeSetJob(*job);
+  }
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGERROR, "OUTPUTDRIVE request {} (start job T={}) threw: {}", job->id, start->T,
+              e.what());
+    job->kind = OUTPUT::DriveReply::FAILED;
+  }
+  catch (...)
+  {
+    CLog::Log(LOGERROR, "OUTPUTDRIVE request {} (start job T={}) threw", job->id, start->T);
+    job->kind = OUTPUT::DriveReply::FAILED;
+  }
+  // a set that ended before its own CAS (a failed read, a throw) is past the drop CAS from here
+  if (job->kind == OUTPUT::DriveReply::DROPPED ||
+      !start->Cas({State::PARKING, State::COMMITTED}, State::COMMITTED))
+  {
+    start->adoptPending = false;
+    start->SettleDone(Settle::DROPPED);
+    return;
+  }
+  if (OUTPUT::SettleOnW())
+    SettleAfterJob(*job);
+  else
+    start->SettleDone(job->kind == OUTPUT::DriveReply::DONE_NO_CHANGE ? Settle::NO_CHANGE
+                      : job->kind == OUTPUT::DriveReply::FAILED       ? Settle::FAILED
+                                                                      : Settle::NOT_ARMED);
+  queueReply();
+}
+
+void CWinSystemAmlogicGLESContext::StartCommitted(SDriveJob& job, bool committed)
+{
+  // D5 step 4 (r1 M1): W's backups from the job, as new as its commit
+  {
+    std::unique_lock lock(s_shadowMutex);
+    s_shadowBackups = {job.result.hdrType, job.result.stereo, job.result.fullScreen,
+                       job.result.nativeGUI, job.result.windowCreated};
+    ++s_shadowBackupsVersion;
+    s_shadowBackupsSeq = job.commitSeq;
+  }
+  // r13 L4: a failed commit records no film row
+  if (!committed)
+    return;
+  m_wStartCommit.commitSeq = job.commitSeq;
+  m_wStartCommit.row = DISPLAYSTATE::FactsOf(job.res);
+  m_wStartCommit.job = job.start;
+  m_wStartCommit.logged = false;
+  job.start->OutputDone(true, job.commitSeq);
+}
+
+std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::StartCommitRow()
+{
+  // r4 M4, r5 M2: nothing committed since, main's adopt still owed, the start's video playing
+  if (!m_wStartCommit.commitSeq || m_wStartCommit.commitSeq != OUTPUT::CommitSeq())
+    return std::nullopt;
+  const auto start = m_wStartCommit.job.lock();
+  if (!start || !start->adoptPending || DISPLAYSTATE::TxOpenJob() != start)
+    return std::nullopt;
+  if (!std::exchange(m_wStartCommit.logged, true))
+    CLog::Log(LOGINFO, "HOTPLUG restore target: the start's committed row {} (T={} seq={})",
+              DISPLAYSTATE::FactsString(m_wStartCommit.row), start->T, m_wStartCommit.commitSeq);
+  return m_wStartCommit.row;
+}
+
+void CWinSystemAmlogicGLESContext::NoteStartRecoveryReply(const SDriveJob& job, bool created)
+{
+  if (!m_startRecovery.id || job.id != m_startRecovery.id)
+    return;
+  m_startRecovery.answerDue = true;
+  m_startRecovery.recovered = created;
+}
+
+void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJob>& job)
+{
+  using Answer = DISPLAYSTATE::StartAnswer;
+  using Form = DISPLAYSTATE::StartAdoptForm;
+  DISPLAYSTATE::SStartJob& start = *job->start;
+  struct SApplying
+  {
+    explicit SApplying(std::atomic_bool& flag) : m_flag(flag) { m_flag = true; }
+    ~SApplying() { m_flag = false; }
+    std::atomic_bool& m_flag;
+  } applying(m_applyingReply);
+  // every form answers RM (after GC's set returned, outside the gfx lock), then tells P
+  const auto answer = [&start](Answer a, Form f)
+  {
+    start.AdoptAnswer(a);
+    start.TxAdopted(f);
+  };
+  const char* const kindName = OUTPUT::DriveReplyName(job->kind);
+  // r14 L3: no ApplyDriveReply, whose default result would overwrite main's backups
+  if (!start.ran)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} reply: the job was discarded unrun", start.T);
+    answer(Answer::FAILED, Form::FAILED);
+    return;
+  }
+  GUISNAPSHOT::NoteModeSeq(job->modeSeq);
+  const bool failed =
+      job->kind == OUTPUT::DriveReply::FAILED || job->kind == OUTPUT::DriveReply::FAILED_PARK;
+
+  // the latest test (r14 L5): no applied reply W ran after this job
+  if (job->runOrdinal < m_appliedSet.runOrdinal)
+  {
+    // D5b (r9 L1): behind-gui when the newest set is one of main's own GUI sets made with the
+    // fullscreen video window active
+    const bool gui = m_appliedSet.own && !m_appliedSet.originRm && !m_appliedSet.hotplug &&
+                     m_appliedSet.postActivation;
+    NoteAppliedReply(*job);
+    CLog::Log(LOGINFO,
+              "OUTPUTDRIVE set request={} ledger={} origin=start reply={} handler=not adopted "
+              "({}: run {} < {}) uiepoch={}",
+              job->id, job->ledgerSet, kindName, gui ? "behind-gui" : "behind", job->runOrdinal,
+              m_appliedSet.runOrdinal, job->uiEpoch);
+    // E2-8b NOTE: a failed job's answer stays FAILED_SET (its own set failed, nothing of it on
+    // the wire) when a later set was applied first; its reply is not applied (as a late reply
+    // of an older request is not)
+    if (failed)
+      answer(Answer::FAILED_SET, Form::FAILED);
+    else if (gui)
+      answer(Answer::BEHIND_GUI, Form::BEHIND_GUI);
+    else
+      answer(Answer::BEHIND, Form::BEHIND);
+    return;
+  }
+
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  // r12 M1, r13 M1: not GC's (a torn-down failed commit would read as an adopt): main's own
+  // failure bookkeeping, as the late-reply path applies a reply
+  if (failed)
+  {
+    {
+      std::unique_lock gfxLock(gfx);
+      DISPLAYSTATE::CGcSetScope gcSetScope;
+      m_guiDiscarded = 0;
+      if (!SupersededOnW(*job))
+        ApplyDriveReply(*job);
+      OUTPUT::NoteDriveReply(job->kind);
+    }
+    ReportDriveSet(*job, false, -1, -1, false);
+    NoteDriveShadowBackups();
+    answer(Answer::FAILED_SET, Form::FAILED);
+    return;
+  }
+
+  // E2-8b NOTE: O2's epoch rule, as HotplugRestoreForm's: a W set tore the surface down since
+  // this job (a Restore whose reply is not yet applied): main's backups only, and behind
+  if (m_wHotplug && job->tornDown && job->uiEpoch != m_coordinator->UiEpoch())
+  {
+    SupersededOnW(*job);
+    CLog::Log(LOGINFO,
+              "OUTPUTDRIVE set request={} ledger={} origin=start reply={} handler=not adopted "
+              "(behind: a W set since) uiepoch={}",
+              job->id, job->ledgerSet, kindName, job->uiEpoch);
+    answer(Answer::BEHIND, Form::BEHIND);
+    return;
+  }
+
+  const int index = FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
+  if (index < 0)
+  {
+    // E2-8b NOTE: as the hotplug ADOPT's not-in-table exit: GC unmoved; the wire is unknown to
+    // main, so the hand-back's set runs in full
+    CLog::Log(LOGERROR, "TXSTART T={} reply: committed mode not in main's table ({} @ {:.3f})",
+              start.T, job->res.strId, job->res.fRefreshRate);
+    NoteAppliedReply(*job);
+    if (job->tornDown)
+    {
+      m_bWindowCreated = false;
+      SetPresentationReady(false);
+    }
+    NoteDriveShadowBackups();
+    answer(Answer::FAILED, Form::FAILED);
+    return;
+  }
+
+  // M9's adopt: GC's set takes the reply (SetFullScreenOnW: ApplyDriveReply, the OUTPUTDRIVE set
+  // line with origin=start, the backups), then GC's row and the start's HDR type
+  bool adopted = false;
+  const char* step = "adopt";
+  try
+  {
+    DISPLAYSTATE::SetInStartAdopt(true);
+    m_adoptJob = job;
+    gfx.SetVideoResolution(static_cast<RESOLUTION>(index), true);
+    adopted = !m_adoptJob;
+    m_adoptJob.reset();
+    DISPLAYSTATE::SetInStartAdopt(false);
+    if (adopted)
+    {
+      step = "re-map";
+      gfx.ApplyModeChange(static_cast<RESOLUTION>(index));
+      gfx.SetHDRType(job->hdrType);
+    }
+  }
+  catch (...)
+  {
+    DISPLAYSTATE::SetInStartAdopt(false);
+    m_adoptJob.reset();
+    std::string what = "unknown exception";
+    try
+    {
+      throw;
+    }
+    catch (const std::exception& e)
+    {
+      what = e.what();
+    }
+    catch (...)
+    {
+    }
+    CLog::Log(LOGERROR, "TXSTART T={} reply dropped after a throw at {}: {}", start.T, step,
+              what);
+    NoteAppliedReply(*job);
+    const auto state = DISPLAYSTATE::Get();
+    const int committed =
+        state ? FindResolution(state->strId, state->refresh, state->dwFlags) : -1;
+    if (!adopted)
+    {
+      // r5 M1: the wire is unknown to main now: one ordinary set by value, run in full
+      m_bWindowCreated = false;
+      if (committed >= 0)
+      {
+        m_startRecovery = {};
+        m_startRecovery.id = OUTPUT::NextDriveId();
+        m_startRecovery.job = job->start;
+        CLog::Log(LOGERROR, "TXSTART T={} reply: recovery set {} posted (request {})", start.T,
+                  committed, m_startRecovery.id);
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, committed, 1, nullptr,
+                                                   "recovery");
+        NoteDriveShadowBackups();
+        answer(Answer::RECOVERING, Form::RECOVERING);
+        return;
+      }
+      // E2-8b NOTE: no recovery set without the committed mode in main's table: failed, so the
+      // hand-back's full set decides
+      CLog::Log(LOGERROR, "TXSTART T={} reply: committed mode not in main's table, no recovery",
+                start.T);
+    }
+    else if (committed >= 0)
+    {
+      // r6 L2: the surface is rebuilt; GC to the committed mode by value, no set
+      try
+      {
+        gfx.ApplyModeChange(static_cast<RESOLUTION>(committed));
+      }
+      catch (const std::exception& again)
+      {
+        CLog::Log(LOGERROR, "TXSTART T={} reply: the re-map threw too: {}", start.T,
+                  again.what());
+      }
+    }
+    NoteDriveShadowBackups();
+    answer(Answer::FAILED, Form::FAILED);
+    return;
+  }
+  if (!adopted)
+  {
+    CLog::Log(LOGERROR, "TXSTART T={} reply: GC's set did not take the Start job", start.T);
+    NoteAppliedReply(*job);
+    answer(Answer::FAILED, Form::FAILED);
+    return;
+  }
+  answer(Answer::ADOPTED, Form::ADOPTED);
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

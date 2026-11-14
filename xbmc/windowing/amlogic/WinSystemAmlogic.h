@@ -78,6 +78,10 @@ struct SHotplugReply
   int modes{-1};
   int64_t parkMs{-1};
   bool parkRetried{false};
+  //! 5.E2-8b D5: W's run ordinal of the job (JobsStarted inside it) and the commit sequence at
+  //! its end (its Restore's own when it committed)
+  uint64_t runOrdinal{0};
+  uint64_t commitSeq{0};
 };
 
 class CWinSystemAmlogic : public CWinSystemBase, public ISettingCallback
@@ -248,6 +252,12 @@ protected:
   }
   //! main, MessagePump: the queued replies, unless an apply or a GC set is on main's stack
   virtual void ApplyHotplugReplies() {}
+  //! 5.E2-8b D4 step 7, P: the Start job (state QUEUED, P's CAS done) on W's START lane, never
+  //! inline; false when W does not run it (no worker, or no Restore inputs latched yet)
+  virtual bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& job) { return false; }
+  //! 5.E2-8b D5 step 4, W: the film's committed row while an engaged start's commit is the
+  //! last commit and main has not answered its adopt (a Restore's target then)
+  virtual std::optional<DISPLAYSTATE::ModeFacts> StartCommitRow() { return std::nullopt; }
   //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
   //! (throwInside: the applythrow hook's "table")
   void ApplyHotplugTable(const SHotplugReply& reply, bool throwInside);

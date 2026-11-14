@@ -13,9 +13,12 @@
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -293,6 +296,135 @@ DecideInputs GetDecideInputs(bool taken = false);
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);
 bool FullScreenRoot();
+
+// 5.E2-8b: the engaged start's Start job (docs/phase5_e2_8b_impl.md D2, D4 step 7, D5, D9)
+enum class StartJobState : uint8_t
+{
+  NOT_POSTED,
+  QUEUED,
+  PARKING,
+  COMMITTED,
+  DROPPED,
+};
+const char* StartJobStateName(StartJobState state);
+//! W, at the commit result (committed) or the no-change test (no-change); seq = s_commitSeq
+struct SOutputDone
+{
+  uint64_t T = 0;
+  bool committed = false;
+  uint64_t seq = 0;
+};
+//! W: the job's one final reply (D5 step 5)
+enum class StartSettleKind
+{
+  DONE,
+  NO_CHANGE,
+  NOT_ARMED,
+  SUPERSEDED,
+  CANCELLED,
+  STOPPING,
+  FAILED,
+  FAILED_PARK,
+  DROPPED,
+};
+const char* StartSettleKindName(StartSettleKind kind);
+struct SSettleDone
+{
+  uint64_t T = 0;
+  uint32_t e = 0;
+  StartSettleKind kind = StartSettleKind::DONE;
+};
+//! main's answer to RM (RM::TxAdoptAnswer's form, mapped one to one by the sink)
+enum class StartAnswer
+{
+  ADOPTED,
+  BEHIND,
+  BEHIND_GUI,
+  FAILED,
+  FAILED_SET, //!< the job's own set failed (kind FAILED/FAILED_PARK)
+  RECOVERING,
+  RECOVERED,
+};
+//! main's adopt, to P after the answer (and after the answer's PLAYER_AVCHANGE put)
+enum class StartAdoptForm
+{
+  ADOPTED,
+  BEHIND,
+  BEHIND_GUI,
+  FAILED,
+  RECOVERING,
+};
+const char* StartAdoptFormName(StartAdoptForm form);
+struct STxAdopted
+{
+  uint64_t T = 0;
+  StartAdoptForm form = StartAdoptForm::FAILED;
+};
+//! P's receiver, registered on the job at the post and cleared at the player's exit. Each call
+//! is made under the job's sink mutex: it must only queue (no wait, no lock that P holds while
+//! clearing the sink)
+class IStartJobSink
+{
+public:
+  virtual ~IStartJobSink() = default;
+  virtual void OnOutputDone(const SOutputDone& reply) = 0; //!< W
+  virtual void OnSettleDone(const SSettleDone& reply) = 0; //!< W
+  //! main, after GC's set returned and outside the gfx lock: RM::TxAdoptAnswer(gen, answer);
+  //! true when RM posted VideoParamsChange
+  virtual bool OnAdoptAnswer(unsigned int gen, StartAnswer answer) = 0;
+  virtual void OnTxAdopted(const STxAdopted& reply) = 0; //!< main, after OnAdoptAnswer
+};
+struct SStartJob
+{
+  std::atomic<StartJobState> state{StartJobState::NOT_POSTED};
+  uint64_t T = 0;
+  unsigned int gen = 0;
+  // the request, by value (D5)
+  RESOLUTION_INFO res;
+  int resIndex = -1;
+  RenderStereoMode stereo = RenderStereoMode::OFF;
+  StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+  bool fullScreen = true;
+  bool fracRequest = false;
+  bool filmStart = true;
+  double tweakMs = 0.0;
+  //! W: the job's mode set ran (false: dropped, or discarded unrun at W's stop: answer failed)
+  std::atomic_bool ran{false};
+  //! W sets it when the job runs; main's answer (any form) clears it
+  std::atomic_bool adoptPending{false};
+
+  //! one CAS from any of from to to; the state found is left in found
+  bool Cas(std::initializer_list<StartJobState> from, StartJobState to, StartJobState* found = nullptr);
+  void SetSink(IStartJobSink* sink);
+  void ClearSink();
+  // the replies, logged with D10's fixed strings and given to the sink under its mutex
+  void OutputDone(bool committed, uint64_t seq);
+  //! once per job; a later call is logged only
+  void SettleDone(StartSettleKind kind);
+  bool AdoptAnswer(StartAnswer answer);
+  void TxAdopted(StartAdoptForm form);
+
+private:
+  std::mutex m_sinkMutex;
+  IStartJobSink* m_sink = nullptr;
+  std::atomic_bool m_settleReplied{false};
+};
+//! P, the D4 step 7 Dekker step: NOT_POSTED -> QUEUED, and back while a GUI set is in flight
+bool StartJobQueue(SStartJob& job);
+bool StartJobUnqueue(SStartJob& job);
+//! GC, a GUI set while the job is open (D9): QUEUED|PARKING -> DROPPED; false at any other state
+bool StartJobDropForGuiSet(SStartJob& job, const char* by);
+//! P's exit (D8): NOT_POSTED|QUEUED|PARKING -> DROPPED; false only at COMMITTED (or DROPPED)
+bool StartJobDropForExit(SStartJob& job, const char* by);
+//! D2: the open's job, CASed null -> job (false: another player's job is still open)
+bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job);
+//! job -> null (false: not the open job)
+bool ClearTxOpenJob(const std::shared_ptr<SStartJob>& job);
+std::shared_ptr<SStartJob> TxOpenJob();
+//! main: GC's set inside main's adopt of a Start reply is on main's stack (it is not a GUI set,
+//! D9)
+bool InStartAdopt();
+void SetInStartAdopt(bool in);
 
 // 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
 // the GUI/OSD encoding at its next render pass
