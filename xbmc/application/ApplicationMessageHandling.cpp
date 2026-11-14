@@ -235,6 +235,10 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
 
     case TMSG_SWITCHTOFULLSCREEN:
     {
+#if defined(HAS_LIBAMCODEC)
+      // 5.E2-8b test (displaystate_mainstall "activation <ms>")
+      OUTPUT::TestMainStallOnce("activation");
+#endif
       if (CWinSystemBase* winSystem = CServiceBroker::GetWinSystem(); winSystem)
         winSystem->ApplyRenderLoopPosts();
       if (CGUIComponent* gui = CServiceBroker::GetGUI(); gui)

@@ -98,9 +98,10 @@ bool HeldStartPendingWindow()
   return on;
 }
 
-// test: special://profile/displaystate_mainstall holds "<after-set|framemove> <ms>"; main sleeps
-// there, after an RM-decided mode set or at the top of every FrameMove
-void TestMainStall(const char* where)
+// test: special://profile/displaystate_mainstall holds "<after-set|framemove|straddle> <ms>"; main
+// sleeps there, after an RM-decided mode set, at the top of every FrameMove, or in UpdateResolution
+// before its consume lock (5.E2-8b: a pass held across OPEN). True when it slept
+bool TestMainStall(const char* where)
 {
   static const auto stall = []
   {
@@ -122,8 +123,10 @@ void TestMainStall(const char* where)
     }
     return result;
   }();
-  if (stall.second > 0 && stall.first == where)
-    std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
+  if (stall.second <= 0 || stall.first != where)
+    return false;
+  std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
+  return true;
 }
 
 // after a write of an input of PublishDisplayTiming (5.V1-4)
@@ -259,8 +262,9 @@ const char* RendererKind(const CBaseRenderer* renderer)
   return name;
 }
 #else
-void TestMainStall(const char*)
+bool TestMainStall(const char*)
 {
+  return false;
 }
 
 void TimingInputsWritten()
@@ -3433,6 +3437,25 @@ bool CRenderManager::TxRaiseOwed(const char* why)
   return true;
 }
 
+void CRenderManager::TxTestNotice(bool changed)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (!m_txShutGen)
+  {
+    CLog::Log(LOGWARNING, "TXTEST notice not raised: main is not shut out");
+    return;
+  }
+  if (!changed)
+  {
+    RaiseTriggerLocked("trigger");
+    return;
+  }
+  // facts that differ from RM's (and so from the job's): RM's own stay as they are
+  RaiseTriggerLocked("fps");
+  m_txNotices.back().fps += 1.0f;
+}
+
 std::vector<CRenderManager::STxNotice> CRenderManager::TakeTxNotices()
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -3522,6 +3545,11 @@ void CRenderManager::UpdateResolution()
         bool setFailed = false;
         const char* setFailedReply = "";
 #endif
+        // 5.E2-8b test (displaystate_mainstall "straddle <ms>"): a pass that began unshut
+        if (!m_txShutGen.load() && TestMainStall("straddle"))
+          CLog::Log(LOGWARNING, "TXTEST straddle: main's pass held before its consume lock "
+                                "(transaction set {} now)",
+                    m_txShutGen.load());
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
           std::unique_lock lock(m_statelock);

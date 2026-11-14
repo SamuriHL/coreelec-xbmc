@@ -307,6 +307,9 @@ std::vector<std::string> ReadSkipList(const char* name, const char* tag);
 // steps are design §4.2's ("1" park .. "8" display reset), at today's inline points.
 //! outputdrive_stopat "<step> [ms]": posts a playback stop at that step, then waits <ms> there
 void TestStopAt(const char* step);
+//! 5.E2-8b: displaystate_mainstall "<where> <ms>": main sleeps once, the first time it reaches
+//! where (activation: before it handles TMSG_SWITCHTOFULLSCREEN)
+void TestMainStallOnce(const char* where);
 //! outputdrive_commitfail "[n]": the n-th mode set after the boot set (default 1) fails once,
 //! after its commit
 bool TestCommitFail();

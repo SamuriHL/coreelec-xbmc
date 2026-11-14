@@ -2931,6 +2931,19 @@ void CVideoPlayer::ArmStartGate(const char* where)
       const STransactionHooks hooks = aml_transaction_hooks();
       m_txCapForce = hooks.capForce;
       m_txAudioFullForce = hooks.audioFullForce;
+      // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
+      if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
+      {
+        m_txNoticeKind = hooks.noticeAt.substr(0, at);
+        m_txNoticePoint = hooks.noticeAt.substr(at + 1);
+        if ((m_txNoticeKind != "trigger" && m_txNoticeKind != "changed") ||
+            (m_txNoticePoint != "prime" && m_txNoticePoint != "posted" &&
+             m_txNoticePoint != "settle"))
+        {
+          CLog::Log(LOGWARNING, "TXTEST noticeat '{}' not understood", hooks.noticeAt);
+          m_txNoticeKind.clear();
+        }
+      }
       m_renderManager.SetTxStartHeld(true);
       m_renderManager.SetTxEngagedGen(m_startGateGen);
       CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
@@ -3372,9 +3385,33 @@ bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice) const
          notice.stereoMode == m_txJobFacts.stereoMode;
 }
 
+// test (transaction_noticeat): prime = the start's first pass (before the post); posted = the
+// first pass after the post with the job past its drop CAS (W's park ack: with transaction_stopat
+// parked, inside its hold); settle = the first pass after OutputDone
+// E2-8b NOTE: posted waits for the park ack so a changed notice meets a committed job (D10 item
+// 4's "after the park ack but before output done"; the chain writes changed@posted for it)
+void CVideoPlayer::TxTestNoticeAt()
+{
+  if (m_txNoticeKind.empty() || !m_txJob)
+    return;
+  const bool posted = m_txStep == TxStep::POSTED;
+  const bool reached =
+      m_txNoticePoint == "prime"    ? !posted
+      : m_txNoticePoint == "posted" ? posted && m_txJob->state.load() ==
+                                                   DISPLAYSTATE::StartJobState::COMMITTED
+                                    : posted && m_txOutputDone;
+  if (!reached)
+    return;
+  CLog::Log(LOGWARNING, "TXTEST noticeat {}@{} T={}", m_txNoticeKind, m_txNoticePoint,
+            m_txJob->T);
+  m_renderManager.TxTestNotice(m_txNoticeKind == "changed");
+  m_txNoticeKind.clear();
+}
+
 // 5.E2-8b: one CheckStartGate pass of the open start P decides (not lost)
 void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
 {
+  TxTestNoticeAt();
   // D9's read order: RM's notices first, then the exit counter, then the replies
   std::vector<CRenderManager::STxNotice> notices = m_renderManager.TakeTxNotices();
   if (m_txStep != TxStep::POSTED)
@@ -4107,6 +4144,8 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txStarted = m_txExited = m_txSyncPassed = false;
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
+  m_txNoticeKind.clear();
+  m_txNoticePoint.clear();
   m_txLossAtUntil = {};
   // 5.E2-8b: the last open's job is released by its stop or next file; P's start state reset
   TxReleaseJob("next open");

@@ -1188,6 +1188,30 @@ void TestStopAt(const char* step)
     std::this_thread::sleep_for(std::chrono::milliseconds(stop.second));
 }
 
+void TestMainStallOnce(const char* where)
+{
+  static const auto stall = []
+  {
+    std::pair<std::string, int> result{"", 0};
+    if (const auto line = ReadTestSwitch("displaystate_mainstall"))
+    {
+      const auto space = line->rfind(' ');
+      if (space != std::string::npos)
+      {
+        result = {line->substr(0, space), std::atoi(line->c_str() + space + 1)};
+        CLog::Log(LOGWARNING, "TIMING: test stall of {} ms on main at \"{}\" (once)",
+                  result.second, result.first);
+      }
+    }
+    return result;
+  }();
+  static std::atomic_bool fired{false};
+  if (stall.second <= 0 || stall.first != where || fired.exchange(true))
+    return;
+  CLog::Log(LOGWARNING, "TXTEST mainstall {} {} ms", where, stall.second);
+  std::this_thread::sleep_for(std::chrono::milliseconds(stall.second));
+}
+
 bool TestCommitFail()
 {
   static std::atomic_int remaining{[]

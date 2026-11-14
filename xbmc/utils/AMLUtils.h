@@ -506,7 +506,9 @@ struct STransactionHooks
   bool prefetchStall = false; //!< transaction_prefetchstall (E2-13)
   std::string parkHold; //!< transaction_parkhold novideo (E2-13)
   int pDemuxDelayMs = 0; //!< transaction_pdemuxdelay <ms> (E2-13)
-  std::string noticeAt; //!< transaction_noticeat owed|posted (E2-13)
+  //! transaction_noticeat owed|posted (E2-13); E2-8b's <trigger|changed>@<prime|posted|settle>:
+  //! P raises a notice with RM's facts (trigger) or different ones (changed) at that point
+  std::string noticeAt;
   int resumeWaitMs = 0; //!< transaction_resumewait <ms>: RESUME's vblank wait held (E2-7)
   bool exitFreeze = false; //!< transaction_exitfreeze: OnExit waits for a freeze (E2-7)
   //! transaction_forcelegacy "before|aftersync": RM's first-picture verdict forced to legacy for
@@ -518,6 +520,14 @@ struct STransactionHooks
   bool capForce = false;
   //! transaction_audiofullforce: CN's audio-full bound condition held for the engaged set
   bool audioFullForce = false;
+  // 5.E2-8b (docs/phase5_e2_8b_impl.md D1, D10)
+  //! transaction_stopat posted|parked|committed: the Start job held there on W, up to 3000 ms
+  std::string stopAt;
+  bool commitFail = false; //!< transaction_commitfail: the Start job's commit fails
+  int startDelayMs = 0; //!< transaction_startdelay <ms>: the Start job waits before its park
+  int adoptStallMs = 0; //!< transaction_adoptstall <ms>: main waits before the Start reply
+  //! transaction_adoptthrow before: main's adopt of the Start reply throws before GC's set
+  std::string adoptThrow;
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();

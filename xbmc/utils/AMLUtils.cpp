@@ -3081,6 +3081,11 @@ STransactionHooks ReadTransactionHooks()
   hooks.lossAt = TransactionHookWord("transaction_lossat");
   hooks.capForce = TransactionHookFlag("transaction_capforce");
   hooks.audioFullForce = TransactionHookFlag("transaction_audiofullforce");
+  hooks.stopAt = TransactionHookWord("transaction_stopat");
+  hooks.commitFail = TransactionHookFlag("transaction_commitfail");
+  hooks.startDelayMs = TransactionHookMs("transaction_startdelay");
+  hooks.adoptStallMs = TransactionHookMs("transaction_adoptstall");
+  hooks.adoptThrow = TransactionHookWord("transaction_adoptthrow");
   return hooks;
 }
 } // namespace

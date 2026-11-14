@@ -44,9 +44,11 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
@@ -162,6 +164,32 @@ namespace
 // R5: an exhausted Mali surface crashes libMali; past this many GUI buffers locked, the frame
 // stays in the back buffer
 constexpr int GUI_LOCK_CAP = 4;
+
+// 5.E2-8b test hooks (transaction_stopat, transaction_startdelay): the Start job waits on W for
+// up to ms, ended early by `release` or W's stop
+void StartTestWait(int ms, const std::function<bool()>& release)
+{
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < until && OUTPUT::COutputWorker::Get().Active() &&
+         !release())
+    std::this_thread::sleep_for(10ms);
+}
+
+void StartTestStopAt(const DISPLAYSTATE::SStartJob& start,
+                     const char* point,
+                     const std::function<bool()>& release)
+{
+  if (aml_transaction_hooks().stopAt != point)
+    return;
+  CLog::Log(LOGWARNING, "TXTEST stopat {} T={}", point, start.T);
+  const auto from = std::chrono::steady_clock::now();
+  StartTestWait(3000, release);
+  CLog::Log(LOGWARNING, "TXTEST released {} T={} after {} ms (job {})", point, start.T,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - from)
+                .count(),
+            DISPLAYSTATE::StartJobStateName(start.state.load()));
+}
 
 // W's copy of the set backups (m_hdrType, m_stereo_mode, m_bFullScreen, m_nativeGUI,
 // m_bWindowCreated), written from main's after each set that ran the job
@@ -1330,6 +1358,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     job.kind = OUTPUT::DriveReply::DROPPED;
     return;
   }
+  if (job.start)
+    StartTestStopAt(*job.start, "parked", [] { return false; });
   job.parkMs = sinceStart();
   OUTPUT::TestStopAt("1");
   job.armDelay = true;
@@ -1434,9 +1464,15 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   const bool wordAhead = aml_transaction_loss_real();
   if (wordAhead)
     OUTPUT::COutputWorker::Get().WordCommitAhead();
-  const bool committed = display->set_native_resolution(
-      res, job.fbName, job.stereo, force_mode_switch, hotplug_mode_switch, frac_reclock,
-      job.hotplug && !routing && OUTPUT::LinkRequestOn());
+  // 5.E2-8b (transaction_commitfail): the Start job's commit fails, nothing written
+  const bool commitFail = job.start && aml_transaction_hooks().commitFail;
+  if (commitFail)
+    CLog::Log(LOGWARNING, "TXTEST commitfail T={} request {}", job.start->T, job.id);
+  const bool committed =
+      !commitFail &&
+      display->set_native_resolution(res, job.fbName, job.stereo, force_mode_switch,
+                                     hotplug_mode_switch, frac_reclock,
+                                     job.hotplug && !routing && OUTPUT::LinkRequestOn());
   if (routing)
     display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
@@ -2508,6 +2544,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
 {
   using State = DISPLAYSTATE::StartJobState;
   using Settle = DISPLAYSTATE::StartSettleKind;
+  StartTestStopAt(*start, "posted", [&start] { return start->state.load() != State::QUEUED; });
   // D5 step 1
   if (!start->Cas({State::QUEUED}, State::PARKING))
   {
@@ -2539,6 +2576,12 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
     start->SettleDone(Settle::STOPPING);
     queueReply();
     return;
+  }
+
+  if (const int delayMs = aml_transaction_hooks().startDelayMs)
+  {
+    CLog::Log(LOGWARNING, "TXTEST startdelay {} T={}", delayMs, start->T);
+    StartTestWait(delayMs, [&start] { return start->state.load() != State::PARKING; });
   }
 
   // RunRestoreOnW's build: no CSettings, no CDisplaySettings and no GC on W
@@ -2589,6 +2632,9 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
     start->SettleDone(Settle::DROPPED);
     return;
   }
+  if (job->kind == OUTPUT::DriveReply::DONE || job->kind == OUTPUT::DriveReply::DONE_NO_CHANGE ||
+      job->kind == OUTPUT::DriveReply::NOT_COMMITTED)
+    StartTestStopAt(*start, "committed", [] { return false; });
   if (OUTPUT::SettleOnW())
     SettleAfterJob(*job);
   else
@@ -2645,6 +2691,11 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   using Answer = DISPLAYSTATE::StartAnswer;
   using Form = DISPLAYSTATE::StartAdoptForm;
   DISPLAYSTATE::SStartJob& start = *job->start;
+  if (const int stallMs = aml_transaction_hooks().adoptStallMs)
+  {
+    CLog::Log(LOGWARNING, "TXTEST adoptstall {} T={}", stallMs, start.T);
+    std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+  }
   struct SApplying
   {
     explicit SApplying(std::atomic_bool& flag) : m_flag(flag) { m_flag = true; }
@@ -2752,6 +2803,11 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   {
     DISPLAYSTATE::SetInStartAdopt(true);
     m_adoptJob = job;
+    if (aml_transaction_hooks().adoptThrow == "before")
+    {
+      CLog::Log(LOGWARNING, "TXTEST adoptthrow before T={}", start.T);
+      throw std::runtime_error("test throw before the adopt");
+    }
     gfx.SetVideoResolution(static_cast<RESOLUTION>(index), true);
     adopted = !m_adoptJob;
     m_adoptJob.reset();

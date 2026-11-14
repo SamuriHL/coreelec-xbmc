@@ -1044,6 +1044,9 @@ protected:
   unsigned int m_txEngagedGen = 0;
   bool m_txCapForce = false; //!< transaction_capforce, read at the engage
   bool m_txAudioFullForce = false; //!< transaction_audiofullforce, read at the engage
+  //! 5.E2-8b transaction_noticeat <trigger|changed>@<prime|posted|settle>, read at the engage
+  std::string m_txNoticeKind;
+  std::string m_txNoticePoint;
   bool m_txLostSinceArm = false; //!< a loss inside the open start: its bounds re-armed after it
   std::chrono::steady_clock::time_point m_txLossAtUntil{}; //!< transaction_lossat's window
   const char* m_txFlushCaller = nullptr; //!< D5: the next FlushBuffers' caller, for the exit line
@@ -1105,6 +1108,8 @@ protected:
   void TxStartGatePass(CRenderManager::ModeFirstState state);
   //! D6: the replies, CN's opener and the backstop
   void TxRepliesPass();
+  //! test (transaction_noticeat): the notice raised once its point is reached
+  void TxTestNoticeAt();
   //! HandleMessages: PLAYER_TX_REPLY
   void TxOnReply(CDVDMsg& msg);
   //! D3: a notice after the post against the job's facts
