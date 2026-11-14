@@ -3241,11 +3241,30 @@ void CVideoPlayer::TxReleaseJob(const char* why)
   m_txJob.reset();
 }
 
-// 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7 (no wait for the fullscreen window)
+// 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7
 void CVideoPlayer::TxDecide()
 {
   using How = CRenderManager::TxHow;
   using Need = CRenderManager::TxNeed;
+  // as main's UpdateResolution (a3f8a5614c): a window the fullscreen switch closes may set its
+  // own mode on the way out; a Back ends the wait for step 1
+  if (!DISPLAYSTATE::FullScreenVideoWindowActive() &&
+      DISPLAYSTATE::FullScreenExits() == m_txExitsAtOpen)
+  {
+    if (!m_renderManager.TxRenderTimedOut())
+    {
+      if (!std::exchange(m_txWindowWaitLogged, true))
+        CLog::Log(LOGINFO, "TXSTART set={} T={} DECIDE waits for the fullscreen window",
+                  m_txEngagedGen, m_txJob->T);
+      return;
+    }
+    CLog::Log(LOGWARNING,
+              "TXSTART set={} T={} DECIDE at the render timeout (no fullscreen window)",
+              m_txEngagedGen, m_txJob->T);
+  }
+  else if (m_txWindowWaitLogged)
+    CLog::Log(LOGINFO, "TXSTART set={} T={} DECIDE after the fullscreen window wait",
+              m_txEngagedGen, m_txJob->T);
   // step 1: a fullscreen exit since OPEN (r4 M2: main does nothing while windowed, RM:3038)
   if (DISPLAYSTATE::FullScreenExits() != m_txExitsAtOpen)
   {
@@ -4179,7 +4198,8 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txOpenPending = m_txWordOpened = m_txFullScreen = m_txRootAtOpen = false;
   m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
   m_txJobFacts = {};
-  m_txJobFactsSet = m_txGuiWaitLogged = m_txBoundMetCommit = m_txOutputDone = false;
+  m_txJobFactsSet = m_txGuiWaitLogged = m_txWindowWaitLogged = m_txBoundMetCommit =
+      m_txOutputDone = false;
   m_txSettle.reset();
   m_txAdopt.reset();
   m_txPostedAt = m_txLostAt = {};

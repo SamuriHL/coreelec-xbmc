@@ -296,6 +296,10 @@ DecideInputs GetDecideInputs(bool taken = false);
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);
 bool FullScreenRoot();
+//! 5.E2-8b D4: WINDOW_FULLSCREEN_VIDEO initialised (main, at its INIT / DEINIT). The window it
+//! replaced has deinitialised by then, its way-out set counted in GuiSetsInFlight
+void SetFullScreenVideoWindowActive(bool active);
+bool FullScreenVideoWindowActive();
 
 // 5.E2-8b: the engaged start's Start job (docs/phase5_e2_8b_impl.md D2, D4 step 7, D5, D9)
 enum class StartJobState : uint8_t

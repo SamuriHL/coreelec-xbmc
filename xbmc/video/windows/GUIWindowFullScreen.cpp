@@ -32,6 +32,9 @@
 #include "video/dialogs/GUIDialogFullScreenInfo.h"
 #include "video/dialogs/GUIDialogSubtitleSettings.h"
 #include "windowing/WinSystem.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/DisplayState.h"
+#endif
 
 #include <algorithm>
 #include <stdio.h>
@@ -223,6 +226,9 @@ bool CGUIWindowFullScreen::OnMessage(CGUIMessage& message)
 
       // now call the base class to load our windows
       CGUIWindow::OnMessage(message);
+#if defined(HAS_LIBAMCODEC)
+      DISPLAYSTATE::SetFullScreenVideoWindowActive(true);
+#endif
 
       m_dwShowViewModeTimeout = {};
       m_viewModeChanged = true;
@@ -232,6 +238,9 @@ bool CGUIWindowFullScreen::OnMessage(CGUIMessage& message)
     }
   case GUI_MSG_WINDOW_DEINIT:
     {
+#if defined(HAS_LIBAMCODEC)
+      DISPLAYSTATE::SetFullScreenVideoWindowActive(false);
+#endif
       // close all active modal dialogs
       CServiceBroker::GetGUI()->GetWindowManager().CloseInternalModalDialogs(true);
 

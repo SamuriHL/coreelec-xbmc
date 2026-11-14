@@ -393,6 +393,9 @@ public:
   //! E2-8b D4 step 4: the frac arm consumed for the start (today's `consumed` line), kept with
   //! its original time for a reraise or a failed hand-back; r.frac becomes the arm taken
   void TxTakeArm(unsigned int gen, SStartResolve& r);
+  //! E2-8b D4: UpdateResolution's render timeout for the start's decision (elapsed since the
+  //! configure or trigger, as main measures it)
+  bool TxRenderTimedOut();
 #endif
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }

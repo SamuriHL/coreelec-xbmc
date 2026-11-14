@@ -4092,6 +4092,13 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   return r;
 }
 
+bool CRenderManager::TxRenderTimedOut()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  return std::chrono::steady_clock::now() - m_videostarted > std::chrono::seconds(m_render_timeout);
+}
+
 void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");

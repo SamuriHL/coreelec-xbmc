@@ -1089,6 +1089,7 @@ protected:
   CRenderManager::STxNotice m_txJobFacts; //!< D3: RM's facts DECIDE read (the newest notice)
   bool m_txJobFactsSet = false;
   bool m_txGuiWaitLogged = false;
+  bool m_txWindowWaitLogged = false;
   bool m_txBoundMetCommit = false; //!< D8: CN's cap or audio-full bound met a committed job
   //! D6: the job's replies, taken from P's messenger
   bool m_txOutputDone = false;

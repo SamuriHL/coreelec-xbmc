@@ -1021,6 +1021,21 @@ bool FullScreenRoot()
   return s_fullScreenRoot.load();
 }
 
+namespace
+{
+std::atomic<bool> s_fullScreenVideoWindow{false};
+} // namespace
+
+void SetFullScreenVideoWindowActive(bool active)
+{
+  s_fullScreenVideoWindow = active;
+}
+
+bool FullScreenVideoWindowActive()
+{
+  return s_fullScreenVideoWindow.load();
+}
+
 const char* StartJobStateName(StartJobState state)
 {
   switch (state)
