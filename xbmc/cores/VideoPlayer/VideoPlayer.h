@@ -1112,7 +1112,9 @@ protected:
   void TxStartGatePass(CRenderManager::ModeFirstState state);
   //! D6: the replies, CN's opener and the backstop
   void TxRepliesPass();
-  //! D9: while lost, a failed Start job's reply ends the start
+  //! D8: the backstop row (a reply missing)
+  void TxBackstopExit();
+  //! D9: while lost, a failed Start job's reply or D6's 30 s backstop ends the start
   void TxLostFailedPass();
   //! test (transaction_noticeat): the notice raised once its point is reached
   void TxTestNoticeAt();

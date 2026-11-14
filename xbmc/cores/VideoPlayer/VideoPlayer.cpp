@@ -3624,6 +3624,11 @@ void CVideoPlayer::TxRepliesPass()
   const auto all = now - m_txPostedAt;
   if (all - m_txLostPaused <= 15s && all <= 30s)
     return;
+  TxBackstopExit();
+}
+
+void CVideoPlayer::TxBackstopExit()
+{
   const bool answer = !m_txAdopt;
   CLog::Log(LOGERROR, "TXSTART T={} start reply missing ({})", m_txJob->T,
             !m_txSettle && !m_txAdopt ? "settle, adopt"
@@ -3641,6 +3646,7 @@ void CVideoPlayer::TxRepliesPass()
 // job-ok x failed hand-back) brings it back, as legacy's failed set retries at once. So its
 // reply ends the start while P is lost, with the same pass as when not lost; the other replies
 // wait for the display (the set that supersedes, cancels or follows the job brings it back)
+// unless D6's backstop is met
 void CVideoPlayer::TxLostFailedPass()
 {
   if (!TxOpen() || !m_txJob || m_txStep != TxStep::POSTED)
@@ -3659,11 +3665,26 @@ void CVideoPlayer::TxLostFailedPass()
     return r.kind == STxReply::Kind::ADOPTED && r.form == DISPLAYSTATE::StartAdoptForm::FAILED;
   };
   std::shared_ptr<CDVDMsg> msg;
-  if (m_messenger.GetFirstOf(msg, failed, 0ms) != MSGQ_OK)
+  if (m_messenger.GetFirstOf(msg, failed, 0ms) == MSGQ_OK)
+  {
+    TxOnReply(*msg);
+    CLog::Log(LOGINFO, "TXSTART T={} start job failed while the display is lost", T);
+    TxStartGatePass(m_renderManager.GetModeFirstState(m_startGateGen));
     return;
-  TxOnReply(*msg);
-  CLog::Log(LOGINFO, "TXSTART T={} start job failed while the display is lost", T);
-  TxStartGatePass(m_renderManager.GetModeFirstState(m_startGateGen));
+  }
+  // D6: the backstop's 30 s in all bound P while lost too; a reply queued behind the loss is not
+  // missing
+  if ((m_txSettle && m_txAdopt) || std::chrono::steady_clock::now() - m_txPostedAt <= 30s)
+    return;
+  const auto ours = [T](CDVDMsg& m)
+  {
+    return m.IsType(CDVDMsg::PLAYER_TX_REPLY) &&
+           static_cast<CDVDMsgType<STxReply>&>(m).m_value.T == T;
+  };
+  while (!(m_txSettle && m_txAdopt) && m_messenger.GetFirstOf(msg, ours, 0ms) == MSGQ_OK)
+    TxOnReply(*msg);
+  if (!(m_txSettle && m_txAdopt))
+    TxBackstopExit();
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
