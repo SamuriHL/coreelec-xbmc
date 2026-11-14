@@ -1002,8 +1002,9 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   auto job = std::make_shared<SDriveJob>();
   // 5.E2-8b D5b (r9 L4): the recovery set of a Start adopt's throw takes the id reserved for it
   const char* origin = OUTPUT::CurrentRequestOrigin();
+  // code review B-L2: by its own origin, so a hotplug catch's recovery set never takes it
   if (m_startRecovery.id && !m_startRecovery.taken && origin &&
-      std::string_view(origin) == "recovery")
+      std::string_view(origin) == "start-recovery")
   {
     job->id = m_startRecovery.id;
     m_startRecovery.taken = true;
@@ -2736,6 +2737,33 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
               "({}: run {} < {}) uiepoch={}",
               job->id, job->ledgerSet, kindName, gui ? "behind-gui" : "behind", job->runOrdinal,
               m_appliedSet.runOrdinal, job->uiEpoch);
+    // code review B-M1: no set tore the surface down since this job (C's epoch is still its
+    // own) and none rebuilt it (the sets applied ahead of it were no-change): its surface rule
+    // runs (rebuild, or a failed commit's bookkeeping), GC unmoved
+    if (job->tornDown && job->uiEpoch == m_coordinator->UiEpoch() &&
+        m_surfaceEpoch < job->uiEpoch)
+    {
+      CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+      bool created = false;
+      {
+        std::unique_lock gfxLock(gfx);
+        DISPLAYSTATE::CGcSetScope gcSetScope;
+        m_guiDiscarded = 0;
+        created = ApplyDriveReply(*job);
+        OUTPUT::NoteDriveReply(job->kind);
+        if (created)
+          CRenderSystemGLES::ResetRenderSystem(job->res.iWidth, job->res.iHeight);
+      }
+      CLog::Log(created ? LOGINFO : LOGERROR,
+                "TXSTART T={} reply not adopted: its torn-down surface {} at epoch {} (GC "
+                "unmoved)",
+                start.T, created ? "rebuilt" : "not rebuilt", job->uiEpoch);
+      // the not-adopted line above is the set's OUTPUTDRIVE line; a handler that failed after a
+      // commit still needs its ledger and settle bookkeeping (a second line, that case only)
+      if (!created)
+        ReportDriveSet(*job, created, -1, -1, false);
+      NoteDriveShadowBackups();
+    }
     // E2-8b NOTE: a failed job's answer stays FAILED_SET (its own set failed, nothing of it on
     // the wire) when a later set was applied first; its reply is not applied (as a late reply
     // of an older request is not)
@@ -2856,7 +2884,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
         CLog::Log(LOGERROR, "TXSTART T={} reply: recovery set {} posted (request {})", start.T,
                   committed, m_startRecovery.id);
         CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, committed, 1, nullptr,
-                                                   "recovery");
+                                                   "start-recovery");
         NoteDriveShadowBackups();
         answer(Answer::RECOVERING, Form::RECOVERING);
         return;

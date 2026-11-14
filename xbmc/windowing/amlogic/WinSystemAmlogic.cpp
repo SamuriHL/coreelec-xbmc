@@ -1373,6 +1373,17 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   // and main may drop this reply (its ApplyHotplugReply marks it applied). The retry's committed
   // mode consumes it, as the recovery set does, only when the dropped Restore was the record's
   // (at FRAC GC's row and the wire's can differ); a dropped Restore off the record keeps it
+  // code review B-M2: the record was taken from GC's GUI row (GC moves only at the adopt); a
+  // Restore to the start's row ends it, so the next event re-records GC's row (the film's once
+  // the adopt has moved GC). W still writes no film row into it (r3 M4)
+  if (startRow && videoRow && target == *videoRow && m_wVideoMode)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG reply {}: the start's row restored, the video's mode record {} "
+                       "reset",
+              reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode));
+    m_wVideoMode.reset();
+    m_wVideoModeReply = 0;
+  }
   if (m_wVideoMode)
   {
     const bool pending = m_wVideoModeReply != 0;

@@ -1522,8 +1522,9 @@ bool DriveOriginRm()
 namespace
 {
 thread_local const char* t_requestOrigin = nullptr;
-constexpr const char* REQUEST_ORIGINS[] = {"user-pick", "window-rule", "test", "recovery",
-                                           "off-main (unscoped)"};
+// start-recovery: a Start adopt's recovery set (E2-8b code review B-L2), never a hotplug's
+constexpr const char* REQUEST_ORIGINS[] = {"user-pick", "window-rule",    "test",
+                                           "recovery",  "start-recovery", "off-main (unscoped)"};
 } // namespace
 
 CRequestOrigin::CRequestOrigin(const char* origin) : m_previous(t_requestOrigin)
