@@ -3984,6 +3984,9 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
     armedAt = m_reclockArmedAt;
   }
   r.fps = fps;
+  r.width = width;
+  r.height = height;
+  r.stereoMode = stereoMode;
   r.stereo = latest.res.stereoMode;
   // E2-8b NOTE: "no inputs" and "not fullscreen" are DecideShadowPlayer's other no-decision
   // outcomes, returned as exclusions for P's exit (neither is reachable on an engaged open)
@@ -4289,7 +4292,8 @@ void CRenderManager::PromoteReclockArm()
   CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm promoted at {:.3f} fps", m_fps);
 }
 
-void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
+void CRenderManager::TriggerUpdateResolution(
+    float fps, int width, int height, std::string& stereomode, const char* kind)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
@@ -4302,7 +4306,7 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
     m_picture.stereoMode = stereomode;
   }
   m_videostarted = std::chrono::steady_clock::now();
-  RaiseTriggerLocked(width ? "trigger-params" : "trigger");
+  RaiseTriggerLocked(kind ? kind : width ? "trigger-params" : "trigger");
 }
 
 void CRenderManager::ToggleDebug()

@@ -163,7 +163,12 @@ public:
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
 
   void UpdateResolution();
-  void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
+  //! kind: the E2-8b notice kind while main is shut out (null: trigger / trigger-params)
+  void TriggerUpdateResolution(float fps,
+                               int width,
+                               int height,
+                               std::string& stereomode,
+                               const char* kind = nullptr);
   //! the next mode decision may re-clock a 1000/1001 rate difference (a content start);
   //! armed at the next Configure, or now for the running stream
   void ArmContentReclock(bool now);
@@ -268,7 +273,7 @@ public:
   //! E2-8b D3: a trigger raised while main is shut out: the facts RM holds after the write
   struct STxNotice
   {
-    const char* kind = ""; //!< fps, configure, reclock, trigger, trigger-params, rm-retry, owed
+    const char* kind = ""; //!< fps, configure, reclock, trigger, trigger-params, vs10, rm-retry, owed
     float fps = 0.0f;
     int width = 0;
     int height = 0;
@@ -368,6 +373,10 @@ public:
     RenderStereoMode stereo = RenderStereoMode::OFF; //!< the GUI's (2D) mode
     double tweakMs = 0.0; //!< the latency tweak for info + hdrType
     float fps = 0.0f;
+    //! RM's picture facts as read with fps (code review A-L1: the notices' baseline)
+    int width = 0;
+    int height = 0;
+    std::string stereoMode;
     bool mayChooseMode = false;
     bool held = false; //!< the disc mode hold
     bool anchor = false; //!< the count sets the disc-mode anchor

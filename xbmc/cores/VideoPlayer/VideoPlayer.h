@@ -404,6 +404,8 @@ public:
   void GetRects(CRect& source, CRect& dest, CRect& view) const override;
   unsigned int GetOrientation() const override;
   void TriggerUpdateResolution() override;
+  //! a live VS10 action's trigger (E2-8b: notice kind vs10 while main is shut out)
+  void TriggerVs10Resolution();
   bool IsRenderingVideo() const override;
   bool HasVisibleOverlay() const override;
   bool IsLiveStream() const override;

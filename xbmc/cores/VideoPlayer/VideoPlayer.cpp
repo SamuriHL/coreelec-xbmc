@@ -3283,15 +3283,16 @@ void CVideoPlayer::TxDecide()
   job.fracRequest = r.frac;
   job.filmStart = r.filmStart;
   job.tweakMs = r.tweakMs;
-  if (!m_txJobFactsSet)
-  {
-    // E2-8b NOTE: the shut configure always leaves a notice before DECIDE; without one the
-    // job's facts are DECIDE's fps and hdr only (a size of 0 is not compared)
-    m_txJobFacts = {};
-    m_txJobFacts.fps = r.fps;
-    m_txJobFacts.hdrType = r.hdrType;
-    m_txJobFactsSet = true;
-  }
+  // D3 (code review A-L1): the notices after the post compare with the facts DECIDE read (a
+  // notice raised between the last take and ResolveStart's read is in them)
+  m_txJobFacts = {};
+  m_txJobFacts.kind = "decide";
+  m_txJobFacts.fps = r.fps;
+  m_txJobFacts.width = r.width;
+  m_txJobFacts.height = r.height;
+  m_txJobFacts.stereoMode = r.stereoMode;
+  m_txJobFacts.hdrType = r.hdrType;
+  m_txJobFactsSet = true;
   // step 6
   CLog::Log(LOGINFO, "DECIDE start set={} T={} {} frac={} hdr={} tweak={:.1f} (P)",
             m_txEngagedGen, job.T, r.info.strMode, r.frac ? 1 : 0, static_cast<int>(r.hdrType),
@@ -3391,6 +3392,9 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
 
 bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice) const
 {
+  // code review A-M2: a live VS10 action changes W's output mode, an input of the job's set
+  if (std::string_view(notice.kind) == "vs10")
+    return false;
   // a parameterless trigger (GC's, a settings change): root, fullscreen, stereo
   if (std::string_view(notice.kind) == "trigger")
     return DISPLAYSTATE::FullScreenRoot() == m_txRootAtOpen &&
@@ -3437,13 +3441,10 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
   std::vector<CRenderManager::STxNotice> notices = m_renderManager.TakeTxNotices();
   if (m_txStep != TxStep::POSTED)
   {
-    // D3: before the post every notice is folded (DECIDE reads RM's current facts)
+    // D3: before the post every notice is folded (DECIDE reads RM's current facts; code review
+    // A-L1: the job's facts are DECIDE's own read, not the newest notice)
     for (const CRenderManager::STxNotice& n : notices)
-    {
       CLog::Log(LOGINFO, "NOTICE folded {}", n.kind);
-      m_txJobFacts = n;
-      m_txJobFactsSet = true;
-    }
     if (m_txStep == TxStep::NONE && state != CRenderManager::ModeFirstState::UNCONFIGURED)
       TxDecide();
     else if (m_txStep == TxStep::WAIT_GUI)
@@ -10501,19 +10502,19 @@ bool CVideoPlayer::OnAction(const CAction &action)
     // change uses, so playback pauses and re-anchors across the re-clock.
     case ACTION_VS10_ORIGINAL:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
-      TriggerUpdateResolution();
+      TriggerVs10Resolution();
       return true;
     case ACTION_VS10_SDR:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10);
-      TriggerUpdateResolution();
+      TriggerVs10Resolution();
       return true;
     case ACTION_VS10_HDR10:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10);
-      TriggerUpdateResolution();
+      TriggerVs10Resolution();
       return true;
     case ACTION_VS10_DV:
       aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
-      TriggerUpdateResolution();
+      TriggerVs10Resolution();
       return true;
   }
 
@@ -11244,6 +11245,14 @@ void CVideoPlayer::TriggerUpdateResolution()
 {
   std::string stereomode;
   m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode);
+}
+
+void CVideoPlayer::TriggerVs10Resolution()
+{
+  // E2-8b D3 (code review A-M2): the VS10 mode is a W input, so after the post its notice is
+  // never `same`; before it (and with main not shut out) it is today's parameterless trigger
+  std::string stereomode;
+  m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode, "vs10");
 }
 
 bool CVideoPlayer::IsRenderingVideo() const
