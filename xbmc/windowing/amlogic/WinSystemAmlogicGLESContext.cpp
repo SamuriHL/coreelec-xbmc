@@ -153,6 +153,7 @@ struct SDriveJob
   std::condition_variable cond;
   bool done{false};
   bool abandoned{false};
+  bool guiSetKept{false}; //!< 5.E2-8b: GC's in-flight count kept at the give-up (W ends it)
 };
 } // namespace KODI::WINDOWING::AML
 
@@ -1036,13 +1037,17 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                       }
                                       if (OUTPUT::SettleOnW())
                                         SettleAfterJob(*job);
-                                      bool late;
+                                      bool late, guiSetKept;
                                       {
                                         std::unique_lock lock(job->mutex);
                                         job->done = true;
                                         late = job->abandoned;
+                                        guiSetKept = job->guiSetKept;
                                       }
                                       job->cond.notify_all();
+                                      // 5.E2-8b D4 step 7 (r6 L4): the late reply
+                                      if (guiSetKept)
+                                        DISPLAYSTATE::GuiSetInFlightEnded();
                                       if (late)
                                       {
                                         // a hotplug job waits for main's apply of it
@@ -1068,6 +1073,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
       if (!job->cond.wait_for(lock, 10s, done))
       {
         job->abandoned = true;
+        // 5.E2-8b (r6 L4): the job may still sit on W; P's Dekker step waits until it ends
+        job->guiSetKept = DISPLAYSTATE::KeepGuiSetInFlight();
         gaveUp = true;
       }
     }
@@ -2325,7 +2332,11 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
               break;
             }
             m_adoptJob = job;
+            // E2-8b NOTE: D9 excludes the set that takes m_adoptJob: the Restore's adopt is no
+            // GUI set either (a Restore inside a start ends it through its SETTLE, D9)
+            DISPLAYSTATE::SetInStartAdopt(true);
             gfx.SetVideoResolution(static_cast<RESOLUTION>(index), true);
+            DISPLAYSTATE::SetInStartAdopt(false);
             adopted = !m_adoptJob;
             m_adoptJob.reset();
             if (!adopted)
@@ -2404,6 +2415,7 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
     {
     }
     // r4 M2: dropped, never re-queued (a re-queued adopt would post a second mode set)
+    DISPLAYSTATE::SetInStartAdopt(false);
     m_adoptJob.reset();
     if (reply.upTo > m_appliedReceipt)
       m_appliedReceipt = reply.upTo;

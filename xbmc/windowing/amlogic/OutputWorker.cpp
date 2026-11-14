@@ -518,17 +518,19 @@ void COutputWorker::WordStop(uint32_t ownT)
 }
 
 
-bool COutputWorker::WordStarting(uint32_t ownT)
+bool COutputWorker::WordStarting(uint32_t ownT, bool decidedOnP)
 {
+  // 5.E2-8b (Plan vs code 10): the row names the decider
+  const char* row = decidedOnP ? "DECIDE (P)" : "DECIDE (main)";
   return WordApply(
       [=](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::NONE || w.spanOpen)
-          return Skip("DECIDE (main)", WordOwned("NONE without a span", ownT));
+          return Skip(row, WordOwned("NONE without a span", ownT));
         SWord n = w;
         n.state = WordState::STARTING;
         n.sub = false;
-        return Apply(n, "DECIDE (main)", "output mode decided");
+        return Apply(n, row, "output mode decided");
       });
 }
 

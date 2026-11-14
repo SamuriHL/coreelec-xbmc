@@ -421,28 +421,60 @@ bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job);
 //! job -> null (false: not the open job)
 bool ClearTxOpenJob(const std::shared_ptr<SStartJob>& job);
 std::shared_ptr<SStartJob> TxOpenJob();
-//! main: GC's set inside main's adopt of a Start reply is on main's stack (it is not a GUI set,
-//! D9)
+//! main: GC's set inside main's adopt of a W reply (the Start job's, or a hotplug Restore's
+//! ADOPT form) is on main's stack (it is not a GUI set, D9)
 bool InStartAdopt();
 void SetInStartAdopt(bool in);
 
-// 5.E2-8b C4: GC's facts P's DECIDE reads (docs/phase5_e2_8b_impl.md D2, D4 step 7, D9).
-// E2-8b C6: stubs until C6 writes them (no GC side yet: every read is "nothing happened")
-//! E2-8b C6: GC's fullscreen-exit counter (atomic, no lock), bumped right after
-//! SetFullScreenVideo computes `exiting`, before its desktop set or trigger
+// 5.E2-8b: GC's facts P's DECIDE reads (docs/phase5_e2_8b_impl.md D2, D4 step 7, D9)
+//! GC's fullscreen-exit counter (seq_cst, no lock): SetFullScreenVideo bumps it right after it
+//! computes `exiting`, before its desktop set or trigger, under every adjustrefreshrate setting
 uint64_t FullScreenExits();
-//! E2-8b C6: GC's mode sets in flight (SetVideoResolutionInternal's scope, until its job's
-//! reply is applied or W reports the job ended); seq_cst, read by P's Dekker step
+void NoteFullScreenExit();
+//! GC's mode sets in flight (seq_cst), read by P's Dekker step: SetVideoResolutionInternal's
+//! scope, counted in at its entry before the drop CAS, out when the set returns, or for a set
+//! main gave up on (15 s) when W ends its job
 int GuiSetsInFlight();
-//! E2-8b C6: the guiSet notice a GUI set bumps while TxOpenJob is open (not Back's own
-//! desktop set): seq the newest notice's number (0: none), preActivation when any notice
-//! after `since` was tagged pre-activation (GetActiveWindow() != WINDOW_FULLSCREEN_VIDEO)
+class CGuiSetInFlight
+{
+public:
+  CGuiSetInFlight();
+  ~CGuiSetInFlight();
+  CGuiSetInFlight(const CGuiSetInFlight&) = delete;
+  CGuiSetInFlight& operator=(const CGuiSetInFlight&) = delete;
+
+private:
+  friend bool KeepGuiSetInFlight();
+  CGuiSetInFlight* m_previous;
+  bool m_kept = false;
+};
+//! main, at the give-up of its set's job: the innermost scope's count stays past the scope's
+//! end. True when one was kept: W then calls GuiSetInFlightEnded when that job ends
+bool KeepGuiSetInFlight();
+void GuiSetInFlightEnded();
+//! GC, a GUI set while TxOpenJob is open (D9; not the adopt of a W reply, not Back's own desktop
+//! set): the drop CAS, then the guiSet notice tagged preActivation (read on main:
+//! GetActiveWindow() != WINDOW_FULLSCREEN_VIDEO)
+void GuiSetDuringStart(SStartJob& job, bool preActivation);
+//! the guiSet notice: seq the newest notice's number (0: none), preActivation when any notice
+//! after `since` was tagged pre-activation
 struct GuiSetNotice
 {
   uint64_t seq = 0;
   bool preActivation = false;
 };
 GuiSetNotice ReadGuiSetNotice(uint64_t since);
+//! GC, Back's desktop set (SetFullScreenVideo's `exiting` branch, its targetResolutionOnStop
+//! set only): no drop CAS and no guiSet notice (the exit counter is its notice). Thread-local
+class CFullScreenExitSet
+{
+public:
+  CFullScreenExitSet();
+  ~CFullScreenExitSet();
+  CFullScreenExitSet(const CFullScreenExitSet&) = delete;
+  CFullScreenExitSet& operator=(const CFullScreenExitSet&) = delete;
+};
+bool InFullScreenExitSet();
 
 // 5.B2-8 (D11, D12): a DV-mode publish posts OutputChanged; main's handler asks RM to re-resolve
 // the GUI/OSD encoding at its next render pass

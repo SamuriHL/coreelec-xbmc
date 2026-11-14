@@ -3030,7 +3030,7 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
 {
   if (!m_txWordStarting)
   {
-    if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load()))
+    if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load(), m_txJob != nullptr))
     {
       EndTransactionToLegacy("word at the decision", CRenderManager::TxHow::RERAISE,
                              CRenderManager::TxNeed::JOB_OK);

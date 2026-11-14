@@ -354,6 +354,11 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
   std::unique_lock lock(*this);
 
   const bool exiting = m_bFullScreenVideo && !bOnOff;
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-8b D2, D9: P's fullscreen exit, before the desktop set or the trigger below
+  if (exiting)
+    DISPLAYSTATE::NoteFullScreenExit();
+#endif
   m_bFullScreenVideo = bOnOff;
   if (bOnOff)
     m_exitViewHeld = false;
@@ -388,6 +393,10 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
     {
 #if defined(HAS_LIBAMCODEC)
       OUTPUT::CRequestOrigin requestOrigin("window-rule");
+      // 5.E2-8b D9: Back's own desktop set does not drop an open Start job
+      std::optional<DISPLAYSTATE::CFullScreenExitSet> exitSet;
+      if (exiting)
+        exitSet.emplace();
 #endif
       SetVideoResolution(targetResolutionOnStop, false);
     }
@@ -473,6 +482,17 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 #if defined(HAS_LIBAMCODEC)
   // 5.B3-7b (O1): a hotplug reply is not applied by a pump inside this set
   DISPLAYSTATE::CGcSetScope gcSetScope;
+  // 5.E2-8b D4 step 7, D9: counted in before the drop CAS (P's Dekker step)
+  DISPLAYSTATE::CGuiSetInFlight guiSetInFlight;
+  if (!DISPLAYSTATE::InStartAdopt() && !DISPLAYSTATE::InFullScreenExitSet())
+  {
+    if (const auto job = DISPLAYSTATE::TxOpenJob())
+    {
+      CGUIComponent* gui = CServiceBroker::GetGUI();
+      DISPLAYSTATE::GuiSetDuringStart(
+          *job, !gui || gui->GetWindowManager().GetActiveWindow() != WINDOW_FULLSCREEN_VIDEO);
+    }
+  }
   forceUpdate = true;
   // 5.B2-5b: W parks the coordinator in its own job, and GC follows the reply
   const bool onW = OUTPUT::ModeSetsOnW();

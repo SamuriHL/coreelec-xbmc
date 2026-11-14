@@ -1272,20 +1272,102 @@ void SetInStartAdopt(bool in)
   s_inStartAdopt = in;
 }
 
-// E2-8b C6: stubs (C6 adds GC's counter, its in-flight scope and the guiSet notice)
+namespace
+{
+// 5.E2-8b (D2, D4 step 7, D9)
+std::atomic<uint64_t> s_fullScreenExits{0};
+std::atomic_int s_guiSetsInFlight{0};
+// written on main only (every GC set runs there): the tag before the seq
+std::atomic<uint64_t> s_guiSetSeq{0};
+std::atomic<uint64_t> s_guiSetPreSeq{0};
+thread_local CGuiSetInFlight* t_guiSetInFlight = nullptr;
+thread_local int t_fullScreenExitSet = 0;
+} // namespace
+
 uint64_t FullScreenExits()
 {
-  return 0;
+  return s_fullScreenExits.load();
+}
+
+void NoteFullScreenExit()
+{
+  const uint64_t n = ++s_fullScreenExits;
+  if (const auto job = TxOpenJob())
+    CLog::Log(LOGINFO, "TXSTART T={} fullscreen exit {} (job {})", job->T, n,
+              StartJobStateName(job->state.load()));
 }
 
 int GuiSetsInFlight()
 {
-  return 0;
+  return s_guiSetsInFlight.load();
+}
+
+CGuiSetInFlight::CGuiSetInFlight() : m_previous(t_guiSetInFlight)
+{
+  t_guiSetInFlight = this;
+  ++s_guiSetsInFlight;
+}
+
+CGuiSetInFlight::~CGuiSetInFlight()
+{
+  t_guiSetInFlight = m_previous;
+  if (!m_kept)
+    --s_guiSetsInFlight;
+}
+
+bool KeepGuiSetInFlight()
+{
+  if (!t_guiSetInFlight || t_guiSetInFlight->m_kept)
+    return false;
+  t_guiSetInFlight->m_kept = true;
+  CLog::Log(LOGINFO, "TXSTART GUI set in flight kept past the give-up ({} in flight)",
+            s_guiSetsInFlight.load());
+  return true;
+}
+
+void GuiSetInFlightEnded()
+{
+  const int n = --s_guiSetsInFlight;
+  CLog::Log(LOGINFO, "TXSTART GUI set given up on: its job ended ({} in flight)", n);
+}
+
+void GuiSetDuringStart(SStartJob& job, bool preActivation)
+{
+  const char* origin = OUTPUT::CurrentRequestOrigin();
+  if (!origin)
+    origin = "unscoped";
+  // D4 step 7 (r5 M1): the caller counted the set in before this CAS
+  const std::string by = StringUtils::Format("gui set, {}", origin);
+  const bool dropped = StartJobDropForGuiSet(job, by.c_str());
+  const uint64_t seq = s_guiSetSeq.load() + 1;
+  if (preActivation)
+    s_guiSetPreSeq = seq;
+  s_guiSetSeq = seq;
+  CLog::Log(LOGINFO, "TXSTART T={} GUI set notice {} ({}, {}-activation, job {})", job.T, seq,
+            origin, preActivation ? "pre" : "post",
+            dropped ? "dropped" : StartJobStateName(job.state.load()));
 }
 
 GuiSetNotice ReadGuiSetNotice(uint64_t since)
 {
-  return {};
+  const uint64_t seq = s_guiSetSeq.load();
+  const uint64_t pre = s_guiSetPreSeq.load();
+  return {seq, pre > since && pre <= seq};
+}
+
+CFullScreenExitSet::CFullScreenExitSet()
+{
+  ++t_fullScreenExitSet;
+}
+
+CFullScreenExitSet::~CFullScreenExitSet()
+{
+  --t_fullScreenExitSet;
+}
+
+bool InFullScreenExitSet()
+{
+  return t_fullScreenExitSet > 0;
 }
 
 void ShadowUiIds(uint32_t planeId, uint32_t crtcId, int srcW, int srcH, int screenW, int screenH)

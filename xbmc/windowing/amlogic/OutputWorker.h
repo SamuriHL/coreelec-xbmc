@@ -163,7 +163,7 @@ public:
   void WordStop(uint32_t ownT);
   //! 5.E2-8a (D2): P, an engaged start at CN's "output mode decided" opening: NONE{own T}, no
   //! span -> STARTING. False when the word is anything else (the open goes legacy)
-  bool WordStarting(uint32_t ownT);
+  bool WordStarting(uint32_t ownT, bool decidedOnP = false);
   //! 5.E2-8a (D2): P, the start's START point or its exit: STARTING{own T} -> NONE
   void WordStartDone(uint32_t ownT, const char* why);
 
