@@ -3637,6 +3637,35 @@ void CVideoPlayer::TxRepliesPass()
     m_renderManager.TxAdoptAnswer(gen, CRenderManager::TxAnswer::FAILED);
 }
 
+// 5.E2-8b D9: a failed Start job's own set lost the display, and only main's rm retry (D8's
+// job-ok x failed hand-back) brings it back, as legacy's failed set retries at once. So its
+// reply ends the start while P is lost, with the same pass as when not lost; the other replies
+// wait for the display (the set that supersedes, cancels or follows the job brings it back)
+void CVideoPlayer::TxLostFailedPass()
+{
+  if (!TxOpen() || !m_txJob || m_txStep != TxStep::POSTED)
+    return;
+  using Settle = DISPLAYSTATE::StartSettleKind;
+  const uint64_t T = m_txJob->T;
+  const auto failed = [T](CDVDMsg& m)
+  {
+    if (!m.IsType(CDVDMsg::PLAYER_TX_REPLY))
+      return false;
+    const STxReply& r = static_cast<CDVDMsgType<STxReply>&>(m).m_value;
+    if (r.T != T)
+      return false;
+    if (r.kind == STxReply::Kind::SETTLE_DONE)
+      return r.settle == Settle::FAILED || r.settle == Settle::FAILED_PARK;
+    return r.kind == STxReply::Kind::ADOPTED && r.form == DISPLAYSTATE::StartAdoptForm::FAILED;
+  };
+  std::shared_ptr<CDVDMsg> msg;
+  if (m_messenger.GetFirstOf(msg, failed, 0ms) != MSGQ_OK)
+    return;
+  TxOnReply(*msg);
+  CLog::Log(LOGINFO, "TXSTART T={} start job failed while the display is lost", T);
+  TxStartGatePass(m_renderManager.GetModeFirstState(m_startGateGen));
+}
+
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
 // Reads the shadow word; CASes nothing
 void CVideoPlayer::LogWordBoundary(bool arm, const char* why)
@@ -4552,6 +4581,7 @@ void CVideoPlayer::Process()
       if (TxOpen() && m_txJob && m_txStep == TxStep::POSTED &&
           m_txLostAt == std::chrono::steady_clock::time_point{})
         m_txLostAt = std::chrono::steady_clock::now();
+      TxLostFailedPass();
       // 5.E2-7 (D3): a real freeze's states; P keeps its stop, a next file in a span and the wake
       if (m_txFreezeReal.load(std::memory_order_acquire))
       {
