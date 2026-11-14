@@ -2863,6 +2863,9 @@ void CVideoPlayer::ArmStartGate(const char* where)
   // start this file ended raises at its arm
   if (m_txEndedGen && m_bdStreamReuseVideo)
     m_renderManager.TxRaiseOwed("keepalive later set");
+  // code review A-M1 (backstop): an earlier exit's outcome still unresolved ends as `later`
+  if (m_txEndedGen)
+    m_renderManager.TxLaterSet(m_txEndedGen);
   bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
 #if defined(HAVE_LIBBLURAY)
   // a menu disc dictates its streams: none may be open yet
@@ -3142,7 +3145,9 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     using Need = CRenderManager::TxNeed;
     bool past = false;
     if (need == Need::LEFT && m_txStep == TxStep::POSTED)
-      past = true; // r9 M1: a fullscreen exit after the post never drops the job
+      // r9 M1: a fullscreen exit after the post never drops the job; code review A-M1: one GC
+      // dropped never reaches the wire and is answered by nobody (reraise)
+      past = m_txJob->state.load() != State::DROPPED;
     else if (m_txJob->state.load() == State::NOT_POSTED)
       m_txJob->Cas({State::NOT_POSTED}, State::DROPPED); // never posted: nothing to log
     else if (!DISPLAYSTATE::StartJobDropForExit(*m_txJob, site))
@@ -3156,10 +3161,20 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     }
     // r13 L3: kept for RM::TxFileEnded at a later stop or next file
     m_txEndedGen = m_txEngagedGen;
+    m_txEndedLeft = past && need == Need::LEFT;
     m_renderManager.TxOpenMain(m_txEngagedGen, past ? CRenderManager::TxHow::NONE : how,
                                past ? need : Need::NONE);
     DISPLAYSTATE::ClearTxOpenJob(m_txJob);
     m_txStep = TxStep::NONE;
+    // code review A-M1: GC's drop landed after the read above (a TxOpenJob copy taken before the
+    // clear): no answer comes, so `left x failed` resolves it (TxOnReply covers a later drop)
+    if (m_txEndedLeft && m_txJob->state.load() == State::DROPPED)
+    {
+      CLog::Log(LOGINFO, "TXSTART T={} dropped by a GUI set at the exit: answer failed",
+                m_txJob->T);
+      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::FAILED);
+      m_txEndedLeft = false;
+    }
   }
   // the undo list (plan E2-8a, review r3 H-3), in order
   if (m_txWordStarting)
@@ -3350,6 +3365,12 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
   if (!m_txJob || r.T != m_txJob->T || !TxOpen() || m_txStep != TxStep::POSTED)
   {
     CLog::Log(LOGINFO, "TXSTART T={} {} after the start ended: logged", r.T, what);
+    // code review A-M1: a job GC dropped after a `left` exit took it past its CAS answers
+    // nobody; its SettleDone{dropped} resolves the outcome as `failed` (logged if resolved)
+    if (r.kind == STxReply::Kind::SETTLE_DONE &&
+        r.settle == DISPLAYSTATE::StartSettleKind::DROPPED && m_txJob && r.T == m_txJob->T &&
+        std::exchange(m_txEndedLeft, false) && m_txEndedGen && m_txEndedGen == m_txJob->gen)
+      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::FAILED);
     return;
   }
   switch (r.kind)

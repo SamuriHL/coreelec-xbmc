@@ -2195,9 +2195,12 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
     if (recovery.recovered)
       recovery.job->AdoptAnswer(DISPLAYSTATE::StartAnswer::RECOVERED);
     else
-      CLog::Log(LOGERROR,
-                "TXSTART T={} recovery set request {} failed: no answer (CN's cap bounds it)",
+    {
+      // code review A-M1: answered, so RM's commit-in-flight does not outlive the start
+      CLog::Log(LOGERROR, "TXSTART T={} recovery set request {} failed: answer failed",
                 recovery.job->T, recovery.id);
+      recovery.job->AdoptAnswer(DISPLAYSTATE::StartAnswer::FAILED);
+    }
   }
   while (true)
   {

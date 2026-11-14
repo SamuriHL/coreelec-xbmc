@@ -3304,6 +3304,24 @@ void CRenderManager::RecoveredTxOutcomeLocked(STxResolution& r)
   CountTxStartLocked(r, "count");
 }
 
+// m_statelock held. Code review A-M1: the recovery set of a Start adopt's throw failed, so no
+// RECOVERED comes: the answer becomes `failed` (job-ok x failed = hand back)
+void CRenderManager::RecoveryFailedTxOutcomeLocked(STxResolution& r)
+{
+  SStartOutcome& o = m_txOutcome;
+  o.answer = TxAnswer::FAILED;
+  CLog::Log(LOGINFO, "TXSTART set={} T={} recovery set failed: answer failed", o.gen, o.T);
+  // stop / next / later: nothing for the gen; fresh: its own hand-back is the decision
+  if (o.exited &&
+      (o.need == TxNeed::NONE_NEEDED || o.need == TxNeed::LATER || o.need == TxNeed::FRESH))
+  {
+    m_txCommitInFlight = false;
+    r.action = "nothing";
+    return;
+  }
+  ResolveTxOutcomeLocked(r);
+}
+
 void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
 {
   STxResolution r;
@@ -3374,6 +3392,8 @@ bool CRenderManager::TxAdoptAnswer(unsigned int gen, TxAnswer form)
     }
     if (form == TxAnswer::RECOVERED)
       RecoveredTxOutcomeLocked(r);
+    else if (form == TxAnswer::FAILED && o.answer == TxAnswer::RECOVERING && !o.closed)
+      RecoveryFailedTxOutcomeLocked(r);
     else if (o.answer != TxAnswer::NONE || o.closed)
     {
       CLog::Log(LOGINFO, "TXSTART set={} T={} answer {} after {}{}: logged", gen, o.T,
@@ -3390,6 +3410,21 @@ bool CRenderManager::TxAdoptAnswer(unsigned int gen, TxAnswer form)
   if (r.post)
     m_playerPort->VideoParamsChange();
   return r.post;
+}
+
+void CRenderManager::TxLaterSet(unsigned int gen)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  SStartOutcome& o = m_txOutcome;
+  // code review A-M1: commit-in-flight would hold this set's CN (GetModeFirstState) to its cap,
+  // and a late count of the old gen would clear this set's m_modeFirstInFlight
+  if (!gen || o.gen != gen || !o.exited || !m_txCommitInFlight)
+    return;
+  CLog::Log(LOGINFO, "TXSTART set={} T={} need={} answer={} unresolved at a later set: later",
+            gen, o.T, TxNeedName(o.need), TxAnswerName(o.answer));
+  o.need = TxNeed::LATER;
+  m_txCommitInFlight = false;
 }
 
 void CRenderManager::TxFileEnded(unsigned int gen)

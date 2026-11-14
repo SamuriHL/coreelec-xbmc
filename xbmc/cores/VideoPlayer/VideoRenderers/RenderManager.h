@@ -286,6 +286,9 @@ public:
   bool TxAdoptAnswer(unsigned int gen, TxAnswer form);
   //! E2-8b D5b: P, a stop or next file after an exit (the gen P kept from it)
   void TxFileEnded(unsigned int gen);
+  //! E2-8b D5b (code review A-M1): P, a later set's arm after an exit (the gen P kept from it):
+  //! an outcome still unresolved (commit-in-flight) is resolved as D8's `later` row
+  void TxLaterSet(unsigned int gen);
   //! E2-8b D5: W's OutputDone reached P: C's pre-roll term for the shut gen
   void SetTxOutputDone(unsigned int gen);
   //! E2-8b D8: P, a KEEPALIVE later set's arm (it never configures): the owed mark raised.
@@ -733,6 +736,9 @@ protected:
   void ResolveTxOutcomeLocked(STxResolution& r);
   //! E2-8b D5b (m_statelock held): the recovery set's reply (the model's recovered())
   void RecoveredTxOutcomeLocked(STxResolution& r);
+  //! E2-8b D5b (m_statelock held, code review A-M1): the recovery set failed: `failed`, the
+  //! table's cell for the exit's need (none-needed / later / fresh: nothing, as recovered())
+  void RecoveryFailedTxOutcomeLocked(STxResolution& r);
   void CountTxStartLocked(STxResolution& r, const char* action);
   void HandBackTxLocked(STxResolution& r, bool rmRetry);
   void LogTxOutcomeLocked(const STxResolution& r) const;

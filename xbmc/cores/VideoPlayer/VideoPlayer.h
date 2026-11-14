@@ -1098,6 +1098,7 @@ protected:
   std::chrono::steady_clock::duration m_txLostPaused{};
   //! D5b (r13 L3): the gen of an exit whose outcome may be unresolved, for RM::TxFileEnded
   unsigned int m_txEndedGen = 0;
+  bool m_txEndedLeft = false; //!< code review A-M1: that exit was `left` past the drop CAS
   //! D2 at the engage, or after WordOpen (the open's T)
   void TxOpenStart();
   //! D4: DECIDE at the set's first configure
