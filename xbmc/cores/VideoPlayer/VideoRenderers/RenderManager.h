@@ -349,6 +349,32 @@ public:
                           const DISPLAYSTATE::DecideInputs& latest,
                           bool rootAtOpen,
                           bool cnArmed);
+  //! E2-8b D4 step 2: DECIDE's choice for the engaged start, by value
+  struct SStartResolve
+  {
+    const char* exclusion = nullptr; //!< D1's exit (`3D start`, `refresh off`, ...); else none
+    RESOLUTION res = RES_INVALID;
+    RESOLUTION_INFO info; //!< latest.res.infos[res]
+    bool change = false; //!< res differs from the video resolution read
+    bool frac = false; //!< fracRequest (TxTakeArm makes it the arm it took)
+    bool filmStart = true;
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    RenderStereoMode stereo = RenderStereoMode::OFF; //!< the GUI's (2D) mode
+    double tweakMs = 0.0; //!< the latency tweak for info + hdrType
+    float fps = 0.0f;
+    bool mayChooseMode = false;
+    bool held = false; //!< the disc mode hold
+    bool anchor = false; //!< the count sets the disc-mode anchor
+  };
+  //! E2-8b D4 step 2 (Plan vs code 2): DecideShadowPlayer's pure body on RM's current facts,
+  //! the published inputs and the settings mirror; consumes nothing
+  SStartResolve ResolveStart(unsigned int gen,
+                             const DISPLAYSTATE::DecideInputs& latest,
+                             bool rootAtOpen,
+                             bool fullScreen);
+  //! E2-8b D4 step 4: the frac arm consumed for the start (today's `consumed` line), kept with
+  //! its original time for a reraise or a failed hand-back; r.frac becomes the arm taken
+  void TxTakeArm(unsigned int gen, SStartResolve& r);
 #endif
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }

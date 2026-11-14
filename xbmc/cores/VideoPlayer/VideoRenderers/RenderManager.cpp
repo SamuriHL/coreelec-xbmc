@@ -3771,8 +3771,13 @@ namespace
 {
 // ChooseHeldResolution from inputs taken earlier, with no side effect (the anchor is read, not
 // set)
-RESOLUTION HeldShadow(
-    const ResolutionInputs& in, float fps, RESOLUTION incumbent, bool is3D, int width, int height)
+RESOLUTION HeldShadow(const ResolutionInputs& in,
+                      float fps,
+                      RESOLUTION incumbent,
+                      bool is3D,
+                      int width,
+                      int height,
+                      bool log = false)
 {
   if (fps <= 0.0f)
     return incumbent;
@@ -3780,11 +3785,11 @@ RESOLUTION HeldShadow(
   {
     if (width <= 0 || height <= 0)
       return incumbent;
-    return CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, false);
+    return CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, log);
   }
   const RESOLUTION_INFO& cur = in.Info(incumbent);
   const RESOLUTION best = CResolutionUtils::ChooseBestResolution(in, fps, cur.iScreenWidth,
-                                                                 cur.iScreenHeight, is3D, false);
+                                                                 cur.iScreenHeight, is3D, log);
   const RESOLUTION_INFO& bestInfo = in.Info(best);
   if (bestInfo.iScreenWidth == cur.iScreenWidth && bestInfo.iScreenHeight == cur.iScreenHeight)
     return best;
@@ -3890,6 +3895,111 @@ void CRenderManager::DecideShadowPlayer(unsigned int gen,
   p.change = res != in.videoResolution;
   p.frac = armed && armAgeS <= 12.0 && mayChooseMode && !held;
   DecideShadowRecord(gen, true, p);
+}
+
+CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
+                                                           const DISPLAYSTATE::DecideInputs& latest,
+                                                           bool rootAtOpen,
+                                                           bool fullScreen)
+{
+  // main is shut out: RM's current facts (a notice before the post is folded into them)
+  float fps;
+  int width, height;
+  std::string stereoMode;
+  bool armed;
+  std::chrono::steady_clock::time_point armedAt;
+  SStartResolve r;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    fps = m_fps;
+    width = static_cast<int>(m_picture.iWidth);
+    height = static_cast<int>(m_picture.iHeight);
+    stereoMode = m_picture.stereoMode;
+    r.hdrType = m_picture.hdrType;
+    armed = m_reclockArmed;
+    armedAt = m_reclockArmedAt;
+  }
+  r.fps = fps;
+  r.stereo = latest.res.stereoMode;
+  // E2-8b NOTE: "no inputs" and "not fullscreen" are DecideShadowPlayer's other no-decision
+  // outcomes, returned as exclusions for P's exit (neither is reachable on an engaged open)
+  if (!latest.seq)
+  {
+    r.exclusion = "no inputs";
+    return r;
+  }
+  if (!fullScreen || !rootAtOpen)
+  {
+    r.exclusion = "not fullscreen";
+    return r;
+  }
+  const auto& mirror = OUTPUT::CSettingsMirror::Get();
+  // D1: a stereoscopic stream (the 3D ASK predicate needs one too)
+  if (!stereoMode.empty())
+  {
+    r.exclusion = "3D start";
+    return r;
+  }
+  if (mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) == ADJUST_REFRESHRATE_OFF)
+  {
+    r.exclusion = "refresh off";
+    return r;
+  }
+  r.mayChooseMode = fps > 0.0f;
+  r.held = r.mayChooseMode && aml_disc_mode_hold();
+  const ResolutionInputs& in = latest.res;
+  RESOLUTION res;
+  if (!r.mayChooseMode)
+    res = in.videoResolution;
+  else if (aml_disc_mode_hold())
+    res = HeldShadow(in, fps, in.videoResolution, false, width, height, true);
+  else
+    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, false, true);
+  r.res = res;
+  r.info = in.Info(res);
+  r.change = res != in.videoResolution;
+  r.frac = armed && std::chrono::steady_clock::now() - armedAt <= 12s && r.mayChooseMode && !r.held;
+  r.anchor = r.mayChooseMode && !r.held && width > 0 && height > 0;
+  // UpdateLatencyTweak's table for the target mode; HDR in use from the published sink caps, as
+  // ComposeTiming reads them off main
+  bool hdrDisplay = false;
+  if (const auto state = DISPLAYSTATE::Get())
+  {
+    const CHDRCapabilities& c = state->hdrCaps;
+    hdrDisplay = c.SupportsHDR10() || c.SupportsHDR10Plus() || c.SupportsHLG() ||
+                 c.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE;
+  }
+  const float refresh = res == RES_WINDOW ? 0.0f : r.info.fRefreshRate;
+  r.tweakMs = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+          refresh, hdrDisplay && r.hdrType != StreamHdrType::HDR_TYPE_NONE,
+          r.info.iScreenHeight));
+  CLog::Log(LOGDEBUG, "CRenderManager::ResolveStart - set {} mode {} frac {} tweak {:.1f}ms", gen,
+            r.info.strMode, r.frac, r.tweakMs);
+  return r;
+}
+
+void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  // UpdateResolution's consume of the arm, on P
+  bool fracArmed = std::exchange(m_reclockArmed, false);
+  if (fracArmed && std::chrono::steady_clock::now() - m_reclockArmedAt > 12s)
+  {
+    CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm expired");
+    fracArmed = false;
+  }
+  m_txArmTaken.taken = fracArmed;
+  m_txArmTaken.at = m_reclockArmedAt;
+  r.frac = fracArmed && r.mayChooseMode && !r.held;
+  if (fracArmed)
+    CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm consumed at {:.3f} fps: {}", r.fps,
+              r.frac ? "may re-clock"
+                     : (r.held ? "menu hold, no re-clock" : "refresh switching off"));
+  if (m_txOutcome.gen == gen)
+    m_txOutcome.anchor = r.anchor;
 }
 
 void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side)
