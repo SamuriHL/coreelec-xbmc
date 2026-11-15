@@ -943,6 +943,10 @@ void CWinSystemAmlogic::TestSetAfter()
 void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::ModeFacts> recover)
 {
   SHotplugReply reply;
+  // 5.E2-8b D5 step 4: main raises m_guiInputsStale, adopts (the start's row no longer pending),
+  // publishes GuiInputs, clears the flag; read here in the reverse order, a start's row not
+  // pending and the flag clear mean GuiInputs carry the adopt
+  const std::optional<DISPLAYSTATE::ModeFacts> startRow = PendingStartRow();
   // HEAD's order: no hotplug between main's set and main's apply of it, nor before its GuiInputs
   // publish (the video's mode, P13). The job stays queued (m_jobQueued set, its receipts not
   // read), so the receipts after this still collapse into it
@@ -970,6 +974,11 @@ void CWinSystemAmlogic::RunHotplugJob(bool retry, std::optional<DISPLAYSTATE::Mo
     }
     m_wUpTo = m_receiptSeq.load();
   }
+  m_wJobStartRow = startRow;
+  // a retry is not deferred: with the flag still set after the row's read, GuiInputs may be from
+  // before an adopt, so it records nothing
+  m_wJobGuiFresh = startRow || !m_guiInputsStale;
+  m_wJobGui = DISPLAYSTATE::GetGuiInputs();
   reply.upTo = m_wUpTo;
   reply.replyId = ++m_wReplies;
   // O4: W stopping drains its queue; main applies no reply after DestroyWindowSystem
@@ -1046,7 +1055,7 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   // edge): recorded once, kept until main has applied a Restore to it (D5: HEAD resets it at the
   // match, its apply being the same call; a reply main drops before its adopt leaves it recorded
   // for the retry's Restore)
-  const DISPLAYSTATE::GuiInputs gui = DISPLAYSTATE::GetGuiInputs();
+  const DISPLAYSTATE::GuiInputs& gui = m_wJobGui;
   const auto recordVideoMode = [&]
   {
     if (!gui.videoPlaying || (m_wVideoModeReply && m_videoModeApplied.load() >= m_wVideoModeReply))
@@ -1054,6 +1063,23 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
       m_wVideoMode.reset();
       m_wVideoModeReply = 0;
     }
+    // 5.E2-8b D5 step 4: from an engaged start's commit to main's adopt GC's row is the GUI's, and
+    // a record of it would outlive that window (a loss job's record, used by the Restore after the
+    // adopt): none is taken or kept there; the first job after the adopt records GC's row
+    if (m_wJobStartRow)
+    {
+      if (m_wVideoMode)
+      {
+        CLog::Log(LOGINFO, "HOTPLUG job {}: the video's mode record {} reset (the start's commit is "
+                           "not adopted yet)",
+                  reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode));
+        m_wVideoMode.reset();
+        m_wVideoModeReply = 0;
+      }
+      return;
+    }
+    if (!m_wJobGuiFresh)
+      return;
     // never the facts of no row (GC at RES_INVALID, or its row past main's table, before D5's hold)
     if (gui.videoPlaying && !m_wVideoMode && !gui.videoResolution.strId.empty())
       m_wVideoMode = gui.videoResolution;
@@ -1301,8 +1327,11 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   }
   std::optional<size_t> videoRow;
   // 5.E2-8b D5 step 4: after an engaged start's commit and before main's adopt (GC's video row is
-  // still the GUI's), the film's committed row; the record stays for after it
-  const std::optional<DISPLAYSTATE::ModeFacts> startRow = StartCommitRow();
+  // still the GUI's), the film's committed row
+  const std::optional<DISPLAYSTATE::ModeFacts>& startRow = m_wJobStartRow;
+  if (startRow)
+    CLog::Log(LOGINFO, "HOTPLUG job {}: restore target the start's committed row {}",
+              reply.replyId, DISPLAYSTATE::FactsString(*startRow));
   const std::optional<DISPLAYSTATE::ModeFacts>& videoMode = startRow ? startRow : m_wVideoMode;
   if (videoMode)
   {

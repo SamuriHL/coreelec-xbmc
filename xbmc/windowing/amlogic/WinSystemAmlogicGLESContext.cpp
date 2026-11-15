@@ -2664,11 +2664,10 @@ void CWinSystemAmlogicGLESContext::StartCommitted(SDriveJob& job, bool committed
   m_wStartCommit.commitSeq = job.commitSeq;
   m_wStartCommit.row = DISPLAYSTATE::FactsOf(job.res);
   m_wStartCommit.job = job.start;
-  m_wStartCommit.logged = false;
   job.start->OutputDone(true, job.commitSeq);
 }
 
-std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::StartCommitRow()
+std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::PendingStartRow()
 {
   // r4 M4, r5 M2: nothing committed since, main's adopt still owed, the start's video playing
   if (!m_wStartCommit.commitSeq || m_wStartCommit.commitSeq != OUTPUT::CommitSeq())
@@ -2676,9 +2675,6 @@ std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::StartCommit
   const auto start = m_wStartCommit.job.lock();
   if (!start || !start->adoptPending || DISPLAYSTATE::TxOpenJob() != start)
     return std::nullopt;
-  if (!std::exchange(m_wStartCommit.logged, true))
-    CLog::Log(LOGINFO, "HOTPLUG restore target: the start's committed row {} (T={} seq={})",
-              DISPLAYSTATE::FactsString(m_wStartCommit.row), start->T, m_wStartCommit.commitSeq);
   return m_wStartCommit.row;
 }
 
@@ -2695,6 +2691,9 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   using Answer = DISPLAYSTATE::StartAnswer;
   using Form = DISPLAYSTATE::StartAdoptForm;
   DISPLAYSTATE::SStartJob& start = *job->start;
+  // P13: GC moves at this adopt and GuiInputs carry it only from the next pump, so W's hotplug
+  // jobs wait for that pump (raised before AdoptAnswer ends PendingStartRow)
+  m_guiInputsStale = true;
   if (const int stallMs = aml_transaction_hooks().adoptStallMs)
   {
     CLog::Log(LOGWARNING, "TXTEST adoptstall {} T={}", stallMs, start.T);

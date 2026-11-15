@@ -258,7 +258,7 @@ protected:
   virtual void ApplyHotplugReplies() {}
   //! 5.E2-8b D5 step 4, W: the film's committed row while an engaged start's commit is the
   //! last commit and main has not answered its adopt (a Restore's target then)
-  virtual std::optional<DISPLAYSTATE::ModeFacts> StartCommitRow() { return std::nullopt; }
+  virtual std::optional<DISPLAYSTATE::ModeFacts> PendingStartRow() { return std::nullopt; }
   //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
   //! (throwInside: the applythrow hook's "table")
   void ApplyHotplugTable(const SHotplugReply& reply, bool throwInside);
@@ -367,6 +367,10 @@ private:
   uint64_t m_wDisconnectedAt{0}; //!< the receipts counted just after that read
   std::optional<DISPLAYSTATE::ModeFacts> m_wVideoMode; //!< HotplugEvent's m_videoModeAtHotplug
   uint64_t m_wVideoModeReply{0}; //!< the last reply whose Restore targets it (0: none)
+  //! W, read once per job at its deferral check (the start's row, then the flag, then GuiInputs)
+  std::optional<DISPLAYSTATE::ModeFacts> m_wJobStartRow;
+  DISPLAYSTATE::GuiInputs m_wJobGui;
+  bool m_wJobGuiFresh{true}; //!< m_wJobGui carries main's last adopt (a record may be taken)
   bool m_wHas2160{false}; //!< W's last table
   //! 5.B3-8: "desktop"'s Restore target, re-decided at each reconnect's caps step (published
   //! with W's caps); the session's desktop mode until the first. This and its reason are also
