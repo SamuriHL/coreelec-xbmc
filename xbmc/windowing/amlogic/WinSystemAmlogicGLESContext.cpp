@@ -2691,14 +2691,14 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   using Answer = DISPLAYSTATE::StartAnswer;
   using Form = DISPLAYSTATE::StartAdoptForm;
   DISPLAYSTATE::SStartJob& start = *job->start;
-  // P13: GC moves at this adopt and GuiInputs carry it only from the next pump, so W's hotplug
-  // jobs wait for that pump (raised before AdoptAnswer ends PendingStartRow)
-  m_guiInputsStale = true;
   if (const int stallMs = aml_transaction_hooks().adoptStallMs)
   {
     CLog::Log(LOGWARNING, "TXTEST adoptstall {} T={}", stallMs, start.T);
     std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
   }
+  // P13: GC moves at this adopt and GuiInputs carry it only from the next pump, so W's hotplug
+  // jobs wait for that pump (raised before AdoptAnswer ends PendingStartRow)
+  m_guiInputsStale = true;
   struct SApplying
   {
     explicit SApplying(std::atomic_bool& flag) : m_flag(flag) { m_flag = true; }
