@@ -1512,9 +1512,14 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     OUTPUT::TestStopAt("5");
   }
   job.engageMs = sinceStart();
-  job.kind = !committed      ? OUTPUT::DriveReply::FAILED
-             : notConnected ? OUTPUT::DriveReply::NOT_COMMITTED
-                            : OUTPUT::DriveReply::DONE;
+  // transaction_notcommitted: only the reply's kind; the word keeps the real display state
+  const bool forceNotCommitted =
+      committed && !notConnected && job.start && aml_transaction_hooks().notCommitted;
+  if (forceNotCommitted)
+    CLog::Log(LOGWARNING, "TXTEST notcommitted T={} request {}", job.start->T, job.id);
+  job.kind = !committed                       ? OUTPUT::DriveReply::FAILED
+             : notConnected || forceNotCommitted ? OUTPUT::DriveReply::NOT_COMMITTED
+                                                 : OUTPUT::DriveReply::DONE;
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end

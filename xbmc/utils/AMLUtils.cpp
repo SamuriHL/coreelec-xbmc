@@ -3083,6 +3083,7 @@ STransactionHooks ReadTransactionHooks()
   hooks.audioFullForce = TransactionHookFlag("transaction_audiofullforce");
   hooks.stopAt = TransactionHookWord("transaction_stopat");
   hooks.commitFail = TransactionHookFlag("transaction_commitfail");
+  hooks.notCommitted = TransactionHookFlag("transaction_notcommitted");
   hooks.startDelayMs = TransactionHookMs("transaction_startdelay");
   hooks.adoptStallMs = TransactionHookMs("transaction_adoptstall");
   hooks.adoptThrow = TransactionHookWord("transaction_adoptthrow");

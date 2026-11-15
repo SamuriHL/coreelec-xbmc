@@ -524,6 +524,8 @@ struct STransactionHooks
   //! transaction_stopat posted|parked|committed: the Start job held there on W, up to 3000 ms
   std::string stopAt;
   bool commitFail = false; //!< transaction_commitfail: the Start job's commit fails
+  //! transaction_notcommitted: the Start job's committed set replies NOT_COMMITTED
+  bool notCommitted = false;
   int startDelayMs = 0; //!< transaction_startdelay <ms>: the Start job waits before its park
   int adoptStallMs = 0; //!< transaction_adoptstall <ms>: main waits before the Start reply
   //! transaction_adoptthrow before: main's adopt of the Start reply throws before GC's set
