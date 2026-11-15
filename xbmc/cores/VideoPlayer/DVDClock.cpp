@@ -406,7 +406,9 @@ bool CDVDClock::ScheduleResumeAt(
     return false;
   const int64_t current = m_videoRefClock->GetTime();
   const double step = clock - SystemToPlaying(current);
-  if (step <= 0.0 || step > maxStep)
+  // a held clock already on the frame (a cancelled scheduled start: up to a few us past it) lands
+  // there too; only a clock genuinely past the frame cannot
+  if (step < -DVD_MSEC_TO_TIME(1) || step > maxStep)
     return false;
   bool onGrid = false;
   const int64_t at = ScheduleInstant(current, lead, &onGrid);
