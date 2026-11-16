@@ -3678,6 +3678,7 @@ void CVideoPlayer::TxErrorExit(const char* why)
   CLog::Log(LOGERROR, "TXSTART T={} {}: start not committed", m_txJob->T, why);
   EndTransactionToLegacy(why, CRenderManager::TxHow::NONE, CRenderManager::TxNeed::NONE_NEEDED);
   m_error = true;
+  m_txErrorExited = true;
   m_bAbortRequest = true;
 }
 
@@ -4400,7 +4401,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txStarted = m_txExited = m_txSyncPassed = false;
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
-  m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
+  m_txReprimed = m_txExc1Done = m_txGateLostSeen = m_txErrorExited = false;
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
@@ -7443,7 +7444,9 @@ void CVideoPlayer::OnExit()
   m_bStop = true;
 
   bool error = m_error;
-  bool close = m_bCloseRequest;
+  // 5.E2-9a (D7): the start's error exit is reported as an error, though the application's
+  // CloseFile can set the close request while the streams close (gate run 1, 2026-11-16)
+  bool close = m_bCloseRequest && !m_txErrorExited;
   m_outboundEvents->Submit([=]() {
     if (close)
       cb->OnPlayBackStopped();

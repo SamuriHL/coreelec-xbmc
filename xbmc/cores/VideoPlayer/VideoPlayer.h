@@ -1127,6 +1127,8 @@ protected:
   void TxNoAnswerExit(const char* site);
   void TxErrorExit(const char* why);
   bool m_txBoundInCommitLogged = false;
+  //! the start's error exit ran: OnExit reports OnPlayBackError though a close raced in after it
+  bool m_txErrorExited = false;
   //! D9: while lost, a failed Start job's reply or D6's 30 s backstop ends the start
   void TxLostFailedPass();
   //! test (transaction_noticeat): the notice raised once its point is reached
