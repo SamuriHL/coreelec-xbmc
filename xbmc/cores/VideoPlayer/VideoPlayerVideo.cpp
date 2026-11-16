@@ -52,13 +52,16 @@ using namespace std::chrono_literals;
 class CDVDMsgVideoCodecChange : public CDVDMsg
 {
 public:
-  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints, std::unique_ptr<CDVDVideoCodec> codec)
-    : CDVDMsg(GENERAL_STREAMCHANGE), m_codec(std::move(codec)), m_hints(hints)
+  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints,
+                          std::unique_ptr<CDVDVideoCodec> codec,
+                          bool hwDecoder)
+    : CDVDMsg(GENERAL_STREAMCHANGE), m_codec(std::move(codec)), m_hints(hints), m_hwDecoder(hwDecoder)
   {}
   ~CDVDMsgVideoCodecChange() override = default;
 
   std::unique_ptr<CDVDVideoCodec> m_codec;
   CDVDStreamInfo  m_hints;
+  bool m_hwDecoder;
 };
 
 CVideoPlayerVideo::CVideoPlayerVideo(CDVDClock* pClock,
@@ -152,27 +155,31 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
       hint.codecOptions |= CODEC_ALLOW_FALLBACK;
     }
 
-    std::unique_ptr<CDVDVideoCodec> codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
+    bool hwDecoder = false;
+    std::unique_ptr<CDVDVideoCodec> codec =
+        CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo, &hwDecoder);
     if (!codec)
     {
       CLog::Log(LOGINFO, "CVideoPlayerVideo::OpenStream - could not open video codec");
     }
 
-    SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec)), 0);
+    SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec), hwDecoder), 0);
   }
   else
   {
     m_processInfo.ResetVideoCodecInfo();
     hint.codecOptions |= CODEC_ALLOW_FALLBACK;
 
-    std::unique_ptr<CDVDVideoCodec> codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
+    bool hwDecoder = false;
+    std::unique_ptr<CDVDVideoCodec> codec =
+        CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo, &hwDecoder);
     if (!codec)
     {
       CLog::Log(LOGERROR, "CVideoPlayerVideo::OpenStream - could not open video codec");
       return false;
     }
 
-    OpenStream(hint, std::move(codec));
+    OpenStream(hint, std::move(codec), hwDecoder);
     CLog::Log(LOGINFO, "Creating video thread");
     m_messageQueue.Init();
     m_flushesQueued = 0;
@@ -182,7 +189,9 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
   return true;
 }
 
-void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec)
+void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
+                                   std::unique_ptr<CDVDVideoCodec> codec,
+                                   bool hwDecoder)
 {
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec: {}",
             avcodec_get_name(hint.codec));
@@ -239,6 +248,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   {
     // reuse old decoder
     codec = std::move(m_pVideoCodec);
+    hwDecoder = m_streamHwDecoder;
   }
 
   m_pVideoCodec.reset();
@@ -248,7 +258,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
     CLog::Log(LOGINFO, "Creating video codec: {}", avcodec_get_name(hint.codec));
     hint.pClock = m_pClock;
     hint.codecOptions |= CODEC_ALLOW_FALLBACK;
-    codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo);
+    codec = CDVDFactoryCodec::CreateVideoCodec(hint, m_processInfo, &hwDecoder);
     if (!codec)
     {
       CLog::Log(LOGERROR, "CVideoPlayerVideo::OpenStream - could not open video codec");
@@ -258,6 +268,11 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   }
 
   m_pVideoCodec = std::move(codec);
+  // the progressive retry judges this stream on its own HW reading: nothing of the previous
+  // stream's (a stale "progressive" with a stale interlace flag halved the next file's rate)
+  m_streamHwDecoder = m_pVideoCodec && hwDecoder;
+  m_vfmt.clear();
+  m_retryProgressive = 0;
   // a decoder opened inside a pause or a display hold starts paused (P4-38)
   m_codecSpeedFix = aml_codec_speed_fix();
   if (m_pVideoCodec && m_codecSpeedFix)
@@ -743,7 +758,15 @@ void CVideoPlayerVideo::Process()
         }
       }
 
-      OpenStream(msg->m_hints, std::move(msg->m_codec));
+      // a software stream's tail was armed by the new HW codec's flag: none of that count is the
+      // next stream's
+      if (!m_streamHwDecoder && vfmtCheckCount > 0)
+      {
+        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - stream change: vfmt check count {} of a software "
+                  "stream dropped", vfmtCheckCount);
+        vfmtCheckCount = 0;
+      }
+      OpenStream(msg->m_hints, std::move(msg->m_codec), msg->m_hwDecoder);
       msg->m_codec = NULL;
       if (m_picture.videoBuffer)
       {
@@ -867,7 +890,7 @@ void CVideoPlayerVideo::Process()
           onlyPrioMsgs = true;
         }
 
-        if (vfmtCheckCount > 0 && --vfmtCheckCount % 5 == 0)
+        if (vfmtCheckCount > 0 && --vfmtCheckCount % 5 == 0 && m_streamHwDecoder)
         {
           CSysfsPath frame_format{"/sys/class/deinterlace/di0/frame_format"};
           if (frame_format.Exists())
@@ -1353,6 +1376,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       if (++m_retryProgressive > 3)
       {
         float halvedFps = m_processInfo.GetVideoFps() / 2.0f;
+        CLog::Log(LOGINFO, "CVideoPlayerVideo: progressive retry: fps {:.3f} -> {:.3f}",
+                  m_processInfo.GetVideoFps(), halvedFps);
         m_processInfo.SetVideoFps(halvedFps);
         m_processInfo.SetVideoInterlaced(false);
         m_renderManager.TriggerUpdateResolution(halvedFps, m_hints.width, m_hints.height, m_hints.stereo_mode);

@@ -129,7 +129,7 @@ protected:
   void WorkerCancelStart();
   //! frame (5.V2-7): collect the picture's overlays there instead of adding them
   void ProcessOverlays(const VideoPicture* pSource, double pts, OVERLAY::FrameOverlays* frame);
-  void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
+  void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec, bool hwDecoder);
 
   void ResetFrameRateCalc();
   void CalcFrameRate();
@@ -137,8 +137,11 @@ protected:
 
   double m_iSubtitleDelay;
 
-  int m_retryProgressive;
+  int m_retryProgressive = 0;
   std::string m_vfmt;
+  //! the stream's own decoder is a hardware one (the factory's answer for its codec): the HW
+  //! deinterlacer's frame format is read only for it
+  bool m_streamHwDecoder = false;
   int m_iLateFrames;
   int m_iDroppedFrames;
   int m_iDroppedRequest;

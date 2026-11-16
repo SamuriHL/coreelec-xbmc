@@ -42,9 +42,17 @@ std::map<std::string, CreateHWAccel> CDVDFactoryCodec::m_hwAccels;
 CCriticalSection videoCodecSection, audioCodecSection;
 
 std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInfo& hint,
-                                                                   CProcessInfo& processInfo)
+                                                                   CProcessInfo& processInfo,
+                                                                   bool* hwDecoder)
 {
   std::unique_lock lock(videoCodecSection);
+  if (hwDecoder)
+    *hwDecoder = false;
+  const auto opened = [&processInfo, hwDecoder]
+  {
+    if (hwDecoder)
+      *hwDecoder = processInfo.IsVideoHwDecoder();
+  };
 
   std::unique_ptr<CDVDVideoCodec> pCodec;
   CDVDCodecOptions options;
@@ -62,6 +70,7 @@ std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInf
       pCodec = std::make_unique<CAddonVideoCodec>(processInfo, addonInfo, parentInstance);
       if (pCodec->Open(hint, options))
       {
+        opened();
         return pCodec;
       }
     }
@@ -76,6 +85,7 @@ std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInf
       pCodec = CreateVideoCodecHW(codec.first, processInfo);
       if (pCodec && pCodec->Open(hint, options))
       {
+        opened();
         return pCodec;
       }
     }
@@ -86,6 +96,7 @@ std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInf
   pCodec = std::make_unique<CDVDVideoCodecFFmpeg>(processInfo);
   if (pCodec->Open(hint, options))
   {
+    opened();
     return pCodec;
   }
 

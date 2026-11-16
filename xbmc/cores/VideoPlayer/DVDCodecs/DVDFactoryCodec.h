@@ -40,8 +40,11 @@ using CreateHWAudioCodec =
 class CDVDFactoryCodec
 {
 public:
+  //! hwDecoder (optional): the opened codec's CProcessInfo::IsVideoHwDecoder(), read under the
+  //! factory's lock (false when no codec opened)
   static std::unique_ptr<CDVDVideoCodec> CreateVideoCodec(CDVDStreamInfo& hint,
-                                                          CProcessInfo& processInfo);
+                                                          CProcessInfo& processInfo,
+                                                          bool* hwDecoder = nullptr);
 
   static IHardwareDecoder* CreateVideoCodecHWAccel(const std::string& id,
                                                    CDVDStreamInfo& hint,
