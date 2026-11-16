@@ -3086,6 +3086,7 @@ STransactionHooks ReadTransactionHooks()
   hooks.notCommitted = TransactionHookFlag("transaction_notcommitted");
   hooks.startDelayMs = TransactionHookMs("transaction_startdelay");
   hooks.adoptStallMs = TransactionHookMs("transaction_adoptstall");
+  hooks.commitStallMs = TransactionHookMs("transaction_commitstall");
   hooks.adoptThrow = TransactionHookWord("transaction_adoptthrow");
   return hooks;
 }

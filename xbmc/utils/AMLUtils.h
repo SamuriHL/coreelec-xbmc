@@ -528,6 +528,8 @@ struct STransactionHooks
   bool notCommitted = false;
   int startDelayMs = 0; //!< transaction_startdelay <ms>: the Start job waits before its park
   int adoptStallMs = 0; //!< transaction_adoptstall <ms>: main waits before the Start reply
+  //! transaction_commitstall <ms>: W sleeps inside a Start job's commit, after its lost walk (E2-9a)
+  int commitStallMs = 0;
   //! transaction_adoptthrow before: main's adopt of the Start reply throws before GC's set
   std::string adoptThrow;
 };

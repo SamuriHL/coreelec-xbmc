@@ -1121,7 +1121,12 @@ protected:
   //! D6: the replies, CN's opener and the backstop
   void TxRepliesPass();
   //! D8: the backstop row (a reply missing)
-  void TxBackstopExit();
+  void TxBackstopExit(const char* site);
+  // 5.E2-9a (D7): the OUTPUT bound, the 30 s rule with no answer from W, the error exit
+  void TxOutputBoundExit();
+  void TxNoAnswerExit(const char* site);
+  void TxErrorExit(const char* why);
+  bool m_txBoundInCommitLogged = false;
   //! D9: while lost, a failed Start job's reply or D6's 30 s backstop ends the start
   void TxLostFailedPass();
   //! test (transaction_noticeat): the notice raised once its point is reached

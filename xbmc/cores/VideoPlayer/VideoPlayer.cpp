@@ -3375,6 +3375,7 @@ void CVideoPlayer::TxTryPost()
   }
   m_txStep = TxStep::POSTED;
   m_txPostedAt = std::chrono::steady_clock::now();
+  m_txBoundInCommitLogged = false;
   m_txLostAt = {};
   m_txLostPaused = {};
 }
@@ -3619,21 +3620,93 @@ void CVideoPlayer::TxRepliesPass()
   }
   if (m_txSettle && m_txAdopt)
     return;
-  // the backstop (r2 N-H3, r3 M3, r4 L5): 15 s from the post, paused while lost, 30 s in all
   const auto now = std::chrono::steady_clock::now();
   const auto all = now - m_txPostedAt;
+  // 5.E2-9a (D7, r1 H4, r2 N-M2): the OUTPUT bound, 15 s from the post to W's first answer
+  // (paused while lost), tested before the backstop; W silent at 30 s in all is the no-answer rule
+  if (!m_txOutputDone && !m_txSettle)
+  {
+    if (all > 30s)
+      TxNoAnswerExit("site backstop");
+    else if (all - m_txLostPaused > 15s)
+      TxOutputBoundExit();
+    return;
+  }
+  // the backstop (r2 N-H3, r3 M3, r4 L5): 15 s from the post, paused while lost, 30 s in all
   if (all - m_txLostPaused <= 15s && all <= 30s)
     return;
-  TxBackstopExit();
+  TxBackstopExit("site backstop");
 }
 
-void CVideoPlayer::TxBackstopExit()
+void CVideoPlayer::TxOutputBoundExit()
 {
+  // r2 N-M3: W past its commit CAS but still inside the commit: wait for its answer to 30 s in all
+  if (m_txJob->state.load() == DISPLAYSTATE::StartJobState::COMMITTED)
+  {
+    if (!m_txBoundInCommitLogged)
+    {
+      m_txBoundInCommitLogged = true;
+      CLog::Log(LOGWARNING, "TXSTART T={} output bound met inside the commit: waiting to 30 s",
+                m_txJob->T);
+    }
+    return;
+  }
+  TxErrorExit("output bound");
+}
+
+void CVideoPlayer::TxNoAnswerExit(const char* site)
+{
+  // r3 N3-M1, r4 N4-H1: to legacy only for a job still queued through a real disconnect (a
+  // mode set's own lost walk marks the display lost too); else W hangs: the error exit
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (m_txJob->state.load() == DISPLAYSTATE::StartJobState::QUEUED && winSystem &&
+      winSystem->IsLostSpanOpen())
+  {
+    CLog::Log(LOGWARNING, "TXSTART T={} start reply missing: real loss, to legacy ({})",
+              m_txJob->T, site);
+    TxBackstopExit(site);
+    return;
+  }
+  CLog::Log(LOGERROR, "TXSTART T={} start reply missing: W hung ({})", m_txJob->T, site);
+  TxErrorExit("no answer from W");
+}
+
+void CVideoPlayer::TxErrorExit(const char* why)
+{
+  // ruling (1) 2026-11-15: the error exit is for the output never answering; the exit's drop CAS
+  // keeps the GUI on the incumbent when it wins
+  CLog::Log(LOGERROR, "TXSTART T={} {}: start not committed", m_txJob->T, why);
+  EndTransactionToLegacy(why, CRenderManager::TxHow::NONE, CRenderManager::TxNeed::NONE_NEEDED);
+  m_error = true;
+  m_bAbortRequest = true;
+}
+
+void CVideoPlayer::TxBackstopExit(const char* site)
+{
+  // E28B-10: main's answer may be queued behind the backstop: take it before answering `failed`
+  if (!m_txAdopt)
+  {
+    const uint64_t T = m_txJob->T;
+    const auto ours = [T](CDVDMsg& m)
+    {
+      return m.IsType(CDVDMsg::PLAYER_TX_REPLY) &&
+             static_cast<CDVDMsgType<STxReply>&>(m).m_value.T == T;
+    };
+    std::shared_ptr<CDVDMsg> msg;
+    while (!m_txAdopt && m_messenger.GetFirstOf(msg, ours, 0ms) == MSGQ_OK)
+      TxOnReply(*msg);
+    if (m_txAdopt)
+    {
+      CLog::Log(LOGINFO, "TXSTART T={} backstop ({}): main's answer was queued, taken", T, site);
+      return;
+    }
+  }
   const bool answer = !m_txAdopt;
-  CLog::Log(LOGERROR, "TXSTART T={} start reply missing ({})", m_txJob->T,
+  CLog::Log(LOGERROR, "TXSTART T={} start reply missing ({}) ({})", m_txJob->T,
             !m_txSettle && !m_txAdopt ? "settle, adopt"
             : !m_txSettle            ? "settle"
-                                     : "adopt");
+                                     : "adopt",
+            site);
   const unsigned int gen = m_txEngagedGen;
   EndTransactionToLegacy("backstop", CRenderManager::TxHow::RERAISE,
                          CRenderManager::TxNeed::JOB_OK);
@@ -3683,8 +3756,13 @@ void CVideoPlayer::TxLostFailedPass()
   };
   while (!(m_txSettle && m_txAdopt) && m_messenger.GetFirstOf(msg, ours, 0ms) == MSGQ_OK)
     TxOnReply(*msg);
-  if (!(m_txSettle && m_txAdopt))
-    TxBackstopExit();
+  if (m_txSettle && m_txAdopt)
+    return;
+  // 5.E2-9a (D7): no first answer from W at 30 s: the no-answer rule
+  if (!m_txOutputDone && !m_txSettle)
+    TxNoAnswerExit("site lost");
+  else
+    TxBackstopExit("site lost");
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.

@@ -1459,6 +1459,13 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // WSA CreateNewWindow: the lost walk (B2-5b's order), then the commit
   if (!lostFirst)
     lostWalk();
+  // 5.E2-9a (transaction_commitstall, D7): W hangs inside the Start job's commit, after its walk
+  if (job.start)
+    if (const int ms = aml_transaction_hooks().commitStallMs; ms > 0)
+    {
+      CLog::Log(LOGWARNING, "TXTEST commitstall {} ms T={} request {}", ms, job.start->T, job.id);
+      KODI::TIME::Sleep(std::chrono::milliseconds(ms));
+    }
 
   // 5.E2-7 (D2a): on a real loss path session the commit's e+1 comes before the first link
   // write (draft42:104), a failed commit bumped too
