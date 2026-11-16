@@ -3542,13 +3542,13 @@ bool CVideoPlayer::TxBoundEnds(const char* site)
 {
   if (!TxOpen())
     return true;
-  using State = DISPLAYSTATE::StartJobState;
-  if (m_txJob && m_txStep == TxStep::POSTED &&
-      !DISPLAYSTATE::StartJobDropForExit(*m_txJob, site) &&
-      m_txJob->state.load() == State::COMMITTED)
+  // 5.E2-9a (D7, C2 review B1): a posted job belongs to the OUTPUT bound (15 s from the post) and
+  // the backstop: CN's cap, armed before the post, must not end it to legacy behind a hung W
+  if (m_txJob && m_txStep == TxStep::POSTED)
   {
     if (!std::exchange(m_txBoundMetCommit, true))
-      CLog::Log(LOGINFO, "TXSTART T={} {}: the job is committed, not ended", m_txJob->T, site);
+      CLog::Log(LOGINFO, "TXSTART T={} {}: the job is posted ({}), not ended", m_txJob->T, site,
+                DISPLAYSTATE::StartJobStateName(m_txJob->state.load()));
     return false;
   }
   EndTransactionToLegacy(site, CRenderManager::TxHow::RERAISE, CRenderManager::TxNeed::JOB_OK);
@@ -3960,7 +3960,8 @@ void CVideoPlayer::CheckStartGate()
       m_txLostAt = {};
     }
     TxStartGatePass(state);
-    if (!m_startGateShut)
+    // C2 review B2: the error exit stops the player; nothing of legacy's gate runs after it
+    if (!m_startGateShut || m_bAbortRequest)
       return;
     // ended to legacy in this pass: RM's state from here, as legacy reads it
     if (!TxOpen())
@@ -4018,13 +4019,13 @@ bool CVideoPlayer::TxKeepsFlush(const char* caller) const
   }
   // keepalive (a segment with no video), set program, a failed seek, the DVD hop and the next file
   // keep E2-8b's exit (r1 M6, L2)
-  static constexpr std::string_view kept[] = {"user seek",        "chapter seek",
+  static constexpr std::string_view reprimeCallers[] = {"user seek",        "chapter seek",
                                               "sync video no start", "sync stuck",
                                               "audio stall resync", "realtime stall",
                                               "GENERAL_FLUSH",    "exc1 (test)"};
   if (!caller)
     return false;
-  for (const auto& k : kept)
+  for (const auto& k : reprimeCallers)
     if (k == caller)
       return true;
   return false;
@@ -4042,8 +4043,10 @@ void CVideoPlayer::TxReprime(const char* caller)
     m_clock.SetStartHeld(false);
     m_VideoPlayerVideo->SetStartHeld(false);
     m_renderManager.SetStartHeld(false);
-    // the graphics bound counts from this re-PRIME, as from E1's hold
+    // the graphics and disc-time bounds count from this re-PRIME, as from E1's hold
     m_renderManager.ArmTxStartHeldBound();
+    if (m_txDiscHeld)
+      m_discTime.SetTxHeld(true);
   }
   m_txReprimed = true;
   // D4 (r2 N-M1): re-armed only while no job is posted, so no second decision
