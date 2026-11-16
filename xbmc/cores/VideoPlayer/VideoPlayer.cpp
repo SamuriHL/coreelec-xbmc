@@ -3847,7 +3847,32 @@ void CVideoPlayer::CheckStartGate()
               m_startGateGen);
   }
   if (m_displayLost)
+  {
+    // 5.E2-9a (D4, E28A-8): an engaged open's bounds do not count the lost time
+    if (TxOpen())
+      m_txGateLostSeen = true;
     return;
+  }
+  if (m_txGateLostSeen)
+  {
+    m_txGateLostSeen = false;
+    if (TxOpen())
+    {
+      m_startGateSince = std::chrono::steady_clock::now();
+      m_startGateStarveSince = {};
+      CLog::Log(LOGINFO, "TXSTART set={} CN's bounds re-armed after the display span",
+                m_txEngagedGen);
+    }
+  }
+  // transaction_exc1 (D2): sync exception 1's flush injected in PRIME, once per open
+  if (txP && m_txStep == TxStep::NONE && !m_txExc1Done && aml_transaction_hooks().exc1)
+  {
+    m_txExc1Done = true;
+    CLog::Log(LOGWARNING, "TXTEST exc1 set={} T={}", m_txEngagedGen, m_txWordT.load());
+    m_txFlushCaller = "exc1 (test)";
+    FlushBuffers(DVD_NOPTS_VALUE, true, true);
+    return;
+  }
   if (txP)
   {
     // D6's backstop does not count a loss (the main loop stamps its start)
@@ -3901,6 +3926,61 @@ void CVideoPlayer::CheckStartGate()
       return;
     OpenStartGate("no mode decision in 12s", true);
   }
+}
+
+bool CVideoPlayer::TxKeepsFlush(const char* caller) const
+{
+  // main decides this open (skip decide, another start job): E2-8b's exit (r1 M3)
+  if (!m_txJob)
+    return false;
+  if (aml_transaction_skip("reprime"))
+  {
+    CLog::Log(LOGINFO, "TXSKIP reprime set={}: the flush ends the start", m_txEngagedGen);
+    return false;
+  }
+  // keepalive (a segment with no video), set program, a failed seek, the DVD hop and the next file
+  // keep E2-8b's exit (r1 M6, L2)
+  static constexpr std::string_view kept[] = {"user seek",        "chapter seek",
+                                              "sync video no start", "sync stuck",
+                                              "audio stall resync", "realtime stall",
+                                              "GENERAL_FLUSH",    "exc1 (test)"};
+  if (!caller)
+    return false;
+  for (const auto& k : kept)
+    if (k == caller)
+      return true;
+  return false;
+}
+
+void CVideoPlayer::TxReprime(const char* caller)
+{
+  CLog::Log(LOGINFO, "TXSTART set={} T={} re-PRIME ({}) at step {}{}", m_txEngagedGen,
+            m_txWordT.load(), caller, static_cast<int>(m_txStep),
+            m_startHeld ? ", E1 hold dropped without START" : "");
+  // r1 H1: CheckHeldStart would release START from the pre-flush clock before the re-sync
+  if (m_startHeld)
+  {
+    m_startHeld = false;
+    m_clock.SetStartHeld(false);
+    m_VideoPlayerVideo->SetStartHeld(false);
+    m_renderManager.SetStartHeld(false);
+    // the graphics bound counts from this re-PRIME, as from E1's hold
+    m_renderManager.ArmTxStartHeldBound();
+  }
+  m_txReprimed = true;
+  // D4 (r2 N-M1): re-armed only while no job is posted, so no second decision
+  if (m_txStep == TxStep::NONE)
+  {
+    m_startGateSince = std::chrono::steady_clock::now();
+    m_startGateStarveSince = {};
+  }
+  // transaction_seekdelay (D3, r2 N-L1): after the re-arm, so CN's cap does not expire inside it
+  if (std::string_view(caller) == "user seek")
+    if (const int ms = aml_transaction_hooks().seekDelayMs; ms > 0)
+    {
+      CLog::Log(LOGWARNING, "TXTEST seekdelay {} ms set={}", ms, m_txEngagedGen);
+      CThread::Sleep(std::chrono::milliseconds(ms));
+    }
 }
 
 void CVideoPlayer::OpenStartGate(const char* why, bool bound)
@@ -4239,6 +4319,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txStarted = m_txExited = m_txSyncPassed = false;
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
+  m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
@@ -5869,7 +5950,10 @@ void CVideoPlayer::HandlePlaySpeed()
       const bool videoPictured = m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
                                  (m_CurrentVideo.packets > 0 || m_scheduledStart);
       std::optional<unsigned int> heldDecisions;
+      // 5.E2-9a (D2, r2 N-L2): a re-PRIMEd P-decided open schedules: main is shut out until START,
+      // so a hold could only end at the 12 s fallback
       const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 && videoPictured &&
+                             !(m_txReprimed && TxOpen() && m_txJob) &&
                              m_renderManager.IsResolutionUpdatePending(heldDecisions);
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
@@ -9688,9 +9772,19 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
-  // 5.E2-8a (D5): a flush before START ends the engaged start (re-PRIME is E2-9's)
+  // 5.E2-9a (D2): a flush inside a P-decided open re-PRIMEs it (same T); the others end it
+  // (E2-8a D5)
   if (TxOpen())
-    EndTransactionToLegacy("flush", CRenderManager::TxHow::RERAISE, CRenderManager::TxNeed::JOB_OK);
+  {
+    if (TxKeepsFlush(m_txFlushCaller))
+      TxReprime(m_txFlushCaller);
+    else
+      EndTransactionToLegacy("flush", CRenderManager::TxHow::RERAISE,
+                             CRenderManager::TxNeed::JOB_OK);
+  }
+  else if (m_txEngaged && m_txStarted && !m_txExited && m_clock.IsScheduledStartOpen())
+    CLog::Log(LOGINFO, "TXSTART set={} row 7 (lead seek: {}): the re-sync's scheduled start",
+              m_txEngagedGen, m_txFlushCaller ? m_txFlushCaller : "flush");
   m_txFlushCaller = nullptr;
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);

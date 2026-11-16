@@ -1091,6 +1091,14 @@ protected:
   bool m_txGuiWaitLogged = false;
   bool m_txWindowWaitLogged = false;
   bool m_txBoundMetCommit = false; //!< D8: CN's cap or audio-full bound met a committed job
+  // 5.E2-9a (docs/phase5_e2_9a_impl.md D2-D4)
+  bool m_txReprimed = false; //!< D2: a flush kept this open: its re-sync schedules, never holds
+  bool m_txExc1Done = false; //!< transaction_exc1: the injected flush ran for this open
+  bool m_txGateLostSeen = false; //!< D4 (E28A-8): CN's bounds re-armed when the display is back
+  //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
+  bool TxKeepsFlush(const char* caller) const;
+  //! D2: the flush's re-PRIME: an E1 hold dropped without START, CN's bounds re-armed
+  void TxReprime(const char* caller);
   //! D6: the job's replies, taken from P's messenger
   bool m_txOutputDone = false;
   std::optional<DISPLAYSTATE::StartSettleKind> m_txSettle;
