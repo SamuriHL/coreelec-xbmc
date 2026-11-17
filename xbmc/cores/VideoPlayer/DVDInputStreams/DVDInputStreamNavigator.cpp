@@ -1367,8 +1367,16 @@ bool CDVDInputStreamNavigator::FillDVDState(DVDState& dvdState)
     return false;
   }
 
-  if (m_dll.dvdnav_current_title_program(m_dvdnav, &dvdState.title, &dvdState.pgcn,
-                                         &dvdState.pgn) == DVDNAV_STATUS_ERR)
+  // the read runs ahead of the picture, a resume returns to the VOBU on screen
+  if (!m_navPackets.empty())
+  {
+    const dvdnav_nav_position_t& position = m_navPackets.front().position;
+    dvdState.title = position.title;
+    dvdState.pgcn = position.pgcn;
+    dvdState.pgn = position.pgn;
+  }
+  else if (m_dll.dvdnav_current_title_program(m_dvdnav, &dvdState.title, &dvdState.pgcn,
+                                              &dvdState.pgn) == DVDNAV_STATUS_ERR)
   {
     CLog::LogF(LOGERROR, "Failed to get current title info ({})",
                m_dll.dvdnav_err_to_string(m_dvdnav));
@@ -1397,7 +1405,8 @@ bool CDVDInputStreamNavigator::GetState(std::string& xmlstate)
   }
 
   // do not save state if we are not playing a title stream (e.g. if we are in menus)
-  if (!m_dll.dvdnav_is_domain_vts(m_dvdnav))
+  if (m_navPackets.empty() ? !m_dll.dvdnav_is_domain_vts(m_dvdnav)
+                           : m_navPackets.front().position.domain != DVD_DOMAIN_VTSTitle)
   {
     return false;
   }
@@ -1631,10 +1640,12 @@ void CDVDInputStreamNavigator::SaveCurrentState(const CStreamDetails& details)
   std::unique_lock lock(m_statesLock);
 
   // Details for this playlist
+  const NavPacket* nav = m_navPackets.empty() ? nullptr : &m_navPackets.front();
   SavePlaylistDetails(m_playedPlaylists, m_startWatchTime,
-                      {.playlist = m_iTitle,
-                       .inMenu = m_bInMenu,
-                       .duration = std::chrono::milliseconds(GetTotalTime()),
+                      {.playlist = nav ? nav->position.title : m_iTitle,
+                       .inMenu = nav ? nav->position.domain != DVD_DOMAIN_VTSTitle
+                                     : !m_dll.dvdnav_is_domain_vts(m_dvdnav),
+                       .duration = std::chrono::milliseconds(nav ? nav->totalTime : GetTotalTime()),
                        .details = details});
 
   // Reset watch timer for next playlist
