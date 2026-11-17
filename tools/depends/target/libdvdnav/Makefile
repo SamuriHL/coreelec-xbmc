@@ -4,7 +4,8 @@ DEPS = ../../Makefile.include LIBDVDNAV-VERSION Makefile ../../download-files.in
                                   02-win-remove-lib-version.patch \
                                   03-all-vm-free-only-what-a-failed-copy-owns.patch \
                                   04-all-vm-keep-the-random-state-in-the-vm.patch \
-                                  05-all-forget-a-skipped-wait-when-the-vm-hops.patch
+                                  05-all-forget-a-skipped-wait-when-the-vm-hops.patch \
+                                  06-all-run-the-cell-step-after-a-sync-wait.patch
 
 MESON_BUILD_TYPE=release
 
@@ -42,6 +43,7 @@ all: .installed-$(PLATFORM)
 	cd $(PLATFORM); patch -p1 -i ../03-all-vm-free-only-what-a-failed-copy-owns.patch
 	cd $(PLATFORM); patch -p1 -i ../04-all-vm-keep-the-random-state-in-the-vm.patch
 	cd $(PLATFORM); patch -p1 -i ../05-all-forget-a-skipped-wait-when-the-vm-hops.patch
+	cd $(PLATFORM); patch -p1 -i ../06-all-run-the-cell-step-after-a-sync-wait.patch
 ifeq ($(TARGET_PLATFORM),windows)
 	cd $(PLATFORM); patch -p1 -i ../01-win-uwpcompat.patch
 	cd $(PLATFORM); patch -p1 -i ../02-win-remove-lib-version.patch

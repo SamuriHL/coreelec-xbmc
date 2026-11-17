@@ -1,0 +1,27 @@
+Subject: [PATCH] dvdnav: run the cell step after a sync wait ends
+
+At the end of a cell with highlights, the next cell was taken in the
+same pass that raised the wait. The player then synced to a VM that had
+already run the cell and PGC commands, which the wait is there to hold
+back. A still cell already takes the step only after its wait.
+
+The wait skip was then cleared by that same step, so a cell with
+highlights that loops waited at every other pass only. It now waits at
+every pass.
+---
+ src/dvdnav.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index 58bfa5c70c..92857bb988 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -871,7 +871,7 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
+       if ((this->position_current.still || this->pci.hli.hl_gi.hli_ss) && !this->sync_wait_skip)
+         this->sync_wait = 1;
+ 
+-      if(!this->position_current.still || this->skip_still ) {
++      if (!this->sync_wait && (!this->position_current.still || this->skip_still)) {
+         /* no active cell still -> get us to the next cell */
+         vm_get_next_cell(this->vm);
+         this->position_current.still = 0; /* still gets activated at end of cell */
