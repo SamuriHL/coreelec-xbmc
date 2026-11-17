@@ -232,6 +232,15 @@ public:
   //! the display is lost) is armed at CN's opening and re-armed at E1's hold
   void SetTxStartHeld(bool held);
   void ArmTxStartHeldBound();
+  //! 5.E2-9b D3 (E28B-1, docs/phase5_e2_9b_impl.md): G-X1, how long before T0 the overlays may
+  //! show; 0 in 9b (overlays at T0)
+  static constexpr int64_t TX_GRAPHICS_GX1_NS = 0;
+  //! P: an engaged start's RM overlays withheld up to t0Ns (CLOCK_MONOTONIC ns, the scheduled
+  //! start's T0) less G-X1; 0 clears. Stored before the holds clear (release order)
+  void SetTxGraphicsFrom(int64_t t0Ns)
+  {
+    m_txGraphicsFromNs.store(t0Ns != 0 ? t0Ns - TX_GRAPHICS_GX1_NS : 0, std::memory_order_release);
+  }
   //! P: the set it engaged; RM's first-picture legacy verdict for that set is published for P
   void SetTxEngagedGen(unsigned int gen) { m_txEngagedGen = gen; }
   //! P: the engaged set RM gave a legacy verdict for (0 = none)
@@ -892,6 +901,7 @@ protected:
   std::atomic_bool m_txStartHeld{false};
   std::atomic<int64_t> m_txStartHeldSince{0}; //!< steady_clock rep; 0 = bound not armed
   std::atomic_bool m_txStartHeldBoundLogged{false};
+  std::atomic<int64_t> m_txGraphicsFromNs{0}; //!< 5.E2-9b D3: steady_clock ns; 0 = none
   std::atomic<unsigned int> m_txEngagedGen{0};
   std::atomic<unsigned int> m_txLegacyVerdict{0};
   bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section

@@ -3206,6 +3206,7 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
   if (m_txWordStarting)
     OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), "ended to legacy");
   m_renderManager.SetTxStartHeld(false);
+  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3
   if (m_txDiscHeld)
     m_discTime.SetTxHeld(false);
   m_txDiscHeld = false;
@@ -4163,6 +4164,8 @@ void CVideoPlayer::TxRestoreDecoderSpeed(const char* why)
 
 void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
+  // 5.E2-9b D3 (r3 M3): this release is the open start's (not a legacy one)
+  const bool isStart = TxOpen();
   // 5.E2-8a (D4): START on the word (a flush release is an exit, taken at FlushBuffers' entry)
   if (TxOpen())
   {
@@ -4200,6 +4203,10 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
       discRunNs = startNs;
       CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
                 startClock / DVD_TIME_BASE, startNs, lead * 1000.0);
+      // 5.E2-9b D3 (E28B-1): the start's overlays withheld to T0, stored before the holds
+      // clear below (a verdict exit at the release leaves it 0)
+      if (isStart && m_txStarted && !m_txExited && lead > 0.0)
+        m_renderManager.SetTxGraphicsFrom(startNs);
     }
   }
   else
@@ -4446,6 +4453,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
   m_txPendingSpeed = INT_MIN;
   m_txPendingTempo = m_txSkipPausestart = false;
+  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
@@ -7368,6 +7376,7 @@ void CVideoPlayer::OnExit()
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;
+  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: stop
   // 5.E2-8b D5 (lifetime): the job's sink cleared at the player's exit
   TxReleaseJob("stop");
   // 5.E2-3: the shadow word's stop. 5.E2-7 (code review M1): on a real loss path session at a
@@ -8212,6 +8221,7 @@ void CVideoPlayer::SetCaching(ECacheState state)
   if (state == CACHESTATE_FULL ||
       state == CACHESTATE_INIT)
   {
+    m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3
     m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
 
     m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
@@ -8259,6 +8269,9 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
 {
   const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
   const int speed = msg->GetSpeed();
+  // 5.E2-9b D3: a speed change ends the overlays' wait for T0 (a play in the lead does not)
+  if (speed != m_playSpeed)
+    m_renderManager.SetTxGraphicsFrom(0);
 
   // correct our current clock, as it would start going wrong otherwise; 5.E2-7b (D3 (b)): no
   // time passes on a held picture
@@ -10000,6 +10013,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     CLog::Log(LOGINFO, "TXSTART set={} row 7 (lead seek: {}): the re-sync's scheduled start",
               m_txEngagedGen, m_txFlushCaller ? m_txFlushCaller : "flush");
   m_txFlushCaller = nullptr;
+  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
   ClearPendingElPackets();

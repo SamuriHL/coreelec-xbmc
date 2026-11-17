@@ -2320,6 +2320,18 @@ bool CRenderManager::GraphicsWithheld()
   // moving picture, as the sound does (design 13.ab)
   if (m_startHeld)
     return true;
+#if defined(HAS_LIBAMCODEC)
+  // 5.E2-9b D3 (E28B-1): an engaged start's overlays from START to T0 - G-X1; stored before the
+  // holds above clear, so a pass that sees them clear sees T0
+  if (aml_transaction_on())
+  {
+    const int64_t fromNs = m_txGraphicsFromNs.load(std::memory_order_acquire);
+    if (fromNs != 0 && std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                               .count() < fromNs)
+      return true;
+  }
+#endif
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
