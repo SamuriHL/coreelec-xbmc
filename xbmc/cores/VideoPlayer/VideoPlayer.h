@@ -1137,21 +1137,23 @@ protected:
   int m_txReadOnPeakData = 0;
   double m_txReadOnPeakTime = 0.0;
   bool m_txReadOnBypassed = false; //!< this pass's read gate was passed by D1
-  //! D1: an engaged open P decides, outside menu domains and transaction_skip readon
+  //! D1: an engaged open P decides with a video stream, outside menu domains and
+  //! transaction_skip readon
   bool TxReadOnOpen() const
   {
-    return TxOpen() && m_txJob && !m_txMenuDomain && !m_txSkipReadon;
+    return TxOpen() && m_txJob && m_CurrentVideo.id >= 0 && !m_txMenuDomain && !m_txSkipReadon;
   }
   //! D1: the read gate stops only for the audio queue: true when the read goes on
   bool TxReadOnBypass();
   //! D1: an active read-on ends at START, an exit, a menu page or the first picture
   void TxReadOnPass();
   void TxReadOnEnd(const char* why);
-  //! D2: the 5 s PRIME bound's open: P decides, outside menu domains and transaction_skip
-  //! primebound
+  //! D2: the 5 s PRIME bound's open: P decides with a video stream, outside menu domains and
+  //! transaction_skip primebound
   bool TxPrimeBoundOpen() const
   {
-    return TxOpen() && m_txJob && !m_txMenuDomain && !m_txSkipPrimebound;
+    return TxOpen() && m_txJob && m_CurrentVideo.id >= 0 && !m_txMenuDomain &&
+           !m_txSkipPrimebound;
   }
   //! D2/D3: latched at the bound until the hint job is posted
   bool m_txHintDecide = false;
