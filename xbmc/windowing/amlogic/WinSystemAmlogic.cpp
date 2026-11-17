@@ -1260,6 +1260,19 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
           reply.liveIndex = static_cast<int>(i);
       }
     reply.hasTable = true;
+    // E29A-10: a connected probe while video plays reads the player's mode live; RES_DESKTOP keeps
+    // its real mode's row (the row of this table: its sizes follow DISABLEGUISCALING), so the
+    // stop's desktop set goes back to the GUI's mode. The Restore still reads liveIndex
+    if (connected && gui.videoPlaying)
+    {
+      reply.desktopOverride = true;
+      if (RealSlot(mainSlot))
+        for (size_t i = 0; i < reply.table.size(); ++i)
+          if (SameMode(reply.table[i], mainSlot.strId, mainSlot.fRefreshRate, mainSlot.dwFlags) &&
+              reply.table[i].iScreenWidth == mainSlot.iScreenWidth &&
+              reply.table[i].iScreenHeight == mainSlot.iScreenHeight)
+            reply.desktopIndex = static_cast<int>(i);
+    }
     slot = reply.liveIndex >= 0 ? reply.table[reply.liveIndex] : mainSlot;
     m_wHas2160 = Has2160(reply.table) || slot.iScreenHeight >= 2160;
   }
@@ -1271,6 +1284,16 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     for (const RESOLUTION_INFO& res : reply.table)
       rows.push_back(CDisplaySettings::AddedResolutionInfo(res));
     UpdateDesktopMode(rows);
+    // E29A-10: a slot the new table lacks (another display, a dark start's placeholder): the
+    // reconnect's desktopMode, never the player's live mode
+    if (reply.desktopOverride && reply.desktopIndex < 0)
+      if (const auto row = FactsRow(rows, m_wDesktopMode); row && *row > 0 && RealSlot(rows[*row]))
+        reply.desktopIndex = static_cast<int>(*row - 1);
+    if (reply.desktopOverride)
+      CLog::Log(LOGINFO, "HOTPLUG RES_DESKTOP during playback: {} (live {}, restore slot {})",
+                reply.desktopIndex >= 0 ? reply.table[reply.desktopIndex].strId : std::string("kept"),
+                reply.liveIndex >= 0 ? reply.table[reply.liveIndex].strId : std::string("-"),
+                slot.strId);
     // a session that started disconnected keeps the placeholder in RES_DESKTOP when the
     // reconnect's link is unrouted (no live mode), and a later desktop set would commit it
     if (reply.liveIndex < 0 && !RealSlot(slot) && OUTPUT::DesktopSlotOn())
@@ -1591,7 +1614,7 @@ void CWinSystemAmlogic::ApplyHotplugTable(const SHotplugReply& reply, bool throw
               res.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", res.fRefreshRate);
     CServiceBroker::GetWinSystem()->GetGfxContext().ResetOverscan(res);
     displaySettings.AddResolutionInfo(res);
-    if (static_cast<int>(i) == reply.liveIndex)
+    if (static_cast<int>(i) == (reply.desktopOverride ? reply.desktopIndex : reply.liveIndex))
       displaySettings.GetResolutionInfo(RES_DESKTOP) = res;
   }
   displaySettings.ApplyCalibrations();

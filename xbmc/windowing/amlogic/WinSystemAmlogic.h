@@ -68,6 +68,10 @@ struct SHotplugReply
   bool hasTable{false};
   std::vector<RESOLUTION_INFO> table;
   int liveIndex{-1};
+  //! E29A-10: while video plays RES_DESKTOP takes this row instead of liveIndex's (the live mode
+  //! is the player's); -1 keeps RES_DESKTOP. liveIndex keeps its meaning for the Restore
+  bool desktopOverride{false};
+  int desktopIndex{-1};
   //! the Restore's mode set, run on W; main adopts it or maps by value (O2)
   std::shared_ptr<KODI::WINDOWING::AML::SDriveJob> restoreJob;
   //! the Restore consumes W's recorded video mode (its row, or the retry's committed row), run
