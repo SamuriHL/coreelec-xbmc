@@ -18,7 +18,8 @@ if(NOT TARGET LIBRARY::${CMAKE_FIND_PACKAGE_NAME})
 
     find_package(LibDvdRead 7.0.0 REQUIRED ${SEARCH_QUIET})
 
-    set(patches "${CORE_SOURCE_DIR}/tools/depends/target/${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}/03-all-vm-free-only-what-a-failed-copy-owns.patch")
+    set(patches "${CORE_SOURCE_DIR}/tools/depends/target/${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}/03-all-vm-free-only-what-a-failed-copy-owns.patch"
+                "${CORE_SOURCE_DIR}/tools/depends/target/${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}/04-all-vm-keep-the-random-state-in-the-vm.patch")
 
     if(WIN32 OR WINDOWS_STORE)
       set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_libType shared)

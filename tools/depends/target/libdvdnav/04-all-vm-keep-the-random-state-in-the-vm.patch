@@ -1,0 +1,88 @@
+Subject: [PATCH] vm: keep the random number state in the VM
+
+The random program mode and the random set command drew from libc
+rand(), whose state lives outside the VM. A copy of the VM that tries a
+step then draws other numbers than the VM draws when it takes the step.
+libc rand() also shares its state with the rest of the process.
+---
+ src/dvdnav.c     | 2 +-
+ src/vm/decoder.c | 9 ++++++++-
+ src/vm/decoder.h | 4 ++++
+ src/vm/play.c    | 2 +-
+ 4 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index f24c5d31fd..b63174204d 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -197,7 +197,7 @@ static dvdnav_status_t dvdnav_open_common(dvdnav_t** dest,
+   /* Seed the random numbers. So that the DVD VM Command rand()
+    * gives a different start value each time a DVD is played. */
+   gettimeofday(&time, NULL);
+-  srand(time.tv_usec);
++  this->vm->state.registers.rand_state = time.tv_usec;
+ 
+   dvdnav_clear(this);
+ 
+diff --git a/src/vm/decoder.c b/src/vm/decoder.c
+index 7dd8da2c03..a49afc4af4 100644
+--- a/src/vm/decoder.c
++++ b/src/vm/decoder.c
+@@ -90,6 +90,13 @@ static uint16_t get_GPRM(registers_t* registers, uint8_t reg) {
+ 
+ }
+ 
++/* a copy of the VM draws the numbers the VM will draw, which libc rand() cannot give;
++ * the generator is the C standard's example rand() */
++uint16_t vm_rand(registers_t *registers, uint16_t range) {
++  registers->rand_state = registers->rand_state * 1103515245 + 12345;
++  return 1 + (uint16_t) (((registers->rand_state >> 16) & 0x7fff) * range / 0x8000);
++}
++
+ static void set_GPRM(registers_t* registers, uint8_t reg, uint16_t value) {
+   if (registers->GPRM_mode[reg] & 0x01) {
+     struct timeval current_time;
+@@ -599,7 +606,7 @@ static void eval_set_op(command_t* command, int32_t op, int32_t reg, int32_t reg
+       }
+       break;
+     case 8: /* SPECIAL CASE - RND! Return numbers between 1 and data. */
+-      set_GPRM(command->registers, reg, 1 + ((uint16_t) ((float) data * rand()/(RAND_MAX+1.0))) );
++      set_GPRM(command->registers, reg, vm_rand(command->registers, data));
+       break;
+     case 9:
+       set_GPRM(command->registers, reg, (get_GPRM(command->registers, reg) & data) );
+diff --git a/src/vm/decoder.h b/src/vm/decoder.h
+index 82cd6ed678..2117dfb759 100644
+--- a/src/vm/decoder.h
++++ b/src/vm/decoder.h
+@@ -82,6 +82,7 @@ typedef struct {
+   uint16_t GPRM[16];
+   uint8_t  GPRM_mode[16];  /* Need to have some thing to indicate normal/counter mode for every GPRM */
+   struct timeval GPRM_time[16]; /* For counter mode */
++  uint32_t rand_state;          /* For the random commands and random play */
+ } registers_t;
+ 
+ /* a VM command data set */
+@@ -100,6 +101,9 @@ int32_t vmEval_CMD(const vm_cmd_t commands[], int32_t num_commands,
+ /* extracts some bits from the command */
+ uint32_t vm_getbits(command_t* command, int32_t start, int32_t count);
+ 
++/* returns a random number between 1 and range, drawn from the VM's own state */
++uint16_t vm_rand(registers_t *registers, uint16_t range);
++
+ #ifdef TRACE
+ /* for debugging: prints a link in readable form */
+ void vm_print_link(link_t value);
+diff --git a/src/vm/play.c b/src/vm/play.c
+index 61dd1bc36e..a2edddede7 100644
+--- a/src/vm/play.c
++++ b/src/vm/play.c
+@@ -73,7 +73,7 @@ link_t play_PGC(vm_t *vm) {
+       pgCnt = (vm->state).pgc->nr_of_programs;
+     }
+     if (pgCnt>1) {
+-      (vm->state).pgN = 1 + ((int) ((float) pgCnt * rand()/(RAND_MAX+1.0)));
++      (vm->state).pgN = vm_rand(&(vm->state).registers, pgCnt);
+     }
+   }
+ 
