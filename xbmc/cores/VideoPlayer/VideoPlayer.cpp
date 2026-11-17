@@ -3630,10 +3630,22 @@ void CVideoPlayer::TxRestoreAudioTimeCap(const char* why)
 {
   if (m_txAudioTimeCapSaved == 0.0)
     return;
-  m_VideoPlayerAudio->SetMaxTimeSize(m_txAudioTimeCapSaved);
-  CLog::Log(LOGWARNING, "TXTEST audiotimecap restored to {:.1f} s ({})", m_txAudioTimeCapSaved,
-            why);
-  m_txAudioTimeCapSaved = 0.0;
+  const double saved = std::exchange(m_txAudioTimeCapSaved, 0.0);
+  // a cap set since (the menu-domain depth) is not overridden (code review L7)
+  int data = 0;
+  int maxData = 0;
+  double time = 0.0;
+  double cap = 0.0;
+  bool timeFull = false;
+  m_VideoPlayerAudio->GetQueueFill(data, maxData, time, cap, timeFull);
+  if (std::abs(cap - aml_transaction_hooks().audioTimeCapS) > 0.001)
+  {
+    CLog::Log(LOGWARNING, "TXTEST audiotimecap not restored ({}): the cap is {:.1f} s now", why,
+              cap);
+    return;
+  }
+  m_VideoPlayerAudio->SetMaxTimeSize(saved);
+  CLog::Log(LOGWARNING, "TXTEST audiotimecap restored to {:.1f} s ({})", saved, why);
 }
 
 void CVideoPlayer::TxHintClear()
