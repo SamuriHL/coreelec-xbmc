@@ -289,6 +289,37 @@ public:
     std::string stereoMode;
     StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
   };
+  //! 5.E2-9c D3: a no-picture DECIDE's facts, taken from the stream's hints on P
+  struct SStartFacts
+  {
+    float fps = 0.0f; //!< what V's first Configure reports (not doubled); fpsInvalid: the mode's
+    int width = 0;
+    int height = 0;
+    std::string stereoMode;
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    bool frac = false; //!< reclockEligible && !fpsInvalid (ResolveStart adds its own terms)
+    bool fpsInvalid = false;
+    bool interlaceHint = false; //!< hint.interlaced, logged only
+  };
+  //! 5.E2-9c D3/D4: a picture against a hint decision. On the gen's first configure 2f is f for
+  //! a 25 / 29.97 fact (E29A-6: fps2x set), and fps is left out with fpsInvalid
+  static bool TxHintFactsSame(const SStartFacts& hint,
+                              float fps,
+                              int width,
+                              int height,
+                              const std::string& stereoMode,
+                              StreamHdrType hdrType,
+                              bool firstConfigure,
+                              bool* fps2x = nullptr);
+  enum class TxHintResult
+  {
+    NONE, //!< no picture compared
+    SAME,
+    DIFFERENT,
+  };
+  //! 5.E2-9c D3: P at a hint job's post: RM's hint flag set for gen, unless a configuring
+  //! Configure of gen came first (then SAME/DIFFERENT, the picture's facts in picture)
+  TxHintResult TxHintPosted(unsigned int gen, const SStartFacts& facts, STxNotice& picture);
   //! E2-8b D2: P at the engage: main's UpdateResolution shut out for gen, the trigger folded,
   //! the start's outcome record opened (T: the word's, for the TXSTART lines)
   void TxShutMain(unsigned int gen, uint64_t T);
@@ -395,16 +426,19 @@ public:
   };
   //! E2-8b D4 step 2 (Plan vs code 2): DecideShadowPlayer's pure body on RM's current facts,
   //! the published inputs and the settings mirror; consumes nothing
+  //! 5.E2-9c D3: facts (a no-picture DECIDE) replace RM's configured picture
   SStartResolve ResolveStart(unsigned int gen,
                              const DISPLAYSTATE::DecideInputs& latest,
                              bool rootAtOpen,
-                             bool fullScreen);
+                             bool fullScreen,
+                             const SStartFacts* facts = nullptr);
   //! E2-8b D4 step 4: the frac arm consumed for the start (today's `consumed` line), kept with
   //! its original time for a reraise or a failed hand-back; r.frac becomes the arm taken
-  void TxTakeArm(unsigned int gen, SStartResolve& r);
+  //! (5.E2-9c D3, r4 H1, r5 M3: on a hint DECIDE OR'd with the hint's, and that one recorded)
+  void TxTakeArm(unsigned int gen, SStartResolve& r, bool hintDecide = false);
   //! E2-8b D4: UpdateResolution's render timeout for the start's decision (elapsed since the
-  //! configure or trigger, as main measures it)
-  bool TxRenderTimedOut();
+  //! configure or trigger, as main measures it; 5.E2-9c D3: or since `from`)
+  bool TxRenderTimedOut(std::chrono::steady_clock::time_point from = {});
 #endif
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }
@@ -779,6 +813,17 @@ protected:
     bool taken = false;
     std::chrono::steady_clock::time_point at;
   } m_txArmTaken; //!< m_statelock: DECIDE's arm take (E2-8b D4 step 4)
+  // 5.E2-9c D3 (m_statelock)
+  //! the gen a configuring Configure ran for (not RM:802's tag)
+  unsigned int m_txConfiguredGen = 0;
+  //! the hint job's gen while its first picture is owed (0: none); the re-clock arm waits
+  unsigned int m_txHintPictureOwed = 0;
+  SStartFacts m_txHintFacts;
+  //! the clearing Configure's compare, read at START (D4, r5 M1)
+  TxHintResult m_txHintCompare = TxHintResult::NONE;
+  STxNotice m_txHintPicture;
+  //! the configuring Configure's clearing compare (fps: the rate it configures at)
+  TxHintResult TxHintConfigureLocked(float fps, const char* path);
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   bool m_overlayVisible = false; //!< render thread: at the last GUI pass
   //! from a start the clock had yet to make until its display phase is measured:

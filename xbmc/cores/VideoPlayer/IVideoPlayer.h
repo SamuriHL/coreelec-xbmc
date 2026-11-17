@@ -136,6 +136,8 @@ public:
   virtual bool IsFlushQueued() const { return false; }
   //! real_player E1: the start is held with the clock paused; not a still
   virtual void SetStartHeld(bool held) {}
+  //! 5.E2-9c D2: steady-clock ns of the decoder's last stall flush (VC_FLUSHED; 0: none)
+  virtual int64_t LastDecoderFlushNs() const { return 0; }
   //! start playing the queued segment out ahead of a draining close
   virtual void BeginDrain() {}
   //! a draining close must not wait any longer (the player is stopping)

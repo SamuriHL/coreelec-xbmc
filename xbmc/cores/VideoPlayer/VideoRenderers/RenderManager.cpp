@@ -827,6 +827,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       if (p533Skipped && p533Skipped != m_p533Logged.exchange(p533Skipped))
         CLog::Log(LOGINFO, "P533 skip epoch {}", p533Skipped);
 #endif
+      // 5.E2-9c D3 (r5 L2): the hint decision's compare before the "fps" raise
+      TxHintConfigureLocked(fps, "kept renderer");
       if (m_fps != fps)
       {
         CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
@@ -1133,6 +1135,8 @@ bool CRenderManager::Configure()
 
     m_bRenderGUI = true;
     m_videostarted = std::chrono::steady_clock::now();
+    // 5.E2-9c D3: V's side wrote the picture and left the arm pending
+    TxHintConfigureLocked(m_fps, "configure");
     RaiseTriggerLocked("configure");
     TagModeFirstConfigure();
     m_presentstep = PRESENT_IDLE;
@@ -1222,6 +1226,7 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       m_pictureDuration = 0.0;
       m_orientation = orientation;
       m_NumberBuffers = buffers;
+      TxHintConfigureLocked(fps, "configure on V"); // 5.E2-9c D3
       PromoteReclockArm();
 
       m_QueueSize = queueSize;
@@ -1692,6 +1697,10 @@ void CRenderManager::BeginFile()
     m_txCommitInFlight = false;
     m_txArmTaken = {};
     m_txOwedDecision = false;
+    // 5.E2-9c D3
+    m_txConfiguredGen = 0;
+    m_txHintPictureOwed = 0;
+    m_txHintCompare = TxHintResult::NONE;
 #if defined(HAS_LIBAMCODEC)
     // 5.B2-5b: a retry of the last file's set is not this file's
     if (m_rmRetry)
@@ -3165,6 +3174,8 @@ void CRenderManager::TxShutMain(unsigned int gen, uint64_t T)
   m_txOutcome.T = T;
   m_txCommitInFlight = false;
   m_txArmTaken = {};
+  m_txHintPictureOwed = 0;
+  m_txHintCompare = TxHintResult::NONE;
   CLog::Log(LOGINFO, "TXSTART set={} T={} main shut out", gen, T);
 }
 
@@ -3380,6 +3391,9 @@ void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     const unsigned int shut = m_txShutGen.exchange(0);
+    // 5.E2-9c D3: an exit ends the hint job's owed picture and its record
+    m_txHintPictureOwed = 0;
+    m_txHintCompare = TxHintResult::NONE;
     SStartOutcome& o = m_txOutcome;
     const bool mine = gen != 0 && o.gen == gen;
     if (shut && shut != gen)
@@ -4028,7 +4042,8 @@ void CRenderManager::DecideShadowPlayer(unsigned int gen,
 CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
                                                            const DISPLAYSTATE::DecideInputs& latest,
                                                            bool rootAtOpen,
-                                                           bool fullScreen)
+                                                           bool fullScreen,
+                                                           const SStartFacts* facts)
 {
   // main is shut out: RM's current facts (a notice before the post is folded into them)
   float fps;
@@ -4047,6 +4062,15 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
     r.hdrType = m_picture.hdrType;
     armed = m_reclockArmed;
     armedAt = m_reclockArmedAt;
+  }
+  // 5.E2-9c D3: a no-picture DECIDE reads the hint's facts, not RM's
+  if (facts)
+  {
+    fps = facts->fps;
+    width = facts->width;
+    height = facts->height;
+    stereoMode = facts->stereoMode;
+    r.hdrType = facts->hdrType;
   }
   r.fps = fps;
   r.width = width;
@@ -4091,6 +4115,9 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   r.info = in.Info(res);
   r.change = res != in.videoResolution;
   r.frac = armed && std::chrono::steady_clock::now() - armedAt <= 12s && r.mayChooseMode && !r.held;
+  // 5.E2-9c D3 (r3 L4): the hint's own frac
+  if (facts)
+    r.frac = r.frac || (facts->frac && r.mayChooseMode && !r.held);
   r.anchor = r.mayChooseMode && !r.held && width > 0 && height > 0;
   // UpdateLatencyTweak's table for the target mode; HDR in use from the published sink caps, as
   // ComposeTiming reads them off main
@@ -4111,14 +4138,16 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   return r;
 }
 
-bool CRenderManager::TxRenderTimedOut()
+bool CRenderManager::TxRenderTimedOut(std::chrono::steady_clock::time_point from)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
-  return std::chrono::steady_clock::now() - m_videostarted > std::chrono::seconds(m_render_timeout);
+  if (from == std::chrono::steady_clock::time_point{})
+    from = m_videostarted;
+  return std::chrono::steady_clock::now() - from > std::chrono::seconds(m_render_timeout);
 }
 
-void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r)
+void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r, bool hintDecide)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
@@ -4131,7 +4160,17 @@ void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r)
   }
   m_txArmTaken.taken = fracArmed;
   m_txArmTaken.at = m_reclockArmedAt;
-  r.frac = fracArmed && r.mayChooseMode && !r.held;
+  if (hintDecide)
+  {
+    // 5.E2-9c D3 (r4 H1, r5 M3): no arm is promoted before the picture; the hint's frac is kept
+    // and recorded, so a failed set's retry restores it
+    r.frac = r.frac || (fracArmed && r.mayChooseMode && !r.held);
+    m_txArmTaken.taken = r.frac;
+    if (!fracArmed)
+      m_txArmTaken.at = std::chrono::steady_clock::now();
+  }
+  else
+    r.frac = fracArmed && r.mayChooseMode && !r.held;
   if (fracArmed)
     CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm consumed at {:.3f} fps: {}", r.fps,
               r.frac ? "may re-clock"
@@ -4351,10 +4390,117 @@ void CRenderManager::ArmContentReclock(bool now)
     PromoteReclockArm();
 }
 
+bool CRenderManager::TxHintFactsSame(const SStartFacts& hint,
+                                     float fps,
+                                     int width,
+                                     int height,
+                                     const std::string& stereoMode,
+                                     StreamHdrType hdrType,
+                                     bool firstConfigure,
+                                     bool* fps2x)
+{
+  if (fps2x)
+    *fps2x = false;
+  // as TxNoticeSame: the same rate within 0.05 %
+  const auto sameRate = [](float a, float b) { return std::abs(a - b) <= 0.0005f * std::max(a, b); };
+  // r4 M3: an fps-invalid picture reports the committed or the GUI's rate
+  bool sameFps = (firstConfigure && hint.fpsInvalid) || sameRate(fps, hint.fps);
+  // E29A-6: a reused V thread's interlace flag doubles the first Configure's rate
+  if (!sameFps && firstConfigure &&
+      (std::abs(hint.fps - 25.0f) < 0.02f || std::abs(hint.fps - 29.97f) < 0.02f) &&
+      sameRate(fps, 2.0f * hint.fps))
+  {
+    sameFps = true;
+    if (fps2x)
+      *fps2x = true;
+  }
+  const bool sameSize =
+      (!hint.width && !hint.height) || (width == hint.width && height == hint.height);
+  return sameFps && sameSize && hdrType == hint.hdrType && stereoMode == hint.stereoMode;
+}
+
+// m_statelock held: every configuring Configure, with the picture's facts written (fps: the rate
+// it configures at). A hint job's first picture decides the stream's re-clock arm (r4 M1)
+CRenderManager::TxHintResult CRenderManager::TxHintConfigureLocked(float fps, const char* path)
+{
+  const unsigned int gen = m_modeFirstGen.load();
+  m_txConfiguredGen = gen;
+  const unsigned int owed = std::exchange(m_txHintPictureOwed, 0u);
+  if (!owed)
+    return TxHintResult::NONE;
+  if (owed != gen)
+  {
+    CLog::Log(LOGINFO, "TXSTART set={} hint picture owed dropped (configure of set {})", owed,
+              gen);
+    return TxHintResult::NONE;
+  }
+  const int width = static_cast<int>(m_picture.iWidth);
+  const int height = static_cast<int>(m_picture.iHeight);
+  bool fps2x = false;
+  const bool same = TxHintFactsSame(m_txHintFacts, fps, width, height, m_picture.stereoMode,
+                                    m_picture.hdrType, true, &fps2x);
+  m_txHintCompare = same ? TxHintResult::SAME : TxHintResult::DIFFERENT;
+  m_txHintPicture = {path, fps, width, height, m_picture.stereoMode, m_picture.hdrType};
+  if (fps2x)
+    CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)", gen);
+  CLog::Log(LOGINFO,
+            "TXSTART set={} hint decision's first picture ({}): {} (fps {:.3f} size {}x{} hdr {})",
+            gen, path, same ? "same" : "different", fps, width, height,
+            static_cast<int>(m_picture.hdrType));
+  if (same)
+  {
+    if (std::exchange(m_reclockPending, false))
+      CLog::Log(LOGINFO,
+                "CRenderManager - reclock arm for a hint-decided start dropped (frac taken at "
+                "DECIDE)");
+  }
+  else
+  {
+    // r6 L3: a reraise or a failed set restores nothing over the picture's own arm
+    m_txArmTaken.taken = false;
+    PromoteReclockArm();
+  }
+  return m_txHintCompare;
+}
+
+CRenderManager::TxHintResult CRenderManager::TxHintPosted(unsigned int gen,
+                                                          const SStartFacts& facts,
+                                                          STxNotice& picture)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (m_txConfiguredGen != gen)
+  {
+    m_txHintPictureOwed = gen;
+    m_txHintFacts = facts;
+    m_txHintCompare = TxHintResult::NONE;
+    return TxHintResult::NONE;
+  }
+  // r5 L3: a picture configured between P's last read and the post: compared at once
+  picture = {"configured", m_fps, static_cast<int>(m_picture.iWidth),
+             static_cast<int>(m_picture.iHeight), m_picture.stereoMode, m_picture.hdrType};
+  bool fps2x = false;
+  const bool same = TxHintFactsSame(facts, picture.fps, picture.width, picture.height,
+                                    picture.stereoMode, picture.hdrType, true, &fps2x);
+  if (fps2x)
+    CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)", gen);
+  m_txHintCompare = same ? TxHintResult::SAME : TxHintResult::DIFFERENT;
+  m_txHintPicture = picture;
+  if (!same)
+    m_txArmTaken.taken = false; // r6 L3
+  // r6 L4: the arm that picture's Configure promoted, as the clearing compare drops it
+  else if (std::exchange(m_reclockArmed, false))
+    CLog::Log(LOGINFO,
+              "CRenderManager - reclock arm for a hint-decided start dropped (frac taken at "
+              "DECIDE)");
+  return m_txHintCompare;
+}
+
 // m_statelock held; the decision runs on the rate just configured
 void CRenderManager::PromoteReclockArm()
 {
-  if (!m_reclockPending)
+  // 5.E2-9c D3: a hint job's first picture decides the arm (TxHintConfigureLocked)
+  if (!m_reclockPending || m_txHintPictureOwed)
     return;
   m_reclockPending = false;
   m_reclockArmed = true;

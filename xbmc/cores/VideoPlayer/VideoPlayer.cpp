@@ -3125,6 +3125,7 @@ void CVideoPlayer::TxStartPoint(const char* point)
   if (m_txWordStarting)
     OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), point);
   m_txStarted = true;
+  TxHintClear(); // 5.E2-9c (r5 M2)
   CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
             point);
   // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
@@ -3229,6 +3230,7 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     CLog::Log(LOGWARNING, "TRANSACTION undo 6 not applicable (sync passed, no E1 hold)");
   m_txExited = true;
   m_txLossAtUntil = {};
+  TxHintClear(); // 5.E2-9c (r5 M2)
   const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
   CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
             m_txEngagedGen, *caller ? " caller=" : "", caller);
@@ -3261,6 +3263,8 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
 void CVideoPlayer::TxOpenStart()
 {
   m_txOpenPending = false;
+  // 5.E2-9c (r6 L1): before the publish-fail return
+  TxHintClear();
   auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
   job->T = m_txWordT.load();
   job->gen = m_txEngagedGen;
@@ -3304,12 +3308,16 @@ void CVideoPlayer::TxDecide()
 {
   using How = CRenderManager::TxHow;
   using Need = CRenderManager::TxNeed;
+  // 5.E2-9c D3: the PRIME bound's latch (no picture; TxStartGatePass clears it for one)
+  const bool hint = m_txHintDecide;
   // as main's UpdateResolution (a3f8a5614c): a window the fullscreen switch closes may set its
   // own mode on the way out; a Back ends the wait for step 1
   if (!DISPLAYSTATE::FullScreenVideoWindowActive() &&
       DISPLAYSTATE::FullScreenExits() == m_txExitsAtOpen)
   {
-    if (!m_renderManager.TxRenderTimedOut())
+    // a hint decision's render timeout counts from the bound (no configure)
+    if (!m_renderManager.TxRenderTimedOut(hint ? m_txHintBoundAt
+                                               : std::chrono::steady_clock::time_point{}))
     {
       if (!std::exchange(m_txWindowWaitLogged, true))
         CLog::Log(LOGINFO, "TXSTART set={} T={} DECIDE waits for the fullscreen window",
@@ -3340,8 +3348,24 @@ void CVideoPlayer::TxDecide()
     return;
   }
   // step 2 (ResolveStart logs main's "Display resolution ADJUST" lines itself)
-  CRenderManager::SStartResolve r =
-      m_renderManager.ResolveStart(m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen);
+  CRenderManager::SStartFacts facts;
+  if (hint)
+    facts = TxDecideFromHints();
+  CRenderManager::SStartResolve r = m_renderManager.ResolveStart(
+      m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen, hint ? &facts : nullptr);
+  if (hint)
+  {
+    // the fps fact of an fps-invalid stream is the chosen mode's rate (r4 M3)
+    if (facts.fpsInvalid)
+      facts.fps = r.info.fRefreshRate;
+    facts.frac = r.frac;
+    CLog::Log(LOGERROR,
+              "TXSTART set={} T={} no-picture DECIDE (5 s bound) facts fps {:.3f} {}x{} hdr {} "
+              "frac {} fpsInvalid {} interlaceHint {}",
+              m_txEngagedGen, m_txJob->T, facts.fps, facts.width, facts.height,
+              static_cast<int>(facts.hdrType), facts.frac ? 1 : 0, facts.fpsInvalid ? 1 : 0,
+              facts.interlaceHint ? 1 : 0);
+  }
   // step 3: D1's exclusions
   if (r.exclusion)
   {
@@ -3349,7 +3373,7 @@ void CVideoPlayer::TxDecide()
     return;
   }
   // step 4: the arm consumed (today's "consumed ... may re-clock" line), nothing counted
-  m_renderManager.TxTakeArm(m_txEngagedGen, r);
+  m_renderManager.TxTakeArm(m_txEngagedGen, r, hint);
   // step 5 (r2 N-M2): disc time held from DECIDE, the 13 s bounds armed
   m_txDiscHeld = true;
   m_discTime.SetTxHeld(true);
@@ -3368,12 +3392,15 @@ void CVideoPlayer::TxDecide()
   // notice raised between the last take and ResolveStart's read is in them)
   m_txJobFacts = {};
   m_txJobFacts.kind = "decide";
-  m_txJobFacts.fps = r.fps;
+  m_txJobFacts.fps = hint ? facts.fps : r.fps;
   m_txJobFacts.width = r.width;
   m_txJobFacts.height = r.height;
   m_txJobFacts.stereoMode = r.stereoMode;
   m_txJobFacts.hdrType = r.hdrType;
   m_txJobFactsSet = true;
+  // 5.E2-9c D3: the same facts for the picture's compares
+  if (hint)
+    m_txHintFacts = facts;
   // step 6
   CLog::Log(LOGINFO, "DECIDE start set={} T={} {} frac={} hdr={} tweak={:.1f} (P)",
             m_txEngagedGen, job.T, r.info.strMode, r.frac ? 1 : 0, static_cast<int>(r.hdrType),
@@ -3436,6 +3463,98 @@ void CVideoPlayer::TxTryPost()
   m_txBoundInCommitLogged = false;
   m_txLostAt = {};
   m_txLostPaused = {};
+  // 5.E2-9c D3: RM owes the hint job's first picture its compare; counted when posted (r5 L4)
+  if (std::exchange(m_txHintDecide, false))
+  {
+    m_txHintJob = true;
+    ++m_txNoPictureDecides;
+    CRenderManager::STxNotice picture;
+    const CRenderManager::TxHintResult at =
+        m_renderManager.TxHintPosted(m_txEngagedGen, m_txHintFacts, picture);
+    if (at != CRenderManager::TxHintResult::NONE)
+    {
+      const bool same = at == CRenderManager::TxHintResult::SAME;
+      CLog::Log(LOGINFO, "TXSTART T={} no-picture DECIDE: picture arrived at the post ({})",
+                job.T, same ? "same" : "different");
+      if (!same)
+        TxHintContradicted(picture, "picture arrived at the post");
+    }
+  }
+}
+
+CRenderManager::SStartFacts CVideoPlayer::TxDecideFromHints()
+{
+  const CDVDStreamInfo& hint = m_CurrentVideo.hint;
+  CRenderManager::SStartFacts f;
+  f.fpsInvalid = !(hint.fpsrate && hint.fpsscale);
+  if (!f.fpsInvalid)
+  {
+    // r3 M8: VPV's OpenStream rate, not doubled for interlace (its first Configure's)
+    f.fps = static_cast<float>(
+        DVD_TIME_BASE / CDVDCodecUtils::NormalizeFrameduration(static_cast<double>(DVD_TIME_BASE) *
+                                                               hint.fpsscale / hint.fpsrate));
+  }
+  else
+  {
+    // as VPV's PrepareOutput for an fps-invalid stream: the GUI's rate, or W's committed one
+    f.fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+    DISPLAYSTATE::ModeTiming committed;
+    if (aml_displaystate_on() && DISPLAYSTATE::CommitTimingOn() &&
+        DISPLAYSTATE::CommittedTiming(committed, "fps@hint-decide"))
+      f.fps = committed.fps;
+  }
+  f.width = hint.width;
+  f.height = hint.height;
+  if (hint.stereo_mode != "mono")
+    f.stereoMode = hint.stereo_mode;
+  // the type after the open's VS10 rewrite. An HDR10/HDR10+ hint left native is DVCA's
+  // candidate: its first keyframe re-fakes DV when VS10 or HDR2DV maps it (DVCA:1146-1147)
+  f.hdrType = hint.hdrType;
+  if (hint.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+      hint.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS)
+  {
+    const bool dv = aml_vs10_by_hdrtype(hint.hdrType, hint.bitdepth) !=
+                        DOLBY_VISION_OUTPUT_MODE_BYPASS ||
+                    aml_convert_to_dv_by_vs_engine(hint.hdrType);
+    if (dv)
+      f.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+    CLog::Log(LOGINFO, "TXSTART set={} hdr from hint (HDR10+ candidate: {})", m_txEngagedGen,
+              dv ? "DV" : "HDR10");
+  }
+  f.frac = hint.reclockEligible && !f.fpsInvalid;
+  f.interlaceHint = hint.interlaced;
+  return f;
+}
+
+void CVideoPlayer::TxHintContradicted(const CRenderManager::STxNotice& picture, const char* where)
+{
+  const CRenderManager::SStartFacts& h = m_txHintFacts;
+  CLog::Log(LOGERROR,
+            "TXSTART set={} T={} no-picture decision contradicted (exit) hint {{fps {:.3f} {}x{} "
+            "hdr {} stereo '{}'}} picture {{fps {:.3f} {}x{} hdr {} stereo '{}'}} ({})",
+            m_txEngagedGen, m_txJob->T, h.fps, h.width, h.height, static_cast<int>(h.hdrType),
+            h.stereoMode, picture.fps, picture.width, picture.height,
+            static_cast<int>(picture.hdrType), picture.stereoMode, where);
+  ++m_txNoPictureContradicted;
+  // the 12 s cap is re-armed for main's set (a no-op once CN is open)
+  m_startGateSince = std::chrono::steady_clock::now();
+  m_startGateStarveSince = {};
+  EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
+                         CRenderManager::TxNeed::FRESH);
+}
+
+void CVideoPlayer::TxHintClear()
+{
+  m_txHintDecide = false;
+  m_txHintJob = false;
+}
+
+void CVideoPlayer::TxNoPictureSummary(const char* why)
+{
+  if (!m_txNoPictureDecides && !m_txNoPictureContradicted)
+    return;
+  CLog::Log(LOGINFO, "TXSTART no-picture summary ({}): DECIDEs {}, contradicted before START {}",
+            why, m_txNoPictureDecides, m_txNoPictureContradicted);
 }
 
 void CVideoPlayer::TxOnReply(CDVDMsg& msg)
@@ -3525,9 +3644,36 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
   {
     // D3: before the post every notice is folded (DECIDE reads RM's current facts; code review
     // A-L1: the job's facts are DECIDE's own read, not the newest notice)
+    // 5.E2-9c D3 (r5 L4): a hint decision waiting for a GUI set meets its picture: one that
+    // differs takes the decision back (not posted: nothing to undo)
+    bool withdraw = false;
     for (const CRenderManager::STxNotice& n : notices)
+    {
+      const std::string_view kind = n.kind;
+      if (m_txStep == TxStep::WAIT_GUI && m_txHintDecide && !withdraw &&
+          (kind == "configure" || kind == "fps" || kind == "reclock") &&
+          !CRenderManager::TxHintFactsSame(m_txHintFacts, n.fps, n.width, n.height, n.stereoMode,
+                                           n.hdrType, true))
+        withdraw = true;
       CLog::Log(LOGINFO, "NOTICE folded {}", n.kind);
-    if (m_txStep == TxStep::NONE && state != CRenderManager::ModeFirstState::UNCONFIGURED)
+    }
+    if (withdraw)
+    {
+      m_txStep = TxStep::NONE;
+      m_txHintDecide = false;
+      CLog::Log(LOGINFO, "DECIDE start set={} T={} no-picture DECIDE withdrawn (picture in WAIT_GUI)",
+                m_txEngagedGen, m_txJob->T);
+    }
+    // a picture during the hint decision's window wait takes the picture path (r5 L4)
+    if (m_txStep == TxStep::NONE && m_txHintDecide &&
+        state != CRenderManager::ModeFirstState::UNCONFIGURED)
+    {
+      m_txHintDecide = false;
+      CLog::Log(LOGINFO, "TXSTART set={} T={} picture before the no-picture DECIDE: decided on it",
+                m_txEngagedGen, m_txJob->T);
+    }
+    if (m_txStep == TxStep::NONE &&
+        (state != CRenderManager::ModeFirstState::UNCONFIGURED || m_txHintDecide))
       TxDecide();
     else if (m_txStep == TxStep::WAIT_GUI)
       TxTryPost();
@@ -4018,6 +4164,30 @@ void CVideoPlayer::CheckStartGate()
       m_txLostPaused += std::chrono::steady_clock::now() - m_txLostAt;
       m_txLostAt = {};
     }
+    // 5.E2-9c D2 (ruling 1): no picture 5 s into PRIME: the mode is decided from the hints
+    if (TxPrimeBoundOpen() && state == State::UNCONFIGURED && m_txStep == TxStep::NONE &&
+        !m_txHintDecide && std::chrono::steady_clock::now() - m_startGateSince >= 5s)
+    {
+      m_txHintDecide = true;
+      m_txHintBoundAt = std::chrono::steady_clock::now();
+      CLog::Log(LOGINFO, "TXSTART set={} T={} PRIME bound (5 s): no picture, DECIDE from the hints",
+                m_txEngagedGen, m_txJob->T);
+      const int64_t flushNs = m_VideoPlayerVideo->LastDecoderFlushNs();
+      const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                m_txHintBoundAt.time_since_epoch())
+                                .count();
+      if (flushNs && nowNs - flushNs <= 1'000'000'000)
+        CLog::Log(LOGINFO, "TXSTART set={} decoder flushed at the bound ({} ms before)",
+                  m_txEngagedGen, (nowNs - flushNs) / 1'000'000);
+      // the window, as the first picture posts it (r2 M6)
+      if (!m_startGateFullScreenPosted && m_playerOptions.fullscreen && !m_State.streamsReady)
+      {
+        m_startGateFullScreenPosted = true;
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+        CLog::Log(LOGINFO, "VideoPlayer: start gate: fullscreen at the PRIME bound (set {})",
+                  m_startGateGen);
+      }
+    }
     TxStartGatePass(state);
     // C2 review B2: the error exit stops the player; nothing of legacy's gate runs after it
     if (!m_startGateShut || m_bAbortRequest)
@@ -4076,7 +4246,10 @@ void CVideoPlayer::CheckStartGate()
   }
   else
     m_startGateStarveSince = {};
-  if (now - m_startGateSince > 12s)
+  // 5.E2-9c D2: before the post the PRIME bound replaces the 12 s cap for an unconfigured set
+  const bool primeBoundOnly = TxPrimeBoundOpen() && state == State::UNCONFIGURED &&
+                              m_txStep == TxStep::NONE && !m_txHintDecide;
+  if (!primeBoundOnly && now - m_startGateSince > 12s)
   {
     if (!TxBoundEnds("12 s cap"))
       return;
@@ -4134,6 +4307,8 @@ void CVideoPlayer::TxReprime(const char* caller)
   {
     m_startGateSince = std::chrono::steady_clock::now();
     m_startGateStarveSince = {};
+    // 5.E2-9c D1 (r4 M2): before the post the PRIME bound restarts from the seek
+    m_txHintDecide = false;
   }
   // transaction_seekdelay (D3, r2 N-L1): after the re-arm, so CN's cap does not expire inside it
   if (std::string_view(caller) == "user seek")
@@ -4577,6 +4752,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txInboxSpeedLoss = 0;
   m_txSkipReadon = m_txSkipPrimebound = m_txMenuDomain = m_txReadOnBypassed = false;
   m_txReadOn = TxReadOn::IDLE;
+  TxHintClear();
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
@@ -7511,6 +7687,7 @@ void CVideoPlayer::OnExit()
   if (TxOpen())
     EndTransactionToLegacy("stop", CRenderManager::TxHow::NONE,
                            CRenderManager::TxNeed::NONE_NEEDED, false);
+  TxNoPictureSummary("stop");
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;
@@ -7702,6 +7879,7 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   if (TxOpen())
     EndTransactionToLegacy("next file", CRenderManager::TxHow::NONE,
                            CRenderManager::TxNeed::NONE_NEEDED, false);
+  TxNoPictureSummary("next file");
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;

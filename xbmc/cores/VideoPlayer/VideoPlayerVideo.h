@@ -70,6 +70,7 @@ public:
   void SetSubtitleDelay(double delay) override { m_iSubtitleDelay = delay; }
   bool IsStalled() const override { return m_stalled; }
   void SetStartHeld(bool held) override { m_startHeld = held; }
+  int64_t LastDecoderFlushNs() const override { return m_lastDecoderFlushNs.load(); }
   void BeginDrain() override;
   //! 5.E2-7 (R5): P's held predicate for its next draining close (empty: the clock's pause)
   void SetDrainHeldHook(std::function<EDrainHeld()> hook) { m_drainHeldHook = std::move(hook); }
@@ -171,6 +172,7 @@ protected:
   int m_speed;
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
+  std::atomic<int64_t> m_lastDecoderFlushNs{0}; //!< 5.E2-9c D2
   CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   std::atomic_bool m_drainStarted{false};
   std::function<EDrainHeld()> m_drainHeldHook; //!< set and called on P only

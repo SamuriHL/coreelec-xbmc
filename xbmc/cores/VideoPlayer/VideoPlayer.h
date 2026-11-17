@@ -1147,6 +1147,28 @@ protected:
   //! D1: an active read-on ends at START, an exit, a menu page or the first picture
   void TxReadOnPass();
   void TxReadOnEnd(const char* why);
+  //! D2: the 5 s PRIME bound's open: P decides, outside menu domains and transaction_skip
+  //! primebound
+  bool TxPrimeBoundOpen() const
+  {
+    return TxOpen() && m_txJob && !m_txMenuDomain && !m_txSkipPrimebound;
+  }
+  //! D2/D3: latched at the bound until the hint job is posted
+  bool m_txHintDecide = false;
+  //! D3: a hint job was posted; kept until START or an exit (a re-PRIME keeps it)
+  bool m_txHintJob = false;
+  std::chrono::steady_clock::time_point m_txHintBoundAt{}; //!< D3: the window wait counts from it
+  CRenderManager::SStartFacts m_txHintFacts; //!< D3: the facts the hint job was decided on
+  unsigned int m_txNoPictureDecides = 0; //!< D3: posted hint jobs (player lifetime)
+  unsigned int m_txNoPictureContradicted = 0; //!< D4/D5: the exits of hint-decided starts
+  //! D3: the stream's facts from m_CurrentVideo.hint, as V's first Configure would report them
+  CRenderManager::SStartFacts TxDecideFromHints();
+  //! D4: a picture against a hint decision before START: the exit "input changed"
+  void TxHintContradicted(const CRenderManager::STxNotice& picture, const char* where);
+  //! D3: both start flags cleared (open, exits, START)
+  void TxHintClear();
+  //! D3: the counters, logged at the player's stop and at a next file
+  void TxNoPictureSummary(const char* why);
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
   bool TxKeepsFlush(const char* caller) const;
   //! D2: the flush's re-PRIME: an E1 hold dropped without START, CN's bounds re-armed
