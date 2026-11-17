@@ -570,6 +570,10 @@ void CVideoPlayerVideo::Process()
       if (m_startHeld || m_pClock->GetPendingStart(startNs, startClock))
         continue;
 
+      // 5.E2-9c D6: m_picture holds a withheld picture, which must not be shown as a still
+      if (m_txNoPictureUntilNs.load() && m_syncState == IDVDStreamPlayer::SYNC_STARTING)
+        continue;
+
       // an output wake, not the stall timeout
       if (m_worker && !m_workerTimedOut)
         continue;
@@ -1557,8 +1561,17 @@ void CVideoPlayerVideo::OnExit()
 bool CVideoPlayerVideo::TxNoPictureDrops()
 {
   int64_t until = m_txNoPictureUntilNs.load();
-  if (!until || m_syncState != IDVDStreamPlayer::SYNC_STARTING)
+  if (!until)
     return false;
+  if (m_syncState != IDVDStreamPlayer::SYNC_STARTING)
+  {
+    if (m_txNoPictureUntilNs.compare_exchange_strong(until, 0))
+      CLog::Log(LOGWARNING,
+                "TXTEST nopicture: {} pictures dropped, this one is the first picture (video "
+                "left STARTING)",
+                std::exchange(m_txNoPictureDrops, 0));
+    return false;
+  }
   const auto now = std::chrono::steady_clock::now();
   const int64_t nowNs =
       std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
