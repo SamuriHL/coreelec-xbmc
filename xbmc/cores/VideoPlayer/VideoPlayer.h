@@ -1177,6 +1177,12 @@ protected:
   bool m_txSettleAudioLogged = false;
   //! D5: at the top of the sync pass: true once START on audio is due
   bool TxSettleTimerPass();
+  //! D6 (transaction_nopicture settle+<ms>): V withholds until settle done + this (-1: none)
+  int m_txNoPictureSettleMs = -1;
+  //! D6 (transaction_audiotimecap): the audio queue's time cap before the hook (0: none)
+  double m_txAudioTimeCapSaved = 0.0;
+  void TxTestHooksAtEngage();
+  void TxRestoreAudioTimeCap(const char* why);
   //! D3: the counters, logged at the player's stop and at a next file
   void TxNoPictureSummary(const char* why);
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers

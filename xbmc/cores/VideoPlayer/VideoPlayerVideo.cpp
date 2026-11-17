@@ -46,6 +46,8 @@
 #include <numeric>
 #include <sstream>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 
 using namespace std::chrono_literals;
 
@@ -1462,6 +1464,16 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     if (m_speed != 0)
       pts += m_picture.iDuration * m_speed / abs(m_speed);
 
+    // 5.E2-9c D6: no Configure and no PLAYER_STARTED for a withheld picture
+    if (TxNoPictureDrops())
+    {
+      m_outputSate = OUTPUT_DROPPED;
+      m_armPicture = m_worker;
+      m_idleSince = std::chrono::steady_clock::now();
+      frametime = (double)DVD_TIME_BASE / m_fFrameRate;
+      return true;
+    }
+
     m_outputSate = OutputPicture(&m_picture);
 
     if (m_outputSate == OUTPUT_AGAIN)
@@ -1538,6 +1550,33 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 void CVideoPlayerVideo::OnExit()
 {
   CLog::Log(LOGINFO, "thread end: video_thread");
+}
+
+// 5.E2-9c D6 (transaction_nopicture): the start's first pictures are pulled and dropped at the
+// hint's rate, so the decoder stays fed and the stream advances in real time
+bool CVideoPlayerVideo::TxNoPictureDrops()
+{
+  int64_t until = m_txNoPictureUntilNs.load();
+  if (!until || m_syncState != IDVDStreamPlayer::SYNC_STARTING)
+    return false;
+  const auto now = std::chrono::steady_clock::now();
+  const int64_t nowNs =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+  if (until != INT64_MAX && nowNs >= until)
+  {
+    if (m_txNoPictureUntilNs.compare_exchange_strong(until, 0))
+      CLog::Log(LOGWARNING, "TXTEST nopicture: {} pictures dropped, this one is the first picture",
+                std::exchange(m_txNoPictureDrops, 0));
+    return false;
+  }
+  if (now < m_txNoPictureNext)
+    CThread::Sleep(std::min(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                m_txNoPictureNext - now),
+                            std::chrono::milliseconds(100)));
+  const auto frame = std::chrono::microseconds(std::lround(1e6 / m_fFrameRate));
+  m_txNoPictureNext = std::max(now, m_txNoPictureNext) + frame;
+  ++m_txNoPictureDrops;
+  return true;
 }
 
 int CVideoPlayerVideo::CodecSpeed() const

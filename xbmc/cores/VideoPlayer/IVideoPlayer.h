@@ -138,6 +138,9 @@ public:
   virtual void SetStartHeld(bool held) {}
   //! 5.E2-9c D2: steady-clock ns of the decoder's last stall flush (VC_FLUSHED; 0: none)
   virtual int64_t LastDecoderFlushNs() const { return 0; }
+  //! 5.E2-9c D6 (transaction_nopicture): the first pictures are dropped until this steady-clock
+  //! ns (INT64_MAX: until a later call; 0: none)
+  virtual void SetTxNoPicture(int64_t untilNs) {}
   //! start playing the queued segment out ahead of a draining close
   virtual void BeginDrain() {}
   //! a draining close must not wait any longer (the player is stopping)

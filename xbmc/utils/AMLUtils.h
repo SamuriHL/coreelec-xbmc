@@ -493,7 +493,10 @@ struct STransactionHooks
 {
   int seekDelayMs = 0; //!< transaction_seekdelay <ms>: a seek in PRIME delayed (E2-9)
   bool exc1 = false; //!< transaction_exc1: sync exception 1 forced in PRIME (E2-9)
-  bool noPicture = false; //!< transaction_nopicture: the decoder's pictures withheld (E2-9, E2-11)
+  //! transaction_nopicture <ms>|settle+<ms>: the decoder's pictures withheld (E2-9c D6, E2-11)
+  std::string noPicture;
+  //! transaction_audiotimecap <s>: the engaged open's audio queue time cap (E2-9c D6)
+  double audioTimeCapS = 0.0;
   int demuxStallMs = 0; //!< transaction_demuxstall <ms>: a demux stall (E2-7)
   int reopenDelayMs = 0; //!< transaction_reopendelay <ms>: the OPEN after row 3's step (E2-10)
   int restoreCapsDelayMs = 0; //!< transaction_restorecapsdelay <ms>: a Restore's caps (E2-11)

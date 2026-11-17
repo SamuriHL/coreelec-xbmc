@@ -2972,6 +2972,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
       if (m_pInputBluray)
         m_txMenuDomain = m_pInputBluray->IsMenuDomainVideo();
 #endif
+      TxTestHooksAtEngage();
       // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
       if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
       {
@@ -3126,6 +3127,7 @@ void CVideoPlayer::TxStartPoint(const char* point)
     OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), point);
   m_txStarted = true;
   TxHintClear(); // 5.E2-9c (r5 M2)
+  TxRestoreAudioTimeCap("START"); // 5.E2-9c D6
   CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
             point);
   // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
@@ -3231,6 +3233,13 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
   m_txExited = true;
   m_txLossAtUntil = {};
   TxHintClear(); // 5.E2-9c (r5 M2)
+  // 5.E2-9c D6: a settle+ hold whose settle done will not come
+  if (m_txNoPictureSettleMs >= 0)
+  {
+    m_txNoPictureSettleMs = -1;
+    m_VideoPlayerVideo->SetTxNoPicture(0);
+    CLog::Log(LOGWARNING, "TXTEST nopicture released at the exit");
+  }
   const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
   CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
             m_txEngagedGen, *caller ? " caller=" : "", caller);
@@ -3543,6 +3552,56 @@ void CVideoPlayer::TxHintContradicted(const CRenderManager::STxNotice& picture, 
   m_startGateStarveSince = {};
   EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
                          CRenderManager::TxNeed::FRESH);
+}
+
+// 5.E2-9c D6: the gate's hooks, read at the engage
+void CVideoPlayer::TxTestHooksAtEngage()
+{
+  const STransactionHooks hooks = aml_transaction_hooks();
+  if (!hooks.noPicture.empty())
+  {
+    const std::string& word = hooks.noPicture;
+    constexpr std::string_view settle = "settle+";
+    if (word.compare(0, settle.size(), settle) == 0)
+    {
+      m_txNoPictureSettleMs = std::max(0, std::atoi(word.c_str() + settle.size()));
+      m_VideoPlayerVideo->SetTxNoPicture(INT64_MAX);
+    }
+    else
+    {
+      const auto until = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(std::max(0, std::atoi(word.c_str())));
+      m_VideoPlayerVideo->SetTxNoPicture(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(until.time_since_epoch()).count());
+    }
+    CLog::Log(LOGWARNING, "TXTEST nopicture {} set={}", word, m_txEngagedGen);
+  }
+  if (hooks.audioTimeCapS > 0.0 && m_txAudioTimeCapSaved == 0.0)
+  {
+    int data = 0;
+    int maxData = 0;
+    double time = 0.0;
+    double cap = 0.0;
+    bool timeFull = false;
+    m_VideoPlayerAudio->GetQueueFill(data, maxData, time, cap, timeFull);
+    if (cap > 0.0)
+    {
+      m_txAudioTimeCapSaved = cap;
+      m_VideoPlayerAudio->SetMaxTimeSize(hooks.audioTimeCapS);
+      CLog::Log(LOGWARNING, "TXTEST audiotimecap {:.3f} s set={} (was {:.1f} s)",
+                hooks.audioTimeCapS, m_txEngagedGen, cap);
+    }
+  }
+}
+
+void CVideoPlayer::TxRestoreAudioTimeCap(const char* why)
+{
+  if (m_txAudioTimeCapSaved == 0.0)
+    return;
+  m_VideoPlayerAudio->SetMaxTimeSize(m_txAudioTimeCapSaved);
+  CLog::Log(LOGWARNING, "TXTEST audiotimecap restored to {:.1f} s ({})", m_txAudioTimeCapSaved,
+            why);
+  m_txAudioTimeCapSaved = 0.0;
 }
 
 void CVideoPlayer::TxHintClear()
@@ -3870,6 +3929,15 @@ void CVideoPlayer::TxRepliesPass()
     // 5.E2-9c D5: a hint-decided start's settle timer
     if (m_txHintJob)
       m_txSettleSince = std::chrono::steady_clock::now();
+    // 5.E2-9c D6: transaction_nopicture settle+<ms>
+    if (m_txNoPictureSettleMs >= 0)
+    {
+      const auto until = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(std::exchange(m_txNoPictureSettleMs, -1));
+      m_VideoPlayerVideo->SetTxNoPicture(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(until.time_since_epoch()).count());
+      CLog::Log(LOGWARNING, "TXTEST nopicture: pictures withheld to settle done + hook time");
+    }
     OpenStartGate(*m_txSettle == Settle::NO_CHANGE ? "transaction no change"
                                                    : "transaction settle done",
                   false);
@@ -4849,6 +4917,11 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txSkipReadon = m_txSkipPrimebound = m_txMenuDomain = m_txReadOnBypassed = false;
   m_txReadOn = TxReadOn::IDLE;
   TxHintClear();
+  // 5.E2-9c D6: the hooks end with the file
+  TxRestoreAudioTimeCap("file end");
+  m_txNoPictureSettleMs = -1;
+  if (m_VideoPlayerVideo)
+    m_VideoPlayerVideo->SetTxNoPicture(0);
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();

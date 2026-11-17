@@ -71,6 +71,7 @@ public:
   bool IsStalled() const override { return m_stalled; }
   void SetStartHeld(bool held) override { m_startHeld = held; }
   int64_t LastDecoderFlushNs() const override { return m_lastDecoderFlushNs.load(); }
+  void SetTxNoPicture(int64_t untilNs) override { m_txNoPictureUntilNs = untilNs; }
   void BeginDrain() override;
   //! 5.E2-7 (R5): P's held predicate for its next draining close (empty: the clock's pause)
   void SetDrainHeldHook(std::function<EDrainHeld()> hook) { m_drainHeldHook = std::move(hook); }
@@ -173,6 +174,11 @@ protected:
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_startHeld = false;
   std::atomic<int64_t> m_lastDecoderFlushNs{0}; //!< 5.E2-9c D2
+  //! 5.E2-9c D6 (transaction_nopicture)
+  std::atomic<int64_t> m_txNoPictureUntilNs{0};
+  int m_txNoPictureDrops = 0;
+  std::chrono::steady_clock::time_point m_txNoPictureNext{};
+  bool TxNoPictureDrops();
   CEvent m_drained{true, true}; //!< the last VIDEO_DRAIN has run to its end
   std::atomic_bool m_drainStarted{false};
   std::function<EDrainHeld()> m_drainHeldHook; //!< set and called on P only
