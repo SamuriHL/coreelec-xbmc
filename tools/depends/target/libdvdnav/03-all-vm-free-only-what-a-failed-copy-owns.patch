@@ -1,0 +1,22 @@
+Subject: [PATCH] vm: free only what a failed copy owns
+
+A VM copy shares the VMG IFO and the dvd reader with the VM it copies.
+When vm_new_copy() failed after the copy, vm_free_vm() closed both, and
+the source VM went on with freed memory.
+---
+ src/vm/vm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/vm/vm.c b/src/vm/vm.c
+index 9276c912bc..1091e1c0f4 100644
+--- a/src/vm/vm.c
++++ b/src/vm/vm.c
+@@ -526,7 +526,7 @@ vm_t *vm_new_copy(vm_t *source) {
+ 
+ fail:
+   if (target != NULL)
+-    vm_free_vm(target);
++    vm_free_copy(target);
+ 
+   return NULL;
+ }
