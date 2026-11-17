@@ -3552,6 +3552,13 @@ void CVideoPlayer::TxHintContradicted(const CRenderManager::STxNotice& picture, 
   m_startGateStarveSince = {};
   EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
                          CRenderManager::TxNeed::FRESH);
+  // code review H1: RM configured the picture before P saw it start; its PLAYER_STARTED follows,
+  // and no start on audio may come before it (the first-picture wait bounds it to 1 s again)
+  if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
+  {
+    m_firstPictureWaitSince = {};
+    m_firstPictureWaitExpired = false;
+  }
 }
 
 // 5.E2-9c D6: the gate's hooks, read at the engage
@@ -6579,6 +6586,15 @@ void CVideoPlayer::HandlePlaySpeed()
           CLog::Log(LOGWARNING,
                     "VideoPlayer::Sync - no start pts within defer window, syncing clock to 0");
       }
+      // 5.E2-9c D4: the hint job's picture compared before the commit's START. After an exit
+      // with no PLAYER_STARTED yet nothing commits on audio: the picture's commit holds for
+      // main's set (code review H1)
+      if (commit && TxOpen() && m_txHintJob)
+      {
+        TxHintPictureCheck("sync commit");
+        if (!TxOpen() && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
+          commit = false;
+      }
       if (commit)
       {
       m_syncStartDeferred = false;
@@ -6591,9 +6607,6 @@ void CVideoPlayer::HandlePlaySpeed()
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_processInfo->GetLevelVQ());
 
-      // 5.E2-9c D4: the hint job's picture compared before the commit's START (an exit here
-      // hands main the set, and E1 holds the start for it)
-      TxHintPictureCheck("sync commit");
       // a scheduled start keeps the audio before an accurate seek's target
       // (FlushBuffers), so it can report first; the video's packets up to the
       // target count as dropped although its keyframe is the first picture
