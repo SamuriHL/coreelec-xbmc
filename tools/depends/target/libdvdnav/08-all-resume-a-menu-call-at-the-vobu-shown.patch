@@ -1,0 +1,147 @@
+Subject: [PATCH] dvdnav: let a player resume a menu call at the VOBU it shows
+
+A player with fifos reads ahead of what it shows. A menu call recorded
+the resume point at the block read, so Resume skipped what was still in
+the fifos. The highlight functions already take the PCI the player
+shows; a menu call had no such input.
+---
+ src/dvdnav/dvdnav.h | 33 +++++++++++++++++++++++++++++++++
+ src/navigation.c    | 36 ++++++++++++++++++++++++++++++++++++
+ src/searching.c     | 19 +++++++++++++++++++
+ 3 files changed, 88 insertions(+)
+
+diff --git a/src/dvdnav/dvdnav.h b/src/dvdnav/dvdnav.h
+index 8e0474271a..3e30847b5d 100644
+--- a/src/dvdnav/dvdnav.h
++++ b/src/dvdnav/dvdnav.h
+@@ -369,6 +369,39 @@ DVDNAV_API dvdnav_status_t dvdnav_time_play(dvdnav_t *self, int32_t title,
+  */
+ DVDNAV_API dvdnav_status_t dvdnav_menu_call(dvdnav_t *self, DVDMenuID_t menu);
+ 
++/*
++ * The position a resume point records for a VOBU. The title is the one
++ * dvdnav_current_title_program() reports, or the title register where no part
++ * entry covers the program, 0 outside a title.
++ */
++typedef struct {
++  DVDDomain_t domain;
++  int32_t title;
++  int32_t vts;
++  int32_t vts_title;
++  int32_t pgcn;
++  int32_t pgn;
++  int32_t cell;
++  int32_t block;     /* the NAV packet, from the start of the cell */
++} dvdnav_nav_position_t;
++
++/*
++ * Get the position of the VOBU whose NAV packet was read last.
++ *
++ * A player with fifos keeps it with the NAV packet and passes the one it
++ * shows to dvdnav_menu_call_from().
++ */
++DVDNAV_API dvdnav_status_t dvdnav_get_current_nav_position(dvdnav_t *self,
++                                                          dvdnav_nav_position_t *pos);
++
++/*
++ * As dvdnav_menu_call(), but a menu called from a title resumes at the given
++ * position, which must be in the title domain as the current one is.
++ * Fails without a jump if the position cannot be taken.
++ */
++DVDNAV_API dvdnav_status_t dvdnav_menu_call_from(dvdnav_t *self, DVDMenuID_t menu,
++                                                const dvdnav_nav_position_t *pos);
++
+ /*
+  * Return the title number and part currently being played.
+  * A title of 0 indicates we are in a menu. In this case, part
+diff --git a/src/navigation.c b/src/navigation.c
+index ba61102631..8584632df7 100644
+--- a/src/navigation.c
++++ b/src/navigation.c
+@@ -186,6 +186,42 @@ dvdnav_status_t dvdnav_current_title_program(dvdnav_t *this, int32_t *title, int
+   return DVDNAV_STATUS_ERR;
+ }
+ 
++dvdnav_status_t dvdnav_get_current_nav_position(dvdnav_t *this, dvdnav_nav_position_t *pos) {
++  int32_t part;
++
++  pthread_mutex_lock(&this->vm_lock);
++  if (!this->vm->vtsi || !this->vm->vmgi) {
++    printerr("Bad VM state.");
++    pthread_mutex_unlock(&this->vm_lock);
++    return DVDNAV_STATUS_ERR;
++  }
++  if (!this->started) {
++    printerr("Virtual DVD machine not started.");
++    pthread_mutex_unlock(&this->vm_lock);
++    return DVDNAV_STATUS_ERR;
++  }
++  if (!this->vm->state.pgc) {
++    printerr("No current PGC.");
++    pthread_mutex_unlock(&this->vm_lock);
++    return DVDNAV_STATUS_ERR;
++  }
++  pos->title = 0;
++  /* a program no part entry covers still has its title in the title register */
++  if (this->vm->state.domain == DVD_DOMAIN_VTSTitle &&
++      !vm_get_current_title_part(this->vm, &pos->title, &part))
++    pos->title = this->vm->state.TTN_REG;
++  pos->domain = this->vm->state.domain;
++  pos->vts = this->vm->state.vtsN;
++  pos->vts_title = this->vm->state.VTS_TTN_REG;
++  pos->pgcn = this->vm->state.pgcN;
++  pos->pgn = this->vm->state.pgN;
++  pos->cell = this->vm->state.cellN;
++  /* the VM's blockN is still the VOBU before this NAV packet */
++  pos->block = this->vobu.vobu_start - this->position_current.cell_start;
++  pthread_mutex_unlock(&this->vm_lock);
++  return DVDNAV_STATUS_OK;
++}
++
+ dvdnav_status_t dvdnav_title_play(dvdnav_t *this, int32_t title) {
+   return dvdnav_part_play(this, title, 1);
+ }
+diff --git a/src/searching.c b/src/searching.c
+index 52022b328c..3de076df37 100644
+--- a/src/searching.c
++++ b/src/searching.c
+@@ -33,6 +33,7 @@
+ #include <dvdread/nav_types.h>
+ #include "vm/decoder.h"
+ #include "vm/vm.h"
++#include "vm/getset.h"
+ #include "dvdnav_internal.h"
+ #include "logger.h"
+ #include <dvdread/ifo_read.h>
+@@ -483,6 +484,11 @@ fail:
+ }
+ 
+ dvdnav_status_t dvdnav_menu_call(dvdnav_t *this, DVDMenuID_t menu) {
++  return dvdnav_menu_call_from(this, menu, NULL);
++}
++
++dvdnav_status_t dvdnav_menu_call_from(dvdnav_t *this, DVDMenuID_t menu,
++                                      const dvdnav_nav_position_t *pos) {
+   vm_t *try_vm;
+ 
+   pthread_mutex_lock(&this->vm_lock);
+@@ -499,6 +505,19 @@ dvdnav_status_t dvdnav_menu_call(dvdnav_t *this, DVDMenuID_t menu) {
+     goto fail;
+   }
+ 
++  /* the resume point is the position the player shows, not the one read */
++  if (pos) {
++    if (pos->domain != DVD_DOMAIN_VTSTitle || try_vm->state.domain != DVD_DOMAIN_VTSTitle ||
++        !set_VTS_PROG(try_vm, pos->vts, pos->vts_title, pos->pgcn, pos->pgn) ||
++        pos->cell < 1 || pos->cell > try_vm->state.pgc->nr_of_cells) {
++      vm_free_copy(try_vm);
++      printerr("Invalid NAV position.");
++      goto fail;
++    }
++    try_vm->state.cellN = pos->cell;
++    try_vm->state.blockN = pos->block;
++  }
++
+   if ( (menu == DVD_MENU_Escape) && (this->vm->state.domain != DVD_DOMAIN_VTSTitle)) {
+     /* Try resume */
+     if (vm_jump_resume(try_vm) && !try_vm->stopped) {
