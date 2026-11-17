@@ -8346,10 +8346,11 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
   {
     if (speed == m_playSpeed)
     {
+      if (m_txPendingSpeed != INT_MIN)
+        CLog::Log(LOGINFO, "TXSTART set={} speed {} pending cleared (the applied speed)",
+                  m_txEngagedGen, speed);
       m_txPendingSpeed = INT_MIN;
       m_txPendingTempo = false;
-      CLog::Log(LOGINFO, "TXSTART set={} speed {} pending cleared (the applied speed)",
-                m_txEngagedGen, speed);
       return;
     }
     m_txPendingSpeed = speed;
