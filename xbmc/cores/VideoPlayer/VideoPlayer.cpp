@@ -1969,6 +1969,10 @@ void CVideoPlayer::HandleDynamicBufferLevel()
       acNew = dec(acOld, acStep, LvLAudioMIN);
   }
 
+  // 5.E2-9c D1: the read-on's entry maximum stays fixed
+  if (m_txReadOn == TxReadOn::ACTIVE)
+    acNew = acOld;
+
   // ---------------------------------------------------------
   // APPLY CHANGES
   // ---------------------------------------------------------
@@ -2959,6 +2963,15 @@ void CVideoPlayer::ArmStartGate(const char* where)
       m_txAudioFullForce = hooks.audioFullForce;
       // 5.E2-9b D1.6: a speed inside this start is applied at once, as transaction_off
       m_txSkipPausestart = aml_transaction_skip("pausestart");
+      // 5.E2-9c D1, D2
+      m_txSkipPrimebound = aml_transaction_skip("primebound");
+      m_txSkipReadon = m_txSkipPrimebound || aml_transaction_skip("readon");
+      m_txReadOn = TxReadOn::IDLE;
+      m_txMenuDomain = false;
+#if defined(HAVE_LIBBLURAY)
+      if (m_pInputBluray)
+        m_txMenuDomain = m_pInputBluray->IsMenuDomainVideo();
+#endif
       // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
       if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
       {
@@ -3612,7 +3625,9 @@ void CVideoPlayer::TxRepliesPass()
   const bool adoptOk = m_txAdopt && (*m_txAdopt == Form::ADOPTED || *m_txAdopt == Form::BEHIND_GUI);
   // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
   // E2-8b NOTE: a forced bound that met a committed job (not ended, D8) lets D6 open it
-  if (settleOk && adoptOk && (!(m_txCapForce || m_txAudioFullForce) || m_txBoundMetCommit))
+  // 5.E2-9c D1: inside the read-on's scope audiofullforce is not read here
+  if (settleOk && adoptOk &&
+      (!(m_txCapForce || (m_txAudioFullForce && !TxReadOnOpen())) || m_txBoundMetCommit))
   {
     if (!TxDecided(*m_txSettle != Settle::NO_CHANGE))
       return;
@@ -4024,9 +4039,27 @@ void CVideoPlayer::CheckStartGate()
     return;
   }
   const auto now = std::chrono::steady_clock::now();
+  // 5.E2-9c D1: inside the read-on's scope the 1 s audio-full bound is not checked;
+  // transaction_audiofullforce only ends the read-on, for the open
+  if (TxReadOnOpen())
+  {
+    if (m_txAudioFullForce && m_txReadOn != TxReadOn::FORCED)
+    {
+      // logged once, entered or not (r4 L12)
+      if (m_txReadOn != TxReadOn::ACTIVE)
+      {
+        m_txReadOnPeakData = 0;
+        m_txReadOnPeakTime = 0.0;
+        m_txReadOn = TxReadOn::ACTIVE;
+      }
+      TxReadOnEnd("forced");
+      m_txReadOn = TxReadOn::FORCED;
+    }
+    m_startGateStarveSince = {};
+  }
   // a full audio queue stops the reads, and a video decoder that needs more input
   // never configures (Sync's audioFullVideoStarving)
-  if ((TxOpen() && m_txAudioFullForce) ||
+  else if ((TxOpen() && m_txAudioFullForce) ||
       (state == State::UNCONFIGURED && m_CurrentAudio.id >= 0 &&
        !m_VideoPlayerAudio->AcceptsData() && m_processInfo->GetLevelVQ() < 10))
   {
@@ -4093,6 +4126,9 @@ void CVideoPlayer::TxReprime(const char* caller)
       m_discTime.SetTxHeld(true);
   }
   m_txReprimed = true;
+  // 5.E2-9c D1 (r3 M6): after the flush a stall gets the read-on again (forced stays off)
+  if (m_txReadOn != TxReadOn::FORCED)
+    m_txReadOn = TxReadOn::IDLE;
   // D4 (r2 N-M1): re-armed only while no job is posted, so no second decision
   if (m_txStep == TxStep::NONE)
   {
@@ -4106,6 +4142,80 @@ void CVideoPlayer::TxReprime(const char* caller)
       CLog::Log(LOGWARNING, "TXTEST seekdelay {} ms set={}", ms, m_txEngagedGen);
       CThread::Sleep(std::chrono::milliseconds(ms));
     }
+}
+
+// 5.E2-9c D1 (ruling 2): the gated audio queue stops the demuxer, so a held start's video
+// decoder starves of the packets for its first picture
+bool CVideoPlayer::TxReadOnBypass()
+{
+  if (!TxReadOnOpen() || m_txReadOn == TxReadOn::ENDED || m_txReadOn == TxReadOn::FORCED)
+    return false;
+  // the pause must reach the demuxer (the read gate's pause branch)
+  if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
+    return false;
+  if (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING ||
+      m_processInfo->GetLevelVQ() >= 10)
+    return false;
+  int data = 0;
+  int maxData = 0;
+  double time = 0.0;
+  double cap = 0.0;
+  bool timeFull = false;
+  m_VideoPlayerAudio->GetQueueFill(data, maxData, time, cap, timeFull);
+  if (m_txReadOn == TxReadOn::IDLE)
+  {
+    // a data-full queue below LvLAudioMAX is reopened by the sizer's staircase
+    if (!timeFull && maxData < LvLAudioMAX)
+      return false;
+    m_txReadOn = TxReadOn::ACTIVE;
+    m_txReadOnMax = maxData;
+    m_txReadOnCap = cap;
+    m_txReadOnPeakData = data;
+    m_txReadOnPeakTime = time;
+    CLog::Log(LOGINFO,
+              "TXSTART set={} reading on for a starving video decoder (audio max {:.1f} MB time "
+              "cap {:.1f} s)",
+              m_txEngagedGen, static_cast<double>(maxData) / SIZE_1M, cap);
+  }
+  const int64_t dataCap = static_cast<int64_t>(m_txReadOnMax) + 8 * SIZE_1M;
+  if (m_VideoPlayerAudio->IsOverFull(dataCap, m_txReadOnCap + 2.0))
+  {
+    m_VideoPlayerAudio->GetQueueFill(data, maxData, time, cap, timeFull);
+    m_txReadOnPeakData = std::max(m_txReadOnPeakData, data);
+    m_txReadOnPeakTime = std::max(m_txReadOnPeakTime, time);
+    TxReadOnEnd(static_cast<int64_t>(data) > dataCap ? "data cap" : "time cap");
+    return false;
+  }
+  m_txReadOnPeakData = std::max(m_txReadOnPeakData, data);
+  m_txReadOnPeakTime = std::max(m_txReadOnPeakTime, time);
+  return true;
+}
+
+void CVideoPlayer::TxReadOnPass()
+{
+  // r3 answer 1: a menu page waiting makes the open a menu-domain one from this pass
+  if (TxOpen() && m_menuPageWaiting && !m_txMenuDomain)
+  {
+    if (m_txReadOn == TxReadOn::ACTIVE)
+      TxReadOnEnd("menu");
+    m_txMenuDomain = true;
+  }
+  if (m_txReadOn != TxReadOn::ACTIVE)
+    return;
+  if (!TxOpen())
+    TxReadOnEnd(m_txStarted ? "start" : "exit");
+  else if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING)
+    TxReadOnEnd("picture");
+}
+
+void CVideoPlayer::TxReadOnEnd(const char* why)
+{
+  if (m_txReadOn != TxReadOn::ACTIVE)
+    return;
+  m_txReadOn = TxReadOn::ENDED;
+  CLog::Log(LOGINFO, "TXSTART set={} reading on ended ({}) peak {:.1f} MB {:.1f} s",
+            m_txEngagedGen, why, static_cast<double>(m_txReadOnPeakData) / SIZE_1M,
+            m_txReadOnPeakTime);
 }
 
 void CVideoPlayer::OpenStartGate(const char* why, bool bound)
@@ -4465,6 +4575,8 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txPendingSpeed = INT_MIN;
   m_txPendingTempo = m_txSkipPausestart = false;
   m_txInboxSpeedLoss = 0;
+  m_txSkipReadon = m_txSkipPrimebound = m_txMenuDomain = m_txReadOnBypassed = false;
+  m_txReadOn = TxReadOn::IDLE;
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
@@ -5040,9 +5152,13 @@ void CVideoPlayer::Process()
         m_pDemuxer->FillBuffer(fillBuffer);
     }
 
+    // 5.E2-9c D1: a held start keeps reading for a starving video decoder
+    TxReadOnPass();
     // if the queues are full, no need to read more
-    if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
-        (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
+    const bool audioFull = !m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0;
+    const bool videoFull = !m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0;
+    m_txReadOnBypassed = audioFull && !videoFull && TxReadOnBypass();
+    if ((audioFull || videoFull) && !m_txReadOnBypassed)
     {
 #if defined(HAVE_LIBBLURAY)
       // a BD-J application acting on a key press (stop this playlist, play
@@ -5175,6 +5291,16 @@ void CVideoPlayer::Process()
         m_bdjAllDelivered = true;
 #else
       const bool bdjAtEnd = false;
+#endif
+
+#if defined(HAVE_LIBBLURAY)
+      // 5.E2-9c D1 (r3 M4): the VM's transition waits behind the full audio queue, as today
+      if (m_txReadOnBypassed && m_pInputBluray && m_pInputBluray->IsNavigationMode())
+      {
+        TxReadOnEnd("segment boundary");
+        CThread::Sleep(10ms);
+        continue;
+      }
 #endif
 
       // if there is another stream available, reopen demuxer

@@ -1116,6 +1116,37 @@ protected:
   //! OnPlayBackSpeedChanged (gate E29B-1 item 5b); INT_MIN = none
   int m_txDroppedSpeed = INT_MIN;
   bool m_txSkipPausestart = false; //!< D1.6: transaction_skip pausestart, read at the engage
+  // 5.E2-9c (docs/phase5_e2_9c_impl.md; P only, reset in Prepare)
+  //! skip words read at the engage: `readon` (D1 off), `primebound` (D2 off; implies readon)
+  bool m_txSkipReadon = false;
+  bool m_txSkipPrimebound = false;
+  //! D1/D2: a disc menu domain at the engage, or a menu page waiting since: CN's 12 s and its
+  //! 1 s bound for the open
+  bool m_txMenuDomain = false;
+  //! D1: the read past a full audio queue for a starving video decoder
+  enum class TxReadOn
+  {
+    IDLE, //!< not entered (or reset by a re-PRIME)
+    ACTIVE,
+    ENDED, //!< ended until a re-PRIME resets it
+    FORCED, //!< transaction_audiofullforce: off for the open
+  };
+  TxReadOn m_txReadOn = TxReadOn::IDLE;
+  int m_txReadOnMax = 0; //!< the audio data maximum at the entry
+  double m_txReadOnCap = 0.0; //!< the audio time cap at the entry (s)
+  int m_txReadOnPeakData = 0;
+  double m_txReadOnPeakTime = 0.0;
+  bool m_txReadOnBypassed = false; //!< this pass's read gate was passed by D1
+  //! D1: an engaged open P decides, outside menu domains and transaction_skip readon
+  bool TxReadOnOpen() const
+  {
+    return TxOpen() && m_txJob && !m_txMenuDomain && !m_txSkipReadon;
+  }
+  //! D1: the read gate stops only for the audio queue: true when the read goes on
+  bool TxReadOnBypass();
+  //! D1: an active read-on ends at START, an exit, a menu page or the first picture
+  void TxReadOnPass();
+  void TxReadOnEnd(const char* why);
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
   bool TxKeepsFlush(const char* caller) const;
   //! D2: the flush's re-PRIME: an E1 hold dropped without START, CN's bounds re-armed

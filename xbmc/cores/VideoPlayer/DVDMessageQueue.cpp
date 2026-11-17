@@ -591,6 +591,25 @@ double CDVDMessageQueue::GetTimeSize() const
     return (m_TimeFront - m_TimeBack) / DVD_TIME_BASE;
 }
 
+void CDVDMessageQueue::GetFill(
+    int& dataSize, int& maxDataSize, double& timeSize, double& timeCap, bool& timeFull) const
+{
+  std::unique_lock lock(m_section);
+  dataSize = static_cast<int>(m_iDataSize);
+  maxDataSize = m_iMaxDataSize;
+  timeSize = GetTimeSize();
+  timeCap = m_TimeSize > 0.0 ? 1.0 / m_TimeSize : 0.0;
+  // GetLevel's time path at 100
+  timeFull = !IsDataBased() && m_iDataSize != 0 &&
+             ceil(100.0 * m_TimeSize * (m_TimeFront - m_TimeBack) / DVD_TIME_BASE) >= 100.0;
+}
+
+bool CDVDMessageQueue::IsOverFull(int64_t maxBytes, double maxSecs) const
+{
+  std::unique_lock lock(m_section);
+  return static_cast<int64_t>(m_iDataSize) > maxBytes || GetTimeSize() > maxSecs;
+}
+
 bool CDVDMessageQueue::IsDataBased() const
 {
   std::unique_lock lock(m_section);

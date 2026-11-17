@@ -36,6 +36,18 @@ public:
   [[nodiscard]] bool IsStalled() const override;
   [[nodiscard]] bool IsPassthrough() const override;
   [[nodiscard]] float GetDynamicRangeAmplification() const override;
+  // 5.E2-9c D1: no queue of its own here (the read-on never enters)
+  [[nodiscard]] bool IsOverFull(int64_t maxBytes, double maxSecs) const override { return false; }
+  void GetQueueFill(int& dataSize,
+                    int& maxDataSize,
+                    double& timeSize,
+                    double& timeCap,
+                    bool& timeFull) const override
+  {
+    dataSize = maxDataSize = 0;
+    timeSize = timeCap = 0.0;
+    timeFull = false;
+  }
 
 private:
   CMediaPipelineWebOS& m_mediaPipeline;

@@ -186,4 +186,13 @@ public:
   virtual void SetMaxDataSize(int iMaxDataSize) {}
   virtual void SetMaxTimeSize(double sec) {}
   virtual int GetMaxDataSize() const = 0;
+  //! 5.E2-9c D1: the queue's data above maxBytes or its queued time above maxSecs, checked
+  //! under the queue's lock
+  virtual bool IsOverFull(int64_t maxBytes, double maxSecs) const = 0;
+  //! 5.E2-9c D1: the queue's fill under one lock (time in seconds; timeFull: full by time)
+  virtual void GetQueueFill(int& dataSize,
+                            int& maxDataSize,
+                            double& timeSize,
+                            double& timeCap,
+                            bool& timeFull) const = 0;
 };

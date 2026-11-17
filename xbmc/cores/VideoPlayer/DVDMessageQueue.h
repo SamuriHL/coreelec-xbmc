@@ -145,6 +145,12 @@ public:
   }
   bool IsInited() const { return m_bInitialized; }
   bool IsDataBased() const;
+  //! 5.E2-9c D1: the fill under one lock: data size and maximum, queued time and the time cap
+  //! (seconds; 0 when data based), and whether the queue is full by time
+  void GetFill(int& dataSize, int& maxDataSize, double& timeSize, double& timeCap,
+               bool& timeFull) const;
+  //! 5.E2-9c D1: the data above maxBytes or the queued time above maxSecs (under the lock)
+  bool IsOverFull(int64_t maxBytes, double maxSecs) const;
 
   // a stream worker's eventfd, written at every put the worker can take, at
   // Abort and when a draining wait starts (-1 clears; the worker clears it

@@ -80,6 +80,18 @@ public:
   void SetMaxDataSize(int iMaxDataSize) { m_messageQueue.SetMaxDataSize(iMaxDataSize); }
   void SetMaxTimeSize(double sec) { m_messageQueue.SetMaxTimeSize(sec); }
   int GetMaxDataSize() const { return m_messageQueue.GetMaxDataSize(); }
+  bool IsOverFull(int64_t maxBytes, double maxSecs) const override
+  {
+    return m_messageQueue.IsOverFull(maxBytes, maxSecs);
+  }
+  void GetQueueFill(int& dataSize,
+                    int& maxDataSize,
+                    double& timeSize,
+                    double& timeCap,
+                    bool& timeFull) const override
+  {
+    m_messageQueue.GetFill(dataSize, maxDataSize, timeSize, timeCap, timeFull);
+  }
 
 protected:
 
