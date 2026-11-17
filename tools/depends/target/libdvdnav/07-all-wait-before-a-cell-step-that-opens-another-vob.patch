@@ -1,0 +1,93 @@
+Subject: [PATCH] dvdnav: wait at a VOB change, not at highlights in a title
+
+A player with fifos reads ahead of what it shows. At the end of a title
+or menu the next cell step opened another VOB while the fifos still held
+the end of the old one, so seeks, chapter skips and menu calls acted on
+a title the player no longer showed. The cell and PGC commands decide
+where the step goes, so they run on a copy of the VM first.
+
+The wait at a cell with highlights is there so a menu is not shown too
+shortly. It also came at every title cell with highlights, and where the
+next cell of the PGC follows as a plain step: no cell command, outside
+an angle block. A player that empties its fifos at a wait paused the
+movie at such a title cell and left a gap at such a seamless join. The
+highlight wait now applies only in the menu domains and not before a
+plain step, so title cells with highlights play straight through. A
+step that opens another VOB still waits in every domain.
+---
+ src/dvdnav.c |  9 +++++++--
+ src/vm/vm.c  | 27 +++++++++++++++++++++++++++
+ src/vm/vm.h  |  2 ++
+ 3 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index 92857bb988..08f60d1385 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -867,8 +867,13 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
+ 
+       /* we are about to leave a cell, so a lot of state changes could occur;
+        * under certain conditions, the application should get in sync with us before this,
+-       * otherwise it might show stills or menus too shortly */
+-      if ((this->position_current.still || this->pci.hli.hl_gi.hli_ss) && !this->sync_wait_skip)
++       * otherwise it might show stills or menus too shortly, or leave the title or menu
++       * it still shows */
++      if (!this->sync_wait_skip &&
++          (this->position_current.still ||
++           (this->pci.hli.hl_gi.hli_ss && !vm_get_next_cell_continues(this->vm) &&
++            this->vm->state.domain != DVD_DOMAIN_VTSTitle) ||
++           vm_get_next_cell_changes_vob(this->vm)))
+         this->sync_wait = 1;
+ 
+       if (!this->sync_wait && (!this->position_current.still || this->skip_still)) {
+diff --git a/src/vm/vm.c b/src/vm/vm.c
+index 1091e1c0f4..f7565fa11f 100644
+--- a/src/vm/vm.c
++++ b/src/vm/vm.c
+@@ -600,6 +600,33 @@ void vm_get_next_cell(vm_t *vm) {
+   process_command(vm, play_Cell_post(vm));
+ }
+ 
++/* tells whether vm_get_next_cell() plays a later cell of this PGC without running commands */
++int vm_get_next_cell_continues(vm_t *vm) {
++  const cell_playback_t *cell = &vm->state.pgc->cell_playback[vm->state.cellN - 1];
++
++  return cell->cell_cmd_nr == 0 && cell->block_type != BLOCK_TYPE_ANGLE_BLOCK &&
++         vm->state.cellN < vm->state.pgc->nr_of_cells;
++}
++
++/* tells whether vm_get_next_cell() leaves the domain or VTS, which opens another VOB */
++int vm_get_next_cell_changes_vob(vm_t *vm) {
++  vm_t *try_vm;
++  int changes;
++
++  if (vm_get_next_cell_continues(vm))
++    return 0;
++
++  /* the commands decide, so run them on a copy */
++  try_vm = vm_new_copy(vm);
++  if (!try_vm)
++    return 0;
++  vm_get_next_cell(try_vm);
++  changes = !try_vm->stopped &&
++            (try_vm->state.domain != vm->state.domain || try_vm->state.vtsN != vm->state.vtsN);
++  vm_free_copy(try_vm);
++  return changes;
++}
++
+ 
+ /* Jumping */
+ 
+diff --git a/src/vm/vm.h b/src/vm/vm.h
+index bada9f0e5f..3b7991457f 100644
+--- a/src/vm/vm.h
++++ b/src/vm/vm.h
+@@ -129,6 +129,8 @@ void  vm_free_copy(vm_t *vm);
+ /* regular playback */
+ void vm_position_get(vm_t *vm, vm_position_t *position);
+ void vm_get_next_cell(vm_t *vm);
++int  vm_get_next_cell_continues(vm_t *vm);
++int  vm_get_next_cell_changes_vob(vm_t *vm);
+ 
+ /* Jumping - all these return 1, if a hop has been performed */
+ int vm_jump_pg(vm_t *vm, int pg);
