@@ -3924,13 +3924,11 @@ void CVideoPlayer::CheckStartGate()
     CLog::Log(LOGINFO, "VideoPlayer: start gate: fullscreen at the first picture (set {})",
               m_startGateGen);
   }
+  // 5.E2-9a (D4, E28A-8): an engaged open's bounds do not count the lost time; the loss is
+  // marked by Process's lost branch (this pass does not run there), this return guards a
+  // pass from inside a demux read
   if (m_displayLost)
-  {
-    // 5.E2-9a (D4, E28A-8): an engaged open's bounds do not count the lost time
-    if (TxOpen())
-      m_txGateLostSeen = true;
     return;
-  }
   if (m_txGateLostSeen)
   {
     m_txGateLostSeen = false;
@@ -4758,8 +4756,13 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      // 5.E2-9a (D4, E28A-8): this branch ends the pass before CheckStartGate, so the loss is
+      // marked here for CN's bounds as for the holds' (re-armed on the first pass after it)
       if (TxOpen())
+      {
         m_txLostSinceArm = true;
+        m_txGateLostSeen = true;
+      }
       // 5.E2-8b D6: the backstop is paused while P is lost
       if (TxOpen() && m_txJob && m_txStep == TxStep::POSTED &&
           m_txLostAt == std::chrono::steady_clock::time_point{})
