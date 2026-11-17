@@ -3504,6 +3504,9 @@ CRenderManager::SStartFacts CVideoPlayer::TxDecideFromHints()
     f.fps = static_cast<float>(
         DVD_TIME_BASE / CDVDCodecUtils::NormalizeFrameduration(static_cast<double>(DVD_TIME_BASE) *
                                                                hint.fpsscale / hint.fpsrate));
+    // VPV's OpenStream forces 25 outside its range (code review L2)
+    if (f.fps > 120.0f || f.fps < 5.0f)
+      f.fps = 25.0f;
   }
   else
   {
@@ -3516,8 +3519,27 @@ CRenderManager::SStartFacts CVideoPlayer::TxDecideFromHints()
   }
   f.width = hint.width;
   f.height = hint.height;
-  if (hint.stereo_mode != "mono")
-    f.stereoMode = hint.stereo_mode;
+  // VPV's stereo mode for a picture the decoder leaves unset: the user's forced mode, else the
+  // hint's (code review L3)
+  const CVideoSettings settings = m_processInfo->GetVideoSettings();
+  std::string stereoMode;
+  switch (static_cast<RenderStereoMode>(settings.m_StereoMode))
+  {
+    case RenderStereoMode::SPLIT_VERTICAL:
+      stereoMode = settings.m_StereoInvert ? "right_left" : "left_right";
+      break;
+    case RenderStereoMode::SPLIT_HORIZONTAL:
+      stereoMode = settings.m_StereoInvert ? "bottom_top" : "top_bottom";
+      break;
+    case RenderStereoMode::HARDWAREBASED:
+      stereoMode = settings.m_StereoInvert ? "block_rl" : "block_lr";
+      break;
+    default:
+      stereoMode = hint.stereo_mode;
+      break;
+  }
+  if (stereoMode != "mono")
+    f.stereoMode = stereoMode;
   // the type after the open's VS10 rewrite. An HDR10/HDR10+ hint left native is DVCA's
   // candidate: its first keyframe re-fakes DV when VS10 or HDR2DV maps it (DVCA:1146-1147)
   f.hdrType = hint.hdrType;
