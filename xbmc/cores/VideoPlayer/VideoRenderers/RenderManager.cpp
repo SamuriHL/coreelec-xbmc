@@ -1446,7 +1446,14 @@ void CRenderManager::FrameMove()
   // drawn just before a held start, P5-11): repaint once they are released.
   const bool withheld = GraphicsWithheld();
   if (m_graphicsWithheld && !withheld)
+  {
     OVERLAY::MarkDirty();
+    // E2-9b D6 row 7: the release instant on the schedule's clock base (CLOCK_MONOTONIC ns)
+    CLog::Log(LOGINFO, "RM graphics released at {} ns",
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch())
+                  .count());
+  }
   m_graphicsWithheld = withheld;
 
   {
