@@ -523,6 +523,7 @@ int CDVDInputStreamNavigator::ProcessBlock(uint8_t* dest_buffer, int* read)
           {
             m_bInMenu = menu;
           }
+          m_navPackets.clear();
           iNavresult = m_pVideoPlayer->OnDiscNavResult(buf, DVDNAV_VTS_CHANGE);
         }
       }
@@ -644,6 +645,12 @@ int CDVDInputStreamNavigator::ProcessBlock(uint8_t* dest_buffer, int* read)
 
         m_iTime = (int) ( m_dll.dvdnav_get_current_time(m_dvdnav)  / 90 );
 
+        NavPacket nav{.time = m_iTime,
+                      .totalTime = m_iTotalTime,
+                      .start = static_cast<double>(m_iVobUnitStart * 1000) / 90};
+        if (m_dll.dvdnav_get_current_nav_position(m_dvdnav, &nav.position) == DVDNAV_STATUS_OK)
+          m_navPackets.push_back(nav);
+
         iNavresult = m_pVideoPlayer->OnDiscNavResult((void*)pci, DVDNAV_NAV_PACKET);
       }
       break;
@@ -652,6 +659,7 @@ int CDVDInputStreamNavigator::ProcessBlock(uint8_t* dest_buffer, int* read)
       // This event is issued whenever a non-seamless operation has been executed.
       // Applications with fifos should drop the fifos content to speed up responsiveness.
       {
+        m_navPackets.clear();
         iNavresult = m_pVideoPlayer->OnDiscNavResult(NULL, DVDNAV_HOP_CHANNEL);
       }
       break;
@@ -859,7 +867,40 @@ bool CDVDInputStreamNavigator::OnMenu(MenuCall type)
     return false;
   }
 
-  return m_dll.dvdnav_menu_call(m_dvdnav, DVD_MENU_Escape) == DVDNAV_STATUS_OK;
+  return CallMenu(DVD_MENU_Escape);
+}
+
+// the read runs ahead of the picture, so a title resumes from the VOBU on screen; one the VM
+// cannot take resumes at the read
+bool CDVDInputStreamNavigator::CallMenu(DVDMenuID_t menu)
+{
+  if (!m_navPackets.empty() && m_navPackets.front().position.domain == DVD_DOMAIN_VTSTitle)
+  {
+    const dvdnav_nav_position_t& position = m_navPackets.front().position;
+    CLog::Log(LOGDEBUG, "{} - from title {} pgc {} cell {} block {}", __FUNCTION__, position.title,
+              position.pgcn, position.cell, position.block);
+    if (m_dll.dvdnav_menu_call_from(m_dvdnav, menu, &position) == DVDNAV_STATUS_OK)
+      return true;
+  }
+  return m_dll.dvdnav_menu_call(m_dvdnav, menu) == DVDNAV_STATUS_OK;
+}
+
+void CDVDInputStreamNavigator::SetNavPacketOffset(double offset)
+{
+  for (auto it = m_navPackets.rbegin(); it != m_navPackets.rend() && it->pts == DVD_NOPTS_VALUE;
+       ++it)
+    it->pts = it->start - offset;
+}
+
+const CDVDInputStreamNavigator::NavPacket* CDVDInputStreamNavigator::ReleaseNavPackets(
+    double presented)
+{
+  // a VOBU is passed once the picture reaches the start of the next one
+  while (presented != DVD_NOPTS_VALUE && m_navPackets.size() > 1 &&
+         m_navPackets[1].pts != DVD_NOPTS_VALUE && presented >= m_navPackets[1].pts)
+    m_navPackets.pop_front();
+
+  return m_navPackets.empty() ? nullptr : &m_navPackets.front();
 }
 
 void CDVDInputStreamNavigator::OnBack()

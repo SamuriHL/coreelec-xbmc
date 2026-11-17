@@ -2736,6 +2736,7 @@ void CVideoPlayer::Process()
       }
     }
 
+    double menuCorrection = 0.0;
     if (IsInMenuInternal())
     {
       if (std::shared_ptr<CDVDInputStream::IMenus> menu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
@@ -2744,7 +2745,10 @@ void CVideoPlayer::Process()
         if (pPacket->dts != DVD_NOPTS_VALUE && pPacket->dts > correction)
           pPacket->dts -= correction;
         if (pPacket->pts != DVD_NOPTS_VALUE && pPacket->pts > correction)
+        {
           pPacket->pts -= correction;
+          menuCorrection = correction;
+        }
       }
       if (m_dvd.syncClock)
       {
@@ -2754,7 +2758,7 @@ void CVideoPlayer::Process()
     }
 
     // process the packet
-    ProcessPacket(pStream, pPacket);
+    ProcessPacket(pStream, pPacket, menuCorrection);
   }
 }
 
@@ -2795,7 +2799,7 @@ bool CVideoPlayer::IsReplayedPacket(CDemuxStream* stream, DemuxPacket* packet)
   return false;
 }
 
-void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
+void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket, double menuCorrection)
 {
   // process packet if it belongs to selected stream.
   // for dvd's don't allow automatic opening of streams*/
@@ -2803,7 +2807,7 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
   if (CheckIsCurrent(m_CurrentAudio, pStream, pPacket))
     ProcessAudioData(pStream, pPacket);
   else if (CheckIsCurrent(m_CurrentVideo, pStream, pPacket))
-    ProcessVideoData(pStream, pPacket);
+    ProcessVideoData(pStream, pPacket, menuCorrection);
   else if (CheckIsCurrent(m_CurrentSubtitle, pStream, pPacket))
     ProcessSubData(pStream, pPacket);
   else if (CheckIsCurrent(m_CurrentTeletext, pStream, pPacket))
@@ -2881,7 +2885,9 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
     m_CurrentAudio.packets++;
 }
 
-void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
+void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream,
+                                    DemuxPacket* pPacket,
+                                    double menuCorrection)
 {
   CheckStreamChanges(m_CurrentVideo, pStream);
   bool checkcont = false;
@@ -2904,6 +2910,11 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
   CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::ProcessVideoData size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms, clock:{:.3f} level:{:d}",
     pPacket->iSize, pPacket->dts/1000000, pPacket->pts/1000000, pPacket->duration/1000.0,
     m_clock.GetClock()/1000000.0,m_processInfo->GetLevelVQ());
+  // a DVD VOBU is played with the offset of the first video packet after its NAV packet
+  if (pPacket->pts != DVD_NOPTS_VALUE && m_pInputStream &&
+      m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+    std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)
+        ->SetNavPacketOffset(m_offset_pts + menuCorrection);
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
 
   if (!drop)
@@ -7721,6 +7732,20 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     CDVDInputStream::ITimes::Times times;
     const bool haveTimes = pTimes && pTimes->GetTimes(times);
+
+    // a DVD VOBU stops being the position once the picture on screen has passed it, which only
+    // the clock of the new pictures tells
+    if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+    {
+      const auto inSync = [](const CCurrentStream& current)
+      { return current.id < 0 || current.syncState == IDVDStreamPlayer::SYNC_INSYNC; };
+      double presented = DVD_NOPTS_VALUE;
+      if ((m_CurrentAudio.id >= 0 || m_CurrentVideo.id >= 0) && inSync(m_CurrentAudio) &&
+          inSync(m_CurrentVideo))
+        presented = m_clock.GetClock();
+      std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)
+          ->ReleaseNavPackets(presented);
+    }
 
     // Raw (pre-EDL) upper bound of the stream, needed below to tell whether the last
     // chapter is fully contained within a trailing EDL cut.

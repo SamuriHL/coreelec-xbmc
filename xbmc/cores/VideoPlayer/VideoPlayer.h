@@ -461,9 +461,9 @@ protected:
 
   bool CheckIsCurrent(const CCurrentStream& current, CDemuxStream* stream, DemuxPacket* pkg);
   bool IsReplayedPacket(CDemuxStream* stream, DemuxPacket* packet);
-  void ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket);
+  void ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket, double menuCorrection = 0.0);
   void ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket);
-  void ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket);
+  void ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket, double menuCorrection);
   void ProcessSubData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessTeletextData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessRadioRDSData(CDemuxStream* pStream, DemuxPacket* pPacket);

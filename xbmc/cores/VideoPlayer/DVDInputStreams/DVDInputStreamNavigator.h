@@ -16,11 +16,13 @@
 #include "DVDStateSerializer.h"
 #include "DllDvdNav.h"
 #include "cores/MenuType.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "threads/CriticalSection.h"
 #include "utils/Geometry.h"
 #include "video/VideoInfoTag.h"
 
 #include <chrono>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -50,6 +52,16 @@ class CDVDInputStreamNavigator
   , public CDVDInputStream::IMenus
 {
 public:
+  // a VOBU read and not yet passed by the picture on screen
+  struct NavPacket
+  {
+    dvdnav_nav_position_t position{};
+    int time{0}; // ms into the PGC at the start of the VOBU
+    int totalTime{0};
+    double start{0.0}; // the VOBU start on the pts the demuxer gives its packets
+    double pts{DVD_NOPTS_VALUE}; // the start less the offset of the first video packet after it
+  };
+
   CDVDInputStreamNavigator(IVideoPlayer* player, const CFileItem& fileitem);
   ~CDVDInputStreamNavigator() override;
 
@@ -145,6 +157,10 @@ public:
 
   VideoStreamInfo GetVideoStreamInfo();
 
+  void SetNavPacketOffset(double offset);
+  // drops the VOBUs the picture at `presented` has passed, returns the one on screen
+  const NavPacket* ReleaseNavPackets(double presented);
+
   void SaveCurrentState(const CStreamDetails& details) override;
   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
   void UpdateStack(CFileItem& item) override;
@@ -156,6 +172,7 @@ protected:
   static void SetAudioStreamName(AudioStreamInfo &info, const audio_attr_t &audio_attributes);
   static void SetSubtitleStreamName(SubtitleStreamInfo &info, const subp_attr_t &subp_attributes);
 
+  bool CallMenu(DVDMenuID_t menu);
   int GetAngleCount();
   void GetVideoResolution(uint32_t * width, uint32_t * height);
 
@@ -180,6 +197,8 @@ protected:
   int64_t m_iVobUnitStart;
   int64_t m_iVobUnitStop;
   int64_t m_iVobUnitCorrection;
+
+  std::deque<NavPacket> m_navPackets; // oldest first
 
   int m_iTitleCount;
   int m_iTitle;

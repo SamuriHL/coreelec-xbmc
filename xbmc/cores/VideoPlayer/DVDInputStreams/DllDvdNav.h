@@ -54,6 +54,8 @@ public:
   virtual dvdnav_status_t dvdnav_part_play_auto_stop(dvdnav_t *self, int32_t title, int32_t part, int32_t parts_to_play) = 0;
   virtual dvdnav_status_t dvdnav_time_play(dvdnav_t *self, int32_t title, uint64_t time) = 0;
   virtual dvdnav_status_t dvdnav_menu_call(dvdnav_t *self, DVDMenuID_t menu) = 0;
+  virtual dvdnav_status_t dvdnav_get_current_nav_position(dvdnav_t *self, dvdnav_nav_position_t *pos) = 0;
+  virtual dvdnav_status_t dvdnav_menu_call_from(dvdnav_t *self, DVDMenuID_t menu, const dvdnav_nav_position_t *pos) = 0;
   virtual dvdnav_status_t dvdnav_current_title_info(dvdnav_t *self, int32_t *title, int32_t *part) = 0;
   virtual dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t *title, int32_t *pgcn, int32_t *pgn) = 0;
   virtual dvdnav_status_t dvdnav_get_position_in_title(dvdnav_t *self, uint32_t *pos, uint32_t *len) = 0;
@@ -151,6 +153,8 @@ class DllDvdNav : public DllDynamic, DllDvdNavInterface
   DEFINE_METHOD4(dvdnav_status_t, dvdnav_part_play_auto_stop, (dvdnav_t *p1, int32_t p2, int32_t p3, int32_t p4))
   DEFINE_METHOD3(dvdnav_status_t, dvdnav_time_play, (dvdnav_t *p1, int32_t p2, uint64_t p3))
   DEFINE_METHOD2(dvdnav_status_t, dvdnav_menu_call, (dvdnav_t *p1, DVDMenuID_t p2))
+  DEFINE_METHOD2(dvdnav_status_t, dvdnav_get_current_nav_position, (dvdnav_t *p1, dvdnav_nav_position_t *p2))
+  DEFINE_METHOD3(dvdnav_status_t, dvdnav_menu_call_from, (dvdnav_t *p1, DVDMenuID_t p2, const dvdnav_nav_position_t *p3))
   DEFINE_METHOD3(dvdnav_status_t, dvdnav_current_title_info, (dvdnav_t *p1, int32_t *p2, int32_t *p3))
   DEFINE_METHOD4(dvdnav_status_t, dvdnav_current_title_program, (dvdnav_t *p1, int32_t *p2, int32_t *p3, int32_t *p4))
   DEFINE_METHOD3(dvdnav_status_t, dvdnav_get_position_in_title, (dvdnav_t *p1, uint32_t *p2, uint32_t *p3))
@@ -243,6 +247,8 @@ class DllDvdNav : public DllDynamic, DllDvdNavInterface
     RESOLVE_METHOD(dvdnav_part_play_auto_stop)
     RESOLVE_METHOD(dvdnav_time_play)
     RESOLVE_METHOD(dvdnav_menu_call)
+    RESOLVE_METHOD(dvdnav_get_current_nav_position)
+    RESOLVE_METHOD(dvdnav_menu_call_from)
     RESOLVE_METHOD(dvdnav_current_title_info)
     RESOLVE_METHOD(dvdnav_current_title_program)
     RESOLVE_METHOD(dvdnav_get_position_in_title)
