@@ -3488,7 +3488,10 @@ void CVideoPlayer::TxTryPost()
       if (!same)
         TxHintContradicted(picture, "picture arrived at the post");
       else
-        m_txHintChecked = true;
+      {
+        // its notices were folded before the post: no later notice is its first (code review L6)
+        m_txHintChecked = m_txHintNoticeSeen = true;
+      }
     }
   }
 }
@@ -3637,7 +3640,7 @@ void CVideoPlayer::TxHintClear()
 {
   m_txHintDecide = false;
   m_txHintJob = false;
-  m_txHintChecked = m_txHintNoticeSeen = false;
+  m_txHintChecked = m_txHintNoticeSeen = m_txHint2xLogged = false;
   m_txSettleSince = {};
   m_txSettleLostSeen = m_txSettleAudioLogged = false;
 }
@@ -3691,7 +3694,7 @@ void CVideoPlayer::TxHintPictureCheck(const char* where)
   if (CRenderManager::TxHintFactsSame(m_txHintFacts, picture.fps, picture.width, picture.height,
                                       picture.stereoMode, picture.hdrType, true, &fps2x))
   {
-    if (fps2x)
+    if (fps2x && !std::exchange(m_txHint2xLogged, true))
       CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)",
                 m_txEngagedGen);
     CLog::Log(LOGINFO, "TXSTART set={} T={} the picture is the hint decision's ({})",
@@ -3765,7 +3768,7 @@ bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice, bool fi
     const bool same = CRenderManager::TxHintFactsSame(m_txHintFacts, notice.fps, notice.width,
                                                       notice.height, notice.stereoMode,
                                                       notice.hdrType, firstConfigure, &fps2x);
-    if (same && fps2x)
+    if (same && fps2x && !std::exchange(m_txHint2xLogged, true))
       CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)",
                 m_txEngagedGen);
     return same;

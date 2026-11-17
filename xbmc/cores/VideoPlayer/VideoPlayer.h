@@ -1176,6 +1176,7 @@ protected:
   void TxHintPictureCheck(const char* where);
   bool m_txHintChecked = false;
   bool m_txHintNoticeSeen = false; //!< D4: the gen's first picture notice was compared
+  mutable bool m_txHint2xLogged = false; //!< D4: "fps 2x accepted" once per hint job
   //! D5: the hint-decided start's settle timer (armed at SettleDone, {} = unarmed)
   std::chrono::steady_clock::time_point m_txSettleSince{};
   bool m_txSettleLostSeen = false; //!< D5: re-armed on the first pass after a display loss
