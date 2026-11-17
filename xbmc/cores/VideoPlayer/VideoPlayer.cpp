@@ -3550,6 +3550,43 @@ void CVideoPlayer::TxHintClear()
   m_txHintDecide = false;
   m_txHintJob = false;
   m_txHintChecked = m_txHintNoticeSeen = false;
+  m_txSettleSince = {};
+  m_txSettleLostSeen = m_txSettleAudioLogged = false;
+}
+
+// 5.E2-9c D5 (r3 M3): a hint-decided start with no picture by settle done starts on audio from
+// +5 s, and ends to legacy at +12 s with no START
+bool CVideoPlayer::TxSettleTimerPass()
+{
+  if (!TxOpen() || !m_txJob || !m_txHintJob ||
+      m_txSettleSince == std::chrono::steady_clock::time_point{})
+    return false;
+  const auto now = std::chrono::steady_clock::now();
+  // a loss's time never counts (the lost branch ends its passes before this one)
+  if (std::exchange(m_txSettleLostSeen, false))
+  {
+    m_txSettleSince = now;
+    CLog::Log(LOGINFO, "TXSTART set={} settle timer re-armed after the display span",
+              m_txEngagedGen);
+    return false;
+  }
+  if (now - m_txSettleSince >= 12s)
+  {
+    CLog::Log(LOGERROR, "TXSTART set={} T={} no start in 12 s after settle: exit", m_txEngagedGen,
+              m_txJob->T);
+    ++m_txNoPictureContradicted;
+    EndTransactionToLegacy("no start in 12 s after settle", CRenderManager::TxHow::RERAISE,
+                           CRenderManager::TxNeed::JOB_OK);
+    return false;
+  }
+  if (now - m_txSettleSince < 5s || m_CurrentVideo.id < 0 ||
+      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC ||
+      m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
+    return false;
+  if (!std::exchange(m_txSettleAudioLogged, true))
+    CLog::Log(LOGINFO, "TXSTART set={} no picture by settle done + 5 s: START on audio",
+              m_txEngagedGen);
+  return true;
 }
 
 // 5.E2-9c D4 (r3 M1, r6 L5): keyed on RM's configured record, not its hint flag (never set when
@@ -3830,6 +3867,9 @@ void CVideoPlayer::TxRepliesPass()
   {
     if (!TxDecided(*m_txSettle != Settle::NO_CHANGE))
       return;
+    // 5.E2-9c D5: a hint-decided start's settle timer
+    if (m_txHintJob)
+      m_txSettleSince = std::chrono::steady_clock::now();
     OpenStartGate(*m_txSettle == Settle::NO_CHANGE ? "transaction no change"
                                                    : "transaction settle done",
                   false);
@@ -4363,6 +4403,9 @@ void CVideoPlayer::TxReprime(const char* caller)
     // 5.E2-9c D1 (r4 M2): before the post the PRIME bound restarts from the seek
     m_txHintDecide = false;
   }
+  // 5.E2-9c D5 (r5 L9): once SettleDone armed it
+  if (m_txSettleSince != std::chrono::steady_clock::time_point{})
+    m_txSettleSince = std::chrono::steady_clock::now();
   // transaction_seekdelay (D3, r2 N-L1): after the re-arm, so CN's cap does not expire inside it
   if (std::string_view(caller) == "user seek")
     if (const int ms = aml_transaction_hooks().seekDelayMs; ms > 0)
@@ -5171,6 +5214,7 @@ void CVideoPlayer::Process()
       {
         m_txLostSinceArm = true;
         m_txGateLostSeen = true;
+        m_txSettleLostSeen = true; // 5.E2-9c D5
       }
       // 5.E2-8b D6: the backstop is paused while P is lost
       if (TxOpen() && m_txJob && m_txStep == TxStep::POSTED &&
@@ -6278,6 +6322,8 @@ void CVideoPlayer::HandlePlaySpeed()
     m_brokenFileStallStarveLogged = false;
   }
 
+  // 5.E2-9c D5: outside the WAITSYNC test, so it runs with neither player there
+  const bool txSettleStart = TxSettleTimerPass();
   // sync streams to clock; a shut start gate's audio cannot arrive, and the start
   // would otherwise go ahead without it (no commit, no stuck-sync flushes)
   if (!StartGateShut() && ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
@@ -6346,7 +6392,7 @@ void CVideoPlayer::HandlePlaySpeed()
         m_firstPictureWaitSince != std::chrono::steady_clock::time_point{} &&
         !m_firstPictureWaitExpired;
     bool video = (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
-                 audioFullVideoStarving;
+                 audioFullVideoStarving || txSettleStart;
     // The video queue fills while the start gate holds the audio, so at the
     // gate's opening the "video full, audio starved" shortcut below would count
     // audio ready before its first frame: the start is then scheduled before
@@ -6495,12 +6541,20 @@ void CVideoPlayer::HandlePlaySpeed()
       const bool audioOnlyStart = m_CurrentVideo.id < 0 &&
                                   m_CurrentAudio.starttime != DVD_NOPTS_VALUE &&
                                   m_CurrentAudio.packets > 0;
+      // 5.E2-9c D5 (E29A-1): a hint-decided start with no picture yet is scheduled on its first
+      // audio (the audio-only clock below); the late picture joins the running clock
+      const bool videoOpenNoPicture =
+          m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_WAITSYNC;
+      const bool hintAudioStart = TxOpen() && m_txJob && m_txHintJob && videoOpenNoPicture &&
+                                  m_CurrentAudio.starttime != DVD_NOPTS_VALUE &&
+                                  m_CurrentAudio.packets > 0;
       // 5.E2-9b D1.3 (b): an engaged open takes the held path at any speed (a pending or applied
       // pause is START held as a pause)
       const bool scheduleStart = !holdStart && m_scheduledStart &&
                                  (m_playSpeed == DVD_PLAYSPEED_NORMAL ||
                                   (TxOpen() && !m_txSkipPausestart)) &&
-                                 !m_pInputStream->IsRealtime() && (videoStart || audioOnlyStart);
+                                 !m_pInputStream->IsRealtime() &&
+                                 (videoStart || audioOnlyStart || hintAudioStart);
       // (c): a pending speed is the held path's (its release applies it), else applied here,
       // before the clock selection below and the resyncs
       if (m_txPendingSpeed != INT_MIN)
