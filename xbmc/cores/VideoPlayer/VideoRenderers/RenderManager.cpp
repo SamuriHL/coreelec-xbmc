@@ -4465,7 +4465,11 @@ CRenderManager::TxHintResult CRenderManager::TxHintConfigureLocked(float fps, co
             static_cast<int>(m_picture.hdrType));
   if (same)
   {
-    if (std::exchange(m_reclockPending, false))
+    // the main pass's V half may have promoted it before the post owed this compare (code
+    // review L1); DECIDE's take left no arm, so any armed one is this picture's
+    const bool pending = std::exchange(m_reclockPending, false);
+    const bool armed = std::exchange(m_reclockArmed, false);
+    if (pending || armed)
       CLog::Log(LOGINFO,
                 "CRenderManager - reclock arm for a hint-decided start dropped (frac taken at "
                 "DECIDE)");
