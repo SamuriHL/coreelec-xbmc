@@ -3,7 +3,8 @@ DEPS = ../../Makefile.include LIBDVDNAV-VERSION Makefile ../../download-files.in
                                   01-win-uwpcompat.patch \
                                   02-win-remove-lib-version.patch \
                                   03-all-vm-free-only-what-a-failed-copy-owns.patch \
-                                  04-all-vm-keep-the-random-state-in-the-vm.patch
+                                  04-all-vm-keep-the-random-state-in-the-vm.patch \
+                                  05-all-forget-a-skipped-wait-when-the-vm-hops.patch
 
 MESON_BUILD_TYPE=release
 
@@ -40,6 +41,7 @@ all: .installed-$(PLATFORM)
 	cd $(PLATFORM); $(ARCHIVE_TOOL) $(ARCHIVE_TOOL_FLAGS) $(TARBALLS_LOCATION)/$(ARCHIVE)
 	cd $(PLATFORM); patch -p1 -i ../03-all-vm-free-only-what-a-failed-copy-owns.patch
 	cd $(PLATFORM); patch -p1 -i ../04-all-vm-keep-the-random-state-in-the-vm.patch
+	cd $(PLATFORM); patch -p1 -i ../05-all-forget-a-skipped-wait-when-the-vm-hops.patch
 ifeq ($(TARGET_PLATFORM),windows)
 	cd $(PLATFORM); patch -p1 -i ../01-win-uwpcompat.patch
 	cd $(PLATFORM); patch -p1 -i ../02-win-remove-lib-version.patch

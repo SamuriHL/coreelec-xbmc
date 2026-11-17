@@ -1,0 +1,38 @@
+Subject: [PATCH] dvdnav: forget a skipped wait or still when the VM hops
+
+dvdnav_wait_skip() and dvdnav_still_skip() let the current cell end
+pass. Only the step from that cell end cleared them. A hop (a jump,
+seek or menu call), or leaving a still menu without buttons, moved the
+VM on without that step. The next cell end, in another title or menu,
+then raised no wait, and with a still skip pending it skipped its still.
+---
+ src/dvdnav.c    | 2 ++
+ src/highlight.c | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index b63174204d..58bfa5c70c 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -611,6 +611,8 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
+     this->vobu.vobu_length = 0;
+     this->vobu.blockN      = 0;
+     this->sync_wait        = 0;
++    this->sync_wait_skip   = 0;
++    this->skip_still       = 0;
+     pthread_mutex_unlock(&this->vm_lock);
+     return DVDNAV_STATUS_OK;
+   }
+diff --git a/src/highlight.c b/src/highlight.c
+index 9954347c47..c58dc09d67 100644
+--- a/src/highlight.c
++++ b/src/highlight.c
+@@ -366,6 +366,8 @@ dvdnav_status_t dvdnav_button_activate(dvdnav_t *this, pci_t *pci) {
+       vm_get_next_cell(this->vm);
+       this->position_current.still = 0;
+       this->sync_wait = 0;
++      this->sync_wait_skip = 0;
++      this->skip_still = 0;
+       this->last_cmd_nav_lbn = pci->pci_gi.nv_pck_lbn;
+       pthread_mutex_unlock(&this->vm_lock);
+       /* clear error message */
