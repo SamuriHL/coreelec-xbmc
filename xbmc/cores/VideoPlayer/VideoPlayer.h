@@ -1161,8 +1161,11 @@ protected:
   bool m_txHintJob = false;
   std::chrono::steady_clock::time_point m_txHintBoundAt{}; //!< D3: the window wait counts from it
   CRenderManager::SStartFacts m_txHintFacts; //!< D3: the facts the hint job was decided on
-  unsigned int m_txNoPictureDecides = 0; //!< D3: posted hint jobs (player lifetime)
-  unsigned int m_txNoPictureContradicted = 0; //!< D4/D5: the exits of hint-decided starts
+  // D3-D5: this file's counts, logged and reset by TxNoPictureSummary
+  unsigned int m_txNoPictureDecides = 0; //!< D3: posted hint jobs
+  unsigned int m_txNoPictureContradicted = 0; //!< D4: contradiction exits before START
+  unsigned int m_txSettleExits = 0; //!< D5: the 12 s exits after settle
+  unsigned int m_txLateContradictedSeen = 0; //!< RM's late count at the last summary
   //! D3: the stream's facts from m_CurrentVideo.hint, as V's first Configure would report them
   CRenderManager::SStartFacts TxDecideFromHints();
   //! D4: a picture against a hint decision before START: the exit "input changed"

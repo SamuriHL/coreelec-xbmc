@@ -3662,7 +3662,7 @@ bool CVideoPlayer::TxSettleTimerPass()
   {
     CLog::Log(LOGERROR, "TXSTART set={} T={} no start in 12 s after settle: exit", m_txEngagedGen,
               m_txJob->T);
-    ++m_txNoPictureContradicted;
+    ++m_txSettleExits;
     EndTransactionToLegacy("no start in 12 s after settle", CRenderManager::TxHow::RERAISE,
                            CRenderManager::TxNeed::JOB_OK);
     return false;
@@ -3703,14 +3703,15 @@ void CVideoPlayer::TxHintPictureCheck(const char* where)
 
 void CVideoPlayer::TxNoPictureSummary(const char* why)
 {
-  if (!m_txNoPictureDecides && !m_txNoPictureContradicted &&
-      !m_renderManager.TxLatePictureContradicted())
-    return;
-  CLog::Log(LOGINFO,
-            "TXSTART no-picture summary ({}): DECIDEs {}, contradicted before START {}, after "
-            "START {}",
-            why, m_txNoPictureDecides, m_txNoPictureContradicted,
-            m_renderManager.TxLatePictureContradicted());
+  const unsigned int late = m_renderManager.TxLatePictureContradicted();
+  const unsigned int lateNew = late - std::exchange(m_txLateContradictedSeen, late);
+  if (m_txNoPictureDecides || m_txNoPictureContradicted || m_txSettleExits || lateNew)
+    CLog::Log(LOGINFO,
+              "TXSTART no-picture summary ({}): DECIDEs {}, contradicted before START {}, after "
+              "START {}, no start in 12 s after settle {}",
+              why, m_txNoPictureDecides, m_txNoPictureContradicted, lateNew, m_txSettleExits);
+  // per file (code review L5)
+  m_txNoPictureDecides = m_txNoPictureContradicted = m_txSettleExits = 0;
 }
 
 void CVideoPlayer::TxOnReply(CDVDMsg& msg)
