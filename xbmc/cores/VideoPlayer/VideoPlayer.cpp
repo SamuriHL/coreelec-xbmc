@@ -897,6 +897,25 @@ CRenderManager::TxAnswer ToTxAnswer(DISPLAYSTATE::StartAnswer answer)
   }
   return R::FAILED;
 }
+
+// 5.E2-9b D1: the caching state's name for the pending speed's lines
+const char* TxCachingName(int state)
+{
+  switch (state)
+  {
+    case 0:
+      return "DONE";
+    case 1:
+      return "FULL";
+    case 2:
+      return "INIT";
+    case 3:
+      return "PLAY";
+    case 4:
+      return "FLUSH";
+  }
+  return "?";
+}
 } // namespace
 
 // 5.E2-8b D5 (lifetime): P's receiver of its Start jobs' replies. Each call runs under the job's
@@ -2938,6 +2957,8 @@ void CVideoPlayer::ArmStartGate(const char* where)
       const STransactionHooks hooks = aml_transaction_hooks();
       m_txCapForce = hooks.capForce;
       m_txAudioFullForce = hooks.audioFullForce;
+      // 5.E2-9b D1.6: a speed inside this start is applied at once, as transaction_off
+      m_txSkipPausestart = aml_transaction_skip("pausestart");
       // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
       if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
       {
@@ -3138,7 +3159,8 @@ void CVideoPlayer::TxCheckVerdict(const char* where)
 
 void CVideoPlayer::EndTransactionToLegacy(const char* site,
                                           CRenderManager::TxHow how,
-                                          CRenderManager::TxNeed need)
+                                          CRenderManager::TxNeed need,
+                                          bool applySpeed)
 {
   if (!TxOpen())
     return;
@@ -3196,6 +3218,28 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
   const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
   CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
             m_txEngagedGen, *caller ? " caller=" : "", caller);
+  // 5.E2-9b D1.4: the speed pending in the start is applied at the exit (not at stop, next file
+  // or the error exit). While lost a pause takes the loss conversion's speeds without its
+  // callbacks; any other speed is kept for the 15 s conversion or the first pass back
+  if (applySpeed && m_txPendingSpeed != INT_MIN)
+  {
+    const int pending = m_txPendingSpeed;
+    if (!m_displayLost)
+    {
+      ApplySpeed(pending);
+      CLog::Log(LOGINFO, "TXSTART speed {} applied at the exit ({}, caching {})", pending, site,
+                TxCachingName(m_caching));
+    }
+    else if (pending == DVD_PLAYSPEED_PAUSE)
+    {
+      ConvertToPauseSpeeds();
+      CLog::Log(LOGINFO, "TXSTART speed {} applied at the exit ({}, caching {})", pending, site,
+                TxCachingName(m_caching));
+    }
+    else
+      CLog::Log(LOGINFO, "TXSTART speed {} kept at the exit ({}): the display is lost", pending,
+                site);
+  }
 }
 
 // 5.E2-8b D2: OPEN on an engaged start P decides. The job is created with the open's T and
@@ -3676,7 +3720,8 @@ void CVideoPlayer::TxErrorExit(const char* why)
   // ruling (1) 2026-11-15: the error exit is for the output never answering; the exit's drop CAS
   // keeps the GUI on the incumbent when it wins
   CLog::Log(LOGERROR, "TXSTART T={} {}: start not committed", m_txJob->T, why);
-  EndTransactionToLegacy(why, CRenderManager::TxHow::NONE, CRenderManager::TxNeed::NONE_NEEDED);
+  EndTransactionToLegacy(why, CRenderManager::TxHow::NONE, CRenderManager::TxNeed::NONE_NEEDED,
+                         false);
   m_error = true;
   m_bAbortRequest = true;
 }
@@ -4399,6 +4444,8 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
   m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
+  m_txPendingSpeed = INT_MIN;
+  m_txPendingTempo = m_txSkipPausestart = false;
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
@@ -4670,7 +4717,7 @@ void CVideoPlayer::ConvertLostDisplayToPause()
 {
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (!winSystem || winSystem->DisconnectedForMs() < 15000 ||
-      m_playSpeed == DVD_PLAYSPEED_PAUSE || !CanPause())
+      UserSpeed() == DVD_PLAYSPEED_PAUSE || !CanPause())
     return;
   LossState expected = LossState::LOST;
   if (!m_lossState.compare_exchange_strong(expected, LossState::CONVERTING))
@@ -4703,6 +4750,7 @@ void CVideoPlayer::ConvertToPauseSpeeds()
   m_processInfo->SetSpeed(0.0f);
   m_processInfo->SetFrameAdvance(false);
   m_playSpeed = DVD_PLAYSPEED_PAUSE;
+  m_txPendingSpeed = INT_MIN; // 5.E2-9b D1.2: one speed owner
   m_caching = CACHESTATE_DONE;
   m_cachingStall = false;
   // the clock is held for the display: this is its speed after the hold
@@ -4785,6 +4833,26 @@ void CVideoPlayer::Process()
         m_boundaryStartWaitSince = std::chrono::steady_clock::now();
       CThread::Sleep(50ms);
       continue;
+    }
+    // 5.E2-9b D1.4 (r7 L3, L5): a speed an exit kept while lost, applied on the first pass back,
+    // before anything below reads the speed
+    if (m_txPendingSpeed != INT_MIN && !TxOpen())
+    {
+      const int pending = m_txPendingSpeed;
+      if (m_startHeld)
+      {
+        // the release applies it (HandleSetSpeed's held start)
+        m_playSpeed = pending;
+        m_txPendingSpeed = INT_MIN;
+        CLog::Log(LOGERROR, "TXSTART speed {} after the display return kept for the release of "
+                            "the held start", pending);
+      }
+      else
+      {
+        ApplySpeed(pending);
+        CLog::Log(LOGINFO, "TXSTART speed {} applied after the display return (caching {})",
+                  pending, TxCachingName(m_caching));
+      }
     }
 
 #if defined(HAVE_LIBBLURAY)
@@ -6048,9 +6116,29 @@ void CVideoPlayer::HandlePlaySpeed()
       const bool audioOnlyStart = m_CurrentVideo.id < 0 &&
                                   m_CurrentAudio.starttime != DVD_NOPTS_VALUE &&
                                   m_CurrentAudio.packets > 0;
+      // 5.E2-9b D1.3 (b): an engaged open takes the held path at any speed (a pending or applied
+      // pause is START held as a pause)
       const bool scheduleStart = !holdStart && m_scheduledStart &&
-                                 m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+                                 (m_playSpeed == DVD_PLAYSPEED_NORMAL ||
+                                  (TxOpen() && !m_txSkipPausestart)) &&
                                  !m_pInputStream->IsRealtime() && (videoStart || audioOnlyStart);
+      // (c): a pending speed is the held path's (its release applies it), else applied here,
+      // before the clock selection below and the resyncs
+      if (m_txPendingSpeed != INT_MIN)
+      {
+        const int pending = m_txPendingSpeed;
+        if (holdStart || scheduleStart)
+        {
+          m_playSpeed = pending;
+          m_txPendingSpeed = INT_MIN;
+        }
+        else
+        {
+          ApplySpeed(pending, true);
+          CLog::Log(LOGINFO, "TXSTART speed {} applied at the commit (caching {})", pending,
+                    TxCachingName(m_caching));
+        }
+      }
       if (scheduleStart)
       {
         // without video the clock starts at the first audio: the audio player
@@ -7276,7 +7364,7 @@ void CVideoPlayer::OnExit()
   const unsigned int txEndedGen = TxOpen() ? 0 : m_txEndedGen;
   if (TxOpen())
     EndTransactionToLegacy("stop", CRenderManager::TxHow::NONE,
-                           CRenderManager::TxNeed::NONE_NEEDED);
+                           CRenderManager::TxNeed::NONE_NEEDED, false);
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;
@@ -7466,7 +7554,7 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   const unsigned int txEndedGen = TxOpen() ? 0 : m_txEndedGen;
   if (TxOpen())
     EndTransactionToLegacy("next file", CRenderManager::TxHow::NONE,
-                           CRenderManager::TxNeed::NONE_NEEDED);
+                           CRenderManager::TxNeed::NONE_NEEDED, false);
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;
@@ -7562,7 +7650,7 @@ void CVideoPlayer::HandleMessages()
           m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
       {
         double now = m_clock.GetAbsoluteClock();
-        if (m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+        if (UserSpeed() == DVD_PLAYSPEED_NORMAL &&
             (now - m_State.lastSeek)/1000 < 2000 &&
             !msg.GetAccurate())
         {
@@ -8004,6 +8092,9 @@ void CVideoPlayer::HandleMessages()
         m_processInfo->SetFrameAdvance(true);
         m_clock.Advance(time);
       }
+      // 5.E2-9b D1.2: the applied speed is not a pause yet
+      else if (UserSpeed() == DVD_PLAYSPEED_PAUSE)
+        CLog::Log(LOGINFO, "TXSTART frame advance ignored: pause pending (applied at START)");
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_GUI_ACTION))
       OnAction(std::static_pointer_cast<CDVDMsgType<CAction>>(pMsg)->m_value);
@@ -8187,13 +8278,14 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
     m_State.timestamp = m_clock.GetAbsoluteClock();
   }
 
-  if (speed != DVD_PLAYSPEED_PAUSE && m_playSpeed != DVD_PLAYSPEED_PAUSE && speed != m_playSpeed)
+  // 5.E2-9b D1.2: the callbacks and the PVR follow the user's speed (a pending one included)
+  if (speed != DVD_PLAYSPEED_PAUSE && UserSpeed() != DVD_PLAYSPEED_PAUSE && speed != UserSpeed())
   {
     m_callback.OnPlayBackSpeedChanged(speed / DVD_PLAYSPEED_NORMAL);
     m_processInfo->SeekFinished(0);
   }
 
-  if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) && speed != m_playSpeed)
+  if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) && speed != UserSpeed())
   {
     std::shared_ptr<CInputStreamPVRBase> pvrinputstream = std::static_pointer_cast<CInputStreamPVRBase>(m_pInputStream);
     pvrinputstream->Pause(speed == 0);
@@ -8234,7 +8326,28 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
 
   m_processInfo->SetFrameAdvance(false);
 
+  // 5.E2-9b D1.1 (R26, R31): inside an engaged start (PRIME..SETTLE, no E1 hold) the speed is
+  // pending until START; the applied speed, the clock and the players stay as they are
+  if (!m_txInboxTaking && TxOpen() && !m_startHeld && !m_pInputStream->IsRealtime() &&
+      !m_txSkipPausestart)
+  {
+    if (speed == m_playSpeed)
+    {
+      m_txPendingSpeed = INT_MIN;
+      m_txPendingTempo = false;
+      CLog::Log(LOGINFO, "TXSTART set={} speed {} pending cleared (the applied speed)",
+                m_txEngagedGen, speed);
+      return;
+    }
+    m_txPendingSpeed = speed;
+    m_txPendingTempo = isTempoSpeed;
+    CLog::Log(LOGINFO, "TXSTART set={} speed {} pending (applied at START)", m_txEngagedGen,
+              speed);
+    return;
+  }
+
   m_playSpeed = speed;
+  m_txPendingSpeed = INT_MIN; // D1.2: one speed owner
 
   m_caching = CACHESTATE_DONE;
   m_cachingStall = false;
@@ -8300,6 +8413,23 @@ void CVideoPlayer::SetPlaySpeed(int speed)
     m_playSpeed = speed;
     m_streamPlayerSpeed = speed;
   }
+}
+
+void CVideoPlayer::ApplySpeed(int speed, bool atCommit)
+{
+  m_playSpeed = speed;
+  m_txPendingSpeed = INT_MIN;
+  // SetCaching's PLAY entry applies m_playSpeed (a seek's FLUSH -> INIT, r3 M5)
+  if (!atCommit && (m_caching == CACHESTATE_INIT || m_caching == CACHESTATE_FULL))
+    return;
+  // nothing was heard before the commit: no hold point (HoldStart and the flush write 0 too)
+  m_clock.SetHoldFrom(0.0);
+  m_cachingStall = false;
+  m_clock.SetSpeed(speed);
+  m_VideoPlayerAudio->SetSpeed(speed);
+  m_VideoPlayerVideo->SetSpeed(speed);
+  m_streamPlayerSpeed = speed;
+  // m_caching left alone: PLAY's caching end still runs; DONE stays DONE (HandleSetSpeed's body)
 }
 
 bool CVideoPlayer::CanPause() const
@@ -10564,7 +10694,7 @@ bool CVideoPlayer::OnAction(const CAction &action)
                    menuArg.empty() ? "auto" : menuArg.c_str());
         if (pMenus->OnMenu(mtype))
         {
-          if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
+          if (UserSpeed() == DVD_PLAYSPEED_PAUSE)
           {
             SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
             m_callback.OnPlayBackResumed();
@@ -12554,7 +12684,7 @@ void CVideoPlayer::TxFrozenPass()
     // step 1 of the conversion, gated by its word CAS (r3 L6)
     auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
     if (winSystem && winSystem->DisconnectedForMs() >= 15000 &&
-        m_playSpeed != DVD_PLAYSPEED_PAUSE && CanPause() &&
+        UserSpeed() != DVD_PLAYSPEED_PAUSE && CanPause() &&
         OUTPUT::COutputWorker::Get().WordConverting(ownT,
                                                     ToWordHead(WordHeadNow(LossState::LOST))))
     {

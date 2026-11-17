@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -946,6 +947,12 @@ protected:
   void HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg);
   //! 5.E2-7b (C1): HandleMessages' PLAYER_SETSPEED branch, moved out unchanged
   void HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg);
+  //! 5.E2-9b (docs/phase5_e2_9b_impl.md D1.4): P, a pending speed applied by the caching state
+  //! (INIT/FULL: m_playSpeed only; PLAY/DONE, and at the commit in any state: the clock, the
+  //! players, the hold); never a callback, never ScheduleUserResume; clears the pending value
+  void ApplySpeed(int speed, bool atCommit = false);
+  //! D1.2: the user's speed, P only: the pending one if set, else the applied m_playSpeed
+  int UserSpeed() const { return m_txPendingSpeed != INT_MIN ? m_txPendingSpeed : m_playSpeed; }
   // 5.E2-7: the real loss path (docs/phase5_e2_7_impl.md D1-D4, D7). m_txFreezeReal: this
   // freeze is real (stored before the mark, cleared at every clear); m_txBodyDone: its FREEZE
   // body (or re-freeze) has finished under the guard; m_txVsyncRecord: the vsync resets taken
@@ -1060,9 +1067,11 @@ protected:
   void TxCheckVerdict(const char* where);
   //! 5.E2-8b D8: how / need are the site's two columns (a job not past its drop CAS, or never
   //! posted / a job past it); unused on an open main decides (no Start job)
+  //! 5.E2-9b D1.4: applySpeed false only at stop, next file and TxErrorExit
   void EndTransactionToLegacy(const char* site,
                               CRenderManager::TxHow how,
-                              CRenderManager::TxNeed need);
+                              CRenderManager::TxNeed need,
+                              bool applySpeed = true);
   bool TxOpen() const { return m_txEngaged && !m_txStarted && !m_txExited; }
   // 5.E2-8b (docs/phase5_e2_8b_impl.md): the engaged start decided on P, main shut out. Reset in
   // Prepare; every read behind m_txJob (an engaged open not under transaction_skip decide)
@@ -1095,6 +1104,12 @@ protected:
   bool m_txReprimed = false; //!< D2: a flush kept this open: its re-sync schedules, never holds
   bool m_txExc1Done = false; //!< transaction_exc1: the injected flush ran for this open
   bool m_txGateLostSeen = false; //!< D4 (E28A-8): CN's bounds re-armed when the display is back
+  // 5.E2-9b D1 (P only, reset in Prepare): a speed requested inside the open start, applied at
+  // START, an exit or the first pass after a display return (INT_MIN = none); every m_playSpeed
+  // write clears it
+  int m_txPendingSpeed = INT_MIN;
+  bool m_txPendingTempo = false;
+  bool m_txSkipPausestart = false; //!< D1.6: transaction_skip pausestart, read at the engage
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
   bool TxKeepsFlush(const char* caller) const;
   //! D2: the flush's re-PRIME: an E1 hold dropped without START, CN's bounds re-armed
