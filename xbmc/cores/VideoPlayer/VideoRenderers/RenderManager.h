@@ -253,6 +253,7 @@ public:
     NONE,
     RERAISE, //!< the trigger set, m_videostarted kept, the frac arm restored
     OWED, //!< the owed mark: the new gen's first configure (or a KEEPALIVE arm) raises
+    START, //!< 5.E2-9c D3 (r6 M1): TxStartPoint only; START reads the hint compare's record
   };
   //! E2-8b D5b: an exit's `need` for a job past its drop CAS (NONE: not past it, or START)
   enum class TxNeed
@@ -320,6 +321,10 @@ public:
   //! 5.E2-9c D3: P at a hint job's post: RM's hint flag set for gen, unless a configuring
   //! Configure of gen came first (then SAME/DIFFERENT, the picture's facts in picture)
   TxHintResult TxHintPosted(unsigned int gen, const SStartFacts& facts, STxNotice& picture);
+  //! 5.E2-9c D4: P before START: a configuring Configure of gen ran (its live facts in picture)
+  bool TxHintConfigured(unsigned int gen, STxNotice& picture) const;
+  //! 5.E2-9c D4: late pictures that contradicted a hint decision after START
+  unsigned int TxLatePictureContradicted() const { return m_txLateContradicted.load(); }
   //! E2-8b D2: P at the engage: main's UpdateResolution shut out for gen, the trigger folded,
   //! the start's outcome record opened (T: the word's, for the TXSTART lines)
   void TxShutMain(unsigned int gen, uint64_t T);
@@ -822,6 +827,9 @@ protected:
   //! the clearing Configure's compare, read at START (D4, r5 M1)
   TxHintResult m_txHintCompare = TxHintResult::NONE;
   STxNotice m_txHintPicture;
+  std::atomic<unsigned int> m_txLateContradicted{0};
+  //! the late-picture ERROR (m_statelock)
+  void LogTxLatePictureLocked(const char* when) const;
   //! the configuring Configure's clearing compare (fps: the rate it configures at)
   TxHintResult TxHintConfigureLocked(float fps, const char* path);
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove

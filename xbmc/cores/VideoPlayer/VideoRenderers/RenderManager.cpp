@@ -827,8 +827,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       if (p533Skipped && p533Skipped != m_p533Logged.exchange(p533Skipped))
         CLog::Log(LOGINFO, "P533 skip epoch {}", p533Skipped);
 #endif
-      // 5.E2-9c D3 (r5 L2): the hint decision's compare before the "fps" raise
-      TxHintConfigureLocked(fps, "kept renderer");
+      // 5.E2-9c D3 (r5 L2): the hint decision's compare before the "fps" raise; D4: a late
+      // picture with its facts raises nothing
+      const bool hintSame =
+          TxHintConfigureLocked(fps, "kept renderer") == TxHintResult::SAME && !m_txShutGen;
       if (m_fps != fps)
       {
         CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
@@ -836,7 +838,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_fps = fps;
         m_pictureDuration = 0.0;
         m_pRenderer->SetFps(fps);
-        RaiseTriggerLocked("fps");
+        if (!hintSame)
+          RaiseTriggerLocked("fps");
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         {
           // PrepareNextRender publishes under m_presentlock
@@ -1135,9 +1138,10 @@ bool CRenderManager::Configure()
 
     m_bRenderGUI = true;
     m_videostarted = std::chrono::steady_clock::now();
-    // 5.E2-9c D3: V's side wrote the picture and left the arm pending
-    TxHintConfigureLocked(m_fps, "configure");
-    RaiseTriggerLocked("configure");
+    // 5.E2-9c D3: V's side wrote the picture and left the arm pending; D4: a late picture with
+    // its facts raises nothing
+    if (TxHintConfigureLocked(m_fps, "configure") != TxHintResult::SAME || m_txShutGen)
+      RaiseTriggerLocked("configure");
     TagModeFirstConfigure();
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
@@ -1226,7 +1230,9 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       m_pictureDuration = 0.0;
       m_orientation = orientation;
       m_NumberBuffers = buffers;
-      TxHintConfigureLocked(fps, "configure on V"); // 5.E2-9c D3
+      // 5.E2-9c D3; D4: a late picture with its facts raises nothing
+      const bool hintSame =
+          TxHintConfigureLocked(fps, "configure on V") == TxHintResult::SAME && !m_txShutGen;
       PromoteReclockArm();
 
       m_QueueSize = queueSize;
@@ -1255,7 +1261,8 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
 
       m_bRenderGUI = true;
       m_videostarted = std::chrono::steady_clock::now();
-      RaiseTriggerLocked("configure");
+      if (!hintSame)
+        RaiseTriggerLocked("configure");
       TagModeFirstConfigure();
       m_presentstep = PRESENT_IDLE;
       m_presentpts = DVD_NOPTS_VALUE;
@@ -3391,9 +3398,18 @@ void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     const unsigned int shut = m_txShutGen.exchange(0);
-    // 5.E2-9c D3: an exit ends the hint job's owed picture and its record
-    m_txHintPictureOwed = 0;
-    m_txHintCompare = TxHintResult::NONE;
+    // 5.E2-9c D3: an exit ends the hint job's owed picture; only START reads the record (r6 M1),
+    // in this lock with the shut's exchange (r5 M1): a picture that configured after P's last
+    // compare raised only notices
+    const TxHintResult hintCompare = std::exchange(m_txHintCompare, TxHintResult::NONE);
+    if (how != TxHow::START)
+      m_txHintPictureOwed = 0;
+    else if (hintCompare == TxHintResult::DIFFERENT)
+    {
+      m_bTriggerUpdateResolution = true;
+      ++m_txLateContradicted;
+      LogTxLatePictureLocked("configured before START");
+    }
     SStartOutcome& o = m_txOutcome;
     const bool mine = gen != 0 && o.gen == gen;
     if (shut && shut != gen)
@@ -4460,7 +4476,43 @@ CRenderManager::TxHintResult CRenderManager::TxHintConfigureLocked(float fps, co
     m_txArmTaken.taken = false;
     PromoteReclockArm();
   }
+  // D4 after START (main back in): its triggers are suppressed on the same facts (the caller),
+  // main's MidPlay set with the promoted arm on different ones
+  if (!m_txShutGen)
+  {
+    if (same)
+      CLog::Log(LOGINFO, "TXSTART set={} late picture same as the hint decision", gen);
+    else
+    {
+      ++m_txLateContradicted;
+      LogTxLatePictureLocked("after START");
+    }
+  }
   return m_txHintCompare;
+}
+
+// m_statelock held
+void CRenderManager::LogTxLatePictureLocked(const char* when) const
+{
+  const SStartFacts& h = m_txHintFacts;
+  const STxNotice& p = m_txHintPicture;
+  CLog::Log(LOGERROR,
+            "TXSTART set={} no-picture decision contradicted (late picture) hint {{fps {:.3f} {}x{} "
+            "hdr {} stereo '{}'}} picture {{fps {:.3f} {}x{} hdr {} stereo '{}'}} ({})",
+            m_modeFirstGen.load(), h.fps, h.width, h.height, static_cast<int>(h.hdrType),
+            h.stereoMode, p.fps, p.width, p.height, static_cast<int>(p.hdrType), p.stereoMode,
+            when);
+}
+
+bool CRenderManager::TxHintConfigured(unsigned int gen, STxNotice& picture) const
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (!gen || m_txConfiguredGen != gen)
+    return false;
+  picture = {"configured", m_fps, static_cast<int>(m_picture.iWidth),
+             static_cast<int>(m_picture.iHeight), m_picture.stereoMode, m_picture.hdrType};
+  return true;
 }
 
 CRenderManager::TxHintResult CRenderManager::TxHintPosted(unsigned int gen,

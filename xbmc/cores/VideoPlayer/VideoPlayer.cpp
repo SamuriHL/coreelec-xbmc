@@ -3131,7 +3131,7 @@ void CVideoPlayer::TxStartPoint(const char* point)
   // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
   if (m_txJob)
   {
-    m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::NONE,
+    m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::START,
                                CRenderManager::TxNeed::NONE);
     DISPLAYSTATE::ClearTxOpenJob(m_txJob);
     m_txEndedGen = 0;
@@ -3478,6 +3478,8 @@ void CVideoPlayer::TxTryPost()
                 job.T, same ? "same" : "different");
       if (!same)
         TxHintContradicted(picture, "picture arrived at the post");
+      else
+        m_txHintChecked = true;
     }
   }
 }
@@ -3547,14 +3549,43 @@ void CVideoPlayer::TxHintClear()
 {
   m_txHintDecide = false;
   m_txHintJob = false;
+  m_txHintChecked = m_txHintNoticeSeen = false;
+}
+
+// 5.E2-9c D4 (r3 M1, r6 L5): keyed on RM's configured record, not its hint flag (never set when
+// the picture came at the post); RM's live facts, as a same-rate picture raises no notice
+void CVideoPlayer::TxHintPictureCheck(const char* where)
+{
+  if (!TxOpen() || !m_txJob || !m_txHintJob || m_txHintChecked)
+    return;
+  CRenderManager::STxNotice picture;
+  if (!m_renderManager.TxHintConfigured(m_txEngagedGen, picture))
+    return;
+  m_txHintChecked = true;
+  bool fps2x = false;
+  if (CRenderManager::TxHintFactsSame(m_txHintFacts, picture.fps, picture.width, picture.height,
+                                      picture.stereoMode, picture.hdrType, true, &fps2x))
+  {
+    if (fps2x)
+      CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)",
+                m_txEngagedGen);
+    CLog::Log(LOGINFO, "TXSTART set={} T={} the picture is the hint decision's ({})",
+              m_txEngagedGen, m_txJob->T, where);
+    return;
+  }
+  TxHintContradicted(picture, where);
 }
 
 void CVideoPlayer::TxNoPictureSummary(const char* why)
 {
-  if (!m_txNoPictureDecides && !m_txNoPictureContradicted)
+  if (!m_txNoPictureDecides && !m_txNoPictureContradicted &&
+      !m_renderManager.TxLatePictureContradicted())
     return;
-  CLog::Log(LOGINFO, "TXSTART no-picture summary ({}): DECIDEs {}, contradicted before START {}",
-            why, m_txNoPictureDecides, m_txNoPictureContradicted);
+  CLog::Log(LOGINFO,
+            "TXSTART no-picture summary ({}): DECIDEs {}, contradicted before START {}, after "
+            "START {}",
+            why, m_txNoPictureDecides, m_txNoPictureContradicted,
+            m_renderManager.TxLatePictureContradicted());
 }
 
 void CVideoPlayer::TxOnReply(CDVDMsg& msg)
@@ -3591,7 +3622,7 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
   }
 }
 
-bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice) const
+bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice, bool firstConfigure) const
 {
   // code review A-M2: a live VS10 action changes W's output mode, an input of the job's set
   if (std::string_view(notice.kind) == "vs10")
@@ -3601,6 +3632,18 @@ bool CVideoPlayer::TxNoticeSame(const CRenderManager::STxNotice& notice) const
     return DISPLAYSTATE::FullScreenRoot() == m_txRootAtOpen &&
            CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() == m_txFullScreen &&
            notice.stereoMode == m_txJobFacts.stereoMode;
+  // 5.E2-9c D4 (r5 L1): a hint job's notices with RM's rules (f/2f, fpsInvalid)
+  if (m_txHintJob)
+  {
+    bool fps2x = false;
+    const bool same = CRenderManager::TxHintFactsSame(m_txHintFacts, notice.fps, notice.width,
+                                                      notice.height, notice.stereoMode,
+                                                      notice.hdrType, firstConfigure, &fps2x);
+    if (same && fps2x)
+      CLog::Log(LOGINFO, "TXSTART set={} fps 2x accepted (interlace flag carried over, E29A-6)",
+                m_txEngagedGen);
+    return same;
+  }
   // E2-8b NOTE: "fps class" read as the same rate within 0.05 % (23.976 = 23.98, not 24)
   const float a = notice.fps;
   const float b = m_txJobFacts.fps;
@@ -3716,7 +3759,11 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
   for (size_t i = 0; i < notices.size(); ++i)
   {
     const CRenderManager::STxNotice& n = notices[i];
-    if (TxNoticeSame(n))
+    // 5.E2-9c D4: the gen's first picture notice
+    const std::string_view kind = n.kind;
+    const bool pictureNotice = kind == "configure" || kind == "fps" || kind == "reclock";
+    const bool first = m_txHintJob && pictureNotice && !std::exchange(m_txHintNoticeSeen, true);
+    if (TxNoticeSame(n, first))
     {
       CLog::Log(LOGINFO, "NOTICE same {}", n.kind);
       continue;
@@ -3733,6 +3780,12 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
               m_txJob->T, n.kind, n.fps, m_txJobFacts.fps, n.width, n.height, m_txJobFacts.width,
               m_txJobFacts.height, static_cast<int>(n.hdrType),
               static_cast<int>(m_txJobFacts.hdrType), n.stereoMode, m_txJobFacts.stereoMode);
+    // 5.E2-9c D4 (ruling 3): a hint decision's contradiction before START
+    if (m_txHintJob)
+    {
+      TxHintContradicted(n, "notice");
+      return;
+    }
     EndTransactionToLegacy("input changed", How::RERAISE, Need::FRESH);
     return;
   }
@@ -5287,6 +5340,7 @@ void CVideoPlayer::Process()
     }
     CheckHeldStart();
     CheckStartGate();
+    TxHintPictureCheck("pass"); // 5.E2-9c D4
     m_discTime.CheckBounds();
     PublishSegmentGen();
     CheckMenuPageWait();
@@ -6418,6 +6472,9 @@ void CVideoPlayer::HandlePlaySpeed()
         CLog::Log(LOGDEBUG, "VideoPlayer::Sync - Video - pts: {:.3f}, cache: {:.3f}, totalcache: {:.3f}, packets:{:d} level:{:d}",
                              m_CurrentVideo.starttime / DVD_TIME_BASE, m_CurrentVideo.cachetime / DVD_TIME_BASE, m_CurrentVideo.cachetotal / DVD_TIME_BASE, m_CurrentVideo.packets, m_processInfo->GetLevelVQ());
 
+      // 5.E2-9c D4: the hint job's picture compared before the commit's START (an exit here
+      // hands main the set, and E1 holds the start for it)
+      TxHintPictureCheck("sync commit");
       // a scheduled start keeps the audio before an accurate seek's target
       // (FlushBuffers), so it can report first; the video's packets up to the
       // target count as dropped although its keyframe is the first picture

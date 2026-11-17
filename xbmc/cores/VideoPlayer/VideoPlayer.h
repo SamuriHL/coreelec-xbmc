@@ -1167,6 +1167,10 @@ protected:
   void TxHintContradicted(const CRenderManager::STxNotice& picture, const char* where);
   //! D3: both start flags cleared (open, exits, START)
   void TxHintClear();
+  //! D4: before START, the hint job's picture once its gen is configured (compared once)
+  void TxHintPictureCheck(const char* where);
+  bool m_txHintChecked = false;
+  bool m_txHintNoticeSeen = false; //!< D4: the gen's first picture notice was compared
   //! D3: the counters, logged at the player's stop and at a next file
   void TxNoPictureSummary(const char* why);
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
@@ -1207,8 +1211,9 @@ protected:
   void TxTestNoticeAt();
   //! HandleMessages: PLAYER_TX_REPLY
   void TxOnReply(CDVDMsg& msg);
-  //! D3: a notice after the post against the job's facts
-  bool TxNoticeSame(const CRenderManager::STxNotice& notice) const;
+  //! D3: a notice after the post against the job's facts (5.E2-9c D4: a hint job's first
+  //! picture notice takes the first-configure rules)
+  bool TxNoticeSame(const CRenderManager::STxNotice& notice, bool firstConfigure = false) const;
   //! D8: the cap / audio-full row; false when the committed job is not ended
   bool TxBoundEnds(const char* site);
   //! D5b: the job's sink cleared and TxOpenJob released (stop, next file, destruction)
