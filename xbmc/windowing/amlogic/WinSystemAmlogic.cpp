@@ -651,6 +651,16 @@ bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
       job->askOpen.load() || !(word.state == WordState::NONE || word.state == WordState::STARTING))
     return false;
   reply.kind = SHotplugReply::Kind::RESTORE_DEFERRED;
+  // before the start's commit GC's video row is the GUI's: a record taken now would be the target
+  // of a later mid-play Restore (as B-M2's commit-to-adopt window)
+  if (m_wVideoMode)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG job {}: the video's mode record {} reset (the Restore deferred to "
+                       "the start)",
+              reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode));
+    m_wVideoMode.reset();
+    m_wVideoModeReply = 0;
+  }
   const bool again = std::exchange(m_wOwedRequeue, false);
   m_wRestoreOwed = true;
   {
