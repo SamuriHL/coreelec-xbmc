@@ -1343,10 +1343,6 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   reply.hasCaps = true;
   if (reply.hdrDisplay)
     aml_hdr_conversion_refresh("display caps");
-  // 5.E2-11 D2.5: the connected sink's signature, stamped on a Start job at DECIDE
-  if (connected && reply.modes > 1)
-    m_wSinkSig = 0x80000000u | (reply.sinkDv ? 1u : 0u) | (reply.hdrDisplay ? 2u : 0u) |
-                 (reply.dvLed ? static_cast<uint32_t>(*reply.dvLed + 1) << 8 : 0u);
 
   RESOLUTION_INFO slot;
   if (reply.modes > 1)
@@ -1584,14 +1580,19 @@ bool CWinSystemAmlogic::StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start
     CLog::Log(LOGWARNING, "TXTEST capschange T={}", start.T);
     return true;
   }
-  const uint32_t sig = m_wSinkSig.load();
-  if (start.sinkSig && sig && start.sinkSig != sig)
+  if (start.sinkSig != state->sinkSig)
     return true;
-  const bool onTable =
-      m_wTable.empty() ||
-      std::any_of(m_wTable.begin(), m_wTable.end(), [&start](const RESOLUTION_INFO& res)
-                  { return SameMode(res, start.res.strId, start.res.fRefreshRate,
-                                    start.res.dwFlags); });
+  // the job's row is main's (CDisplaySettings' added flags, frame packing's): W's probe rows the
+  // same way
+  const auto same = [&start](const RESOLUTION_INFO& res)
+  { return SameMode(res, start.res.strId, start.res.fRefreshRate, start.res.dwFlags); };
+  const bool onTable = m_wTable.empty() ||
+                       std::any_of(m_wTable.begin(), m_wTable.end(),
+                                   [&same](const RESOLUTION_INFO& res)
+                                   {
+                                     return same(res) ||
+                                            same(CDisplaySettings::AddedResolutionInfo(res));
+                                   });
   if (onTable)
     CLog::Log(LOGINFO, "TXSTART job T={} caps checked since DECIDE: unchanged", start.T);
   return !onTable;

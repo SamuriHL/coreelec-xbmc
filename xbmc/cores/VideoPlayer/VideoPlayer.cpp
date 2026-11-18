@@ -3941,11 +3941,12 @@ void CVideoPlayer::TxDecide()
   job.fracRequest = r.frac;
   job.filmStart = r.filmStart;
   job.tweakMs = r.tweakMs;
-  // 5.E2-11 D2.5: the caps this decision read, for W's check at the job's run
+  // 5.E2-11 D2.5: the caps this decision read, for W's check at the job's run (one snapshot)
   if (const auto state = DISPLAYSTATE::Get())
+  {
     job.capsEpoch = state->capsEpoch;
-  if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
-    job.sinkSig = winSystem->SinkSig();
+    job.sinkSig = state->sinkSig;
+  }
   // D3 (code review A-L1): the notices after the post compare with the facts DECIDE read (a
   // notice raised between the last take and ResolveStart's read is in them)
   m_txJobFacts = {};

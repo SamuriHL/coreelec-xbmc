@@ -145,9 +145,6 @@ public:
   uint32_t UnstartedStartJobT() const;
   //! 5.E2-11 D1.2: the walk in progress is a span's loss (not a mode set's), m_resourceSection
   bool InSpanWalk() const { return m_spanWalk; }
-  //! 5.E2-11 D2.5: W's sink signature at its last caps step (sinkDv, hdrDisplay, dvLed; 0: none
-  //! read yet), stamped on the Start job at DECIDE
-  uint32_t SinkSig() const { return m_wSinkSig.load(); }
   //! 5.E2-11 D2.6: at the open job's clear (START, an exit, the stop), W re-queues an owed
   //! Restore 1500 ms later
   void PostOwedRestoreCheck(const char* why,
@@ -176,7 +173,7 @@ protected:
   bool m_wOwedRequeue{false};
   bool m_wOwedDeferredAgain{false}; //!< the re-queue met a new open start (it discharges)
   std::chrono::milliseconds m_wOwedRetryDelay{1000};
-  //! W: the open Start job's sink as the last caps step read it (D2.5)
+  //! W: the job decided on older caps: its row off W's table or another sink (D2.5)
   bool StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start);
   std::string m_framebuffer_name;
   //! 5.B3-7b (O1): with the hotplug on W, a receipt not yet answered by a popped reply
@@ -402,9 +399,8 @@ private:
   DISPLAYSTATE::GuiInputs m_wJobGui;
   bool m_wJobGuiFresh{true}; //!< m_wJobGui carries main's last adopt (a record may be taken)
   bool m_wHas2160{false}; //!< W's last table
-  //! 5.E2-11 D2.5: W's last table, by value, and its sink signature
+  //! 5.E2-11 D2.5: W's last table, by value
   std::vector<RESOLUTION_INFO> m_wTable;
-  std::atomic<uint32_t> m_wSinkSig{0};
   bool m_wCapsChangeTaken{false}; //!< transaction_capschange, once
   //! D2.1: a Restore at step 7 deferred to the open start (row 10b); true when deferred
   bool DeferRestore(SHotplugReply& reply, bool retry);

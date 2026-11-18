@@ -77,6 +77,9 @@ struct DisplayState
   bool hdr10Plus = false;
   bool has2160 = false; //!< a table entry with iScreenHeight >= 2160
   uint64_t capsEpoch = 0;
+  //! 5.E2-11 D2.5: the sink's signature with these caps (DV format, HDR10/HDR10+/HLG, the
+  //! device's DV), stamped on a Start job at DECIDE with capsEpoch from the same snapshot
+  uint32_t sinkSig = 0;
   // 5.B3-3 (design §3): the GUI plane as BuildFlipRequest programs it, read at each publish
   // under the DRM lock, only under hotplugworker (0 otherwise); log-only ("DISPLAYSTATE ui-ids")
   // until B3-4's readers take them
