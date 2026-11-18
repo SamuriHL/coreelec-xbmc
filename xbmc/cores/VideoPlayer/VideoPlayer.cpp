@@ -2910,7 +2910,7 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
 
 void CVideoPlayer::CheckHeldStart()
 {
-  if (!m_startHeld || m_displayLost)
+  if (!m_startHeld || m_displayLost || m_txInSpan)
     return;
   const auto held = std::chrono::steady_clock::now() - m_startHeldSince;
   if (m_renderManager.GetResolutionDecisions() != m_startHeldDecisions)
@@ -4238,6 +4238,9 @@ bool CVideoPlayer::TxSettleTimerPass()
   if (!TxOpen() || !m_txJob || !m_txHintJob ||
       m_txSettleSince == std::chrono::steady_clock::time_point{})
     return false;
+  // 5.E2-11: re-armed once after a row-9 span, not on each of its passes
+  if (m_txInSpan)
+    return false;
   const auto now = std::chrono::steady_clock::now();
   // a loss's time never counts (the lost branch ends its passes before this one)
   if (std::exchange(m_txSettleLostSeen, false))
@@ -5432,8 +5435,13 @@ bool CVideoPlayer::TxStartGuarded(TxStartPath path,
                                   const std::function<void()>& commitSteps)
 {
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  // the word and e a refused CAS met: unchanged, no CAS can apply (no section, no WORD line)
+  if (m_txStartHeldWord && OUTPUT::COutputWorker::Get().LoadWord() == m_txStartHeldWord &&
+      m_txStartE == m_txStartHeldE)
+    return false;
   const STransactionHooks hooks = aml_transaction_hooks();
-  if (hooks.startCasDelayAt == "before" && hooks.startCasDelayMs > 0)
+  if (hooks.startCasDelayAt == "before" && hooks.startCasDelayMs > 0 &&
+      !std::exchange(m_txStartCasDelayDone, true))
   {
     CLog::Log(LOGWARNING, "TXTEST startcasdelay before {}", hooks.startCasDelayMs);
     CThread::Sleep(std::chrono::milliseconds(hooks.startCasDelayMs));
@@ -5484,6 +5492,7 @@ bool CVideoPlayer::TxStartGuarded(TxStartPath path,
   if (!started)
   {
     const uint64_t word = OUTPUT::COutputWorker::Get().LoadWord();
+    m_txStartHeldE = e;
     if (std::exchange(m_txStartHeldWord, word) != word)
       CLog::Log(LOGINFO, "TXSTART START held: word {} (start e={})",
                 OUTPUT::COutputWorker::WordText(word), e);
@@ -5881,6 +5890,7 @@ void CVideoPlayer::TxResetStart(bool reopen)
   m_txDecideHoldUntil = m_txPostHoldUntil = {};
   m_txGuardBusyLogged = false;
   m_txStartHeldWord = 0;
+  m_txStartCasDelayDone = false;
   m_txLeadT0Ns = 0;
   m_txSpanPaused = {};
   m_txSpanPausedFrom = m_txSpanClosedAt = {};

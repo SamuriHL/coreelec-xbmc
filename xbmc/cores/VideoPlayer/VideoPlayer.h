@@ -1363,6 +1363,8 @@ protected:
   std::chrono::steady_clock::time_point m_txRestoreMissingSince{}; //!< D3.4's bound
   bool m_txGuardBusyLogged = false;
   uint64_t m_txStartHeldWord = 0; //!< the word a refused CAS last logged
+  uint32_t m_txStartHeldE = 0; //!< and the e it expected
+  bool m_txStartCasDelayDone = false; //!< transaction_startcasdelay before: once per start
   //! D5: the scheduled start's T0 (CLOCK_MONOTONIC ns), read by W's lost walk
   std::atomic<int64_t> m_txLeadT0Ns{0};
   //! test (transaction_noticeat): the notice raised once its point is reached

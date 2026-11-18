@@ -894,6 +894,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       m_txGate.accepted = false;
       m_txGate.prerollShown = false;
       m_txGate.prerollMismatchLogged = false;
+      m_txGate.reshowE = -1; // 5.E2-11: a re-show owed to the discarded queue
       m_txHoldsDecoder = false;
       if (m_presentstep == PRESENT_READY)
         m_presentstep = PRESENT_IDLE;
@@ -4339,6 +4340,7 @@ void CRenderManager::TxReacceptLocked(const char* why, STxLog& log)
   m_txGate.accepted = false;
   m_txGate.prerollShown = false;
   m_txGate.prerollMismatchLogged = false;
+  m_txGate.reshowE = -1; // 5.E2-11: the re-accepted picture is an ordinary pre-roll
   m_txHoldsDecoder = false;
   log.lines.push_back(StringUtils::Format("TXGATE {} set={}: the start picture is re-accepted", why,
                                           m_txGateGen.load()));
