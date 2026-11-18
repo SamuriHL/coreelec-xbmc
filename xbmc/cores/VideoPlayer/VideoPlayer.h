@@ -1183,6 +1183,13 @@ protected:
                      bool markFolded = true);
   //! D2: a different decision after the post: a new Start job of the same T
   void TxPostAmend(const char* origin);
+  //! the gate's transaction_requestat: armed at OPEN, fired at its point, repeated by TxDeferPass
+  void TxRequestAt(const char* point);
+  void TxRequestFire();
+  bool m_txRequestAtArmed = false;
+  int m_txRequestAtLeft = 0;
+  int m_txRequestAtIndex = 0;
+  std::chrono::steady_clock::time_point m_txRequestAtNext;
   std::unique_ptr<CTxStartSink> m_txSink;
   TxStep m_txStep = TxStep::NONE;
   bool m_txOpenPending = false; //!< D2: engaged before Prepare's WordOpen: OPEN after it

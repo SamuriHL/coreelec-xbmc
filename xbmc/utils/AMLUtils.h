@@ -523,6 +523,9 @@ struct STransactionHooks
   //! transaction_noticeat owed|posted (E2-13); E2-8b's <trigger|changed>@<prime|posted|settle>:
   //! P raises a notice with RM's facts (trigger) or different ones (changed) at that point
   std::string noticeAt;
+  //! transaction_requestat "<prime|posted|settle|lead> <pick WxH@rate[,...]|vs10 <mode>|main>
+  //! [x<n>]" (E2-12a gate): P posts the request at that point, n times 50 ms apart
+  std::string requestAt;
   int resumeWaitMs = 0; //!< transaction_resumewait <ms>: RESUME's vblank wait held (E2-7)
   bool exitFreeze = false; //!< transaction_exitfreeze: OnExit waits for a freeze (E2-7)
   //! transaction_forcelegacy "before|aftersync": RM's first-picture verdict forced to legacy for

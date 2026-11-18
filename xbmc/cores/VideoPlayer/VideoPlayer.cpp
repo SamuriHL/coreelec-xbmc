@@ -3582,6 +3582,8 @@ void CVideoPlayer::TxDeferPass()
     CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}) for T={}{}", e.reqId, e.res.strMode,
               m_txJob->T, m_txAmendPending ? ": after the post" : "");
   }
+  if (m_txRequestAtLeft > 0 && std::chrono::steady_clock::now() >= m_txRequestAtNext)
+    TxRequestFire();
   if (!m_txDeferF)
     return;
   if (m_txAmendPending && TxOpen() && m_txJob && m_txStep == TxStep::POSTED)
@@ -3601,6 +3603,73 @@ void CVideoPlayer::TxDeferPass()
     const int64_t now = static_cast<int64_t>(mono.tv_sec) * 1000000000LL + mono.tv_nsec;
     if (now >= m_txLeadEndNs)
       TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::LANDED), "landed");
+  }
+}
+
+// 5.E2-12a gate: transaction_requestat "<point> <kind> [arg] [x<n>]"
+void CVideoPlayer::TxRequestAt(const char* point)
+{
+  if (!m_txRequestAtArmed)
+    return;
+  const std::vector<std::string> words =
+      StringUtils::Split(aml_transaction_hooks().requestAt, ' ');
+  if (words.empty() || words[0] != point)
+    return;
+  m_txRequestAtArmed = false;
+  m_txRequestAtLeft = 1;
+  for (const std::string& w : words)
+    if (w.size() > 1 && w[0] == 'x')
+      m_txRequestAtLeft = std::max(1, std::atoi(w.c_str() + 1));
+  m_txRequestAtIndex = 0;
+  TxRequestFire();
+}
+
+void CVideoPlayer::TxRequestFire()
+{
+  const std::vector<std::string> words =
+      StringUtils::Split(aml_transaction_hooks().requestAt, ' ');
+  if (words.size() < 2 || m_txRequestAtLeft <= 0)
+    return;
+  --m_txRequestAtLeft;
+  m_txRequestAtNext = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  const std::string& kind = words[1];
+  const std::string arg = words.size() > 2 && words[2][0] != 'x' ? words[2] : "";
+  CLog::Log(LOGWARNING, "TXTEST requestat {} {} {}", words[0], kind, arg);
+  const auto messenger = CServiceBroker::GetAppMessenger();
+  if (kind == "pick" && messenger)
+  {
+    const std::vector<std::string> modes = StringUtils::Split(arg, ',');
+    if (modes.empty())
+      return;
+    const std::string& mode = modes[m_txRequestAtIndex++ % modes.size()];
+    int w = 0, h = 0;
+    float rate = 0.0f;
+    if (std::sscanf(mode.c_str(), "%dx%d@%f", &w, &h, &rate) != 3)
+      return;
+    const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+    for (const auto& [index, info] : latest.res.infos)
+      if (index >= RES_DESKTOP && info.iScreenWidth == w && info.iScreenHeight == h &&
+          std::abs(info.fRefreshRate - rate) < 0.05f &&
+          !(info.dwFlags & (D3DPRESENTFLAG_MODE3DSBS | D3DPRESENTFLAG_MODE3DTB | D3DPRESENTFLAG_MODE3DFP)))
+      {
+        messenger->PostMsg(TMSG_SETVIDEORESOLUTION, index, 0, nullptr, "user-pick");
+        return;
+      }
+    CLog::Log(LOGWARNING, "TXTEST requestat pick {}: not in the table", mode);
+  }
+  else if (kind == "vs10" && messenger)
+  {
+    const int action = arg == "sdr"     ? ACTION_VS10_SDR
+                       : arg == "hdr10" ? ACTION_VS10_HDR10
+                       : arg == "dv"    ? ACTION_VS10_DV
+                                        : ACTION_VS10_ORIGINAL;
+    messenger->PostMsg(TMSG_GUI_ACTION, WINDOW_INVALID, -1,
+                       static_cast<void*>(new CAction(action)));
+  }
+  else if (kind == "main")
+  {
+    std::string stereomode;
+    m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode, "trigger");
   }
 }
 
@@ -3776,6 +3845,8 @@ void CVideoPlayer::TxOpenStart()
   }
   m_txAmends = 0;
   m_txAmendPending = false;
+  m_txRequestAtArmed = !aml_transaction_hooks().requestAt.empty();
+  m_txRequestAtLeft = 0;
   if (!m_txSink)
     m_txSink = std::make_unique<CTxStartSink>(m_messenger, m_renderManager);
   m_txJob = std::move(job);
@@ -3801,6 +3872,7 @@ void CVideoPlayer::TxOpenStart()
     m_txOpenInputsSeq = m_txMsgInputsSeq;
   }
   m_renderManager.TxShutMain(m_txEngagedGen, m_txJob->T);
+  TxRequestAt("prime");
   CLog::Log(LOGINFO,
             "TXSTART set={} T={} OPEN: decision on P (inputs seq {}, fullscreen exits {}, root {})",
             m_txEngagedGen, m_txJob->T, m_txOpenInputsSeq, m_txExitsAtOpen,
@@ -4309,6 +4381,7 @@ void CVideoPlayer::TxTryPost()
   m_txStep = TxStep::POSTED;
   if (m_txDeferF)
     OUTPUT::COutputWorker::Get().DeferPosted(m_txDeferF);
+  TxRequestAt("posted");
   m_txPostedAt = std::chrono::steady_clock::now();
   m_txBoundInCommitLogged = false;
   m_txLostAt = {};
@@ -4615,6 +4688,8 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
       // D5 step 4: C's pre-roll term for the shut gen (committed or no-change: the output is final)
       m_txOutputDone = true;
       m_renderManager.SetTxOutputDone(m_txEngagedGen);
+      if (r.committed)
+        TxRequestAt("settle");
       break;
     case STxReply::Kind::SETTLE_DONE:
       m_txSettle = r.settle;
@@ -5856,6 +5931,8 @@ void CVideoPlayer::TxStartAfterGuard(TxStartPath path, const STxStartDone& done,
                                                     static_cast<int>(StartPhase::NONE));
     m_txLeadEndNs = done.lead > 0.0 ? done.discRunNs : 0;
     if (done.lead > 0.0)
+      TxRequestAt("lead");
+    if (done.lead > 0.0)
       OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, done.discRunNs,
                                                     "scheduled start",
                                                     static_cast<int>(StartPhase::STARTING));
@@ -5956,6 +6033,8 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   {
     using StartPhase = OUTPUT::COutputWorker::StartPhase;
     m_txLeadEndNs = lead > 0.0 ? discRunNs : 0;
+    if (lead > 0.0)
+      TxRequestAt("lead");
     if (lead > 0.0)
       OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, discRunNs,
                                                     "scheduled start",

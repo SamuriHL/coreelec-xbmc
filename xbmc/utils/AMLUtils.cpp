@@ -3077,6 +3077,7 @@ STransactionHooks ReadTransactionHooks()
   hooks.parkHold = TransactionHookWord("transaction_parkhold");
   hooks.pDemuxDelayMs = TransactionHookMs("transaction_pdemuxdelay");
   hooks.noticeAt = TransactionHookWord("transaction_noticeat");
+  hooks.requestAt = TransactionHookWord("transaction_requestat");
   hooks.resumeWaitMs = TransactionHookMs("transaction_resumewait");
   hooks.exitFreeze = TransactionHookFlag("transaction_exitfreeze");
   hooks.forceLegacy = TransactionHookWord("transaction_forcelegacy");
