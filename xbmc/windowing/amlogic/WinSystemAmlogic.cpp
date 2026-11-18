@@ -1570,6 +1570,20 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   // step 8: the unpark at the hold's end, then the reply
 }
 
+std::optional<int> CWinSystemAmlogic::StartJobDvLed() const
+{
+  // W's clamp on the published caps' dv_cap bits (no DRM read), as the Restore's step 5 takes it:
+  // main's DV_LED may still be the old sink's until it applies the reply
+  const auto state = DISPLAYSTATE::Get();
+  if (!state || !aml_support_dolby_vision() ||
+      state->hdrCaps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE)
+    return std::nullopt;
+  const int dvCap = (state->hdrCaps.SupportsDVTVLED() ? DV_RGB_444_8BIT : 0) |
+                    (state->hdrCaps.SupportsDVPlayerLED() ? LL_YCbCr_422_12BIT : 0);
+  return DvLedClamp(
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED), dvCap);
+}
+
 bool CWinSystemAmlogic::StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start)
 {
   const auto state = DISPLAYSTATE::Get();

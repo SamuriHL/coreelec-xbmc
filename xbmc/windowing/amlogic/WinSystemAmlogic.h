@@ -175,6 +175,9 @@ protected:
   std::chrono::milliseconds m_wOwedRetryDelay{1000};
   //! W: the job decided on older caps: its row off W's table or another sink (D2.5)
   bool StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start);
+  //! 5.E2-11 (review B M-5), W: the DV_LED value a Start job's set takes (W's clamp on the sink's
+  //! published caps; nullopt: no DV sink)
+  std::optional<int> StartJobDvLed() const;
   std::string m_framebuffer_name;
   //! 5.B3-7b (O1): with the hotplug on W, a receipt not yet answered by a popped reply
   bool IsHotplugPending() const

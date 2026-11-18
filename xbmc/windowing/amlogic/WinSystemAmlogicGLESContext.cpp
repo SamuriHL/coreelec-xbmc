@@ -2818,6 +2818,11 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   job->guiLocked = -1;
   start->ran = true;
   start->adoptPending = true;
+  // 5.E2-11 (review B M-5): the wire takes W's DV_LED clamp, as the Restore's (H5)
+  std::optional<OUTPUT::CSettingsMirror::CScopedValue> led;
+  if (aml_transaction_loss_in_start())
+    if (const std::optional<int> dvLed = StartJobDvLed())
+      led.emplace(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, *dvLed);
   try
   {
     RunModeSetJob(*job);
@@ -2833,6 +2838,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
     CLog::Log(LOGERROR, "OUTPUTDRIVE request {} (start job T={}) threw", job->id, start->T);
     job->kind = OUTPUT::DriveReply::FAILED;
   }
+  led.reset();
   // a set that ended before its own CAS (a failed read, a throw) is past the drop CAS from here
   if (job->kind == OUTPUT::DriveReply::DROPPED ||
       !start->Cas({State::PARKING, State::COMMITTED}, State::COMMITTED))

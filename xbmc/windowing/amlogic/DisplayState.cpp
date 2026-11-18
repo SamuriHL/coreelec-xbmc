@@ -236,6 +236,8 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> h
   s.sinkSig = 0x80000000u | (aml_support_dolby_vision() ? 1u : 0u) |
               (s.hdrCaps.SupportsHDR10() ? 2u : 0u) | (s.hdrCaps.SupportsHDR10Plus() ? 4u : 0u) |
               (s.hdrCaps.SupportsHLG() ? 8u : 0u) |
+              (s.hdrCaps.SupportsDVTVLED() ? 16u : 0u) |
+              (s.hdrCaps.SupportsDVPlayerLED() ? 32u : 0u) |
               (static_cast<uint32_t>(s.hdrCaps.SupportsDolbyVision()) & 0xffu) << 8;
   if (has2160)
   {
