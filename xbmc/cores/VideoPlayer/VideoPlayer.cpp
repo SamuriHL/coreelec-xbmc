@@ -3780,17 +3780,23 @@ void CVideoPlayer::TxAskPass()
   TxDecide();
 }
 
-// 5.E2-11 D4: TxAskPass's "dialog open" for W's deferral test (a Restore then commits the GUI's
-// mode so the dialog is seen); a pause pending in ASK counts once the dialog step has opened
+// 5.E2-11 D4: the 3D dialog open for W's deferral test (a Restore then commits the GUI's mode so
+// the dialog is seen). Any pause in ASK counts, read at the intake and each pass (TxAskPass does
+// not run in a span): erring to "open" costs a re-lock, never a dark TV
 void CVideoPlayer::TxAskOpenUpdate()
 {
   if (!m_txJob)
     return;
-  const bool open = TxOpen() && m_txStep == TxStep::ASK && m_txAskOpen &&
-                    m_txPendingSpeed == DVD_PLAYSPEED_PAUSE;
-  if (m_txJob->askOpen.exchange(open) != open)
-    CLog::Log(LOGINFO, "TXSTART T={} 3D question {} (a Restore is not deferred while open)",
-              m_txJob->T, open ? "open" : "closed");
+  const bool open =
+      TxOpen() && m_txStep == TxStep::ASK && UserSpeed() == DVD_PLAYSPEED_PAUSE;
+  if (m_txJob->askOpen.exchange(open) == open)
+    return;
+  CLog::Log(LOGINFO, "TXSTART T={} 3D question {} (a Restore is not deferred while open)",
+            m_txJob->T, open ? "open" : "closed");
+  // a Restore deferred before the dialog opened is committed now (the GUI's mode)
+  if (open)
+    if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
+      winSystem->PostOwedRestoreCheck("3D question", std::chrono::milliseconds(0));
 }
 
 // 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7
@@ -4899,6 +4905,7 @@ void CVideoPlayer::TxSpanPass()
   m_txGateLostSeen = true;
   m_txSettleLostSeen = true;
   TxLostFailedPass();
+  TxAskOpenUpdate();
   TxSpanConvertPass();
 }
 
