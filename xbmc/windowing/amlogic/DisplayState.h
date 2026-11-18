@@ -418,6 +418,8 @@ struct SStartJob
   bool Cas(std::initializer_list<StartJobState> from, StartJobState to, StartJobState* found = nullptr);
   void SetSink(IStartJobSink* sink);
   void ClearSink();
+  //! 5.E2-11 gate 2: false once the player's exit cleared the sink (TxReleaseJob)
+  bool HasSink();
   // the replies, logged with D10's fixed strings and given to the sink under its mutex
   void OutputDone(bool committed, uint64_t seq);
   //! once per job; a later call is logged only

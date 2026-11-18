@@ -1166,6 +1166,12 @@ void SStartJob::ClearSink()
   m_sink = nullptr;
 }
 
+bool SStartJob::HasSink()
+{
+  std::unique_lock lock(m_sinkMutex);
+  return m_sink != nullptr;
+}
+
 void SStartJob::OutputDone(bool committed, uint64_t seq)
 {
   CLog::Log(LOGINFO, "TXSTART output done T={} {} seq={}", T, committed ? "committed" : "no-change",

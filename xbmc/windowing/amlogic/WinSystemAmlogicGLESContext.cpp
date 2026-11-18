@@ -2750,6 +2750,16 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
       return;
   }
   StartTestStopAt(*start, "posted", [&start] { return start->state.load() != State::QUEUED; });
+  // 5.E2-11 gate 2: a held job re-posts behind later sets, so one whose player exited (a stop
+  // after a fullscreen exit leaves it QUEUED, r9 M1) would set the film's mode after the stop's
+  // desktop set. The sink is cleared in P's OnExit, before main's stop set is posted
+  if (aml_transaction_loss_in_start() && start->state.load() == State::QUEUED &&
+      !start->HasSink() && start->Cas({State::QUEUED}, State::DROPPED))
+  {
+    CLog::Log(LOGINFO, "TXSTART job T={} dropped: the player has exited", start->T);
+    start->SettleDone(Settle::DROPPED);
+    return;
+  }
   // 5.E2-11 D2.5: decided on caps older than the last publish: its mode on the new table by value
   // and the same sink, else main decides on the new caps (one decision, one re-lock)
   if (aml_transaction_loss_in_start() && start->state.load() == State::QUEUED &&
