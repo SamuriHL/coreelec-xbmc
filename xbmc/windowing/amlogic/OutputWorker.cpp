@@ -551,20 +551,25 @@ void COutputWorker::WordStop(uint32_t ownT)
 }
 
 
-bool COutputWorker::WordStarting(uint32_t ownT, bool decidedOnP)
+bool COutputWorker::WordStarting(uint32_t ownT, bool decidedOnP, uint32_t* e)
 {
   // 5.E2-8b (Plan vs code 10): the row names the decider
   const char* row = decidedOnP ? "DECIDE (P)" : "DECIDE (main)";
-  return WordApply(
-      [=](const SWord& w)
+  uint32_t written = 0;
+  const bool applied = WordApply(
+      [=, &written](const SWord& w)
       {
         if (w.t != ownT || w.state != WordState::NONE || w.spanOpen)
           return Skip(row, WordOwned("NONE without a span", ownT));
         SWord n = w;
         n.state = WordState::STARTING;
         n.sub = false;
+        written = n.e;
         return Apply(n, row, "output mode decided");
       });
+  if (applied && e)
+    *e = written;
+  return applied;
 }
 
 void COutputWorker::WordStartDone(uint32_t ownT, const char* why)
@@ -578,6 +583,25 @@ void COutputWorker::WordStartDone(uint32_t ownT, const char* why)
         SWord n = w;
         n.state = WordState::NONE;
         return Apply(n, "START", why);
+      });
+}
+
+bool COutputWorker::WordStart(uint32_t ownT, uint32_t e)
+{
+  e &= WORD_E_MASK;
+  return WordApply(
+      [=](const SWord& w)
+      {
+        if (w.t != ownT || w.state != WordState::STARTING || w.e != e || w.spanOpen)
+        {
+          Step step =
+              Skip("START", StringUtils::Format("STARTING{{T={}}} e={} no span", ownT, e));
+          step.explained = "START held";
+          return step;
+        }
+        SWord n = w;
+        n.state = WordState::NONE;
+        return Apply(n, "START", "START");
       });
 }
 

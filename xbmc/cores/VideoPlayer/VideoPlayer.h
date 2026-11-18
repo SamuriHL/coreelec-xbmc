@@ -1140,7 +1140,8 @@ protected:
   std::chrono::steady_clock::time_point m_txConfiguredAt{};
   //! D2/D3 at CN's decided or unchanged opening; false while transaction_lossat holds the opening
   bool TxDecided(bool modeDecided);
-  void TxStartPoint(const char* point);
+  //! guarded: 5.E2-11 D1.5's START took the word and m_txStarted under the player guard
+  void TxStartPoint(const char* point, bool guarded = false);
   void TxStartRelease(int64_t discRunNs);
   void TxCheckVerdict(const char* where);
   //! 5.E2-8b D8: how / need are the site's two columns (a job not past its drop CAS, or never
@@ -1320,6 +1321,35 @@ protected:
   //! D1.3: P's edge dropped; disc time back unless a freeze owns it
   void TxSpanEdgeClear(const char* why);
   const char* TxSpanStateName(bool starting) const;
+  //! D1.5: START as the word CAS STARTING{T, e, no span} -> NONE under the player guard, with
+  //! only START's irreversible steps; on a P-decided engaged open with TxLossInStartOn()
+  bool TxGuardedStartOn() const;
+  enum class TxStartPath
+  {
+    SCHEDULED, //!< the sync commit's held and released start
+    UNHELD, //!< the sync commit's unheld start (SetCaching's DONE)
+    RELEASE, //!< an E1-held start's release
+  };
+  //! the release's results, for the steps and logs after the guard
+  struct STxStartDone
+  {
+    double held = 0.0;
+    double lead = 0.0;
+    int64_t startNs = 0;
+    int64_t discRunNs = 0;
+    double startClock = 0.0;
+  };
+  //! false: no START this pass (the guard busy or the CAS refused; nothing ran)
+  bool TxStartGuarded(TxStartPath path,
+                      STxStartDone& done,
+                      const std::function<void()>& commitSteps);
+  void TxReleaseClock(STxStartDone& done);
+  void TxStartAfterGuard(TxStartPath path, const STxStartDone& done, const char* why);
+  uint32_t m_txStartE = 0; //!< the e START's CAS expects (STARTING's, or a Restore's settle)
+  bool m_txGuardBusyLogged = false;
+  uint64_t m_txStartHeldWord = 0; //!< the word a refused CAS last logged
+  //! D5: the scheduled start's T0 (CLOCK_MONOTONIC ns), read by W's lost walk
+  std::atomic<int64_t> m_txLeadT0Ns{0};
   //! test (transaction_noticeat): the notice raised once its point is reached
   void TxTestNoticeAt();
   //! HandleMessages: PLAYER_TX_REPLY

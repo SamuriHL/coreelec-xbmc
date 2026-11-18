@@ -3280,7 +3280,8 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
 {
   if (!m_txWordStarting)
   {
-    if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load(), m_txJob != nullptr))
+    if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load(), m_txJob != nullptr,
+                                                   &m_txStartE))
     {
       EndTransactionToLegacy("word at the decision", CRenderManager::TxHow::RERAISE,
                              CRenderManager::TxNeed::JOB_OK);
@@ -3316,11 +3317,15 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
          std::chrono::steady_clock::now() >= m_txLossAtUntil;
 }
 
-void CVideoPlayer::TxStartPoint(const char* point)
+void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
 {
-  if (m_txWordStarting)
-    OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), point);
-  m_txStarted = true;
+  // 5.E2-11 D1.5: a guarded START took the word and m_txStarted under the guard
+  if (!guarded)
+  {
+    if (m_txWordStarting)
+      OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), point);
+    m_txStarted = true;
+  }
   TxHintClear(); // 5.E2-9c (r5 M2)
   TxRestoreAudioTimeCap("START"); // 5.E2-9c D6
   CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
@@ -3414,8 +3419,8 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
       m_txEndedLeft = false;
     }
   }
-  // the undo list (plan E2-8a, review r3 H-3), in order
-  if (m_txWordStarting)
+  // the undo list (plan E2-8a, review r3 H-3), in order; 5.E2-11: not after START's CAS
+  if (m_txWordStarting && !(m_txJob && m_txJob->started.load()))
     OUTPUT::COutputWorker::Get().WordStartDone(m_txWordT.load(), "ended to legacy");
   m_renderManager.SetTxStartHeld(false);
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3
@@ -5256,8 +5261,166 @@ void CVideoPlayer::TxRestoreDecoderSpeed(const char* why)
   CLog::Log(LOGINFO, "TXGATE decoder speed restored ({})", why);
 }
 
+bool CVideoPlayer::TxGuardedStartOn() const
+{
+  return TxOpen() && m_txJob && m_txWordStarting && aml_transaction_loss_in_start() &&
+         dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+}
+
+bool CVideoPlayer::TxStartGuarded(TxStartPath path,
+                                  STxStartDone& done,
+                                  const std::function<void()>& commitSteps)
+{
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  const STransactionHooks hooks = aml_transaction_hooks();
+  if (hooks.startCasDelayAt == "before" && hooks.startCasDelayMs > 0)
+  {
+    CLog::Log(LOGWARNING, "TXTEST startcasdelay before {}", hooks.startCasDelayMs);
+    CThread::Sleep(std::chrono::milliseconds(hooks.startCasDelayMs));
+  }
+  const std::shared_ptr<DISPLAYSTATE::SStartJob> job = m_txJob;
+  const uint32_t T = m_txWordT.load();
+  const uint32_t e = m_txStartE;
+  bool started = false;
+  // The player guard (m_resourceSection, the lock W's lost walk holds from WordLoss through the
+  // walk): a loss lands wholly before the CAS (row 9, the CAS fails) or after a finished START
+  // (row 11). Inside it nothing calls the demuxer, the input stream, an add-on, the GUI or the
+  // messenger, takes a lock main or W can hold while taking the section, or waits: only the
+  // clock, the VPA/VPV queues, DTO, RM's state and present locks, atomics and P members
+  const bool ran = winSystem->RunUnderPlayerGuard(
+      [&]
+      {
+        job->started = true;
+        if (!OUTPUT::COutputWorker::Get().WordStart(T, e))
+        {
+          job->started = false;
+          return;
+        }
+        started = true;
+        if (hooks.startCasDelayAt == "after" && hooks.startCasDelayMs > 0)
+        {
+          CLog::Log(LOGWARNING, "TXTEST startcasdelay after {}", hooks.startCasDelayMs);
+          CThread::Sleep(std::chrono::milliseconds(hooks.startCasDelayMs));
+        }
+        if (commitSteps)
+          commitSteps();
+        if (path == TxStartPath::UNHELD)
+        {
+          SetCaching(CACHESTATE_DONE);
+          TxStartRelease(0);
+        }
+        else
+          TxReleaseClock(done);
+        m_txStarted = true;
+      },
+      true);
+  if (!ran)
+  {
+    if (!std::exchange(m_txGuardBusyLogged, true))
+      CLog::Log(LOGINFO, "TXSTART START deferred: player guard busy");
+    return false;
+  }
+  m_txGuardBusyLogged = false;
+  if (!started)
+  {
+    const uint64_t word = OUTPUT::COutputWorker::Get().LoadWord();
+    if (std::exchange(m_txStartHeldWord, word) != word)
+      CLog::Log(LOGINFO, "TXSTART START held: word {} (start e={})",
+                OUTPUT::COutputWorker::WordText(word), e);
+    return false;
+  }
+  m_txStartHeldWord = 0;
+  return true;
+}
+
+void CVideoPlayer::TxReleaseClock(STxStartDone& done)
+{
+  // ReleaseHeldStart's clock part, in its order (inside the guard)
+  done.held = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startHeldSince)
+                  .count();
+  // after HoldStart: the start's branch lands the offset for the start
+  if (m_audioOffsetToAudio)
+    ApplyAudioOffset();
+  m_startHeld = false;
+  m_startReleasedClock = m_clock.GetClock();
+  constexpr double SCHEDULED_START_LEAD = 0.35;
+  if (m_scheduledStart)
+  {
+    if (m_clock.ScheduleResume(m_playSpeed, SCHEDULED_START_LEAD, done.startNs, done.startClock,
+                               m_startAtFrame))
+    {
+      done.lead = SCHEDULED_START_LEAD;
+      done.discRunNs = done.startNs;
+      m_txLeadT0Ns = done.startNs;
+    }
+  }
+  else
+    m_clock.SetSpeed(m_playSpeed);
+  m_discTime.SetStartHeld(false, done.discRunNs);
+  m_clock.SetStartHeld(false);
+  m_VideoPlayerVideo->SetStartHeld(false);
+  m_renderManager.SetStartHeld(false);
+  m_VideoPlayerAudio->SetSpeed(m_playSpeed);
+  m_VideoPlayerVideo->SetSpeed(m_playSpeed);
+  TxStartRelease(done.discRunNs);
+  m_streamPlayerSpeed = m_playSpeed;
+}
+
+void CVideoPlayer::TxStartAfterGuard(TxStartPath path, const STxStartDone& done, const char* why)
+{
+  TxStartPoint(why, true);
+  // the gate opens after V's speed message: the decoder's speed is sent again
+  if (m_renderManager.OpenTxPictureGate(why))
+    TxRestoreDecoderSpeed(why);
+  if (path == TxStartPath::UNHELD)
+    return;
+  if (done.lead > 0.0)
+  {
+    CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
+              done.startClock / DVD_TIME_BASE, done.startNs, done.lead * 1000.0);
+    // 5.E2-9b D3 (E28B-1): the overlays withheld to T0, unless a loss after the guard already
+    // cancelled the schedule (RESUME's landing governs them then). A read, not a CAS: a loss
+    // right after it costs only a past overlay instant (r4 L-6)
+    if (!m_displayLost)
+      m_renderManager.SetTxGraphicsFrom(done.startNs);
+    else
+      CLog::Log(LOGINFO, "TXSTART overlays not withheld: the schedule was cancelled by a loss");
+  }
+  if (m_txEngaged && m_txSyncPassed && !m_State.streamsReady)
+    SignalStreamsReady();
+  m_syncTimer.Set(3000ms + std::chrono::milliseconds(std::lround(done.lead * 1000.0)));
+  if (aml_transaction_shadow_on())
+  {
+    using StartPhase = OUTPUT::COutputWorker::StartPhase;
+    if (path == TxStartPath::SCHEDULED && !m_State.streamsReady)
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::STARTING, 0, "start held",
+                                                    static_cast<int>(StartPhase::NONE));
+    if (done.lead > 0.0)
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, done.discRunNs,
+                                                    "scheduled start",
+                                                    static_cast<int>(StartPhase::STARTING));
+    else
+      OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::NONE, 0, why,
+                                                    static_cast<int>(StartPhase::STARTING));
+  }
+  CLog::Log(LOGINFO, "VideoPlayer: E1 start released after {:.3f}s: {} (clock {:.3f})", done.held,
+            why, m_clock.GetClock() / DVD_TIME_BASE);
+}
+
 void CVideoPlayer::ReleaseHeldStart(const char* why)
 {
+  // 5.E2-11 D1.5: an E1-held guarded start's release is START under the guard; the verdict first
+  if (TxGuardedStartOn() && std::string_view(why) != "flush")
+  {
+    TxCheckVerdict("release");
+    if (TxGuardedStartOn())
+    {
+      STxStartDone done;
+      if (TxStartGuarded(TxStartPath::RELEASE, done, nullptr))
+        TxStartAfterGuard(TxStartPath::RELEASE, done, why);
+      return;
+    }
+  }
   // 5.E2-9b D3 (r3 M3): this release is the open start's (not a legacy one)
   const bool isStart = TxOpen();
   // 5.E2-8a (D4): START on the word (a flush release is an exit, taken at FlushBuffers' entry)
@@ -5544,6 +5707,10 @@ void CVideoPlayer::TxResetStart(bool reopen)
   // 5.E2-11
   TxSpanEdgeClear("open");
   m_txInSpan = false;
+  m_txStartE = 0;
+  m_txGuardBusyLogged = false;
+  m_txStartHeldWord = 0;
+  m_txLeadT0Ns = 0;
   m_txSpanPaused = {};
   m_txSpanPausedFrom = m_txSpanClosedAt = {};
   m_txNoticeKind.clear();
@@ -7281,8 +7448,18 @@ void CVideoPlayer::HandlePlaySpeed()
         if (!TxOpen() && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
           commit = false;
       }
+      // 5.E2-11 D1.5: a guarded start's verdict comes ahead of START's CAS: its exit ends the
+      // start before any START step
+      if (commit && TxGuardedStartOn())
+        TxCheckVerdict(m_scheduledStart && !m_pInputStream->IsRealtime() ? "release" : "sync");
       if (commit)
       {
+      // 5.E2-11 D1.5: what a missed START (word or guard) puts back; nothing else has run then
+      const bool txGuardOn = TxGuardedStartOn();
+      const bool deferredBefore = m_syncStartDeferred;
+      const auto gateOpenedBefore = m_startGateOpenedAt;
+      const int playSpeedBefore = m_playSpeed;
+      const int pendingBefore = m_txPendingSpeed;
       m_syncStartDeferred = false;
       m_startGateOpenedAt = {};
       double clock = 0;
@@ -7329,6 +7506,9 @@ void CVideoPlayer::HandlePlaySpeed()
                                   (TxOpen() && !m_txSkipPausestart)) &&
                                  !m_pInputStream->IsRealtime() &&
                                  (videoStart || audioOnlyStart || hintAudioStart);
+      // 5.E2-11 D1.5: START's steps run under the player guard (an E1 hold is no START)
+      const bool txGuarded = txGuardOn && !holdStart;
+      int txUnheldSpeed = INT_MIN;
       // (c): a pending speed is the held path's (its release applies it), else applied here,
       // before the clock selection below and the resyncs
       if (m_txPendingSpeed != INT_MIN)
@@ -7338,6 +7518,13 @@ void CVideoPlayer::HandlePlaySpeed()
         {
           m_playSpeed = pending;
           m_txPendingSpeed = INT_MIN;
+        }
+        else if (txGuarded)
+        {
+          // the selection below reads it; the guard applies it
+          m_playSpeed = pending;
+          m_txPendingSpeed = INT_MIN;
+          txUnheldSpeed = pending;
         }
         else
         {
@@ -7389,6 +7576,8 @@ void CVideoPlayer::HandlePlaySpeed()
         clock = m_CurrentVideo.starttime - m_CurrentVideo.cachetotal;
       }
 
+      const auto commitClock = [&]
+      {
       // the start clock is the first picture's pts: its landing is on a frame
       m_startAtFrame = videoPictured && clock == m_CurrentVideo.starttime;
       m_syncStartPtsWait.reset();
@@ -7412,8 +7601,8 @@ void CVideoPlayer::HandlePlaySpeed()
         // scheduleStart alone never read the count: today's snapshot (r1 L3)
         HoldStart(holdStart ? heldDecisions : std::nullopt);
         // 5.E2-4: a file's held start is inside the window until its release (E2-4 review H1);
-        // a seek's resync is no start
-        if (aml_transaction_shadow_on() && !m_State.streamsReady)
+        // a seek's resync is no start (5.E2-11: a guarded START's after the guard)
+        if (!txGuarded && aml_transaction_shadow_on() && !m_State.streamsReady)
           OUTPUT::COutputWorker::Get().ShadowStartPhase(
               this, OUTPUT::COutputWorker::StartPhase::STARTING, 0, "start held",
               static_cast<int>(OUTPUT::COutputWorker::StartPhase::NONE));
@@ -7427,10 +7616,43 @@ void CVideoPlayer::HandlePlaySpeed()
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
+      };
+      STxStartDone txDone;
+      if (txGuarded &&
+          !TxStartGuarded(scheduleStart ? TxStartPath::SCHEDULED : TxStartPath::UNHELD, txDone,
+                          [&]
+                          {
+                            if (txUnheldSpeed != INT_MIN)
+                              ApplySpeed(txUnheldSpeed, true);
+                            commitClock();
+                          }))
+      {
+        // no START this pass: the sync stays WAITSYNC and the next pass retries
+        m_syncStartDeferred = deferredBefore;
+        m_startGateOpenedAt = gateOpenedBefore;
+        m_playSpeed = playSpeedBefore;
+        m_txPendingSpeed = pendingBefore;
+      }
+      else
+      {
+      if (!txGuarded)
+        commitClock();
+      if (txUnheldSpeed != INT_MIN)
+        CLog::Log(LOGINFO, "TXSTART speed {} applied at the commit (caching {})", txUnheldSpeed,
+                  TxCachingName(m_caching));
       // after the resyncs, so the audio player takes its resync paused and
       // resumes with the release
-      if (scheduleStart)
+      if (scheduleStart && txGuarded)
+        TxStartAfterGuard(TxStartPath::SCHEDULED, txDone, "scheduled start");
+      else if (scheduleStart)
         ReleaseHeldStart("scheduled start");
+      else if (txGuarded)
+      {
+        TxStartAfterGuard(TxStartPath::UNHELD, txDone, "sync, start not held");
+        if (aml_transaction_shadow_on())
+          OUTPUT::COutputWorker::Get().ShadowStartPhase(
+              this, OUTPUT::COutputWorker::StartPhase::NONE, 0, "sync, start not held");
+      }
       else if (!holdStart)
       {
         SetCaching(CACHESTATE_DONE);
@@ -7466,6 +7688,7 @@ void CVideoPlayer::HandlePlaySpeed()
           SignalStreamsReady();
         else
           m_txSyncPassed = true;
+      }
       }
       }
     }
@@ -13138,6 +13361,17 @@ void CVideoPlayer::OnLostDisplay()
   {
     const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
     CLog::Log(LOGINFO, "TXLOSS real ({}) T={} e={}", newcomer ? "newcomer" : "body", wordT, word.e);
+    // 5.E2-11 D5: from W-visible facts only (the started job, or the published T0)
+    {
+      struct timespec mono = {};
+      clock_gettime(CLOCK_MONOTONIC, &mono);
+      const int64_t nowNs = static_cast<int64_t>(mono.tv_sec) * 1000000000 + mono.tv_nsec;
+      const int64_t t0 = m_txLeadT0Ns.load();
+      const auto job = DISPLAYSTATE::TxOpenJob();
+      if ((job && job->T == wordT && job->started.load()) || t0 > nowNs)
+        CLog::Log(LOGINFO, "TXLOSS in the lead (T0 in {} ms)",
+                  t0 > nowNs ? (t0 - nowNs) / 1000000 : 0);
+    }
     // r3 N3: the frozen checks are armed only now, the body done under the guard
     m_txBodyDone.store(true, std::memory_order_release);
   }
