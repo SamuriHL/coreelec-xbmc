@@ -521,6 +521,10 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   if (iformat && strcmp(iformat->name, "mpegts") == 0)
     av_opt_set_int(m_pFormatContext, "probesize", 10000000, 0); // double ffmpeg default
 
+  // DVD pts jump back at title and cell changes, which ffmpeg would take for a 33-bit wrap
+  if (pInput->IsStreamType(DVDSTREAM_TYPE_DVD))
+    av_opt_set_int(m_pFormatContext, "correct_ts_overflow", 0, 0);
+
   // this should never happen. Log it to inform about the error.
   if (m_pFormatContext->nb_streams > 0 && m_pFormatContext->streams == nullptr)
   {
