@@ -792,6 +792,18 @@ bool CWinSystemAmlogic::RunUnderPlayerGuard(const std::function<void()>& fn, boo
   return true;
 }
 
+bool CWinSystemAmlogic::HoldIfRestoreOwed(IDispResource* resource)
+{
+  // the same newcomer freeze as a lost display: the owed set's lost walk re-freezes it and its
+  // reset (or a stop) ends it; a failed set keeps the debt and its P5-9 back-off re-queue
+  std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  if (!m_wRestoreOwed)
+    return false;
+  resource->OnLostDisplay();
+  LedgerLost(resource);
+  return true;
+}
+
 bool CWinSystemAmlogic::HoldIfDisplayLost(IDispResource* resource)
 {
   std::unique_lock<CCriticalSection> lock(m_resourceSection);

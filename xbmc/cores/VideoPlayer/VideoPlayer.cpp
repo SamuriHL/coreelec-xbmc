@@ -3476,6 +3476,13 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
       spanDisc = false; // the freeze owns disc time
       CLog::Log(LOGINFO, "TXLOSS exit inside the span: today's freeze");
     }
+    // code review B M-7: after a deferral the link is uncommitted until the owed Restore (or a
+    // marked set) commits; the legacy start waits for that set's reset as for a lost display
+    else if (winSystem && winSystem->HoldIfRestoreOwed(this))
+    {
+      spanDisc = false;
+      CLog::Log(LOGINFO, "TXLOSS exit with the Restore owed: held until it commits");
+    }
   }
   if (spanDisc && !m_displayLost)
     m_discTime.SetDisplayLost(false);
@@ -3578,9 +3585,12 @@ bool CVideoPlayer::TxClearOpenJob(const char* why)
 {
   if (!DISPLAYSTATE::ClearTxOpenJob(m_txJob))
     return false;
-  // 5.E2-11 D2.6: a Restore still owed is re-queued (through the deferral test) 1500 ms later
+  // 5.E2-11 D2.6: a Restore still owed is re-queued through the deferral test; at once after an
+  // exit or a release (the legacy start waits for it), 1500 ms after START
   if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
-    winSystem->PostOwedRestoreCheck(why);
+    winSystem->PostOwedRestoreCheck(why, std::string_view(why) == "START"
+                                             ? std::chrono::milliseconds(1500)
+                                             : std::chrono::milliseconds(0));
   return true;
 }
 
