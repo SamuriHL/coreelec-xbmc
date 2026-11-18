@@ -1260,7 +1260,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   const bool force_mode_switch_by_fractional_rate = cur_fractional_rate != fractional_rate;
   // 5.E2-11 D2.6: the set after a deferred Restore (the Start job, main's set, the owed Restore)
   // always commits, with the Restore's flags: lost walk, SETTLE, the reset, the handler
-  job.restoreOwed = m_wRestoreOwed.load();
+  job.restoreOwed = (job.start || job.own || job.hotplug) && m_wRestoreOwed.load();
   if (job.restoreOwed)
     CLog::Log(LOGINFO, "OUTPUTDRIVE request {} discharges the owed restore (forced)", job.id);
   const bool force_mode_switch_by_hotplug = job.hotplug || job.restoreOwed;
@@ -1544,9 +1544,16 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   job.kind = !committed                       ? OUTPUT::DriveReply::FAILED
              : notConnected || forceNotCommitted ? OUTPUT::DriveReply::NOT_COMMITTED
                                                  : OUTPUT::DriveReply::DONE;
-  // 5.E2-11 D2.6: only a committed, connected set discharges it
+  // 5.E2-11 D2.6: a committed, connected set discharges it; a marked set that found no display
+  // ends it too (the link is down: its reconnect brings its own Restore), so it never outlives
+  // the start's commit
   if (job.kind == OUTPUT::DriveReply::DONE && m_wRestoreOwed.exchange(false))
     CLog::Log(LOGINFO, "OUTPUTDRIVE request {} committed: the owed restore discharged", job.id);
+  else if (job.restoreOwed && job.kind == OUTPUT::DriveReply::NOT_COMMITTED &&
+           m_wRestoreOwed.exchange(false))
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} not committed (no display): the owed restore "
+                       "ends, the reconnect restores",
+              job.id);
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
