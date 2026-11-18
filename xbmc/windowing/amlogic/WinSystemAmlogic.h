@@ -143,6 +143,8 @@ public:
   bool IsLostSpanOpen() const { return m_lostOpen.load(); }
   //! 5.E2-11 D1.1: the open Start job's T while it is not started (0: none)
   uint32_t UnstartedStartJobT() const;
+  //! 5.E2-11 gate 2: T of the open start job before its commit (NOT_POSTED, QUEUED, PARKING), else 0
+  uint32_t UncommittedStartJobT() const;
   //! 5.E2-11 D1.2: the walk in progress is a span's loss (not a mode set's), m_resourceSection
   bool InSpanWalk() const { return m_spanWalk; }
   //! 5.E2-11 D2.6: at the open job's clear (START, an exit, the stop), W re-queues an owed

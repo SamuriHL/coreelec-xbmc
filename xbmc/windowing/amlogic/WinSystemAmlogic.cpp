@@ -594,7 +594,7 @@ void CWinSystemAmlogic::OpenLostSpan()
   // there). The Restore stays owed: the reconnect's read brings a new route. W's own field (W hotplug)
   else if (m_wOwedRoute)
   {
-    CLog::Log(LOGINFO, "HOTPLUG owed restore: the deferred read's dark route dropped (a new loss)");
+    CLog::Log(LOGINFO, "HOTPLUG owed restore: the deferred read's dark route dropped (the span opened)");
     m_wOwedRoute.reset();
   }
   CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
@@ -625,6 +625,20 @@ uint32_t CWinSystemAmlogic::UnstartedStartJobT() const
     return 0;
   const auto job = DISPLAYSTATE::TxOpenJob();
   if (!job || job->started.load())
+    return 0;
+  return static_cast<uint32_t>(job->T);
+}
+
+uint32_t CWinSystemAmlogic::UncommittedStartJobT() const
+{
+  using State = DISPLAYSTATE::StartJobState;
+  if (!aml_transaction_loss_in_start())
+    return 0;
+  const auto job = DISPLAYSTATE::TxOpenJob();
+  if (!job)
+    return 0;
+  const State state = job->state.load();
+  if (state != State::NOT_POSTED && state != State::QUEUED && state != State::PARKING)
     return 0;
   return static_cast<uint32_t>(job->T);
 }
@@ -1242,15 +1256,16 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
       }
       return;
     }
-    // 5.E2-11 gate 2: from OPEN to START's CAS the film has no mode yet and GC's row is the GUI's
-    // (a loss in PRIME recorded the GUI's 24 Hz; after an exit to legacy the reconnect restored
-    // it). None is taken or kept there; the first job after the start (or its exit) records
-    if (const uint32_t openT = UnstartedStartJobT())
+    // 5.E2-11 gate 2: from OPEN to the start's commit the film has no mode yet and GC's row is the
+    // GUI's (a loss in PRIME recorded the GUI's 24 Hz; after an exit to legacy the reconnect
+    // restored it). None is taken or kept there; E2-8b D5 above covers the commit to the adopt,
+    // after which GC's row is the film's (review: not START's CAS, which comes after the adopt)
+    if (const uint32_t openT = UncommittedStartJobT())
     {
       if (m_wVideoMode)
       {
         CLog::Log(LOGINFO, "HOTPLUG job {}: the video's mode record {} reset (the start T={} has "
-                           "not started)",
+                           "not committed)",
                   reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode), openT);
         m_wVideoMode.reset();
         m_wVideoModeReply = 0;
