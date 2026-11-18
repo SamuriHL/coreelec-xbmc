@@ -1109,6 +1109,9 @@ protected:
   // write clears it
   int m_txPendingSpeed = INT_MIN;
   bool m_txPendingTempo = false;
+  //! P only: a non-pause, non-1x pending speed Prepare dropped, read once by the next speed's
+  //! OnPlayBackSpeedChanged (gate E29B-1 item 5b); INT_MIN = none
+  int m_txDroppedSpeed = INT_MIN;
   bool m_txSkipPausestart = false; //!< D1.6: transaction_skip pausestart, read at the engage
   //! D2: a flush inside a P-decided open keeps it (same T) for the callers re-PRIME covers
   bool TxKeepsFlush(const char* caller) const;

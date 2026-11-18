@@ -4451,6 +4451,16 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_txEngagedGen = 0;
   m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
   m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
+  // gate E29B-1 item 5b: a dropped FF/RW/tempo speed was already notified at its request; the
+  // NORMAL posted above notifies the return to 1x, as transaction_off's applied speed does
+  m_txDroppedSpeed = INT_MIN;
+  if (m_txPendingSpeed != INT_MIN && m_txPendingSpeed != DVD_PLAYSPEED_PAUSE &&
+      m_txPendingSpeed != DVD_PLAYSPEED_NORMAL && IsPlaying())
+  {
+    m_txDroppedSpeed = m_txPendingSpeed;
+    CLog::Log(LOGINFO, "TXSTART speed {} dropped by the next file (1x notified at the next speed)",
+              m_txDroppedSpeed);
+  }
   m_txPendingSpeed = INT_MIN;
   m_txPendingTempo = m_txSkipPausestart = false;
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
@@ -8291,8 +8301,12 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
     m_State.timestamp = m_clock.GetAbsoluteClock();
   }
 
-  // 5.E2-9b D1.2: the callbacks and the PVR follow the user's speed (a pending one included)
-  if (speed != DVD_PLAYSPEED_PAUSE && UserSpeed() != DVD_PLAYSPEED_PAUSE && speed != UserSpeed())
+  // 5.E2-9b D1.2: the callbacks and the PVR follow the user's speed (a pending one included);
+  // the first speed after a next file reads the one Prepare dropped (gate E29B-1 item 5b)
+  const int notifiedSpeed = m_txDroppedSpeed != INT_MIN ? m_txDroppedSpeed : UserSpeed();
+  m_txDroppedSpeed = INT_MIN;
+  if (speed != DVD_PLAYSPEED_PAUSE && notifiedSpeed != DVD_PLAYSPEED_PAUSE &&
+      speed != notifiedSpeed)
   {
     m_callback.OnPlayBackSpeedChanged(speed / DVD_PLAYSPEED_NORMAL);
     m_processInfo->SeekFinished(0);
