@@ -4069,7 +4069,8 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
                                                            const DISPLAYSTATE::DecideInputs& latest,
                                                            bool rootAtOpen,
                                                            bool fullScreen,
-                                                           const SStartFacts* facts)
+                                                           const SStartFacts* facts,
+                                                           const SStartStereo* stereo)
 {
   // main is shut out: RM's current facts (a notice before the post is folded into them)
   float fps;
@@ -4098,11 +4099,14 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
     stereoMode = facts->stereoMode;
     r.hdrType = facts->hdrType;
   }
+  // 5.E2-10 9d: the stream P's target was computed for (a later picture is a notice)
+  if (stereo)
+    stereoMode = stereo->stream;
   r.fps = fps;
   r.width = width;
   r.height = height;
   r.stereoMode = stereoMode;
-  r.stereo = latest.res.stereoMode;
+  r.stereo = stereo ? stereo->target : latest.res.stereoMode;
   // E2-8b NOTE: "no inputs" and "not fullscreen" are DecideShadowPlayer's other no-decision
   // outcomes, returned as exclusions for P's exit (neither is reachable on an engaged open)
   if (!latest.seq)
@@ -4116,8 +4120,8 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
     return r;
   }
   const auto& mirror = OUTPUT::CSettingsMirror::Get();
-  // D1: a stereoscopic stream (the 3D ASK predicate needs one too)
-  if (!stereoMode.empty())
+  // D1: a stereoscopic stream without P's 3D target
+  if (!stereo && !stereoMode.empty())
   {
     r.exclusion = "3D start";
     return r;
@@ -4133,14 +4137,18 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   }
   r.mayChooseMode = fps > 0.0f && !r.refreshOff;
   r.held = r.mayChooseMode && aml_disc_mode_hold();
-  const ResolutionInputs& in = latest.res;
+  // 5.E2-10 9d: chosen for the target stereo mode, as main passes GC's (RES:166-185)
+  ResolutionInputs in = latest.res;
+  if (stereo)
+    in.stereoMode = stereo->target;
+  const bool is3D = stereo && !stereoMode.empty();
   RESOLUTION res;
   if (!r.mayChooseMode)
     res = in.videoResolution;
   else if (aml_disc_mode_hold())
-    res = HeldShadow(in, fps, in.videoResolution, false, width, height, true);
+    res = HeldShadow(in, fps, in.videoResolution, is3D, width, height, true);
   else
-    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, false, true);
+    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, true);
   r.res = res;
   r.info = in.Info(res);
   r.change = res != in.videoResolution;
@@ -4166,6 +4174,13 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   CLog::Log(LOGDEBUG, "CRenderManager::ResolveStart - set {} mode {} frac {} tweak {:.1f}ms", gen,
             r.info.strMode, r.frac, r.tweakMs);
   return r;
+}
+
+std::string CRenderManager::TxPictureStereoMode()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  return m_picture.stereoMode;
 }
 
 bool CRenderManager::TxRenderTimedOut(std::chrono::steady_clock::time_point from)

@@ -312,16 +312,31 @@ RenderStereoMode CStereoscopicsManager::GetPreferredPlaybackMode(void) const
       m_settings->GetInt(CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE));
 }
 
-RenderStereoMode CStereoscopicsManager::ConvertVideoToGuiStereoMode(const std::string& mode)
+RenderStereoMode StereoVideoModeToGuiMode(const std::string& mode,
+                                          const std::function<bool(RenderStereoMode)>& supports,
+                                          bool* present)
 {
+  if (present)
+    *present = false;
   size_t i = 0;
   while (VideoModeToGuiModeMap[i].name)
   {
-    if (mode == VideoModeToGuiModeMap[i].name && CServiceBroker::GetRenderSystem()->SupportsStereo(VideoModeToGuiModeMap[i].mode))
-      return VideoModeToGuiModeMap[i].mode;
+    if (mode == VideoModeToGuiModeMap[i].name)
+    {
+      if (present)
+        *present = true;
+      if (supports(VideoModeToGuiModeMap[i].mode))
+        return VideoModeToGuiModeMap[i].mode;
+    }
     ++i;
   }
   return RenderStereoMode::UNDEFINED;
+}
+
+RenderStereoMode CStereoscopicsManager::ConvertVideoToGuiStereoMode(const std::string& mode)
+{
+  return StereoVideoModeToGuiMode(mode, [](RenderStereoMode m)
+                                  { return CServiceBroker::GetRenderSystem()->SupportsStereo(m); });
 }
 
 RenderStereoMode CStereoscopicsManager::ConvertStringToGuiStereoMode(const std::string& mode)

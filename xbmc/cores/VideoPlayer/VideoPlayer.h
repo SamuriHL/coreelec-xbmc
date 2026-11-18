@@ -1098,6 +1098,42 @@ protected:
   void TxEndSuperseded(const char* refusal);
   //! §3: no new OPEN 12 s after the step
   void TxSupersededBound();
+  // 5.E2-10 9d: the 3D target P decides on (StereoscopicsManager::OnStreamChange's)
+  struct STxStereo
+  {
+    enum class Kind
+    {
+      TARGET, //!< no question
+      ASK,
+      UNAVAILABLE, //!< an input P cannot read: legacy
+    } kind = Kind::TARGET;
+    RenderStereoMode target = RenderStereoMode::OFF;
+    RenderStereoMode gui = RenderStereoMode::OFF;
+    const char* rule = "";
+    bool stereoscopic = false;
+  };
+  STxStereo TxStereoTarget(const std::string& stream, const DISPLAYSTATE::DecideInputs& latest);
+  //! SetStereoMode's rule for m on the GUI mode gui
+  static RenderStereoMode TxStereoApply(RenderStereoMode m,
+                                        RenderStereoMode gui,
+                                        RenderStereoMode playing,
+                                        bool support3d);
+  //! the ASK step's pass: the dialog's pause and unpause, then DECIDE on the answer
+  void TxAskPass();
+  //! the target the ASK step decided (DECIDE re-runs on it)
+  std::optional<RenderStereoMode> m_txAskTarget;
+  std::string m_txAskStream;
+  RenderStereoMode m_txAskPlaying = RenderStereoMode::OFF;
+  bool m_txAskSupport3d = false;
+  //! r1 M-5: a pending pause since this set's OPEN counts as the dialog open
+  bool m_txAskPauseSeen = false;
+  bool m_txAskOpen = false;
+  bool m_txAskBoundLogged = false;
+  uint64_t m_txAskInputsSeq = 0; //!< the publish after the dialog closed (0: not closed yet)
+  std::chrono::steady_clock::time_point m_txAskSince{};
+  std::chrono::steady_clock::time_point m_txAskClosedAt{};
+  //! the set's first pass with a configured picture (the 2 s no-dialog bound counts from it)
+  std::chrono::steady_clock::time_point m_txConfiguredAt{};
   //! D2/D3 at CN's decided or unchanged opening; false while transaction_lossat holds the opening
   bool TxDecided(bool modeDecided);
   void TxStartPoint(const char* point);
@@ -1118,6 +1154,7 @@ protected:
     NONE, //!< not decided yet
     WAIT_GUI, //!< D4 step 7: decided, the post waits while a GUI set is in flight
     POSTED, //!< the Start job is on W
+    ASK, //!< 5.E2-10 9d: DECIDE waits for the 3D question
   };
   //! D2: the open's Start job (null: main decides this open)
   std::shared_ptr<DISPLAYSTATE::SStartJob> m_txJob;

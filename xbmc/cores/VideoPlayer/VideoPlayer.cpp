@@ -62,6 +62,7 @@
 #include "utils/PresentationTimeline.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/VideoSyncAML.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -3469,6 +3470,10 @@ void CVideoPlayer::TxOpenStart()
     m_txSink = std::make_unique<CTxStartSink>(m_messenger, m_renderManager);
   m_txJob = std::move(job);
   m_txStep = TxStep::NONE;
+  // sc L-5: this set's own pause and configure
+  m_txAskPauseSeen = false;
+  m_txConfiguredAt = {};
+  m_txAskTarget.reset();
   m_txRootAtOpen = DISPLAYSTATE::FullScreenRoot();
   if (m_txReopenOpen)
   {
@@ -3502,6 +3507,215 @@ void CVideoPlayer::TxReleaseJob(const char* why)
   if (DISPLAYSTATE::ClearTxOpenJob(m_txJob))
     CLog::Log(LOGINFO, "TXSTART T={} start job released ({})", m_txJob->T, why);
   m_txJob.reset();
+}
+
+namespace
+{
+const char* TxStereoName(RenderStereoMode m)
+{
+  switch (m)
+  {
+    case RenderStereoMode::OFF:
+      return "OFF";
+    case RenderStereoMode::SPLIT_HORIZONTAL:
+      return "SPLIT_HORIZONTAL";
+    case RenderStereoMode::SPLIT_VERTICAL:
+      return "SPLIT_VERTICAL";
+    case RenderStereoMode::ANAGLYPH_RED_CYAN:
+      return "ANAGLYPH_RED_CYAN";
+    case RenderStereoMode::ANAGLYPH_GREEN_MAGENTA:
+      return "ANAGLYPH_GREEN_MAGENTA";
+    case RenderStereoMode::ANAGLYPH_YELLOW_BLUE:
+      return "ANAGLYPH_YELLOW_BLUE";
+    case RenderStereoMode::INTERLACED:
+      return "INTERLACED";
+    case RenderStereoMode::CHECKERBOARD:
+      return "CHECKERBOARD";
+    case RenderStereoMode::HARDWAREBASED:
+      return "HARDWAREBASED";
+    case RenderStereoMode::MONO:
+      return "MONO";
+    case RenderStereoMode::AUTO:
+      return "AUTO";
+    default:
+      return "UNDEFINED";
+  }
+}
+
+// RenderSystem.cpp:68-79, and HARDWAREBASED on a 3D display (WinSystemAmlogicGLESContext)
+bool TxSupportsStereo(RenderStereoMode m, bool support3d)
+{
+  return m == RenderStereoMode::OFF || m == RenderStereoMode::SPLIT_HORIZONTAL ||
+         m == RenderStereoMode::SPLIT_VERTICAL || m == RenderStereoMode::MONO ||
+         (support3d && m == RenderStereoMode::HARDWAREBASED);
+}
+} // namespace
+
+RenderStereoMode CVideoPlayer::TxStereoApply(RenderStereoMode m,
+                                             RenderStereoMode gui,
+                                             RenderStereoMode playing,
+                                             bool support3d)
+{
+  const RenderStereoMode apply = m == RenderStereoMode::AUTO ? playing : m;
+  if (apply != gui && apply >= RenderStereoMode::OFF && TxSupportsStereo(apply, support3d))
+    return apply;
+  return gui;
+}
+
+// r1 H-1: OnStreamChange's rules in its order, from inputs P can read (never a guess)
+CVideoPlayer::STxStereo CVideoPlayer::TxStereoTarget(const std::string& stream,
+                                                     const DISPLAYSTATE::DecideInputs& latest)
+{
+  STxStereo t;
+  t.stereoscopic = !stream.empty() && stream != "mono";
+  const auto& mirror = OUTPUT::CSettingsMirror::Get();
+  const bool mirrored =
+      mirror.IsMirrored(CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE) &&
+      mirror.IsMirrored(CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE) &&
+      mirror.IsMirrored(CSettings::SETTING_VIDEOPLAYER_QUITSTEREOMODEONSTOP);
+  t.gui = mirrored ? static_cast<RenderStereoMode>(
+                         mirror.GetInt(CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE))
+                   : latest.res.stereoMode;
+  t.target = t.gui;
+  const auto state = DISPLAYSTATE::Get();
+  bool present = false;
+  const bool support3d = state && state->support3d;
+  RenderStereoMode playing = StereoVideoModeToGuiMode(
+      stream, [support3d](RenderStereoMode m) { return TxSupportsStereo(m, support3d); },
+      &present);
+  if (playing == RenderStereoMode::UNDEFINED)
+    playing = RenderStereoMode::OFF;
+  // a 2D stream on a GUI in 2D: nothing SMg could change
+  if (!t.stereoscopic && t.gui == RenderStereoMode::OFF)
+  {
+    t.rule = "2D stream";
+    return t;
+  }
+  if (!mirrored || !state || (t.stereoscopic && !present))
+  {
+    t.kind = STxStereo::Kind::UNAVAILABLE;
+    t.rule = !mirrored ? "settings not mirrored" : !state ? "no display state" : "stream mode";
+    return t;
+  }
+  const int playback = mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE);
+  const bool quit = mirror.GetBool(CSettings::SETTING_VIDEOPLAYER_QUITSTEREOMODEONSTOP);
+  const auto preferred = static_cast<RenderStereoMode>(
+      mirror.GetInt(CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE));
+  if (playback == STEREOSCOPIC_PLAYBACK_MODE_IGNORE && t.gui == RenderStereoMode::OFF)
+  {
+    t.rule = "ignore";
+    return t;
+  }
+  if (!support3d)
+  {
+    t.rule = "no 3D display";
+    return t;
+  }
+  if (!t.stereoscopic)
+  {
+    t.rule = quit ? "2D stream, quit 3D" : "2D stream, 3D kept";
+    if (quit)
+      t.target = TxStereoApply(RenderStereoMode::OFF, t.gui, playing, support3d);
+    return t;
+  }
+  if (latest.userStereo != RenderStereoMode::UNDEFINED)
+  {
+    t.rule = "user mode";
+    t.target = TxStereoApply(latest.userStereo, t.gui, playing, support3d);
+    return t;
+  }
+  if (t.gui != RenderStereoMode::OFF &&
+      (!quit || t.gui == preferred || (preferred == RenderStereoMode::AUTO && t.gui == playing)))
+  {
+    t.rule = !quit ? "3D kept" : "already preferred";
+    return t;
+  }
+  switch (playback)
+  {
+    case STEREOSCOPIC_PLAYBACK_MODE_ASK:
+      t.kind = STxStereo::Kind::ASK;
+      t.rule = "ask";
+      m_txAskPlaying = playing;
+      m_txAskSupport3d = support3d;
+      break;
+    case STEREOSCOPIC_PLAYBACK_MODE_PREFERRED:
+      t.rule = "preferred";
+      t.target = TxStereoApply(preferred, t.gui, playing, support3d);
+      break;
+    case STEREOSCOPIC_PLAYBACK_MODE_MONO:
+      t.rule = "mono";
+      t.target = TxStereoApply(RenderStereoMode::MONO, t.gui, playing, support3d);
+      break;
+    default:
+      t.rule = "ignore";
+      break;
+  }
+  return t;
+}
+
+// 5.E2-10 9d (r1 M-5): the dialog is SMg's pause/unpause pair; its answer is the user mode main
+// publishes after the unpause (SMg sets it first)
+void CVideoPlayer::TxAskPass()
+{
+  const auto now = std::chrono::steady_clock::now();
+  const auto& mirror = OUTPUT::CSettingsMirror::Get();
+  const auto gui = static_cast<RenderStereoMode>(
+      mirror.GetInt(CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE));
+  if (!m_txAskOpen)
+  {
+    if (!m_txAskPauseSeen)
+    {
+      // a hint DECIDE has no configure: counted from the step
+      const auto from =
+          m_txConfiguredAt != std::chrono::steady_clock::time_point{} ? m_txConfiguredAt
+                                                                       : m_txAskSince;
+      if (now - from < 2s)
+        return;
+      // sc M-8: SMg did nothing; a dialog that opens later goes through main's trigger
+      CLog::Log(LOGERROR, "TXSTART set={} T={} 3D question did not open in 2 s: GUI stereo mode {}",
+                m_txEngagedGen, m_txJob->T, TxStereoName(gui));
+      m_txAskTarget = gui;
+      m_txStep = TxStep::NONE;
+      TxDecide();
+      return;
+    }
+    m_txAskOpen = true;
+  }
+  if (m_txPendingSpeed == DVD_PLAYSPEED_PAUSE)
+    return;
+  if (!m_txAskInputsSeq)
+  {
+    m_txAskInputsSeq = DISPLAYSTATE::GetDecideInputs().seq + 1;
+    m_txAskClosedAt = now;
+    DISPLAYSTATE::RequestDecideInputs();
+  }
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  if (latest.seq < m_txAskInputsSeq)
+  {
+    if (now - m_txAskClosedAt < 1s)
+      return;
+    CLog::Log(LOGINFO, "TXSTART set={} inputs seq {} after the 3D question, {} published",
+              m_txEngagedGen, m_txAskInputsSeq, latest.seq);
+    EndTransactionToLegacy("inputs stale", CRenderManager::TxHow::RERAISE,
+                           CRenderManager::TxNeed::JOB_OK);
+    return;
+  }
+  if (latest.userStereo != RenderStereoMode::UNDEFINED)
+  {
+    m_txAskTarget = TxStereoApply(latest.userStereo, gui, m_txAskPlaying, m_txAskSupport3d);
+    CLog::Log(LOGINFO, "TXSTART set={} T={} 3D question answered: user {}, target {}",
+              m_txEngagedGen, m_txJob->T, TxStereoName(latest.userStereo),
+              TxStereoName(*m_txAskTarget));
+  }
+  else
+  {
+    // Q2
+    m_txAskTarget = gui;
+    CLog::Log(LOGINFO, "TXSTART set={} T={} 3D question cancelled: GUI stereo mode {}",
+              m_txEngagedGen, m_txJob->T, TxStereoName(gui));
+  }
+  m_txStep = TxStep::NONE;
+  TxDecide();
 }
 
 // 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7
@@ -3549,7 +3763,8 @@ void CVideoPlayer::TxDecide()
                 m_txEngagedGen, m_txJob->T, m_txReopenSeq);
     return;
   }
-  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs(true);
+  // 5.E2-10 9d: read untaken (the pump keeps running) until DECIDE goes past the 3D question
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
   if (!m_txOpenInputsSeq || latest.seq < m_txOpenInputsSeq)
   {
     CLog::Log(LOGINFO, "TXSTART set={} inputs seq {} at the open, {} published", m_txEngagedGen,
@@ -3561,8 +3776,46 @@ void CVideoPlayer::TxDecide()
   CRenderManager::SStartFacts facts;
   if (hint)
     facts = TxDecideFromHints();
-  CRenderManager::SStartResolve r = m_renderManager.ResolveStart(
-      m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen, hint ? &facts : nullptr);
+  // 5.E2-10 9d: the stereo mode the GUI is about to take, decided up front
+  std::optional<CRenderManager::SStartStereo> stereo;
+  if (!aml_transaction_skip("ask"))
+  {
+    stereo.emplace();
+    stereo->stream = hint ? facts.stereoMode : m_renderManager.TxPictureStereoMode();
+    if (m_txAskTarget)
+      stereo->target = *m_txAskTarget;
+    else
+    {
+      const STxStereo t = TxStereoTarget(stereo->stream, latest);
+      if (t.kind == STxStereo::Kind::UNAVAILABLE)
+      {
+        CLog::Log(LOGINFO, "TXSTART set={} T={} 3D inputs unavailable ({})", m_txEngagedGen,
+                  m_txJob->T, t.rule);
+        EndTransactionToLegacy("3D inputs unavailable", How::RERAISE, Need::JOB_OK);
+        return;
+      }
+      if (t.kind == STxStereo::Kind::ASK)
+      {
+        m_txStep = TxStep::ASK;
+        m_txAskStream = stereo->stream;
+        m_txAskOpen = m_txAskBoundLogged = false;
+        m_txAskInputsSeq = 0;
+        m_txAskSince = std::chrono::steady_clock::now();
+        CLog::Log(LOGINFO, "TXSTART set={} T={} DECIDE waits for the 3D question (stream '{}')",
+                  m_txEngagedGen, m_txJob->T, stereo->stream);
+        return;
+      }
+      if (t.stereoscopic || t.gui != RenderStereoMode::OFF)
+        CLog::Log(LOGINFO, "TXSTART set={} T={} 3D: no question ({}): target {} (GUI {})",
+                  m_txEngagedGen, m_txJob->T, t.rule, TxStereoName(t.target),
+                  TxStereoName(t.gui));
+      stereo->target = t.target;
+    }
+  }
+  DISPLAYSTATE::GetDecideInputs(true);
+  CRenderManager::SStartResolve r =
+      m_renderManager.ResolveStart(m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen,
+                                   hint ? &facts : nullptr, stereo ? &*stereo : nullptr);
   if (hint)
   {
     // the fps fact of an fps-invalid stream is the chosen mode's rate (r4 M3)
@@ -3593,6 +3846,9 @@ void CVideoPlayer::TxDecide()
   job.res = r.info;
   job.resIndex = static_cast<int>(r.res);
   job.stereo = r.stereo;
+  // sc M-7: a frame packing mode's full height, as GC's set and W's restore job give it
+  if (job.stereo == RenderStereoMode::HARDWAREBASED)
+    job.res.iHeight = r.info.iScreenHeight * 2 + r.info.iBlanking;
   job.hdrType = r.hdrType;
   job.fullScreen = m_txFullScreen;
   job.fracRequest = r.frac;
@@ -4062,6 +4318,8 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
       TxDecide();
     else if (m_txStep == TxStep::WAIT_GUI)
       TxTryPost();
+    else if (m_txStep == TxStep::ASK)
+      TxAskPass();
     return;
   }
   using How = CRenderManager::TxHow;
@@ -4141,6 +4399,13 @@ bool CVideoPlayer::TxBoundEnds(const char* site)
 {
   if (!TxOpen())
     return true;
+  // 5.E2-10 9d: the 3D dialog has no timeout
+  if (m_txJob && m_txStep == TxStep::ASK)
+  {
+    if (!std::exchange(m_txAskBoundLogged, true))
+      CLog::Log(LOGINFO, "TXSTART T={} {}: the 3D question is open, not ended", m_txJob->T, site);
+    return false;
+  }
   // 5.E2-9a (D7, C2 review B1): a posted job belongs to the OUTPUT bound (15 s from the post) and
   // the backstop: CN's cap, armed before the post, must not end it to legacy behind a hung W
   if (m_txJob && m_txStep == TxStep::POSTED)
@@ -4566,6 +4831,10 @@ void CVideoPlayer::CheckStartGate()
   }
   if (txP)
   {
+    // 5.E2-10 9d: the configure raised SMg's AVChange
+    if (state != State::UNCONFIGURED &&
+        m_txConfiguredAt == std::chrono::steady_clock::time_point{})
+      m_txConfiguredAt = std::chrono::steady_clock::now();
     // D6's backstop does not count a loss (the main loop stamps its start)
     if (m_txLostAt != std::chrono::steady_clock::time_point{})
     {
@@ -5147,6 +5416,9 @@ void CVideoPlayer::TxResetStart(bool reopen)
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
   m_txReopenOpen = m_txReopenInStart = m_txReopenWaitLogged = m_txSuperseded = false;
+  m_txAskTarget.reset();
+  m_txAskPauseSeen = false;
+  m_txConfiguredAt = {};
   if (reopen)
   {
     // the engage sets the hook, read-on and menu-domain flags itself; the word's open, the
@@ -9132,6 +9404,8 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
     }
     m_txPendingSpeed = speed;
     m_txPendingTempo = isTempoSpeed;
+    if (speed == DVD_PLAYSPEED_PAUSE)
+      m_txAskPauseSeen = true; // 5.E2-10 9d (r1 M-5)
     CLog::Log(LOGINFO, "TXSTART set={} speed {} pending (applied at START)", m_txEngagedGen,
               speed);
     return;

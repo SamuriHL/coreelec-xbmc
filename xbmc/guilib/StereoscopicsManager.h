@@ -17,12 +17,20 @@
 #include "rendering/RenderSystemTypes.h"
 #include "settings/lib/ISettingCallback.h"
 
+#include <functional>
 #include <stdlib.h>
+#include <string>
 
 class CAction;
 class CDataCacheCore;
 class CGUIWindowManager;
 class CSettings;
+
+//! VideoModeToGuiModeMap's GUI mode for a video stereo mode when supports() accepts it, else
+//! UNDEFINED; present: the mode is in the map (5.E2-10 9d: shared with the player's 3D target)
+RenderStereoMode StereoVideoModeToGuiMode(const std::string& mode,
+                                          const std::function<bool(RenderStereoMode)>& supports,
+                                          bool* present = nullptr);
 
 enum STEREOSCOPIC_PLAYBACK_MODE
 {

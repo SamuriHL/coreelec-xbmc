@@ -436,11 +436,21 @@ public:
   //! E2-8b D4 step 2 (Plan vs code 2): DecideShadowPlayer's pure body on RM's current facts,
   //! the published inputs and the settings mirror; consumes nothing
   //! 5.E2-9c D3: facts (a no-picture DECIDE) replace RM's configured picture
+  //! 5.E2-10 9d: P's 3D target for the video's stereo mode (stream); null: a stereoscopic
+  //! stream is the `3D start` exclusion (transaction_skip ask)
+  struct SStartStereo
+  {
+    std::string stream;
+    RenderStereoMode target = RenderStereoMode::OFF;
+  };
   SStartResolve ResolveStart(unsigned int gen,
                              const DISPLAYSTATE::DecideInputs& latest,
                              bool rootAtOpen,
                              bool fullScreen,
-                             const SStartFacts* facts = nullptr);
+                             const SStartFacts* facts = nullptr,
+                             const SStartStereo* stereo = nullptr);
+  //! 5.E2-10 9d: the configured picture's stereo mode, as ResolveStart reads it
+  std::string TxPictureStereoMode();
   //! E2-8b D4 step 4: the frac arm consumed for the start (today's `consumed` line), kept with
   //! its original time for a reraise or a failed hand-back; r.frac becomes the arm taken
   //! (5.E2-9c D3, r4 H1, r5 M3: on a hint DECIDE OR'd with the hint's, and that one recorded)

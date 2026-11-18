@@ -38,6 +38,8 @@ public:
 
   bool GetBool(const std::string& id) const;
   int GetInt(const std::string& id) const;
+  //! 5.E2-10 9d: the value is the mirror's (a setting not mirrored is read from CSettings)
+  bool IsMirrored(const std::string& id) const;
 
   bool OnSettingChanging(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingsLoaded() override;

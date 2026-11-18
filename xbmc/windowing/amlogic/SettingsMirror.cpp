@@ -72,6 +72,10 @@ const char* const MIRRORED[] = {
     // 5.E2-5: DECIDE's mode rules on P (mayChooseMode, the 3D ASK predicate)
     CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE,
     CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE,
+    // 5.E2-10 9d: the 3D target's other inputs (StereoscopicsManager's)
+    CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE,
+    CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE,
+    CSettings::SETTING_VIDEOPLAYER_QUITSTEREOMODEONSTOP,
 };
 
 int ValueOf(const CSetting& setting)
@@ -181,6 +185,12 @@ CSettingsMirror::CScopedValue::CScopedValue(const std::string& id, int value)
 CSettingsMirror::CScopedValue::~CScopedValue()
 {
   t_override = false;
+}
+
+bool CSettingsMirror::IsMirrored(const std::string& id) const
+{
+  std::unique_lock lock(m_mutex);
+  return m_started && m_values.count(id) != 0;
 }
 
 int CSettingsMirror::GetInt(const std::string& id) const
