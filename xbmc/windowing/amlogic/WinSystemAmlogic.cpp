@@ -629,6 +629,14 @@ uint32_t CWinSystemAmlogic::UnstartedStartJobT() const
   return static_cast<uint32_t>(job->T);
 }
 
+void CWinSystemAmlogic::RecordVideoModeAtCommit(const RESOLUTION_INFO& res, uint64_t requestId)
+{
+  m_wVideoMode = DISPLAYSTATE::FactsOf(res);
+  m_wVideoModeReply = 0;
+  CLog::Log(LOGINFO, "HOTPLUG the video's mode record {}: request {}'s commit",
+            DISPLAYSTATE::FactsString(*m_wVideoMode), requestId);
+}
+
 uint32_t CWinSystemAmlogic::UncommittedStartJobT() const
 {
   using State = DISPLAYSTATE::StartJobState;

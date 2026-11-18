@@ -183,6 +183,8 @@ protected:
   //! W: the deferring read's dark route (B3-9a), for the forced set that discharges the debt on
   //! an unbound connector (D2.6's routing commit); a later event's seq refuses it when stale
   std::optional<SDarkRoute> m_wOwedRoute;
+  //! 5.E2-11 gate 3 (W): the video's own committed set (the Start job, RM's) records the video's mode
+  void RecordVideoModeAtCommit(const RESOLUTION_INFO& res, uint64_t requestId);
   //! W: the film's row a marked film set asked for (the Start job's, main's rm set's): the owed
   //! re-queue's target while the film plays with nothing of its own committed
   std::optional<DISPLAYSTATE::ModeFacts> m_wOwedFilmRow;

@@ -1576,6 +1576,13 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     m_wOwedRoute.reset();
     m_wOwedFilmRow.reset();
   }
+  // 5.E2-11 gate 3: the video's own committed set (the Start job, RM's) is the video's mode: GC's
+  // row lags it (a legacy retry after a failed start job committed 50 Hz while GC still read the
+  // GUI's 24 Hz; the next job recorded that and the reconnect restored it). E2-8b D5's window
+  // still resets it from the start's commit to the adopt
+  if (aml_transaction_loss_in_start() && job.kind == OUTPUT::DriveReply::DONE &&
+      (job.start || (job.own && job.originRm)))
+    RecordVideoModeAtCommit(job.res, job.id);
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
