@@ -1124,6 +1124,8 @@ protected:
                                         bool support3d);
   //! the ASK step's pass: the dialog's pause and unpause, then DECIDE on the answer
   void TxAskPass();
+  //! 5.E2-11 D4: the job's askOpen from TxAskPass's dialog predicate
+  void TxAskOpenUpdate();
   //! the target the ASK step decided (DECIDE re-runs on it)
   std::optional<RenderStereoMode> m_txAskTarget;
   std::string m_txAskStream;

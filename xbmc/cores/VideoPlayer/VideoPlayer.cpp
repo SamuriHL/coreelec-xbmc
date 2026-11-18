@@ -3780,6 +3780,19 @@ void CVideoPlayer::TxAskPass()
   TxDecide();
 }
 
+// 5.E2-11 D4: TxAskPass's "dialog open" for W's deferral test (a Restore then commits the GUI's
+// mode so the dialog is seen); a pause pending in ASK counts once the dialog step has opened
+void CVideoPlayer::TxAskOpenUpdate()
+{
+  if (!m_txJob)
+    return;
+  const bool open = TxOpen() && m_txStep == TxStep::ASK && m_txAskOpen &&
+                    m_txPendingSpeed == DVD_PLAYSPEED_PAUSE;
+  if (m_txJob->askOpen.exchange(open) != open)
+    CLog::Log(LOGINFO, "TXSTART T={} 3D question {} (a Restore is not deferred while open)",
+              m_txJob->T, open ? "open" : "closed");
+}
+
 // 5.E2-8b D4: DECIDE at the set's first configure, steps 1-7
 void CVideoPlayer::TxDecide()
 {
@@ -4423,7 +4436,10 @@ void CVideoPlayer::TxStartGatePass(CRenderManager::ModeFirstState state)
     else if (m_txStep == TxStep::WAIT_GUI)
       TxTryPost();
     else if (m_txStep == TxStep::ASK)
+    {
       TxAskPass();
+      TxAskOpenUpdate();
+    }
     return;
   }
   using How = CRenderManager::TxHow;
@@ -9936,6 +9952,7 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
     m_txPendingTempo = isTempoSpeed;
     if (speed == DVD_PLAYSPEED_PAUSE)
       m_txAskPauseSeen = true; // 5.E2-10 9d (r1 M-5)
+    TxAskOpenUpdate();
     CLog::Log(LOGINFO, "TXSTART set={} speed {} pending (applied at START)", m_txEngagedGen,
               speed);
     return;
