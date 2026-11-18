@@ -727,6 +727,19 @@ void CWinSystemAmlogic::PostOwedFilmEnded(const char* why)
   OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "owed film ended",
                                              [this, why]
                                              {
+                                               // gate 3 review: a commit's record ends with its
+                                               // file (no next file's Restore targets it)
+                                               if (m_wVideoMode)
+                                               {
+                                                 CLog::Log(LOGINFO,
+                                                           "HOTPLUG the video's mode record {} "
+                                                           "dropped: the file ended ({})",
+                                                           DISPLAYSTATE::FactsString(
+                                                               *m_wVideoMode),
+                                                           why);
+                                                 m_wVideoMode.reset();
+                                                 m_wVideoModeReply = 0;
+                                               }
                                                if (!m_wOwedFilmRow)
                                                  return;
                                                CLog::Log(LOGINFO,
