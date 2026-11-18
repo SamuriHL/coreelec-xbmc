@@ -1098,6 +1098,10 @@ protected:
   void TxEndSuperseded(const char* refusal);
   //! §3: no new OPEN 12 s after the step
   void TxSupersededBound();
+  //! test hooks: transaction_reopendelay's end ({} = none); boundarynohold / the lead's line,
+  //! once per boundary
+  std::chrono::steady_clock::time_point m_txReopenDelayUntil{};
+  bool m_txBoundaryLogged = false;
   // 5.E2-10 9d: the 3D target P decides on (StereoscopicsManager::OnStreamChange's)
   struct STxStereo
   {

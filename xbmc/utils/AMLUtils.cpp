@@ -3065,6 +3065,7 @@ STransactionHooks ReadTransactionHooks()
   hooks.audioTimeCapS = std::atof(TransactionHookWord("transaction_audiotimecap").c_str());
   hooks.demuxStallMs = TransactionHookMs("transaction_demuxstall");
   hooks.reopenDelayMs = TransactionHookMs("transaction_reopendelay");
+  hooks.boundaryNoHold = TransactionHookFlag("transaction_boundarynohold");
   hooks.restoreCapsDelayMs = TransactionHookMs("transaction_restorecapsdelay");
   hooks.aeDevChange = TransactionHookFlag("transaction_aedevchange");
   hooks.noVideo = TransactionHookFlag("transaction_novideo");

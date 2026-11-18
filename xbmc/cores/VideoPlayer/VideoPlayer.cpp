@@ -2445,9 +2445,26 @@ bool CVideoPlayer::WaitStartAtBoundary()
       m_startReleasedClock = DVD_NOPTS_VALUE;
   }
   const bool resuming = m_startReleasedClock != DVD_NOPTS_VALUE;
+  if (!held)
+    m_txBoundaryLogged = false;
+  // 5.E2-10 transaction_boundarynohold (r1 M-4): both holds skipped inside an open start, so the
+  // boundary reaches the transition before the job's commit
+  if (held && !m_bAbortRequest && TxOpen() && aml_transaction_hooks().boundaryNoHold)
+  {
+    if (!std::exchange(m_txBoundaryLogged, true))
+      CLog::Log(LOGWARNING, "TXTEST boundarynohold: released at {}",
+                m_txJob ? DISPLAYSTATE::StartJobStateName(m_txJob->state.load()) : "no job");
+    m_boundaryStartWaitSince = {};
+    return false;
+  }
   // a shut start gate holds it under the gate's own bound
   if (held && !m_bAbortRequest && (m_startHeld || resuming || StartGateShut()))
   {
+    // 5.E2-10 §4 (row 7): the boundary held in a transaction's lead
+    if (resuming && !m_startHeld && m_txEngaged && !std::exchange(m_txBoundaryLogged, true))
+      CLog::Log(LOGINFO,
+                "TXSTART boundary held in the lead (clock {:.3f} < release {:.3f} + 200 ms)",
+                m_clock.GetClock() / DVD_TIME_BASE, m_startReleasedClock / DVD_TIME_BASE);
     m_boundaryStartWaitSince = {};
     return true;
   }
@@ -3109,6 +3126,11 @@ void CVideoPlayer::TxSupersede(TxSegClass cls)
     CLog::Log(LOGINFO, "TXSTART set={} T={} row 3: reopen ({}) supersedes the job ({})",
               m_txEngagedGen, m_txJob->T, TxSegClassName(cls),
               DISPLAYSTATE::StartJobStateName(state));
+    if (const int ms = aml_transaction_hooks().reopenDelayMs; ms > 0)
+    {
+      m_txReopenDelayUntil = m_txSupersededAt + std::chrono::milliseconds(ms);
+      CLog::Log(LOGWARNING, "TXTEST reopendelay {}", ms);
+    }
     return;
   }
   // Q3 (E210-2): past the commit CAS
@@ -5448,6 +5470,7 @@ void CVideoPlayer::TxResetStart(bool reopen)
   m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
   m_txSegClass = TxSegClass::NONE;
   m_txReopenCandidateGen = 0;
+  m_txReopenDelayUntil = {};
   m_discMenuOnly = false;
   m_menuOnlyCandidateSince = {};
 }
@@ -5933,6 +5956,18 @@ void CVideoPlayer::Process()
         continue;
       }
       m_menuOnlyCandidateSince = {};
+
+      // transaction_reopendelay (5.E2-10): the OPEN after a supersede waits, P keeps running
+      if (m_txReopenDelayUntil != std::chrono::steady_clock::time_point{})
+      {
+        if (std::chrono::steady_clock::now() < m_txReopenDelayUntil)
+        {
+          UpdatePlayState(200);
+          CThread::Sleep(20ms);
+          continue;
+        }
+        m_txReopenDelayUntil = {};
+      }
 
       if (m_pInputStream->NextStream() == CDVDInputStream::NEXTSTREAM_NONE)
         break;

@@ -499,6 +499,8 @@ struct STransactionHooks
   double audioTimeCapS = 0.0;
   int demuxStallMs = 0; //!< transaction_demuxstall <ms>: a demux stall (E2-7)
   int reopenDelayMs = 0; //!< transaction_reopendelay <ms>: the OPEN after row 3's step (E2-10)
+  //! transaction_boundarynohold: a held Blu-ray boundary released at once inside a start (E2-10)
+  bool boundaryNoHold = false;
   int restoreCapsDelayMs = 0; //!< transaction_restorecapsdelay <ms>: a Restore's caps (E2-11)
   bool aeDevChange = false; //!< transaction_aedevchange: an AE device change after START (E2-10)
   bool noVideo = false; //!< transaction_novideo: the next segment's video dropped (E2-13)
