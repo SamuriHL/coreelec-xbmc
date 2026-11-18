@@ -1,0 +1,44 @@
+Subject: [PATCH] dvdnav: select the forced button when its highlight starts
+
+libdvdnav set the selected button to FOSL_BTNN at the SPU stream change
+it forces at a cell change. Its PCI was still the one of the cell it
+left, as the new cell's NAV packet is read later. A menu page then
+started on the forced button of the page before, which it may not have,
+so its highlight and the arrow keys found no button.
+---
+ src/dvdnav.c | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index 08f60d1385..c5fdacea1a 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -809,14 +809,6 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
+     Log3(this, "SPU_STREAM_CHANGE stream_id_pan_scan=%d",stream_change->physical_pan_scan);
+     Log3(this, "SPU_STREAM_CHANGE returning DVDNAV_STATUS_OK");
+ #endif
+-    /* This is not really the right place to do this. FOSL_BTNN should set the register
+-     * at HLI_S_PTM rather than when we enter the SPU. As well we should activate FOAC_BTNN
+-     * at HLI_E_PTM
+-     */
+-    if (this->pci.hli.hl_gi.fosl_btnn != 0) {
+-      set_HL_BTN(this->vm, this->pci.hli.hl_gi.fosl_btnn);
+-    }
+-
+     pthread_mutex_unlock(&this->vm_lock);
+     return DVDNAV_STATUS_OK;
+   }
+@@ -920,6 +912,13 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
+     if (this->last_cmd_nav_lbn == this->pci.pci_gi.nv_pck_lbn)
+       this->last_cmd_nav_lbn = SRI_END_OF_CELL;
+ 
++    /* FOSL_BTNN selects a button when its highlight starts, so set it as the NAV
++     * packet that starts the highlight is read. FOAC_BTNN should be activated at
++     * HLI_E_PTM.
++     */
++    if ((this->pci.hli.hl_gi.hli_ss & 0x03) == 1 && this->pci.hli.hl_gi.fosl_btnn != 0)
++      set_HL_BTN(this->vm, this->pci.hli.hl_gi.fosl_btnn);
++
+     /* Successfully got a NAV packet */
+     (*event) = DVDNAV_NAV_PACKET;
+ #ifdef LOG_DEBUG
