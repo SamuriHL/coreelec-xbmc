@@ -222,6 +222,65 @@ public:
   //! W: SETTLE's display reset done for a request (SettleDone{T, e})
   void ShadowSettleDone(uint64_t request);
 
+  // 5.E2-12a (docs/phase5_e2_12_impl.md §1, D0, D4, D6): under aml_transaction_fold(), a
+  // user-pick, a main-decision or (after the start's post) a vs10 request of the window's file is
+  // deferred while the window is open; such a request is held in the after-list while the word
+  // is frozen or the span open, and dropped by the ABORT rule. The window is keyed on F, opened
+  // by P for an engaged start and closed only by P's DeferClose
+  enum class DeferVerdict
+  {
+    DEFERRED,
+    HELD,
+    DROPPED,
+  };
+  //! the poster's callback for a request W did not run at its dequeue; on W or P, no lock held
+  using VerdictFn = std::function<void(DeferVerdict verdict, uint64_t reqId)>;
+  //! Post with a verdict callback
+  void PostRequest(Lane lane, const char* name, std::function<void()> fn, VerdictFn onVerdict);
+  //! Run with a verdict callback; false (fn not run now) when W deferred, held or dropped it.
+  //! fn must capture by value (it may run later)
+  bool RunRequest(Lane lane, const char* name, std::function<void()> fn, VerdictFn onVerdict);
+  enum class DeferOutcome
+  {
+    LANDED,
+    LEGACY,
+    LEAD_LOSS,
+    GATE,
+    STOP,
+    NEXT_FILE,
+    SEGMENT, //!< a committed start's segment transition: the window carried open (D4.4)
+  };
+  struct SDeferKey
+  {
+    uint32_t f = 0;
+    uint32_t t = 0;
+  };
+  struct SDeferCounts
+  {
+    int replayed = 0;
+    int folded = 0;
+    int dropped = 0;
+    bool mainDropped = false;
+    bool closed = false;
+  };
+  //! P, before an engaged start's publish: opens the window on f (a reopen of the open f keeps
+  //! the key; DeferReKey after the publish). The previous key, for a refused publish's restore
+  SDeferKey DeferOpen(uint32_t f, uint32_t t);
+  void DeferRestoreKey(const SDeferKey& key);
+  //! P, after a reopen's successful publish
+  void DeferReKey(uint32_t f, uint32_t t);
+  //! P, the start's first post: vs10 requests of f defer from now on
+  void DeferPosted(uint32_t f);
+  //! P's StartDone step (D4): closes the window on f and replays or drops its requests in one
+  //! step under m_mutex and the list lock (SEGMENT keeps them, carried); idempotent on f
+  SDeferCounts DeferClose(uint32_t f, DeferOutcome outcome);
+  bool DeferWindowOpen(uint32_t f) const;
+  //! the window of f is carried (no T yet)
+  bool DeferCarried(uint32_t f) const;
+  //! P: a deferred request folded into the start's decision (D1.3): never replayed
+  void DeferMarkFolded(uint64_t reqId);
+  static bool DeferrableOrigin(const char* origin);
+
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
   bool WordApply(const std::function<SWordStep(const SWord&)>& decide,
@@ -230,6 +289,7 @@ private:
   struct Result
   {
     bool done = false;
+    bool notRun = false; //!< 5.E2-12a: deferred, held or dropped at its dequeue
     std::exception_ptr error;
   };
 
@@ -244,6 +304,10 @@ private:
     uint64_t reqId = 0;
     const char* origin = nullptr;
     uint32_t reqF = 0;
+    // 5.E2-12a
+    VerdictFn onVerdict;
+    bool replayed = false;
+    bool folded = false;
   };
 
   struct TimedJob
@@ -265,6 +329,19 @@ private:
   std::string ShadowVerdict(const Job& job, const SWord& word, StartPhase phase) const;
   //! 5.E2-4: the start phase now (a lead past its end reads NONE)
   StartPhase ShadowPhaseNow() const;
+  //! 5.E2-12a: what W does with a deferrable request now (list lock held); why for the log
+  enum class Verdict
+  {
+    RUN,
+    DEFER,
+    HOLD,
+    DROP,
+  };
+  Verdict DeferVerdictLocked(const Job& job, const SWord& word, std::string& why) const;
+  //! a moved job back into its lane by request id (m_mutex held)
+  void InsertByIdLocked(Lane lane, Job&& job);
+  //! the after-list re-queued when the word is NONE with the span closed (m_mutex held)
+  void RequeueAfterLocked();
 
   mutable std::mutex m_mutex;
   std::condition_variable m_cond;
@@ -286,8 +363,13 @@ private:
   // stay empty in this step
   mutable std::mutex m_listMutex;
   uint64_t m_reqNext = 0;
-  std::vector<uint64_t> m_deferred; //!< request ids deferred under a T (shadow: empty)
-  std::vector<uint64_t> m_after; //!< request ids held in the after-list (shadow: empty)
+  std::vector<std::pair<Lane, Job>> m_deferred; //!< 5.E2-12a: requests deferred in the window
+  std::vector<std::pair<Lane, Job>> m_after; //!< 5.E2-12a: requests held in the after-list
+  uint32_t m_deferF = 0; //!< the window's file (0: closed)
+  uint32_t m_deferT = 0; //!< its start (0: carried across a segment gap)
+  bool m_deferPosted = false;
+  uint32_t m_abortF = 0; //!< the ABORT floor: requests of the stopped file posted before it
+  uint64_t m_abortReqId = 0;
   uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job
   bool m_busy = false;
   // 5.E2-4: the start window (P writes, W reads), its own leaf lock; nothing logs under it

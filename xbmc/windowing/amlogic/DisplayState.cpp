@@ -1249,6 +1249,17 @@ bool StartJobDropForGuiSet(SStartJob& job, const char* by)
   return true;
 }
 
+bool StartJobDropForAmend(SStartJob& job, unsigned int amend)
+{
+  StartJobState found;
+  if (job.Cas({StartJobState::QUEUED, StartJobState::PARKING}, StartJobState::DROPPED, &found))
+  {
+    CLog::Log(LOGINFO, "TXSTART job T={} overtaken by amend {}", job.T, amend);
+    return true;
+  }
+  return found == StartJobState::DROPPED;
+}
+
 bool StartJobDropForExit(SStartJob& job, const char* by)
 {
   StartJobState found;
@@ -1280,6 +1291,34 @@ bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job)
   }
   CLog::Log(LOGINFO, "TXSTART job T={}: not published, T={} still open", job->T, open->T);
   return false;
+}
+
+bool ReplaceTxOpenJob(const std::shared_ptr<SStartJob>& old,
+                      const std::shared_ptr<SStartJob>& amend)
+{
+  std::unique_lock lock(s_txOpenJobMutex);
+  if (s_txOpenJob != old)
+    return false;
+  s_txOpenJob = amend;
+  return true;
+}
+
+namespace
+{
+std::mutex s_txInboxMutex;
+std::vector<STxInboxEntry> s_txInbox;
+} // namespace
+
+void PostTxInbox(STxInboxEntry entry)
+{
+  std::unique_lock lock(s_txInboxMutex);
+  s_txInbox.push_back(std::move(entry));
+}
+
+std::vector<STxInboxEntry> TakeTxInbox()
+{
+  std::unique_lock lock(s_txInboxMutex);
+  return std::exchange(s_txInbox, {});
 }
 
 bool ClearTxOpenJob(const std::shared_ptr<SStartJob>& job)

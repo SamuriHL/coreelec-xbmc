@@ -487,6 +487,11 @@ const char* aml_transaction_loss_reason();
 //! 5.E2-11 D0: TxLossInStartOn(): the real loss path and no transaction_skip lossinstart; W's
 //! and P's rows for a loss inside an open start read it alone
 bool aml_transaction_loss_in_start();
+//! 5.E2-12a (docs/phase5_e2_12_impl.md §1): requests deferred in an engaged start's window: the
+//! transaction on with its shadows and no transaction_skip fold (skip fold = E2-11)
+bool aml_transaction_fold();
+//! 5.E2-12a D2: fold and no transaction_skip amend
+bool aml_transaction_amend();
 //! 5.E2-7b (docs/phase5_e2_7b_impl.md D1, r3 N-L2): the frozen inbox's session predicate,
 //! latched once: the real loss path, no transaction_skip inbox, and the codec speed fix (no file
 //! is checked per frozen pass)

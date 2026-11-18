@@ -7,6 +7,7 @@
  */
 
 #include "OutputWorker.h"
+#include "DisplayState.h"
 
 #include "ServiceBroker.h"
 #include "ThreadRole.h"
@@ -826,6 +827,218 @@ void COutputWorker::TagRequestLocked(Lane lane, Job& job)
     return;
   std::lock_guard listLock(m_listMutex);
   job.reqId = ++m_reqNext;
+  // 5.E2-12a D4.3 (r2 M-4): posted after the stop's step while the word still reads the stopping
+  // file (a late stop): a desktop request
+  if (m_abortF && job.reqF == m_abortF && job.reqId > m_abortReqId)
+    job.reqF = 0;
+}
+
+bool COutputWorker::DeferrableOrigin(const char* origin)
+{
+  if (!origin)
+    return false;
+  const std::string_view o(origin);
+  return o == "user-pick" || o == "main-decision" || o == "vs10";
+}
+
+COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
+                                                         const SWord& word,
+                                                         std::string& why) const
+{
+  using enum WordState;
+  if (!DeferrableOrigin(job.origin))
+    return Verdict::RUN;
+  if (m_abortF && job.reqF == m_abortF && job.reqId <= m_abortReqId)
+  {
+    why = StringUtils::Format("ABORT floor F={}", m_abortF);
+    return Verdict::DROP;
+  }
+  if (m_deferF && job.reqF == m_deferF &&
+      (std::string_view(job.origin) != "vs10" || m_deferPosted))
+    return Verdict::DEFER;
+  if (job.reqF && job.reqF != word.f)
+  {
+    why = word.f ? StringUtils::Format("ABORT: made for F={}, F={} open", job.reqF, word.f)
+                 : StringUtils::Format("ABORT: F={} stopped", job.reqF);
+    return Verdict::DROP;
+  }
+  // r3 M-B: the stopping file is no player for a desktop request
+  if (!job.reqF && word.f && word.f != m_abortF)
+  {
+    why = StringUtils::Format("desktop set, F={} open", word.f);
+    return Verdict::DROP;
+  }
+  const bool frozen = word.state == LOST || word.state == CONVERTING || word.state == PAUSED;
+  if (word.state == RETURNING || word.state == RESET_OWED || (frozen && word.spanOpen) ||
+      (word.state == NONE && !word.f && word.spanOpen))
+    return Verdict::HOLD;
+  return Verdict::RUN;
+}
+
+void COutputWorker::InsertByIdLocked(Lane lane, Job&& job)
+{
+  auto& queue = m_lanes[static_cast<size_t>(lane)];
+  auto it = queue.begin();
+  while (it != queue.end() && it->reqId && it->reqId < job.reqId)
+    ++it;
+  queue.insert(it, std::move(job));
+}
+
+void COutputWorker::RequeueAfterLocked()
+{
+  size_t n = 0;
+  {
+    std::lock_guard listLock(m_listMutex);
+    if (m_after.empty())
+      return;
+    const SWord word = UnpackWord(LoadWord());
+    if (word.state != WordState::NONE || word.spanOpen)
+      return;
+    for (auto& [lane, job] : m_after)
+    {
+      job.replayed = true;
+      InsertByIdLocked(lane, std::move(job));
+    }
+    n = m_after.size();
+    m_after.clear();
+  }
+  CLog::Log(LOGINFO, "DEFER after-list re-queued: {}", n);
+}
+
+COutputWorker::SDeferKey COutputWorker::DeferOpen(uint32_t f, uint32_t t)
+{
+  SDeferKey previous;
+  {
+    std::lock_guard listLock(m_listMutex);
+    previous = {m_deferF, m_deferT};
+    if (m_deferF != f)
+    {
+      m_deferF = f;
+      m_deferT = t;
+      m_deferPosted = false;
+      if (m_abortF != f)
+        m_abortF = 0;
+    }
+  }
+  if (previous.f != f)
+    CLog::Log(LOGINFO, "DEFER window open F={} T={}", f, t);
+  return previous;
+}
+
+void COutputWorker::DeferRestoreKey(const SDeferKey& key)
+{
+  std::lock_guard listLock(m_listMutex);
+  m_deferF = key.f;
+  m_deferT = key.t;
+}
+
+void COutputWorker::DeferReKey(uint32_t f, uint32_t t)
+{
+  uint32_t old = 0;
+  size_t n = 0;
+  {
+    std::lock_guard listLock(m_listMutex);
+    if (m_deferF != f || m_deferT == t)
+      return;
+    old = m_deferT;
+    m_deferT = t;
+    m_deferPosted = false;
+    n = m_deferred.size();
+  }
+  CLog::Log(LOGINFO, "DEFER F={} re-keyed T={} -> T={}: {}", f, old, t, n);
+}
+
+void COutputWorker::DeferPosted(uint32_t f)
+{
+  std::lock_guard listLock(m_listMutex);
+  if (m_deferF == f)
+    m_deferPosted = true;
+}
+
+bool COutputWorker::DeferWindowOpen(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  return f && m_deferF == f;
+}
+
+bool COutputWorker::DeferCarried(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  return f && m_deferF == f && !m_deferT;
+}
+
+void COutputWorker::DeferMarkFolded(uint64_t reqId)
+{
+  std::lock_guard listLock(m_listMutex);
+  for (auto& entry : m_deferred)
+    if (entry.second.reqId == reqId)
+      entry.second.folded = true;
+}
+
+COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome outcome)
+{
+  SDeferCounts counts;
+  std::vector<std::pair<VerdictFn, uint64_t>> drops;
+  uint32_t T = 0;
+  {
+    std::unique_lock lock(m_mutex);
+    std::lock_guard listLock(m_listMutex);
+    if (!f || m_deferF != f)
+      return counts;
+    T = m_deferT;
+    if (outcome == DeferOutcome::SEGMENT)
+    {
+      m_deferT = 0;
+      counts.replayed = static_cast<int>(m_deferred.size());
+    }
+    else
+    {
+      const bool abort = outcome == DeferOutcome::STOP || outcome == DeferOutcome::NEXT_FILE;
+      for (auto& [lane, job] : m_deferred)
+      {
+        if (abort || std::string_view(job.origin) == "main-decision")
+        {
+          counts.mainDropped |= std::string_view(job.origin) == "main-decision";
+          ++counts.dropped;
+          drops.emplace_back(std::move(job.onVerdict), job.reqId);
+        }
+        else if (job.folded)
+          ++counts.folded;
+        else
+        {
+          ++counts.replayed;
+          job.replayed = true;
+          InsertByIdLocked(lane, std::move(job));
+        }
+      }
+      m_deferred.clear();
+      if (abort)
+      {
+        for (auto it = m_after.begin(); it != m_after.end();)
+        {
+          if (it->second.reqF == f)
+          {
+            ++counts.dropped;
+            drops.emplace_back(std::move(it->second.onVerdict), it->second.reqId);
+            it = m_after.erase(it);
+          }
+          else
+            ++it;
+        }
+        m_abortF = f;
+        m_abortReqId = m_reqNext;
+      }
+      m_deferF = 0;
+      m_deferT = 0;
+      m_deferPosted = false;
+      counts.closed = true;
+    }
+    m_cond.notify_all();
+  }
+  for (auto& [fn, id] : drops)
+    if (fn)
+      fn(DeferVerdict::DROPPED, id);
+  return counts;
 }
 
 uint64_t COutputWorker::LowestRequestLocked(Lane* lane) const
@@ -1017,7 +1230,7 @@ void COutputWorker::Run(Lane lane,
   auto result = std::make_shared<Result>();
   const uint64_t id = m_nextId++;
   m_lanes[static_cast<size_t>(lane)].push_back(
-      {name, std::move(fn), generation, id, result, 0, nullptr, 0});
+      {name, std::move(fn), generation, id, result, 0, nullptr, 0, {}, false, false});
   TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
 
@@ -1046,9 +1259,50 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
     return;
   }
   m_lanes[static_cast<size_t>(lane)].push_back(
-      {name, std::move(fn), generation, m_nextId++, {}, 0, nullptr, 0});
+      {name, std::move(fn), generation, m_nextId++, {}, 0, nullptr, 0, {}, false, false});
   TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
+}
+
+void COutputWorker::PostRequest(Lane lane,
+                                const char* name,
+                                std::function<void()> fn,
+                                VerdictFn onVerdict)
+{
+  std::unique_lock lock(m_mutex);
+  if (!m_running || m_stop)
+  {
+    lock.unlock();
+    fn();
+    return;
+  }
+  m_lanes[static_cast<size_t>(lane)].push_back(
+      {name, std::move(fn), 0, m_nextId++, {}, 0, nullptr, 0, std::move(onVerdict), false, false});
+  TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
+  m_cond.notify_all();
+}
+
+bool COutputWorker::RunRequest(Lane lane,
+                               const char* name,
+                               std::function<void()> fn,
+                               VerdictFn onVerdict)
+{
+  std::unique_lock lock(m_mutex);
+  if (!m_running || m_stop || std::this_thread::get_id() == m_workerId)
+  {
+    lock.unlock();
+    fn();
+    return true;
+  }
+  auto result = std::make_shared<Result>();
+  m_lanes[static_cast<size_t>(lane)].push_back(
+      {name, std::move(fn), 0, m_nextId++, result, 0, nullptr, 0, std::move(onVerdict), false, false});
+  TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
+  m_cond.notify_all();
+  m_doneCond.wait(lock, [&result] { return result->done; });
+  if (result->error)
+    std::rethrow_exception(result->error);
+  return !result->notRun;
 }
 
 bool COutputWorker::PostIfRunning(Lane lane,
@@ -1060,7 +1314,7 @@ bool COutputWorker::PostIfRunning(Lane lane,
   if (!m_running || m_stop)
     return false;
   m_lanes[static_cast<size_t>(lane)].push_back(
-      {name, std::move(fn), generation, m_nextId++, {}, 0, nullptr, 0});
+      {name, std::move(fn), generation, m_nextId++, {}, 0, nullptr, 0, {}, false, false});
   TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
   m_cond.notify_all();
   return true;
@@ -1075,7 +1329,7 @@ bool COutputWorker::PostAfter(Lane lane,
   if (!m_running || m_stop)
     return false;
   m_timed.push_back({std::chrono::steady_clock::now() + after, lane,
-                     {name, std::move(fn), 0, m_nextId++, {}, 0, nullptr, 0}});
+                     {name, std::move(fn), 0, m_nextId++, {}, 0, nullptr, 0, {}, false, false}});
   TagRequestLocked(lane, m_timed.back().job);
   m_cond.notify_all();
   return true;
@@ -1110,14 +1364,32 @@ void COutputWorker::Process()
     auto next = [this]() -> std::deque<Job>* {
       for (auto& lane : m_lanes)
         if (!lane.empty())
+        {
+          // 5.E2-12a D0.7: requests in id order across MIDPLAY and SETTINGS (a replay first)
+          auto& settings = m_lanes[static_cast<size_t>(Lane::SETTINGS)];
+          if (&lane == &m_lanes[static_cast<size_t>(Lane::MIDPLAY)] && !settings.empty() &&
+              lane.front().reqId && settings.front().reqId &&
+              settings.front().reqId < lane.front().reqId && aml_transaction_fold())
+            return &settings;
           return &lane;
+        }
       return nullptr;
     };
+    if (aml_transaction_fold())
+      RequeueAfterLocked();
     // timed jobs join their lane when due; a stop drops the ones not yet due
     const auto timedDue = ReleaseDueLocked();
     if (!m_stop && !next())
     {
-      if (timedDue)
+      bool afterWaiting;
+      {
+        std::lock_guard listLock(m_listMutex);
+        afterWaiting = !m_after.empty();
+      }
+      // 5.E2-12a D6: the after-list re-checks the word (its NONE wakes no one)
+      if (afterWaiting && (!timedDue || *timedDue > std::chrono::steady_clock::now() + std::chrono::milliseconds(50)))
+        m_cond.wait_for(lock, std::chrono::milliseconds(50));
+      else if (timedDue)
         m_cond.wait_until(lock, *timedDue);
       else
         m_cond.wait(lock);
@@ -1146,6 +1418,63 @@ void COutputWorker::Process()
     Lane lowestLane = Lane::MIDPLAY;
     const uint64_t lowest = shadow && job.reqId ? LowestRequestLocked(&lowestLane) : 0;
     const Lane jobLane = static_cast<Lane>(lane - m_lanes.data());
+    // 5.E2-12a D0.2: a deferrable request W does not run now
+    if (shadow && job.origin && DeferrableOrigin(job.origin) && aml_transaction_fold())
+    {
+      const uint64_t value = LoadWord();
+      std::string why;
+      Verdict verdict;
+      VerdictFn onVerdict;
+      const uint64_t reqId = job.reqId;
+      const uint32_t reqF = job.reqF;
+      const char* origin = job.origin;
+      std::shared_ptr<Result> result = job.result;
+      uint32_t deferT = 0;
+      {
+        std::lock_guard listLock(m_listMutex);
+        verdict = DeferVerdictLocked(job, UnpackWord(value), why);
+        deferT = m_deferT;
+        if (verdict == Verdict::DEFER)
+          m_deferred.emplace_back(jobLane, std::move(job));
+        else if (verdict == Verdict::HOLD)
+          m_after.emplace_back(jobLane, std::move(job));
+        else if (verdict == Verdict::DROP)
+          onVerdict = std::move(job.onVerdict);
+      }
+      if (verdict != Verdict::RUN)
+      {
+        if (verdict == Verdict::DEFER)
+        {
+          std::lock_guard listLock(m_listMutex);
+          onVerdict = m_deferred.back().second.onVerdict;
+        }
+        else if (verdict == Verdict::HOLD)
+        {
+          std::lock_guard listLock(m_listMutex);
+          onVerdict = m_after.back().second.onVerdict;
+        }
+        if (result)
+        {
+          result->notRun = true;
+          result->done = true;
+          m_doneCond.notify_all();
+        }
+        lock.unlock();
+        const DeferVerdict kind = verdict == Verdict::DEFER  ? DeferVerdict::DEFERRED
+                                  : verdict == Verdict::HOLD ? DeferVerdict::HELD
+                                                             : DeferVerdict::DROPPED;
+        CLog::Log(LOGINFO, "DEFER T={} id={} {} F={}: {}{}", deferT, reqId, origin, reqF,
+                  kind == DeferVerdict::DEFERRED ? "deferred"
+                  : kind == DeferVerdict::HELD   ? "held (after-list)"
+                                                 : "dropped",
+                  why.empty() ? "" : " (" + why + ")");
+        if (onVerdict)
+          onVerdict(kind, reqId);
+        lock.lock();
+        continue;
+      }
+      // the job runs: the word read for the verdict stands for the shadow line below
+    }
     lock.unlock();
     uint32_t eBefore = 0;
     if (shadow)
@@ -1182,6 +1511,15 @@ void COutputWorker::Process()
       error = std::current_exception();
       if (!job.result)
         CLog::Log(LOGERROR, "OUTPUT: posted {} job {} threw", job.name, job.id);
+    }
+    // 5.E2-12a D0.4 (r2 M-2): a replayed or re-queued VS10 press has run: P raises its trigger
+    if (job.replayed && job.origin && std::string_view(job.origin) == "vs10")
+    {
+      DISPLAYSTATE::STxInboxEntry entry;
+      entry.kind = DISPLAYSTATE::STxInboxEntry::Kind::VS10_RAN;
+      entry.reqId = job.reqId;
+      entry.f = job.reqF;
+      DISPLAYSTATE::PostTxInbox(std::move(entry));
     }
     if (shadow)
     {

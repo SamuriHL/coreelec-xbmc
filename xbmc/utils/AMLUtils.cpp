@@ -3259,6 +3259,16 @@ bool aml_transaction_loss_in_start()
   return aml_transaction_loss_real() && !aml_transaction_skip("lossinstart");
 }
 
+bool aml_transaction_fold()
+{
+  return aml_transaction_on() && aml_transaction_shadow_on() && !aml_transaction_skip("fold");
+}
+
+bool aml_transaction_amend()
+{
+  return aml_transaction_fold() && !aml_transaction_skip("amend");
+}
+
 bool aml_transaction_inbox()
 {
   return s_transactionLatched.load(std::memory_order_acquire) &&

@@ -21,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 class CAMLDisplay;
 
@@ -446,6 +447,27 @@ bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job);
 //! job -> null (false: not the open job)
 bool ClearTxOpenJob(const std::shared_ptr<SStartJob>& job);
 std::shared_ptr<SStartJob> TxOpenJob();
+//! 5.E2-12a D1 (docs/phase5_e2_12_impl.md): W -> P, under a leaf lock (W posts after its list
+//! lock is released); P drains it every main-loop pass
+struct STxInboxEntry
+{
+  enum class Kind
+  {
+    PICK_DEFERRED, //!< a user-pick deferred in the window: its target by value
+    VS10_RAN, //!< a replayed or re-queued VS10 press has run: raise its trigger
+  } kind = Kind::PICK_DEFERRED;
+  uint64_t reqId = 0;
+  uint32_t f = 0;
+  RESOLUTION_INFO res;
+};
+void PostTxInbox(STxInboxEntry entry);
+std::vector<STxInboxEntry> TakeTxInbox();
+//! 5.E2-12a D2.2: the open job old -> amend (false: old is not the open job)
+bool ReplaceTxOpenJob(const std::shared_ptr<SStartJob>& old,
+                      const std::shared_ptr<SStartJob>& amend);
+//! 5.E2-12a D2.4: P's overtake of the open job by an amend: QUEUED|PARKING -> DROPPED (true also
+//! when already DROPPED); false at COMMITTED
+bool StartJobDropForAmend(SStartJob& job, unsigned int amend);
 //! main: GC's set inside main's adopt of a W reply (the Start job's, or a hotplug Restore's
 //! ADOPT form) is on main's stack (it is not a GUI set, D9)
 bool InStartAdopt();
