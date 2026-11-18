@@ -484,6 +484,9 @@ bool aml_transaction_loss_base();
 bool aml_transaction_loss_real();
 //! why the base is off ("on" when it is on)
 const char* aml_transaction_loss_reason();
+//! 5.E2-11 D0: TxLossInStartOn(): the real loss path and no transaction_skip lossinstart; W's
+//! and P's rows for a loss inside an open start read it alone
+bool aml_transaction_loss_in_start();
 //! 5.E2-7b (docs/phase5_e2_7b_impl.md D1, r3 N-L2): the frozen inbox's session predicate,
 //! latched once: the real loss path, no transaction_skip inbox, and the codec speed fix (no file
 //! is checked per frozen pass)
@@ -537,6 +540,16 @@ struct STransactionHooks
   int commitStallMs = 0;
   //! transaction_adoptthrow before: main's adopt of the Start reply throws before GC's set
   std::string adoptThrow;
+  // 5.E2-11 (docs/phase5_e2_11_impl.md §3)
+  int decideHoldMs = 0; //!< transaction_decidehold <ms>: P's DECIDE waits (a P-loop wait)
+  int queueHoldMs = 0; //!< transaction_queuehold <ms>: the Start job re-posts itself, W free
+  int postHoldMs = 0; //!< transaction_posthold <ms>: P holds the decided job's post (WAIT_GUI)
+  //! transaction_startcasdelay before|after <ms>: P sleeps before the START guard, or inside it
+  //! after the CAS
+  std::string startCasDelayAt;
+  int startCasDelayMs = 0;
+  //! transaction_capschange: W's caps check reads the sink as changed once
+  bool capsChange = false;
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();

@@ -3090,6 +3090,20 @@ STransactionHooks ReadTransactionHooks()
   hooks.adoptStallMs = TransactionHookMs("transaction_adoptstall");
   hooks.commitStallMs = TransactionHookMs("transaction_commitstall");
   hooks.adoptThrow = TransactionHookWord("transaction_adoptthrow");
+  hooks.decideHoldMs = TransactionHookMs("transaction_decidehold");
+  hooks.queueHoldMs = TransactionHookMs("transaction_queuehold");
+  hooks.postHoldMs = TransactionHookMs("transaction_posthold");
+  {
+    std::vector<std::string> words =
+        StringUtils::Split(TransactionHookWord("transaction_startcasdelay"), ' ');
+    words.erase(std::remove(words.begin(), words.end(), ""), words.end());
+    if (words.size() == 2 && (words[0] == "before" || words[0] == "after"))
+    {
+      hooks.startCasDelayAt = words[0];
+      hooks.startCasDelayMs = std::max(0, std::atoi(words[1].c_str()));
+    }
+  }
+  hooks.capsChange = TransactionHookFlag("transaction_capschange");
   return hooks;
 }
 } // namespace
@@ -3238,6 +3252,11 @@ bool aml_transaction_loss_base()
 bool aml_transaction_loss_real()
 {
   return aml_transaction_loss_base() && !aml_transaction_skip("resume");
+}
+
+bool aml_transaction_loss_in_start()
+{
+  return aml_transaction_loss_real() && !aml_transaction_skip("lossinstart");
 }
 
 bool aml_transaction_inbox()
