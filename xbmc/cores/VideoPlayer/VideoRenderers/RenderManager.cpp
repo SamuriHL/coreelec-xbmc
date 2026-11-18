@@ -4392,6 +4392,26 @@ bool CRenderManager::ArmTxPictureGate(unsigned int gen, bool candidate, const ch
   return held;
 }
 
+bool CRenderManager::TxReShowPreRoll(unsigned int gen, uint32_t e)
+{
+  STxLog txLog;
+  std::unique_lock lock(m_presentlock);
+  if (!gen || gen != m_txGateGen.load() || !m_txGate.engaged || !m_txGate.shut ||
+      !m_txGate.prerollShown)
+    return false;
+  // the head in V's queue order (S6: the FIFO's next index); the shown start picture is never
+  // queued again (its buffer goes back to the decoder at the show)
+  m_txGate.prerollShown = false;
+  m_txGate.prerollMismatchLogged = false;
+  m_txGate.reshowE = e;
+  m_txGate.reshowStartPts = m_txGate.acceptedPts;
+  m_txGate.acceptedPts =
+      m_queued.empty() ? DVD_NOPTS_VALUE : m_Queue[m_queued.front()].pts;
+  txLog.lines.push_back(StringUtils::Format(
+      "TXGATE pre-roll re-armed set={} e={}: a Restore committed in the start", gen, e));
+  return true;
+}
+
 bool CRenderManager::OpenTxPictureGate(const char* why)
 {
   if (!aml_transaction_on())
@@ -5061,6 +5081,9 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
     if (m_txPrerollDue && m_txGate.accepted && !m_txGate.prerollShown)
     {
       const int idx = m_queued.front();
+      // 5.E2-11 D3.3: re-armed on an empty queue: the head now
+      if (m_txGate.reshowE >= 0 && m_txGate.acceptedPts == DVD_NOPTS_VALUE)
+        m_txGate.acceptedPts = m_Queue[idx].pts;
       if (m_Queue[idx].pts != m_txGate.acceptedPts)
       {
         if (!m_txGate.prerollMismatchLogged)
@@ -5074,6 +5097,15 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
         return;
       }
       m_txGate.prerollShown = true;
+      if (m_txGate.reshowE >= 0)
+      {
+        TxLogLocked(StringUtils::Format(
+            "TXGATE pre-roll re-shown set={} e={}: the head {:.3f} idx {} after idx {} (start "
+            "picture {:.3f} not re-queued)",
+            m_txGateGen.load(), m_txGate.reshowE, m_Queue[idx].pts / DVD_TIME_BASE, idx,
+            m_presentsource, m_txGate.reshowStartPts / DVD_TIME_BASE));
+        m_txGate.reshowE = -1;
+      }
       // review L6: the epoch of the tick that selects it, whatever releases it
       m_txGate.prerollEpoch = m_txTickEpoch;
       m_txPrerollThisTick = true;

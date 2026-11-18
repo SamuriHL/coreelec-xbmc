@@ -379,6 +379,8 @@ public:
   //! true when RM posted VideoParamsChange
   virtual bool OnAdoptAnswer(unsigned int gen, StartAnswer answer) = 0;
   virtual void OnTxAdopted(const STxAdopted& reply) = 0; //!< main, after OnAdoptAnswer
+  //! 5.E2-11 D3.2: W or main, a Restore inside STARTING settled: START's CAS expects e
+  virtual void OnRestoreSettled(uint64_t T, uint32_t e) = 0;
 };
 struct SStartJob
 {
@@ -406,6 +408,8 @@ struct SStartJob
   //! D2.5: P at DECIDE, before the queue: the caps publish and W's sink signature it decided on
   uint64_t capsEpoch = 0;
   uint32_t sinkSig = 0;
+  //! D3.3: W, a Restore committed inside this start: (count << 32) | the word's e after it
+  std::atomic<uint64_t> restoreCommit{0};
 
   //! one CAS from any of from to to; the state found is left in found
   bool Cas(std::initializer_list<StartJobState> from, StartJobState to, StartJobState* found = nullptr);
@@ -417,6 +421,8 @@ struct SStartJob
   void SettleDone(StartSettleKind kind);
   bool AdoptAnswer(StartAnswer answer);
   void TxAdopted(StartAdoptForm form);
+  //! 5.E2-11 D3.2: RESTORED{T, e}, once per Restore settled inside STARTING
+  void RestoreSettled(uint32_t e);
 
 private:
   std::mutex m_sinkMutex;

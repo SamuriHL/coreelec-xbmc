@@ -1189,6 +1189,14 @@ void SStartJob::SettleDone(StartSettleKind kind)
     CLog::Log(LOGINFO, "TXSTART T={} settle done: no sink (the player has exited)", T);
 }
 
+void SStartJob::RestoreSettled(uint32_t e)
+{
+  CLog::Log(LOGINFO, "TXSTART T={} restored e={}", T, e);
+  std::unique_lock lock(m_sinkMutex);
+  if (m_sink)
+    m_sink->OnRestoreSettled(T, e);
+}
+
 bool SStartJob::AdoptAnswer(StartAnswer answer)
 {
   adoptPending = false;

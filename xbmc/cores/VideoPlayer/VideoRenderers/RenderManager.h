@@ -225,6 +225,10 @@ public:
   //! P, at START (or the sync's no-release branch, a stop, a close): opens the gate. True when it
   //! held an accepted picture
   bool OpenTxPictureGate(const char* why);
+  //! 5.E2-11 D3.3: P, a Restore committed inside the open start: the shut gate's shown pre-roll
+  //! is shown again from the queue's head (the start picture is not re-queued); false when the
+  //! gate is not engaged and shut with a pre-roll shown
+  bool TxReShowPreRoll(unsigned int gen, uint32_t e);
   //! V's CodecSpeed: the decoder is held paused (an engaged, shut gate with its picture accepted)
   bool TxHoldsDecoder() const { return m_txHoldsDecoder.load(); }
   //! 5.E2-8a (D3, D1): P, an engaged start. Graphics withheld from OPEN to START or the exit
@@ -964,6 +968,9 @@ protected:
     bool prerollMismatchLogged = false;
     bool forceRefusedLogged = false;
     bool logFirstAfterOpen = false;
+    //! 5.E2-11 D3.3: a Restore's re-show pending (its e; -1: none) and the start picture's pts
+    int64_t reshowE = -1;
+    double reshowStartPts = DVD_NOPTS_VALUE;
   } m_txGate;
   std::atomic<unsigned int> m_txGateGen{0};
   std::atomic_bool m_txHoldsDecoder{false};

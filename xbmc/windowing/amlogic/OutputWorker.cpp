@@ -718,16 +718,18 @@ bool COutputWorker::WordResumeDone(uint32_t ownT, uint64_t read, std::string& lo
   return false;
 }
 
-void COutputWorker::WordCommitAhead()
+void COutputWorker::WordCommitAhead(uint32_t startingT)
 {
   WordApply(
-      [](const SWord& w)
+      [startingT](const SWord& w)
       {
         SWord n = w;
         n.e = (w.e + 1) & WORD_E_MASK;
         const char* note = "commit, before the link write";
         if (!w.f)
           return Apply(n, "27", note);
+        if (startingT && w.state == WordState::STARTING && w.t == startingT)
+          return Apply(n, "10", "a Restore inside the start, before the link write");
         if (WordHeldState(w.state))
           return Apply(n, w.spanOpen ? "19" : "15", note);
         return Apply(n, ROW_NOT_HELD, note);

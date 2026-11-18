@@ -867,8 +867,10 @@ struct STxReply
     OUTPUT_DONE,
     SETTLE_DONE,
     ADOPTED,
+    RESTORED, //!< 5.E2-11 D3.2: a Restore inside STARTING settled at e
   } kind = Kind::OUTPUT_DONE;
   uint64_t T = 0;
+  uint32_t e = 0;
   bool committed = false;
   uint64_t seq = 0;
   DISPLAYSTATE::StartSettleKind settle = DISPLAYSTATE::StartSettleKind::DONE;
@@ -957,6 +959,14 @@ public:
     r.kind = STxReply::Kind::ADOPTED;
     r.T = reply.T;
     r.form = reply.form;
+    Put(r);
+  }
+  void OnRestoreSettled(uint64_t T, uint32_t e) override
+  {
+    STxReply r;
+    r.kind = STxReply::Kind::RESTORED;
+    r.T = T;
+    r.e = e;
     Put(r);
   }
 
@@ -4278,6 +4288,7 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
   const STxReply r = static_cast<CDVDMsgType<STxReply>&>(msg).m_value;
   const char* what = r.kind == STxReply::Kind::OUTPUT_DONE   ? "output done"
                      : r.kind == STxReply::Kind::SETTLE_DONE ? "settle done"
+                     : r.kind == STxReply::Kind::RESTORED    ? "restored"
                                                              : "adopted";
   // D5 (lifetime): a reply for an ended start is logged only
   if (!m_txJob || r.T != m_txJob->T || !TxOpen() || m_txStep != TxStep::POSTED)
@@ -4303,6 +4314,12 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
       break;
     case STxReply::Kind::ADOPTED:
       m_txAdopt = r.form;
+      break;
+    case STxReply::Kind::RESTORED:
+      // 5.E2-11 D3.2: START's CAS expects the Restore's settled e
+      m_txStartE = r.e;
+      m_txRestoredE = static_cast<int64_t>(r.e);
+      m_txRestoreMissingSince = {};
       break;
   }
 }
@@ -4801,6 +4818,37 @@ void CVideoPlayer::TxSpanPass()
   m_txInSpan = TxOpen() && m_txJob && !m_displayLost && lossInStart &&
                word.t == ownT && word.spanOpen &&
                (word.state == WordState::NONE || word.state == WordState::STARTING);
+  // D3.3: a Restore committed in this start: the next picture becomes the pre-roll still, once
+  // per value (frozen passes too)
+  if (TxOpen() && m_txJob)
+  {
+    const uint64_t commit = m_txJob->restoreCommit.load();
+    if (commit != m_txReShowSeen)
+    {
+      m_txReShowSeen = commit;
+      if (m_renderManager.TxReShowPreRoll(m_startGateGen, static_cast<uint32_t>(commit)))
+        m_txPreRollReShown = true;
+    }
+  }
+  // D3.4: STARTING after a span with e moved and no RESTORED: 15 s, then legacy
+  if (lossInStart && TxOpen() && m_txJob && m_txWordStarting && !m_displayLost &&
+      !word.spanOpen && word.t == ownT && word.state == WordState::STARTING &&
+      word.e != m_txStartE)
+  {
+    if (m_txRestoreMissingSince == std::chrono::steady_clock::time_point{})
+      m_txRestoreMissingSince = now;
+    else if (now - m_txRestoreMissingSince >= 15s)
+    {
+      CLog::Log(LOGERROR, "TXSTART restore settle missing e={} (start e={})", word.e,
+                m_txStartE);
+      m_txRestoreMissingSince = {};
+      EndTransactionToLegacy("restore settle missing", CRenderManager::TxHow::RERAISE,
+                             CRenderManager::TxNeed::JOB_OK);
+      return;
+    }
+  }
+  else
+    m_txRestoreMissingSince = {};
   if (!m_txInSpan)
   {
     if (m_txSpanSeen)
@@ -5456,6 +5504,10 @@ void CVideoPlayer::TxReleaseClock(STxStartDone& done)
 
 void CVideoPlayer::TxStartAfterGuard(TxStartPath path, const STxStartDone& done, const char* why)
 {
+  if (m_txRestoredE >= 0)
+    CLog::Log(LOGINFO,
+              "TXSTART T={} restore settled e={}: START on the start picture, pre-roll {}",
+              m_txWordT.load(), m_txRestoredE, m_txPreRollReShown ? "re-shown" : "none");
   TxStartPoint(why, true);
   // the gate opens after V's speed message: the decoder's speed is sent again
   if (m_renderManager.OpenTxPictureGate(why))
@@ -5796,6 +5848,10 @@ void CVideoPlayer::TxResetStart(bool reopen)
   TxSpanEdgeClear("open");
   m_txInSpan = false;
   m_txStartE = 0;
+  m_txRestoredE = -1;
+  m_txReShowSeen = 0;
+  m_txPreRollReShown = false;
+  m_txRestoreMissingSince = {};
   m_txDecideHoldUntil = m_txPostHoldUntil = {};
   m_txGuardBusyLogged = false;
   m_txStartHeldWord = 0;

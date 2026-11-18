@@ -242,6 +242,12 @@ private:
   DISPLAYSTATE::ModeFacts m_wOwedStartRow;
   bool SettleCarry(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start);
   std::optional<DISPLAYSTATE::ModeFacts> CarriedStartRow() override;
+  //! 5.E2-11 D3.2, D3.3 (W): after a Restore's committed, connected set
+  void RestoreInStart(const SDriveJob& job);
+  //! m_resourceSection held, after a reset: RESTORED{T, e} for a Restore committed in STARTING
+  void DeliverRestoreSettled();
+  //! guarded by m_resourceSection: the start a STARTING Restore's reset answers
+  std::shared_ptr<DISPLAYSTATE::SStartJob> m_restoreSettleJob;
   //! main: a committed set whose handler failed: the Q9 ERROR, its SETTLE dropped on W
   void SettleHandlerFailed(const SDriveJob& job);
   //! W, at the park of a set: an armed SETTLE ends unreset; its owed lost stay in the ledger

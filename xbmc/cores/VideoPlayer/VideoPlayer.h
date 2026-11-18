@@ -1355,6 +1355,10 @@ protected:
   void TxReleaseClock(STxStartDone& done);
   void TxStartAfterGuard(TxStartPath path, const STxStartDone& done, const char* why);
   uint32_t m_txStartE = 0; //!< the e START's CAS expects (STARTING's, or a Restore's settle)
+  int64_t m_txRestoredE = -1; //!< D3.2: the last RESTORED's e (-1: none)
+  uint64_t m_txReShowSeen = 0; //!< D3.3: the job's restoreCommit value acted on
+  bool m_txPreRollReShown = false;
+  std::chrono::steady_clock::time_point m_txRestoreMissingSince{}; //!< D3.4's bound
   bool m_txGuardBusyLogged = false;
   uint64_t m_txStartHeldWord = 0; //!< the word a refused CAS last logged
   //! D5: the scheduled start's T0 (CLOCK_MONOTONIC ns), read by W's lost walk

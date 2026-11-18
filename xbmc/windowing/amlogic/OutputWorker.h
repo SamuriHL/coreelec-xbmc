@@ -192,7 +192,8 @@ public:
   bool WordResumeDone(uint32_t ownT, uint64_t read, std::string& lostTo);
   //! W, a real session's commit: e+1 before the first link write (draft42:104), and the result
   //! logged after it
-  void WordCommitAhead();
+  //! 5.E2-11 D3.2: startingT, an open start's T: its STARTING word's commit is row 10
+  void WordCommitAhead(uint32_t startingT = 0);
   void WordCommitResult(bool committed, bool notConnected);
 
   // 5.E2-4: W's request lists as a shadow (design §8.10; docs/phase5_e2_plan.md E2-4). Requests

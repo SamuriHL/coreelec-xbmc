@@ -772,6 +772,7 @@ void CWinSystemAmlogicGLESContext::ResetDisplayNow(uint64_t lostGen)
   }
   LedgerResetDone();
   CloseLostSpan();
+  DeliverRestoreSettled();
   lock.unlock();
   OUTPUT::TestStopAt("8");
 }
@@ -1481,7 +1482,12 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // write (draft42:104), a failed commit bumped too
   const bool wordAhead = aml_transaction_loss_real();
   if (wordAhead)
-    OUTPUT::COutputWorker::Get().WordCommitAhead();
+  {
+    // 5.E2-11 D3.2: a Restore inside an open start's STARTING is row 10
+    const auto open = job.hotplug && aml_transaction_loss_in_start() ? DISPLAYSTATE::TxOpenJob()
+                                                                      : nullptr;
+    OUTPUT::COutputWorker::Get().WordCommitAhead(open ? static_cast<uint32_t>(open->T) : 0);
+  }
   // 5.E2-8b (transaction_commitfail): the Start job's commit fails, nothing written
   const bool commitFail = job.start && aml_transaction_hooks().commitFail;
   if (commitFail)
@@ -2049,6 +2055,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     }
     LedgerResetDone();
     CloseLostSpan();
+    DeliverRestoreSettled();
     lock.unlock();
     // 5.E2-4: SettleDone{T, e} (shadow)
     if (aml_transaction_shadow_on())
@@ -2232,10 +2239,50 @@ void CWinSystemAmlogicGLESContext::RunRestoreOnW(SHotplugReply& reply,
       job->kind = OUTPUT::DriveReply::FAILED;
     }
   }
+  if (job->kind == OUTPUT::DriveReply::DONE)
+    RestoreInStart(*job);
   if (OUTPUT::SettleOnW())
     SettleAfterJob(*job);
   reply.commitSeq = job->commitSeq;
   reply.restoreJob = job;
+}
+
+void CWinSystemAmlogicGLESContext::RestoreInStart(const SDriveJob& job)
+{
+  // 5.E2-11 D3.2, D3.3: a Restore committed connected inside an open start's STARTING (or its
+  // carried SETTLE). A read, not a CAS: a START just after it costs only a log line (r4 L-6)
+  if (!aml_transaction_loss_in_start())
+    return;
+  const auto start = DISPLAYSTATE::TxOpenJob();
+  if (!start)
+    return;
+  const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  const bool starting =
+      word.state == OUTPUT::COutputWorker::WordState::STARTING && word.t == start->T;
+  if (!starting && m_wOwedStart != start)
+    return;
+  // P re-shows the pre-roll once per value (the next picture as the still)
+  const uint64_t count = (start->restoreCommit.load() >> 32) + 1;
+  start->restoreCommit.store(count << 32 | word.e);
+  CLog::Log(LOGINFO, "TXSTART T={} restore request {} committed in the start e={} ({})", start->T,
+            job.id, word.e, starting ? "STARTING" : "carried SETTLE");
+  if (!starting)
+    return;
+  // START waits for this Restore's reset (RESTORED{T, e})
+  std::unique_lock<CCriticalSection> lock(m_resourceSection);
+  m_restoreSettleJob = start;
+}
+
+void CWinSystemAmlogicGLESContext::DeliverRestoreSettled()
+{
+  // m_resourceSection held, after a reset's walk closed the span
+  const auto start = std::exchange(m_restoreSettleJob, nullptr);
+  if (!start)
+    return;
+  const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  if (word.state == OUTPUT::COutputWorker::WordState::STARTING && word.t == start->T &&
+      !word.spanOpen)
+    start->RestoreSettled(word.e);
 }
 
 const char* CWinSystemAmlogicGLESContext::RestoreFormName(RestoreForm form)
@@ -3187,6 +3234,7 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     }
     LedgerResetDone();
     CloseLostSpan();
+    DeliverRestoreSettled();
     lock.unlock();
     OUTPUT::TestStopAt("8");
   }
