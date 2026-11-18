@@ -1088,6 +1088,15 @@ protected:
   //! D1 items 3, 5: a reopen's refusals and its word step; false: the set is legacy (logged)
   bool TxReopenAllowed(const char* where, TxSegClass cls);
   void TxKeepaliveVerdict(bool reuse);
+  //! §3 (row 3): a reopen inside an open start drops its job before the commit; main stays shut
+  //! and the start stays open for the reopen's OPEN
+  bool m_txSuperseded = false;
+  std::chrono::steady_clock::time_point m_txSupersededAt{};
+  void TxSupersede(TxSegClass cls);
+  //! D1 item 8: a superseded start ended at a refusal, main back in with the owed decision
+  void TxEndSuperseded(const char* refusal);
+  //! §3: no new OPEN 12 s after the step
+  void TxSupersededBound();
   //! D2/D3 at CN's decided or unchanged opening; false while transaction_lossat holds the opening
   bool TxDecided(bool modeDecided);
   void TxStartPoint(const char* point);
@@ -1166,7 +1175,8 @@ protected:
   //! transaction_skip readon
   bool TxReadOnOpen() const
   {
-    return TxOpen() && m_txJob && m_CurrentVideo.id >= 0 && !m_txMenuDomain && !m_txSkipReadon;
+    return TxOpen() && m_txJob && !m_txSuperseded && m_CurrentVideo.id >= 0 && !m_txMenuDomain &&
+           !m_txSkipReadon;
   }
   //! D1: the read gate stops only for the audio queue: true when the read goes on
   bool TxReadOnBypass();

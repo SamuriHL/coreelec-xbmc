@@ -2671,14 +2671,20 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     return;
   }
 
-  // 5.E2-8a (D5): a non-seamless segment transition before START
-  if (TxOpen())
-    EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
-                           CRenderManager::TxNeed::LATER);
   // 5.E2-10 D1: the next set's reopen class
   m_txSegClass = transition == EBdTransition::DRAIN           ? TxSegClass::DRAIN
                  : transition == EBdTransition::DISCARD_CLOSE ? TxSegClass::DISCARD_CLOSE
                                                               : TxSegClass::KEEPALIVE;
+  // 5.E2-8a (D5): a non-seamless segment transition before START; 5.E2-10 §3: a P-decided
+  // start's job is superseded instead, before the decoder is touched
+  if (TxOpen())
+  {
+    if (m_txJob && !aml_transaction_skip("segment"))
+      TxSupersede(m_txSegClass);
+    else
+      EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
+                             CRenderManager::TxNeed::LATER);
+  }
   CloseDemuxer();
 
   m_syncStartPtsWait.reset();
@@ -2889,16 +2895,6 @@ void CVideoPlayer::ArmStartGate(const char* where)
 {
   const TxSegClass segClass = std::exchange(m_txSegClass, TxSegClass::NONE);
   m_txReopenCandidateGen = 0;
-  // 5.E2-8a (D5): a later set while the engaged start is open ends it first
-  if (TxOpen())
-    EndTransactionToLegacy("later set", CRenderManager::TxHow::OWED, CRenderManager::TxNeed::LATER);
-  // 5.E2-8b D8 (r2 N-L8): a KEEPALIVE reuse later set never configures: the owed mark of the
-  // start this file ended raises at its arm
-  if (m_txEndedGen && m_bdStreamReuseVideo)
-    m_renderManager.TxRaiseOwed("keepalive later set");
-  // code review A-M1 (backstop): an earlier exit's outcome still unresolved ends as `later`
-  if (m_txEndedGen)
-    m_renderManager.TxLaterSet(m_txEndedGen);
   bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
 #if defined(HAVE_LIBBLURAY)
   // a menu disc dictates its streams: none may be open yet
@@ -2911,6 +2907,20 @@ void CVideoPlayer::ArmStartGate(const char* where)
   const bool arm =
       hasVideo && m_startGateEnabled &&
       (startFullScreen || CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
+  // 5.E2-8a (D5): a later set while the engaged start is open ends it first; 5.E2-10 §3: a
+  // superseded start waits for the reopen's verdict (a refusal ends it, D1 item 8)
+  const bool txFirstSet = !m_txGateSetSeen && !m_State.streamsReady;
+  const bool reopenCandidate =
+      arm && !txFirstSet && segClass != TxSegClass::NONE && aml_transaction_loss_base();
+  if (TxOpen() && !(m_txSuperseded && reopenCandidate))
+    EndTransactionToLegacy("later set", CRenderManager::TxHow::OWED, CRenderManager::TxNeed::LATER);
+  // 5.E2-8b D8 (r2 N-L8): a KEEPALIVE reuse later set never configures: the owed mark of the
+  // start this file ended raises at its arm
+  if (m_txEndedGen && m_bdStreamReuseVideo)
+    m_renderManager.TxRaiseOwed("keepalive later set");
+  // code review A-M1 (backstop): an earlier exit's outcome still unresolved ends as `later`
+  if (m_txEndedGen)
+    m_renderManager.TxLaterSet(m_txEndedGen);
   LogTransactionShadow(arm, hasVideo, startFullScreen, where, segClass);
   if (!arm)
   {
@@ -2943,12 +2953,11 @@ void CVideoPlayer::ArmStartGate(const char* where)
   // the file's first set (plan §2.3 item 4, E2-1's rule): the first armed set while the streams
   // are not ready, whatever armed it ("first set", or a disc's first "Blu-ray set" after a
   // no-video first-play)
-  const bool txFirstSet = !m_txGateSetSeen && !m_State.streamsReady;
   m_txGateSetSeen = true;
   // 5.E2-10 D1 item 3: a later set's reopen verdict, before its picture gate; a KEEPALIVE set's
   // waits for the reuse compare (its gate is no candidate: a MATCH never holds pictures)
   bool txReopen = false;
-  if (!txFirstSet && segClass != TxSegClass::NONE && aml_transaction_loss_base())
+  if (reopenCandidate)
   {
     if (segClass == TxSegClass::KEEPALIVE)
       m_txReopenCandidateGen = m_startGateGen;
@@ -2959,8 +2968,10 @@ void CVideoPlayer::ArmStartGate(const char* where)
     TxRestoreDecoderSpeed("new set");
   if (txReopen)
   {
+    const bool inStart = m_txSuperseded;
     TxResetStart(true);
     m_txReopenOpen = true;
+    m_txReopenInStart = inStart;
     TxEngage(segClass == TxSegClass::DRAIN ? "reopen drain" : "reopen discard-close", false);
   }
   // 5.E2-8a (D1): P's verdict for the file's first set; graphics are held from here
@@ -3006,15 +3017,26 @@ void CVideoPlayer::TxKeepaliveVerdict(bool reuse)
   if (reuse)
   {
     CLog::Log(LOGINFO, "TRANSACTION reuse match T={} set={}", m_txWordT.load(), m_startGateGen);
+    // E210-1: a MATCH inside an open start ends it, as today
+    if (m_txSuperseded)
+      TxEndSuperseded("keepalive reuse match");
     return;
   }
   constexpr const char* where = "reopen keepalive reuse-fail";
-  if (!m_startGateShut || !TxReopenAllowed(where, TxSegClass::KEEPALIVE))
+  if (!m_startGateShut)
+  {
+    if (m_txSuperseded)
+      TxEndSuperseded("gate open");
+    return;
+  }
+  if (!TxReopenAllowed(where, TxSegClass::KEEPALIVE))
     return;
   if (m_renderManager.ArmTxPictureGate(m_startGateGen, true, "keepalive reopen"))
     TxRestoreDecoderSpeed("keepalive reopen");
+  const bool inStart = m_txSuperseded;
   TxResetStart(true);
   m_txReopenOpen = true;
+  m_txReopenInStart = inStart;
   TxEngage(where, false);
   // r1 L-3: the PRIME bound and CN's caps count from the compare
   m_startGateSince = std::chrono::steady_clock::now();
@@ -3063,7 +3085,56 @@ bool CVideoPlayer::TxReopenAllowed(const char* where, TxSegClass cls)
   if (!refused)
     return true;
   CLog::Log(LOGINFO, "TXSTART set={} legacy-open ({}; {})", m_startGateGen, refused, where);
+  if (m_txSuperseded)
+    TxEndSuperseded(refused);
   return false;
+}
+
+void CVideoPlayer::TxSupersede(TxSegClass cls)
+{
+  using State = DISPLAYSTATE::StartJobState;
+  if (m_txSuperseded)
+  {
+    CLog::Log(LOGINFO, "TXSTART set={} T={} row 3: reopen ({}) while superseded: kept",
+              m_txEngagedGen, m_txJob->T, TxSegClassName(cls));
+    return;
+  }
+  const State state = m_txJob->state.load();
+  if (DISPLAYSTATE::StartJobDropForExit(*m_txJob, "superseded by a reopen"))
+  {
+    m_txSuperseded = true;
+    m_txSupersededAt = std::chrono::steady_clock::now();
+    m_txStep = TxStep::NONE;
+    CLog::Log(LOGINFO, "TXSTART set={} T={} row 3: reopen ({}) supersedes the job ({})",
+              m_txEngagedGen, m_txJob->T, TxSegClassName(cls),
+              DISPLAYSTATE::StartJobStateName(state));
+    return;
+  }
+  // Q3 (E210-2): past the commit CAS
+  CLog::Log(LOGINFO, "TXSTART set={} T={} row 3: reopen ({}) after the job's commit: ended to "
+                     "legacy",
+            m_txEngagedGen, m_txJob->T, TxSegClassName(cls));
+  EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
+                         CRenderManager::TxNeed::LATER);
+}
+
+void CVideoPlayer::TxEndSuperseded(const char* refusal)
+{
+  const std::string site = std::string("superseded, ") + refusal;
+  EndTransactionToLegacy(site.c_str(), CRenderManager::TxHow::OWED,
+                         CRenderManager::TxNeed::LATER);
+  m_renderManager.TxRaiseOwed(site.c_str());
+}
+
+void CVideoPlayer::TxSupersededBound()
+{
+  if (!m_txSuperseded || !TxOpen() ||
+      std::chrono::steady_clock::now() - m_txSupersededAt < 12s)
+    return;
+  CLog::Log(LOGERROR,
+            "TXSTART set={} T={} superseded start: no new OPEN in 12 s: ended to legacy",
+            m_txEngagedGen, m_txWordT.load());
+  TxEndSuperseded("no open");
 }
 
 void CVideoPlayer::TxEngage(const char* where, bool startFullScreen)
@@ -3278,6 +3349,7 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
 {
   if (!TxOpen())
     return;
+  m_txSuperseded = false;
   // 5.E2-8b D8: the race, then main let back in (the exit's first step after the CAS)
   if (m_txJob)
   {
@@ -3381,6 +3453,13 @@ void CVideoPlayer::TxOpenStart()
     // E2-8b NOTE: D2 names no fallback; this start keeps E2-8a's (main decides), as skip decide
     CLog::Log(LOGWARNING, "TXSTART set={} T={} decision on main (another start job is open)",
               m_txEngagedGen, job->T);
+    // 5.E2-10 D1 item 8: the superseded start's job shut main out
+    if (m_txReopenInStart)
+    {
+      m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::OWED,
+                                 CRenderManager::TxNeed::NONE);
+      TxEndSuperseded("publish failed");
+    }
     return;
   }
   if (!m_txSink)
@@ -4429,7 +4508,8 @@ void CVideoPlayer::DecideShadow()
 
 void CVideoPlayer::CheckStartGate()
 {
-  if (!m_startGateShut)
+  // 5.E2-10 §3: no pass on a superseded job
+  if (!m_startGateShut || m_txSuperseded)
     return;
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
@@ -5063,7 +5143,7 @@ void CVideoPlayer::TxResetStart(bool reopen)
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
-  m_txReopenOpen = m_txReopenInStart = m_txReopenWaitLogged = false;
+  m_txReopenOpen = m_txReopenInStart = m_txReopenWaitLogged = m_txSuperseded = false;
   if (reopen)
   {
     // the engage sets the hook, read-on and menu-domain flags itself; the word's open, the
@@ -5539,6 +5619,8 @@ void CVideoPlayer::Process()
 
     if (m_bAbortRequest)
       break;
+
+    TxSupersededBound(); // 5.E2-10 §3
 
     // should we open a new input stream?
     if (!m_pInputStream)
@@ -10694,7 +10776,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   // (E2-8a D5)
   if (TxOpen())
   {
-    if (TxKeepsFlush(m_txFlushCaller))
+    // 5.E2-10 §3: the superseded start waits for the KEEPALIVE reopen's verdict
+    if (m_txSuperseded && m_txFlushCaller && std::string_view(m_txFlushCaller) == "keepalive")
+      CLog::Log(LOGINFO, "TXSTART set={} superseded: the keepalive flush keeps it",
+                m_txEngagedGen);
+    else if (TxKeepsFlush(m_txFlushCaller))
       TxReprime(m_txFlushCaller);
     else
       EndTransactionToLegacy("flush", CRenderManager::TxHow::RERAISE,
