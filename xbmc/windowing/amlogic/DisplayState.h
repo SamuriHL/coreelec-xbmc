@@ -401,6 +401,11 @@ struct SStartJob
   //! 5.E2-11 D0: P, under the player guard right before START's word CAS; W reads it only for
   //! a word at NONE (the lead's first instant against PRIME..SETTLE)
   std::atomic_bool started{false};
+  //! D4: P, the 3D question's dialog open (TxAskPass's predicate); W does not defer then
+  std::atomic_bool askOpen{false};
+  //! D2.5: P at DECIDE, before the queue: the caps publish and W's sink signature it decided on
+  uint64_t capsEpoch = 0;
+  uint32_t sinkSig = 0;
 
   //! one CAS from any of from to to; the state found is left in found
   bool Cas(std::initializer_list<StartJobState> from, StartJobState to, StartJobState* found = nullptr);

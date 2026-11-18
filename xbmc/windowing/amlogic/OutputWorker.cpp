@@ -354,15 +354,18 @@ void COutputWorker::WordCommitted(bool notConnected)
       });
 }
 
-void COutputWorker::WordSpanClosed()
+void COutputWorker::WordSpanClosed(const char* row)
 {
   WordApply(
-      [](const SWord& w)
+      [row](const SWord& w)
       {
         if (!w.spanOpen)
           return Step{};
         SWord n = w;
         n.spanOpen = false;
+        // 5.E2-11 D2.2: a deferred Restore closes the span with no commit
+        if (row)
+          return Apply(n, row, "span closed, the Restore deferred");
         if (!w.f)
           return Apply(n, "27", "span closed");
         if (WordHeldState(w.state))

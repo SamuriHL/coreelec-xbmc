@@ -51,6 +51,7 @@ struct SHotplugReply
     REASSERT,
     RETRY_NOOP,
     RETRY_RESTORE,
+    RESTORE_DEFERRED, //!< 5.E2-11 D2.2: caps done, no commit (row 10b)
   };
   static const char* KindName(Kind kind);
 
@@ -144,6 +145,12 @@ public:
   uint32_t UnstartedStartJobT() const;
   //! 5.E2-11 D1.2: the walk in progress is a span's loss (not a mode set's), m_resourceSection
   bool InSpanWalk() const { return m_spanWalk; }
+  //! 5.E2-11 D2.5: W's sink signature at its last caps step (sinkDv, hdrDisplay, dvLed; 0: none
+  //! read yet), stamped on the Start job at DECIDE
+  uint32_t SinkSig() const { return m_wSinkSig.load(); }
+  //! 5.E2-11 D2.6: at the open job's clear (START, an exit, the stop), W re-queues an owed
+  //! Restore 1500 ms later
+  void PostOwedRestoreCheck(const char* why);
   //! how long the output has been disconnected (0 while connected)
   int64_t DisconnectedForMs() const;
   //! calls the resource's OnLostDisplay() when a span is open; true if it did
@@ -158,8 +165,16 @@ public:
 protected:
   //! no display reset inside an open span while the output is disconnected
   bool DisplayResetAllowed() const;
-  //! the reset was fanned out with the display back
-  void CloseLostSpan();
+  //! the reset was fanned out with the display back; row: the word's row when no reset follows
+  void CloseLostSpan(const char* row = nullptr);
+  // 5.E2-11 D2 (docs/phase5_e2_11_impl.md)
+  //! W: a Restore deferred to the open start is owed; the next set is forced and clears it when
+  //! it commits connected
+  std::atomic_bool m_wRestoreOwed{false};
+  //! W: the owed check's RunHotplugJob (a deferral trigger)
+  bool m_wOwedRequeue{false};
+  //! W: the open Start job's sink as the last caps step read it (D2.5)
+  bool StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start);
   std::string m_framebuffer_name;
   //! 5.B3-7b (O1): with the hotplug on W, a receipt not yet answered by a popped reply
   bool IsHotplugPending() const
@@ -380,6 +395,13 @@ private:
   DISPLAYSTATE::GuiInputs m_wJobGui;
   bool m_wJobGuiFresh{true}; //!< m_wJobGui carries main's last adopt (a record may be taken)
   bool m_wHas2160{false}; //!< W's last table
+  //! 5.E2-11 D2.5: W's last table, by value, and its sink signature
+  std::vector<RESOLUTION_INFO> m_wTable;
+  std::atomic<uint32_t> m_wSinkSig{0};
+  bool m_wCapsChangeTaken{false}; //!< transaction_capschange, once
+  //! D2.1: a Restore at step 7 deferred to the open start (row 10b); true when deferred
+  bool DeferRestore(SHotplugReply& reply, bool retry);
+  void OwedRestoreCheck(const char* why);
   //! 5.B3-8: "desktop"'s Restore target, re-decided at each reconnect's caps step (published
   //! with W's caps); the session's desktop mode until the first. This and its reason are also
   //! written once by main, in StartHotplugOnW, before any W hotplug job

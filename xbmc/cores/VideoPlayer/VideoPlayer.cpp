@@ -3335,7 +3335,7 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
   {
     m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::START,
                                CRenderManager::TxNeed::NONE);
-    DISPLAYSTATE::ClearTxOpenJob(m_txJob);
+    TxClearOpenJob("START");
     m_txEndedGen = 0;
     // the job's tweak: ReleaseHeldStart's ApplyAudioOffset lands RM's tweak, composed from W's
     // committed mode (the job's)
@@ -3407,7 +3407,7 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     m_txEndedLeft = past && need == Need::LEFT;
     m_renderManager.TxOpenMain(m_txEngagedGen, past ? CRenderManager::TxHow::NONE : how,
                                past ? need : Need::NONE);
-    DISPLAYSTATE::ClearTxOpenJob(m_txJob);
+    TxClearOpenJob("exit");
     m_txStep = TxStep::NONE;
     // code review A-M1: GC's drop landed after the read above (a TxOpenJob copy taken before the
     // clear): no answer comes, so `left x failed` resolves it (TxOnReply covers a later drop)
@@ -3546,9 +3546,19 @@ void CVideoPlayer::TxReleaseJob(const char* why)
   // D5 (lifetime): no reply reaches this player after it; never waits on what W holds (the
   // sink's calls only queue)
   m_txJob->ClearSink();
-  if (DISPLAYSTATE::ClearTxOpenJob(m_txJob))
+  if (TxClearOpenJob(why))
     CLog::Log(LOGINFO, "TXSTART T={} start job released ({})", m_txJob->T, why);
   m_txJob.reset();
+}
+
+bool CVideoPlayer::TxClearOpenJob(const char* why)
+{
+  if (!DISPLAYSTATE::ClearTxOpenJob(m_txJob))
+    return false;
+  // 5.E2-11 D2.6: a Restore still owed is re-queued (through the deferral test) 1500 ms later
+  if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
+    winSystem->PostOwedRestoreCheck(why);
+  return true;
 }
 
 namespace
@@ -3765,6 +3775,18 @@ void CVideoPlayer::TxDecide()
 {
   using How = CRenderManager::TxHow;
   using Need = CRenderManager::TxNeed;
+  // transaction_decidehold (5.E2-11, test only): DECIDE waits on P's loop, W free
+  if (const int ms = aml_transaction_hooks().decideHoldMs; ms > 0)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_txDecideHoldUntil == std::chrono::steady_clock::time_point{})
+    {
+      m_txDecideHoldUntil = now + std::chrono::milliseconds(ms);
+      CLog::Log(LOGWARNING, "TXTEST decidehold {} T={}", ms, m_txJob->T);
+    }
+    if (now < m_txDecideHoldUntil)
+      return;
+  }
   // 5.E2-9c D3: the PRIME bound's latch (no picture; TxStartGatePass clears it for one)
   const bool hint = m_txHintDecide;
   // as main's UpdateResolution (a3f8a5614c): a window the fullscreen switch closes may set its
@@ -3896,6 +3918,11 @@ void CVideoPlayer::TxDecide()
   job.fracRequest = r.frac;
   job.filmStart = r.filmStart;
   job.tweakMs = r.tweakMs;
+  // 5.E2-11 D2.5: the caps this decision read, for W's check at the job's run
+  if (const auto state = DISPLAYSTATE::Get())
+    job.capsEpoch = state->capsEpoch;
+  if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
+    job.sinkSig = winSystem->SinkSig();
   // D3 (code review A-L1): the notices after the post compare with the facts DECIDE read (a
   // notice raised between the last take and ResolveStart's read is in them)
   m_txJobFacts = {};
@@ -3924,6 +3951,22 @@ void CVideoPlayer::TxTryPost()
   using How = CRenderManager::TxHow;
   using Need = CRenderManager::TxNeed;
   DISPLAYSTATE::SStartJob& job = *m_txJob;
+  // transaction_posthold (5.E2-11, test only): decided and stamped, the post held (WAIT_GUI,
+  // NOT_POSTED: no OUTPUT bound runs), W free
+  if (const int ms = aml_transaction_hooks().postHoldMs; ms > 0)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_txPostHoldUntil == std::chrono::steady_clock::time_point{})
+    {
+      m_txPostHoldUntil = now + std::chrono::milliseconds(ms);
+      CLog::Log(LOGWARNING, "TXTEST posthold {} T={}", ms, job.T);
+    }
+    if (now < m_txPostHoldUntil)
+    {
+      m_txStep = TxStep::WAIT_GUI;
+      return;
+    }
+  }
   if (const int n = DISPLAYSTATE::GuiSetsInFlight())
   {
     m_txStep = TxStep::WAIT_GUI;
@@ -5753,6 +5796,7 @@ void CVideoPlayer::TxResetStart(bool reopen)
   TxSpanEdgeClear("open");
   m_txInSpan = false;
   m_txStartE = 0;
+  m_txDecideHoldUntil = m_txPostHoldUntil = {};
   m_txGuardBusyLogged = false;
   m_txStartHeldWord = 0;
   m_txLeadT0Ns = 0;

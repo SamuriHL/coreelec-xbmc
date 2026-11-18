@@ -288,6 +288,10 @@ private:
   std::optional<DISPLAYSTATE::ModeFacts> PendingStartRow() override;
   //! W: the job on Lane::START, built as RunRestoreOnW builds its set
   void RunStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start);
+  // 5.E2-11 D2.4 (W only): the job whose span hold was logged; transaction_queuehold's job and end
+  uint64_t m_wSpanHeldT{0};
+  uint64_t m_wQueueHoldT{0};
+  std::chrono::steady_clock::time_point m_wQueueHoldUntil{};
   //! W, a Start job's commit result: its backups, m_wStartCommit, OutputDone
   void StartCommitted(SDriveJob& job, bool committed);
   //! main: one Start reply (O1, in run-ordinal order with the hotplug replies)

@@ -1323,6 +1323,11 @@ protected:
   const char* TxSpanStateName(bool starting) const;
   //! D1.6, D1.7: the span's own 15 s conversion, once per span; a speed taken in it stands
   void TxSpanConvertPass();
+  //! D2.6: the open job cleared (START, an exit, the stop): W re-queues an owed Restore
+  bool TxClearOpenJob(const char* why);
+  //! transaction_decidehold / posthold's ends ({} = not started)
+  std::chrono::steady_clock::time_point m_txDecideHoldUntil{};
+  std::chrono::steady_clock::time_point m_txPostHoldUntil{};
   bool m_txSpanConverted = false;
   bool m_txSpanSpeedTaken = false;
   //! D1.5: START as the word CAS STARTING{T, e, no span} -> NONE under the player guard, with

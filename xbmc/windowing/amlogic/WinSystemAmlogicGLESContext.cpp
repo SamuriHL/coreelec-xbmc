@@ -146,6 +146,8 @@ struct SDriveJob
   // 5.E2-8b (docs/phase5_e2_8b_impl.md D5, D5b)
   std::shared_ptr<DISPLAYSTATE::SStartJob> start; //!< the Start job this set runs, else null
   bool own{false}; //!< main's own set (SetFullScreenOnW's post)
+  //! 5.E2-11 D2.6: W ran it while a deferred Restore was owed: forced as the Restore is
+  bool restoreOwed{false};
   bool postActivation{false}; //!< own: WINDOW_FULLSCREEN_VIDEO was active at the set's start
   uint64_t runOrdinal{0}; //!< W's run ordinal (JobsStarted inside the job)
   uint64_t commitSeq{0}; //!< s_commitSeq at the commit result, else the value at its end
@@ -1255,7 +1257,12 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   const bool force_mode_switch_by_hdr = job.backups.hdrType != job.hdrType;
   const bool force_mode_switch_by_stereo_mode = job.backups.stereo != job.stereo;
   const bool force_mode_switch_by_fractional_rate = cur_fractional_rate != fractional_rate;
-  const bool force_mode_switch_by_hotplug = job.hotplug;
+  // 5.E2-11 D2.6: the set after a deferred Restore (the Start job, main's set, the owed Restore)
+  // always commits, with the Restore's flags: lost walk, SETTLE, the reset, the handler
+  job.restoreOwed = m_wRestoreOwed.load();
+  if (job.restoreOwed)
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} discharges the owed restore (forced)", job.id);
+  const bool force_mode_switch_by_hotplug = job.hotplug || job.restoreOwed;
   const bool force_mode_switch_by_wire = display->aml_output_wire_stale();
 
   RESOLUTION_INFO current_resolution;
@@ -1483,7 +1490,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
       !commitFail &&
       display->set_native_resolution(res, job.fbName, job.stereo, force_mode_switch,
                                      hotplug_mode_switch, frac_reclock,
-                                     job.hotplug && !routing && OUTPUT::LinkRequestOn());
+                                     force_mode_switch_by_hotplug && !routing &&
+                                         OUTPUT::LinkRequestOn());
   if (routing)
     display->aml_log_routed(*job.route, committed);
   // today's true with no display and no hotplug set (r1 M5)
@@ -1530,6 +1538,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   job.kind = !committed                       ? OUTPUT::DriveReply::FAILED
              : notConnected || forceNotCommitted ? OUTPUT::DriveReply::NOT_COMMITTED
                                                  : OUTPUT::DriveReply::DONE;
+  // 5.E2-11 D2.6: only a committed, connected set discharges it
+  if (job.kind == OUTPUT::DriveReply::DONE && m_wRestoreOwed.exchange(false))
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} committed: the owed restore discharged", job.id);
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
@@ -2313,7 +2324,7 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReply(SHotplugReply& reply)
   const RestoreForm form = job ? HotplugRestoreForm(*job) : RestoreForm::NOT_TORN_DOWN;
   // HEAD's not-ready per kind (r2 N1): every event's, then the set that re-readies
   const bool notReady = reply.kind == Kind::LOSS || reply.kind == Kind::LOSS_CAPSFAIL ||
-                        reply.kind == Kind::THROW ||
+                        reply.kind == Kind::THROW || reply.kind == Kind::RESTORE_DEFERRED ||
                         (job && (form == RestoreForm::ADOPT || form == RestoreForm::NOT_TORN_DOWN));
   const bool acts = notReady || job || reply.hasTable || reply.hasCaps;
   const char* step = "pop";
@@ -2563,7 +2574,42 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
 {
   using State = DISPLAYSTATE::StartJobState;
   using Settle = DISPLAYSTATE::StartSettleKind;
+  // 5.E2-11 D2.4: a queued job waits for the display span on its lane (W free); its state is
+  // untouched, so P's and GC's drops still work. transaction_queuehold holds it the same way
+  if (start->state.load() == State::QUEUED)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    const int holdMs = aml_transaction_hooks().queueHoldMs;
+    if (holdMs > 0 && m_wQueueHoldT != start->T)
+    {
+      m_wQueueHoldT = start->T;
+      m_wQueueHoldUntil = now + std::chrono::milliseconds(holdMs);
+      CLog::Log(LOGWARNING, "TXTEST queuehold {} T={}", holdMs, start->T);
+    }
+    const bool hookHold = holdMs > 0 && now < m_wQueueHoldUntil;
+    const bool spanHold = aml_transaction_loss_in_start() && IsLostSpanOpen();
+    if (spanHold && m_wSpanHeldT != start->T)
+    {
+      m_wSpanHeldT = start->T;
+      CLog::Log(LOGINFO, "TXSTART job T={} held: the display span is open", start->T);
+    }
+    // a failed re-post (W stopping) runs on: the unrun job's STOPPING below
+    if ((hookHold || spanHold) &&
+        OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::START, "start job", 50ms,
+                                               [this, start] { RunStartJob(start); }))
+      return;
+  }
   StartTestStopAt(*start, "posted", [&start] { return start->state.load() != State::QUEUED; });
+  // 5.E2-11 D2.5: decided on caps older than the last publish: its mode on the new table by value
+  // and the same sink, else main decides on the new caps (one decision, one re-lock)
+  if (aml_transaction_loss_in_start() && start->state.load() == State::QUEUED &&
+      StartJobCapsChanged(*start) && start->Cas({State::QUEUED}, State::DROPPED))
+  {
+    CLog::Log(LOGINFO, "TXSTART job T={} dropped: the sink's caps changed since DECIDE",
+              start->T);
+    start->SettleDone(Settle::DROPPED);
+    return;
+  }
   // D5 step 1
   if (!start->Cas({State::QUEUED}, State::PARKING))
   {

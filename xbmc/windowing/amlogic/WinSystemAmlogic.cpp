@@ -621,14 +621,81 @@ uint32_t CWinSystemAmlogic::UnstartedStartJobT() const
   return static_cast<uint32_t>(job->T);
 }
 
-void CWinSystemAmlogic::CloseLostSpan()
+void CWinSystemAmlogic::CloseLostSpan(const char* row)
 {
   if (m_lostOpen.exchange(false))
   {
     CLog::Log(LOGINFO, "CWinSystemAmlogic: display back, the lost span ends");
     if (aml_transaction_shadow_on())
-      OUTPUT::COutputWorker::Get().WordSpanClosed();
+      OUTPUT::COutputWorker::Get().WordSpanClosed(row);
   }
+}
+
+bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
+{
+  // the triggers: a reconnect or re-assert, a retry with the span open, the owed re-queue (a
+  // throw recovery is not one)
+  if ((retry && !m_lostOpen && !m_wOwedRequeue) || !aml_transaction_loss_in_start() ||
+      aml_transaction_skip("restoredefer"))
+    return false;
+  const auto job = DISPLAYSTATE::TxOpenJob();
+  if (!job)
+    return false;
+  using State = DISPLAYSTATE::StartJobState;
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const State state = job->state.load();
+  const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  // P took no FREEZE body (a frozen P, any skip or path, gets today's Restore); the 3D dialog
+  // open sees the GUI's mode first (D4)
+  if (job->T != word.t || !word.f || !(state == State::NOT_POSTED || state == State::QUEUED) ||
+      job->askOpen.load() || !(word.state == WordState::NONE || word.state == WordState::STARTING))
+    return false;
+  reply.kind = SHotplugReply::Kind::RESTORE_DEFERRED;
+  const bool again = std::exchange(m_wOwedRequeue, false);
+  m_wRestoreOwed = true;
+  {
+    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+    CloseLostSpan("10b");
+  }
+  if (again)
+    CLog::Log(LOGINFO, "HOTPLUG owed restore deferred again to T={}", job->T);
+  else
+    CLog::Log(LOGINFO,
+              "HOTPLUG restore deferred to the start T={} (job {}): caps done, no commit (row 10b)",
+              job->T, DISPLAYSTATE::StartJobStateName(state));
+  return true;
+}
+
+void CWinSystemAmlogic::PostOwedRestoreCheck(const char* why)
+{
+  if (!m_wRestoreOwed)
+    return;
+  OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "owed restore", 1500ms,
+                                         [this, why] { OwedRestoreCheck(why); });
+}
+
+void CWinSystemAmlogic::OwedRestoreCheck(const char* why)
+{
+  // the flag alone decides (a failed discharging set leaves it set)
+  if (!m_wRestoreOwed)
+    return;
+  bool replyQueued;
+  {
+    std::unique_lock lock(m_replyMutex);
+    replyQueued = !m_replies.empty();
+  }
+  // HotplugRetryTick's wait: no Restore beside main's set or an unapplied reply
+  if (IsHotplugPending() || replyQueued || m_applyingReply || m_mainRequests > 0 ||
+      m_guiInputsStale || m_lateReplies > 0)
+  {
+    OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "owed restore", 50ms,
+                                           [this, why] { OwedRestoreCheck(why); });
+    return;
+  }
+  CLog::Log(LOGINFO, "HOTPLUG owed restore re-queued ({})", why);
+  m_wOwedRequeue = true;
+  RunHotplugJob(true);
+  m_wOwedRequeue = false;
 }
 
 bool CWinSystemAmlogic::DisplayResetAllowed() const
@@ -770,6 +837,8 @@ const char* SHotplugReply::KindName(Kind kind)
       return "retry-noop";
     case Kind::RETRY_RESTORE:
       return "retry-restore";
+    case Kind::RESTORE_DEFERRED:
+      return "restore-deferred";
   }
   return "?";
 }
@@ -1244,6 +1313,10 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   reply.hasCaps = true;
   if (reply.hdrDisplay)
     aml_hdr_conversion_refresh("display caps");
+  // 5.E2-11 D2.5: the connected sink's signature, stamped on a Start job at DECIDE
+  if (connected && reply.modes > 1)
+    m_wSinkSig = 0x80000000u | (reply.sinkDv ? 1u : 0u) | (reply.hdrDisplay ? 2u : 0u) |
+                 (reply.dvLed ? static_cast<uint32_t>(*reply.dvLed + 1) << 8 : 0u);
 
   RESOLUTION_INFO slot;
   if (reply.modes > 1)
@@ -1317,6 +1390,15 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
                   DISPLAYSTATE::FactsString(m_wDesktopMode), slot.strId);
       }
   }
+  if (connected && reply.hasTable)
+    m_wTable = reply.table;
+  // transaction_restorecapsdelay (5.E2-11 D2.3, test only): a Restore's caps held
+  if (const int ms = aml_transaction_hooks().restoreCapsDelayMs; ms > 0 && connected &&
+                                                                 reply.modes > 1)
+  {
+    CLog::Log(LOGWARNING, "TXTEST restorecapsdelay {}", ms);
+    KODI::TIME::Sleep(std::chrono::milliseconds(ms));
+  }
   DISPLAYSTATE::PublishCaps(*m_amlDisplay, m_wHas2160, row2 ? &m_wDesktopMode : nullptr);
 
   // step 6: no commit at a loss (§1 step 4's plug-out commit is gone, fc30 C3)
@@ -1335,6 +1417,9 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     reply.kind = retry ? Kind::RETRY_NOOP : Kind::LOSS_CAPSFAIL;
     return;
   }
+  // 5.E2-11 D2.1: the start owes its decision: caps done, no commit
+  if (DeferRestore(reply, retry))
+    return;
 
   // step 7: the Restore at §6's target on W's table (row 1, HotplugEvent's, under the skip; row 2
   // under B3-8): RES_DESKTOP's entry, then the probe's as CDisplaySettings stores them
@@ -1456,6 +1541,29 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
     m_wVideoModeReply = reply.videoMode ? reply.replyId : 0;
   }
   // step 8: the unpark at the hold's end, then the reply
+}
+
+bool CWinSystemAmlogic::StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start)
+{
+  const auto state = DISPLAYSTATE::Get();
+  if (!state || start.capsEpoch >= state->capsEpoch)
+    return false;
+  if (aml_transaction_hooks().capsChange && !std::exchange(m_wCapsChangeTaken, true))
+  {
+    CLog::Log(LOGWARNING, "TXTEST capschange T={}", start.T);
+    return true;
+  }
+  const uint32_t sig = m_wSinkSig.load();
+  if (start.sinkSig && sig && start.sinkSig != sig)
+    return true;
+  const bool onTable =
+      m_wTable.empty() ||
+      std::any_of(m_wTable.begin(), m_wTable.end(), [&start](const RESOLUTION_INFO& res)
+                  { return SameMode(res, start.res.strId, start.res.fRefreshRate,
+                                    start.res.dwFlags); });
+  if (onTable)
+    CLog::Log(LOGINFO, "TXSTART job T={} caps checked since DECIDE: unchanged", start.T);
+  return !onTable;
 }
 
 void CWinSystemAmlogic::UpdateDesktopMode(const std::vector<RESOLUTION_INFO>& rows)

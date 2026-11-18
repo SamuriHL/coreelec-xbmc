@@ -146,7 +146,7 @@ public:
   //! W, a mode set's commit (e+1)
   void WordCommitted(bool notConnected);
   //! W, the lost span's close: the span bit, when no player's return cleared it
-  void WordSpanClosed();
+  void WordSpanClosed(const char* row = nullptr);
   //! P, a file's open (today's start: row 29, or 28+29 for a next file); mirror is the player's
   //! own loss state. The new T, or 0 when the CAS failed
   uint32_t WordOpen(uint32_t ownT, WordState mirror);
