@@ -265,10 +265,11 @@ Step SkipOwn(const COutputWorker::SWord& w, uint32_t ownT, const char* row, std:
 }
 } // namespace
 
-void COutputWorker::WordLoss(bool walk)
+void COutputWorker::WordLoss(bool walk, uint32_t unstartedJobT)
 {
+  const bool inStart = unstartedJobT && aml_transaction_loss_in_start();
   WordApply(
-      [walk](const SWord& w)
+      [walk, inStart, unstartedJobT](const SWord& w)
       {
         SWord n = w;
         n.e = (w.e + 1) & WORD_E_MASK;
@@ -280,6 +281,9 @@ void COutputWorker::WordLoss(bool walk)
           case NONE:
             if (!w.f)
               return Apply(n, "27", note);
+            // 5.E2-11 D1.1: PRIME..SETTLE of an open start: the state is kept, no claim
+            if (inStart && w.t == unstartedJobT)
+              return Apply(n, "9", walk ? "a loss inside a start: no FREEZE body" : note);
             if (walk)
             {
               // a Lost job's claim; the walk's FREEZE body parks it

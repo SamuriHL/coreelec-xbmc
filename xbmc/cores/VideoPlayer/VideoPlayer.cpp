@@ -3753,8 +3753,8 @@ void CVideoPlayer::TxDecide()
       DISPLAYSTATE::FullScreenExits() == m_txExitsAtOpen)
   {
     // a hint decision's render timeout counts from the bound (no configure)
-    if (!m_renderManager.TxRenderTimedOut(hint ? m_txHintBoundAt
-                                               : std::chrono::steady_clock::time_point{}))
+    if (!m_renderManager.TxRenderTimedOut(
+            hint ? m_txHintBoundAt : std::chrono::steady_clock::time_point{}, m_txSpanClosedAt))
     {
       if (!std::exchange(m_txWindowWaitLogged, true))
         CLog::Log(LOGINFO, "TXSTART set={} T={} DECIDE waits for the fullscreen window",
@@ -3951,6 +3951,8 @@ void CVideoPlayer::TxTryPost()
   m_txBoundInCommitLogged = false;
   m_txLostAt = {};
   m_txLostPaused = {};
+  m_txSpanPaused = {};
+  m_txSpanPausedFrom = {};
   // 5.E2-9c D3: RM owes the hint job's first picture its compare; counted when posted (r5 L4)
   if (std::exchange(m_txHintDecide, false))
   {
@@ -4521,19 +4523,23 @@ void CVideoPlayer::TxRepliesPass()
   if (m_txSettle && m_txAdopt)
     return;
   const auto now = std::chrono::steady_clock::now();
-  const auto all = now - m_txPostedAt;
+  // 5.E2-11 D1.9: a span pauses every bound ("30 s in all" too); a freeze from the start's own
+  // set with no span still counts
+  const auto spanPaused = TxSpanPausedNow();
+  const auto all = now - m_txPostedAt - spanPaused;
+  const auto paused = std::max(m_txLostPaused, spanPaused) - spanPaused;
   // 5.E2-9a (D7, r1 H4, r2 N-M2): the OUTPUT bound, 15 s from the post to W's first answer
   // (paused while lost), tested before the backstop; W silent at 30 s in all is the no-answer rule
   if (!m_txOutputDone && !m_txSettle)
   {
     if (all > 30s)
       TxNoAnswerExit("site backstop");
-    else if (all - m_txLostPaused > 15s)
+    else if (all - paused > 15s)
       TxOutputBoundExit();
     return;
   }
   // the backstop (r2 N-H3, r3 M3, r4 L5): 15 s from the post, paused while lost, 30 s in all
-  if (all - m_txLostPaused <= 15s && all <= 30s)
+  if (all - paused <= 15s && all <= 30s)
     return;
   TxBackstopExit("site backstop");
 }
@@ -4648,7 +4654,8 @@ void CVideoPlayer::TxLostFailedPass()
   }
   // D6: the backstop's 30 s in all bound P while lost too; a reply queued behind the loss is not
   // missing
-  if ((m_txSettle && m_txAdopt) || std::chrono::steady_clock::now() - m_txPostedAt <= 30s)
+  if ((m_txSettle && m_txAdopt) ||
+      std::chrono::steady_clock::now() - m_txPostedAt - TxSpanPausedNow() <= 30s) // 5.E2-11 D1.9
     return;
   const auto ours = [T](CDVDMsg& m)
   {
@@ -4664,6 +4671,105 @@ void CVideoPlayer::TxLostFailedPass()
     TxNoAnswerExit("site lost");
   else
     TxBackstopExit("site lost");
+}
+
+std::chrono::steady_clock::duration CVideoPlayer::TxSpanPausedNow() const
+{
+  if (m_txSpanPausedFrom == std::chrono::steady_clock::time_point{})
+    return m_txSpanPaused;
+  return m_txSpanPaused + (std::chrono::steady_clock::now() - m_txSpanPausedFrom);
+}
+
+const char* CVideoPlayer::TxSpanStateName(bool starting) const
+{
+  if (starting)
+    return "STARTING";
+  switch (m_txStep)
+  {
+    case TxStep::NONE:
+      return m_txConfiguredAt != std::chrono::steady_clock::time_point{} || m_txHintDecide
+                 ? "DECIDE"
+                 : "PRIME";
+    case TxStep::WAIT_GUI:
+      return "DECIDE";
+    case TxStep::ASK:
+      return "ASK";
+    case TxStep::POSTED:
+      break;
+  }
+  return DISPLAYSTATE::StartJobStateName(m_txJob->state.load());
+}
+
+void CVideoPlayer::TxSpanEdgeClear(const char* why)
+{
+  if (!m_txSpanSeen)
+    return;
+  m_txSpanSeen = false;
+  if (std::exchange(m_txSpanDiscLost, false) && !m_displayLost)
+    m_discTime.SetDisplayLost(false);
+  CLog::Log(LOGINFO, "TXLOSS span in the start closed after {} ms ({})",
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - m_txSpanOpenedAt)
+                .count(),
+            why);
+}
+
+// 5.E2-11 D1.3, D1.9: P's span input, derived from the word each pass (W writes no P member)
+void CVideoPlayer::TxSpanPass()
+{
+  using WordState = OUTPUT::COutputWorker::WordState;
+  const uint32_t ownT = m_txWordT.load();
+  const auto word = ownT ? OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord())
+                         : OUTPUT::COutputWorker::SWord{};
+  const auto now = std::chrono::steady_clock::now();
+  // D1.9: from the post on, the word's span alone (a real freeze inside it counts too)
+  const bool lossInStart = aml_transaction_loss_in_start();
+  const bool posted = TxOpen() && m_txJob && m_txStep == TxStep::POSTED && lossInStart;
+  if (posted && word.spanOpen)
+  {
+    if (m_txSpanPausedFrom == std::chrono::steady_clock::time_point{})
+      m_txSpanPausedFrom = now;
+  }
+  else if (m_txSpanPausedFrom != std::chrono::steady_clock::time_point{})
+  {
+    m_txSpanPaused += now - m_txSpanPausedFrom;
+    m_txSpanPausedFrom = {};
+  }
+  m_txInSpan = TxOpen() && m_txJob && !m_displayLost && lossInStart &&
+               word.t == ownT && word.spanOpen &&
+               (word.state == WordState::NONE || word.state == WordState::STARTING);
+  if (!m_txInSpan)
+  {
+    if (m_txSpanSeen)
+    {
+      TxSpanEdgeClear(m_displayLost ? "a freeze took it" : !TxOpen() ? "the start ended"
+                                                                     : "display back");
+      // the bounds of PRIME..STARTING re-arm on the next pass, as after a freeze; DECIDE's
+      // render timeout and ASK's 2 s from here
+      m_txSpanClosedAt = now;
+      if (m_txConfiguredAt != std::chrono::steady_clock::time_point{})
+        m_txConfiguredAt = now;
+      if (m_txAskSince != std::chrono::steady_clock::time_point{})
+        m_txAskSince = now;
+    }
+    return;
+  }
+  if (!m_txSpanSeen)
+  {
+    m_txSpanSeen = true;
+    m_txSpanOpenedAt = now;
+    m_txSpanE = word.e;
+    // D:222: P feeds the span to disc time
+    m_discTime.SetDisplayLost(true);
+    m_txSpanDiscLost = true;
+    CLog::Log(LOGINFO, "TXLOSS span in the start open (state {}) T={} e={}",
+              TxSpanStateName(word.state == WordState::STARTING), ownT, word.e);
+  }
+  // the lost branch's marks: CN's bounds, the settle timer and the holds re-arm after the span
+  m_txLostSinceArm = true;
+  m_txGateLostSeen = true;
+  m_txSettleLostSeen = true;
+  TxLostFailedPass();
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
@@ -4828,8 +4934,9 @@ void CVideoPlayer::CheckStartGate()
   }
   // 5.E2-9a (D4, E28A-8): an engaged open's bounds do not count the lost time; the loss is
   // marked by Process's lost branch (this pass does not run there), this return guards a
-  // pass from inside a demux read
-  if (m_displayLost)
+  // pass from inside a demux read. 5.E2-11 D1.4: a row-9 span too (DECIDE never reads the caps W
+  // published at the loss)
+  if (m_displayLost || m_txInSpan)
     return;
   if (m_txGateLostSeen)
   {
@@ -5434,6 +5541,11 @@ void CVideoPlayer::TxResetStart(bool reopen)
   m_txAdopt.reset();
   m_txPostedAt = m_txLostAt = {};
   m_txLostPaused = {};
+  // 5.E2-11
+  TxSpanEdgeClear("open");
+  m_txInSpan = false;
+  m_txSpanPaused = {};
+  m_txSpanPausedFrom = m_txSpanClosedAt = {};
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
   m_txLossAtUntil = {};
@@ -5738,7 +5850,13 @@ void CVideoPlayer::Prepare(bool nextFile)
     TxOpenStart();
   m_txOpenPending = false;
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
-  if (winSystem && winSystem->HoldIfDisplayLost(this))
+  // 5.E2-11 D1.10: no OPEN waits for a span; a P-decided open sees it from the word
+  if (TxOpen() && m_txJob && aml_transaction_loss_in_start())
+  {
+    if (winSystem && winSystem->IsLostSpanOpen())
+      CLog::Log(LOGINFO, "TXLOSS row 9 (no body) T={}: opened inside the span", m_txWordT.load());
+  }
+  else if (winSystem && winSystem->HoldIfDisplayLost(this))
     CLog::Log(LOGINFO, "VideoPlayer: started while the display is lost, held until it is back");
 }
 
@@ -5836,6 +5954,7 @@ void CVideoPlayer::Process()
     PublishHoldOnDisplayLoss();
     if (aml_transaction_shadow_on())
       SampleWord();
+    TxSpanPass();
     // check display lost
     if (m_displayLost)
     {
@@ -6971,8 +7090,10 @@ void CVideoPlayer::HandlePlaySpeed()
   const bool txSettleStart = TxSettleTimerPass();
   // sync streams to clock; a shut start gate's audio cannot arrive, and the start
   // would otherwise go ahead without it (no commit, no stuck-sync flushes)
-  if (!StartGateShut() && ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
-                           (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)))
+  // 5.E2-11 D1.5: not inside a row-9 span (the START CAS under the guard is the guarantee)
+  if (!StartGateShut() && !m_txInSpan &&
+      ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
+       (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC)))
   {
     unsigned int threshold = 20;
     if (m_pInputStream->IsRealtime())
@@ -12880,6 +13001,29 @@ void CVideoPlayer::OnLostDisplay()
     if (m_txFreezeReal.load())
       TxRefreeze();
     return;
+  }
+  // 5.E2-11 D1.2: a loss inside an open start before START takes no FREEZE body; decided on the
+  // word W just wrote and the open job, as W's row 9 (no P member written)
+  if (aml_transaction_loss_in_start())
+  {
+    const uint32_t ownT = m_txWordT.load();
+    const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+    using WordState = OUTPUT::COutputWorker::WordState;
+    const auto job = ownT && word.t == ownT && word.spanOpen ? DISPLAYSTATE::TxOpenJob() : nullptr;
+    if (job && job->T == word.t &&
+        (word.state == WordState::STARTING ||
+         (word.state == WordState::NONE && !job->started.load())))
+    {
+      // HEAD's line once per loss (a Restore's own walk in the span is not one)
+      auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+      const bool spanWalk = winSystem && winSystem->InSpanWalk();
+      if (spanWalk)
+        CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
+      CLog::Log(LOGINFO, "TXLOSS row 9 (no body) T={} e={} word {}{}", word.t, word.e,
+                word.state == WordState::STARTING ? "STARTING" : "NONE",
+                spanWalk ? "" : " (a mode set's walk)");
+      return;
+    }
   }
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (winSystem && winSystem->IsLostSpanOpen() && !m_holdOnDisplayLoss)

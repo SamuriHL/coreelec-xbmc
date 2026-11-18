@@ -137,8 +137,10 @@ public:
   static std::string WordText(uint64_t value);
   uint64_t LoadWord() const { return m_word.load(std::memory_order_acquire); }
   //! W, a loss it detects (e+1, the span set): walk = the span's lost walk follows (row 11's
-  //! claim for an open player), else a loss inside an open span (the re-stamp)
-  void WordLoss(bool walk);
+  //! claim for an open player), else a loss inside an open span (the re-stamp).
+  //! 5.E2-11 D1.1: unstartedJobT, the T of an open Start job not started yet (0: none): a NONE
+  //! word of that T takes row 9 (no claim, no FREEZE body)
+  void WordLoss(bool walk, uint32_t unstartedJobT = 0);
   //! W, after the span's lost walk: a claim no player parked is released (row 13)
   void WordLossWalked();
   //! W, a mode set's commit (e+1)

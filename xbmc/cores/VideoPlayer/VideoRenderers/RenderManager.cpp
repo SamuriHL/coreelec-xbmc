@@ -4183,12 +4183,14 @@ std::string CRenderManager::TxPictureStereoMode()
   return m_picture.stereoMode;
 }
 
-bool CRenderManager::TxRenderTimedOut(std::chrono::steady_clock::time_point from)
+bool CRenderManager::TxRenderTimedOut(std::chrono::steady_clock::time_point from,
+                                      std::chrono::steady_clock::time_point notBefore)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (from == std::chrono::steady_clock::time_point{})
     from = m_videostarted;
+  from = std::max(from, notBefore);
   return std::chrono::steady_clock::now() - from > std::chrono::seconds(m_render_timeout);
 }
 

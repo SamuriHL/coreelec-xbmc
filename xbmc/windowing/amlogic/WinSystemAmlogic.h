@@ -140,6 +140,10 @@ public:
   //! design §18.24 (P5-8): a lost display, held from the disconnect until a
   //! reset with the display connected again
   bool IsLostSpanOpen() const { return m_lostOpen.load(); }
+  //! 5.E2-11 D1.1: the open Start job's T while it is not started (0: none)
+  uint32_t UnstartedStartJobT() const;
+  //! 5.E2-11 D1.2: the walk in progress is a span's loss (not a mode set's), m_resourceSection
+  bool InSpanWalk() const { return m_spanWalk; }
   //! how long the output has been disconnected (0 while connected)
   int64_t DisconnectedForMs() const;
   //! calls the resource's OnLostDisplay() when a span is open; true if it did
@@ -387,6 +391,7 @@ private:
 
   bool m_lostAtDisconnect{false};
   std::atomic_bool m_lostOpen{false};
+  bool m_spanWalk{false}; //!< guarded by m_resourceSection
   std::atomic<int64_t> m_disconnectedSinceMs{0};
   XbmcThreads::EndTime<> m_lostRetry;
   std::chrono::milliseconds m_lostRetryDelay{1000};

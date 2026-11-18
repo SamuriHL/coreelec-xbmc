@@ -457,7 +457,9 @@ public:
   void TxTakeArm(unsigned int gen, SStartResolve& r, bool hintDecide = false);
   //! E2-8b D4: UpdateResolution's render timeout for the start's decision (elapsed since the
   //! configure or trigger, as main measures it; 5.E2-9c D3: or since `from`)
-  bool TxRenderTimedOut(std::chrono::steady_clock::time_point from = {});
+  //! 5.E2-11 D1.3: notBefore, a later reference (a span's close) when set
+  bool TxRenderTimedOut(std::chrono::steady_clock::time_point from = {},
+                        std::chrono::steady_clock::time_point notBefore = {});
 #endif
   //! the pictures queued from now on belong to this disc segment generation
   void SetIncomingSegmentGen(unsigned int gen) { m_incomingSegmentGen = gen; }

@@ -598,14 +598,27 @@ void CWinSystemAmlogic::OpenLostSpan()
   // 5.E2-3: the shadow word's loss (e+1, the span), before the walk's FREEZE bodies
   const bool wordShadow = aml_transaction_shadow_on();
   if (wordShadow)
-    OUTPUT::COutputWorker::Get().WordLoss(true);
+    OUTPUT::COutputWorker::Get().WordLoss(true, UnstartedStartJobT());
+  m_spanWalk = true;
   for (IDispResource* resource : m_resources)
   {
     resource->OnLostDisplay();
     LedgerLost(resource);
   }
+  m_spanWalk = false;
   if (wordShadow)
     OUTPUT::COutputWorker::Get().WordLossWalked();
+}
+
+uint32_t CWinSystemAmlogic::UnstartedStartJobT() const
+{
+  // 5.E2-11 D1.1: read outside the word's CAS, under m_resourceSection (P writes started under it)
+  if (!aml_transaction_loss_in_start())
+    return 0;
+  const auto job = DISPLAYSTATE::TxOpenJob();
+  if (!job || job->started.load())
+    return 0;
+  return static_cast<uint32_t>(job->T);
 }
 
 void CWinSystemAmlogic::CloseLostSpan()
@@ -1169,7 +1182,7 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
           CLog::Log(LOGINFO, "LEDGER set={} lost generation {} (re-stamp)", m_ledgerSet.load(),
                     ++m_lostGen);
           if (aml_transaction_shadow_on())
-            OUTPUT::COutputWorker::Get().WordLoss(false);
+            OUTPUT::COutputWorker::Get().WordLoss(false, UnstartedStartJobT());
         }
         m_disconnectedSinceMs = SteadyMs();
       }

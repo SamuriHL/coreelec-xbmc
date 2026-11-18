@@ -398,6 +398,9 @@ struct SStartJob
   std::atomic_bool ran{false};
   //! W sets it when the job runs; main's answer (any form) clears it
   std::atomic_bool adoptPending{false};
+  //! 5.E2-11 D0: P, under the player guard right before START's word CAS; W reads it only for
+  //! a word at NONE (the lead's first instant against PRIME..SETTLE)
+  std::atomic_bool started{false};
 
   //! one CAS from any of from to to; the state found is left in found
   bool Cas(std::initializer_list<StartJobState> from, StartJobState to, StartJobState* found = nullptr);

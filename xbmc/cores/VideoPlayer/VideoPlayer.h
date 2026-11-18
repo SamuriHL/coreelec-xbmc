@@ -1302,6 +1302,24 @@ protected:
   bool m_txBoundInCommitLogged = false;
   //! D9: while lost, a failed Start job's reply or D6's 30 s backstop ends the start
   void TxLostFailedPass();
+  // 5.E2-11 (docs/phase5_e2_11_impl.md; P only, reset in Prepare)
+  //! D1.3: a row-9 span over the open start (the word's span, NONE or STARTING of this T, P not
+  //! frozen), derived at the top of each pass
+  bool m_txInSpan = false;
+  bool m_txSpanSeen = false; //!< P's own edge of it
+  bool m_txSpanDiscLost = false; //!< the open edge set disc time lost
+  uint32_t m_txSpanE = 0; //!< the word's e at the open edge (the span's e)
+  std::chrono::steady_clock::time_point m_txSpanOpenedAt{};
+  //! D1.3: DECIDE's render timeout counts from the last span's close
+  std::chrono::steady_clock::time_point m_txSpanClosedAt{};
+  //! D1.9: the time the word's span was open since the post (any span, a freeze inside it too)
+  std::chrono::steady_clock::duration m_txSpanPaused{};
+  std::chrono::steady_clock::time_point m_txSpanPausedFrom{};
+  std::chrono::steady_clock::duration TxSpanPausedNow() const;
+  void TxSpanPass();
+  //! D1.3: P's edge dropped; disc time back unless a freeze owns it
+  void TxSpanEdgeClear(const char* why);
+  const char* TxSpanStateName(bool starting) const;
   //! test (transaction_noticeat): the notice raised once its point is reached
   void TxTestNoticeAt();
   //! HandleMessages: PLAYER_TX_REPLY
