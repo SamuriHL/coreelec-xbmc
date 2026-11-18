@@ -1078,6 +1078,7 @@ protected:
   static const char* TxSegClassName(TxSegClass cls);
   //! D1 item 1: BdSegmentTransition's class, taken by the next ArmStartGate (one-shot)
   TxSegClass m_txSegClass = TxSegClass::NONE;
+  bool m_txNextFile = false; //!< §5: this open is Prepare(true)'s
   //! D1 item 7: a KEEPALIVE set whose verdict waits for the reuse compare (0: none)
   unsigned int m_txReopenCandidateGen = 0;
   bool m_txReopenOpen = false; //!< D1 item 6: this start is a reopen: DECIDE waits for a publish

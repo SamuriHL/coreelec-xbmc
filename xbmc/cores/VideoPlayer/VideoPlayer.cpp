@@ -3241,6 +3241,9 @@ const char* CVideoPlayer::TxEngageRefusal(const char* where)
     return "scheduled start off";
   if (aml_transaction_skip("start"))
     return "skip start";
+  // 5.E2-10 §5: a next file is a segment for the skip word
+  if (m_txNextFile && aml_transaction_skip("segment"))
+    return "skip segment";
   if (aml_transaction_skip("gate"))
     return "skip gate";
   for (const char* f : {"disctime_off", "streamsplit_video_off", "vconfigure_skip",
@@ -5187,6 +5190,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_processInfo->SetTempo(1.0);
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
+  m_txNextFile = nextFile;
   // gate E29B-1 item 5b: a dropped FF/RW/tempo speed was already notified at its request; the
   // NORMAL posted above notifies the return to 1x, as transaction_off's applied speed does
   m_txDroppedSpeed = INT_MIN;
@@ -6868,9 +6872,11 @@ void CVideoPlayer::HandlePlaySpeed()
                                  (m_CurrentVideo.packets > 0 || m_scheduledStart);
       std::optional<unsigned int> heldDecisions;
       // 5.E2-9a (D2, r2 N-L2): a re-PRIMEd P-decided open schedules: main is shut out until START,
-      // so a hold could only end at the 12 s fallback
+      // so a hold could only end at the 12 s fallback. 5.E2-10 D5 (P5-18): every P-decided open,
+      // so none is released on RM's decision count (9a's rule under transaction_skip segment)
       const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 && videoPictured &&
-                             !(m_txReprimed && TxOpen() && m_txJob) &&
+                             !((m_txReprimed || !aml_transaction_skip("segment")) && TxOpen() &&
+                               m_txJob) &&
                              m_renderManager.IsResolutionUpdatePending(heldDecisions);
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
