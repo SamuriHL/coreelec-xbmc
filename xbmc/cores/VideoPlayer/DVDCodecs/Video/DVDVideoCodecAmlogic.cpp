@@ -1520,6 +1520,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
      m_Codec->GetSessionGeneration());
   }
 
+  if (retVal != VC_PICTURE)
+    return retVal;
+
   // check for mpeg2 aspect ratio changes
   if (m_mpeg2_sequence && pVideoPicture->pts >= m_mpeg2_sequence_pts)
     m_aspect_ratio = m_mpeg2_sequence->ratio;
