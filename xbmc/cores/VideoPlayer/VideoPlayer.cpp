@@ -3293,6 +3293,16 @@ bool CVideoPlayer::TxDecided(bool modeDecided)
     if (!OUTPUT::COutputWorker::Get().WordStarting(m_txWordT.load(), m_txJob != nullptr,
                                                    &m_txStartE))
     {
+      // 5.E2-11: W opened a row-9 span on this T since the pass's span read: CN stays shut and
+      // the pass after the span retries
+      const auto word =
+          OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+      if (aml_transaction_loss_in_start() && m_txJob && word.t == m_txWordT.load() &&
+          word.state == OUTPUT::COutputWorker::WordState::NONE && word.spanOpen)
+      {
+        CLog::Log(LOGINFO, "TXSTART STARTING held: the display span is open");
+        return false;
+      }
       EndTransactionToLegacy("word at the decision", CRenderManager::TxHow::RERAISE,
                              CRenderManager::TxNeed::JOB_OK);
       return true;
