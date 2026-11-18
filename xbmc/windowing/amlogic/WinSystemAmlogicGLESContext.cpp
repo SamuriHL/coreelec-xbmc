@@ -1754,7 +1754,33 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
   ++settle.gen;
   m_resetPending = false;
   if (const auto start = std::exchange(settle.start, nullptr))
-    start->SettleDone(DISPLAYSTATE::StartSettleKind::SUPERSEDED);
+    if (!(job.hotplug && SettleCarry(start)))
+      start->SettleDone(DISPLAYSTATE::StartSettleKind::SUPERSEDED);
+}
+
+bool CWinSystemAmlogicGLESContext::SettleCarry(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start)
+{
+  // 5.E2-11 D3.1: the open start's SETTLE, superseded by a Restore or cancelled by a loss, is
+  // delivered by the next Restore to its committed row instead of ending the start
+  if (!aml_transaction_loss_in_start() || aml_transaction_skip("restorecarry") ||
+      DISPLAYSTATE::TxOpenJob() != start || m_wStartCommit.job.lock() != start)
+    return false;
+  if (m_wOwedStart != start)
+  {
+    m_wOwedStart = start;
+    m_wOwedStartRow = m_wStartCommit.row;
+  }
+  CLog::Log(LOGINFO, "SETTLE set={} start T={} carried to the next Restore", m_settle.ledgerSet,
+            start->T);
+  return true;
+}
+
+std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::CarriedStartRow()
+{
+  // carried, or riding on a Restore's armed SETTLE (a second loss in it: the same row)
+  if (!m_wOwedStart && !(m_settle.armed && m_settle.carried && m_settle.start))
+    return std::nullopt;
+  return m_wOwedStartRow;
 }
 
 void CWinSystemAmlogicGLESContext::SettleWaitsMainEnds()
@@ -1771,7 +1797,7 @@ void CWinSystemAmlogicGLESContext::SettleWaitsMainEnds()
   settle.waitsMain = 0;
 }
 
-void CWinSystemAmlogicGLESContext::SettleCancel(const char* why)
+void CWinSystemAmlogicGLESContext::SettleCancel(const char* why, bool lostGen)
 {
   SSettle& settle = m_settle;
   SettleWaitsMainEnds();
@@ -1781,7 +1807,8 @@ void CWinSystemAmlogicGLESContext::SettleCancel(const char* why)
   ++settle.gen;
   m_resetPending = false;
   if (const auto start = std::exchange(settle.start, nullptr))
-    start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
+    if (!(lostGen && SettleCarry(start)))
+      start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
 }
 
 void CWinSystemAmlogicGLESContext::SettleHandlerFailed(const SDriveJob& job)
@@ -1809,6 +1836,21 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
     if (job.start)
       job.start->SettleDone(kind);
   };
+  // 5.E2-11 D3.1: a carried start's SETTLE rides only on a Restore that arms its own on the
+  // start's row; any other end of this Restore ends it (today's exit)
+  struct SCarryEnd
+  {
+    std::shared_ptr<DISPLAYSTATE::SStartJob> start;
+    uint64_t request;
+    ~SCarryEnd()
+    {
+      if (!start)
+        return;
+      CLog::Log(LOGINFO, "SETTLE start T={} not delivered by restore request {}: cancelled",
+                start->T, request);
+      start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
+    }
+  } carried{job.hotplug ? std::exchange(m_wOwedStart, nullptr) : nullptr, job.id};
   const auto unarmed = [&job]
   {
     switch (job.kind)
@@ -1869,11 +1911,21 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   settle.lockedReads = 0;
   settle.unreadableLogged = false;
   settle.start = job.start;
+  settle.carried = false;
+  if (carried.start && job.kind == OUTPUT::DriveReply::DONE &&
+      DISPLAYSTATE::FactsOf(job.res) == m_wOwedStartRow &&
+      DISPLAYSTATE::TxOpenJob() == carried.start)
+  {
+    settle.start = std::exchange(carried.start, nullptr);
+    settle.carried = true;
+  }
   if (!OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "settle",
                                               std::chrono::milliseconds(0),
                                               [this, gen] { SettleCheck(gen); }))
   {
     settle.armed = false;
+    if (settle.carried)
+      carried.start = settle.start;
     settle.start.reset();
     startSettle(DISPLAYSTATE::StartSettleKind::STOPPING);
     if (gatesOnW)
@@ -1973,7 +2025,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
       lock.lock();
       if (!ResetStillArmedLocked(settle.lostGen, "settle"))
       {
-        SettleCancel("lost generation superseded");
+        SettleCancel("lost generation superseded", true);
         return;
       }
     }
@@ -2002,7 +2054,12 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     if (aml_transaction_shadow_on())
       OUTPUT::COutputWorker::Get().ShadowSettleDone(settle.request);
     if (const auto start = std::exchange(settle.start, nullptr))
+    {
+      if (settle.carried)
+        CLog::Log(LOGINFO, "SETTLE set={} start T={} delivered by restore request {}",
+                  settle.ledgerSet, start->T, settle.request);
       start->SettleDone(DISPLAYSTATE::StartSettleKind::DONE);
+    }
     OUTPUT::TestStopAt("8");
     return;
   }

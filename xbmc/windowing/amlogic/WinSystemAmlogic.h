@@ -282,6 +282,8 @@ protected:
   //! 5.E2-8b D5 step 4, W: the film's committed row while an engaged start's commit is the
   //! last commit and main has not answered its adopt (a Restore's target then)
   virtual std::optional<DISPLAYSTATE::ModeFacts> PendingStartRow() { return std::nullopt; }
+  //! 5.E2-11 D3.1: W, a start's SETTLE carried to the next Restore: its committed row, the target
+  virtual std::optional<DISPLAYSTATE::ModeFacts> CarriedStartRow() { return std::nullopt; }
   //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
   //! (throwInside: the applythrow hook's "table")
   void ApplyHotplugTable(const SHotplugReply& reply, bool throwInside);

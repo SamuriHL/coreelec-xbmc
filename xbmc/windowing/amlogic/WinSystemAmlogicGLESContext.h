@@ -222,6 +222,7 @@ private:
     unsigned int waitsMain{0};
     //! 5.E2-8b: the Start job whose SETTLE this is (its final reply at the SETTLE's end)
     std::shared_ptr<DISPLAYSTATE::SStartJob> start;
+    bool carried{false}; //!< 5.E2-11 D3.1: start's SETTLE carried into this Restore's
   };
   //! W: the "SETTLE ... waits main" line of a wait that ends here
   void SettleWaitsMainEnds();
@@ -234,7 +235,13 @@ private:
   //! main: the request whose handler failed (its SETTLE is dropped, Q9)
   std::atomic<uint64_t> m_settleFailed{0};
   //! W: ends the armed SETTLE unreset
-  void SettleCancel(const char* why);
+  //! lostGen: a loss's new generation dropped it (5.E2-11 D3.1: a start's SETTLE is carried)
+  void SettleCancel(const char* why, bool lostGen = false);
+  //! 5.E2-11 D3.1 (W only): the start's SETTLE carried to the next Restore, and its committed row
+  std::shared_ptr<DISPLAYSTATE::SStartJob> m_wOwedStart;
+  DISPLAYSTATE::ModeFacts m_wOwedStartRow;
+  bool SettleCarry(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start);
+  std::optional<DISPLAYSTATE::ModeFacts> CarriedStartRow() override;
   //! main: a committed set whose handler failed: the Q9 ERROR, its SETTLE dropped on W
   void SettleHandlerFailed(const SDriveJob& job);
   //! W, at the park of a set: an armed SETTLE ends unreset; its owed lost stay in the ledger

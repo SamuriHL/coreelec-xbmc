@@ -1448,8 +1448,9 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   }
   std::optional<size_t> videoRow;
   // 5.E2-8b D5 step 4: after an engaged start's commit and before main's adopt (GC's video row is
-  // still the GUI's), the film's committed row
-  const std::optional<DISPLAYSTATE::ModeFacts>& startRow = m_wJobStartRow;
+  // still the GUI's), the film's committed row; 5.E2-11 D3.1: while its SETTLE is carried
+  const std::optional<DISPLAYSTATE::ModeFacts> carriedRow = CarriedStartRow();
+  const std::optional<DISPLAYSTATE::ModeFacts>& startRow = carriedRow ? carriedRow : m_wJobStartRow;
   if (startRow)
     CLog::Log(LOGINFO, "HOTPLUG job {}: restore target the start's committed row {}",
               reply.replyId, DISPLAYSTATE::FactsString(*startRow));
