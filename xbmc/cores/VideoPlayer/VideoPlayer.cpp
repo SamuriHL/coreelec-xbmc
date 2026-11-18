@@ -12547,20 +12547,20 @@ bool CVideoPlayer::OnAction(const CAction &action)
     // for the new output through the same display lost/reset protocol a mode
     // change uses, so playback pauses and re-anchors across the re-clock.
     case ACTION_VS10_ORIGINAL:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS);
-      TriggerVs10Resolution();
+      if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS))
+        TriggerVs10Resolution();
       return true;
     case ACTION_VS10_SDR:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10);
-      TriggerVs10Resolution();
+      if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10))
+        TriggerVs10Resolution();
       return true;
     case ACTION_VS10_HDR10:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10);
-      TriggerVs10Resolution();
+      if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10))
+        TriggerVs10Resolution();
       return true;
     case ACTION_VS10_DV:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT);
-      TriggerVs10Resolution();
+      if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT))
+        TriggerVs10Resolution();
       return true;
   }
 

@@ -486,7 +486,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   DISPLAYSTATE::CGuiSetInFlight guiSetInFlight;
   if (!DISPLAYSTATE::InStartAdopt() && !DISPLAYSTATE::InFullScreenExitSet())
   {
-    if (const auto job = DISPLAYSTATE::TxOpenJob())
+    // 5.E2-12a D0.5 (r1 H-2): a set W will defer does not drop the job (P amends instead)
+    if (const auto job = DISPLAYSTATE::TxOpenJob();
+        job && !OUTPUT::WillDeferSet(job->state.load() != DISPLAYSTATE::StartJobState::NOT_POSTED))
     {
       CGUIComponent* gui = CServiceBroker::GetGUI();
       DISPLAYSTATE::GuiSetDuringStart(

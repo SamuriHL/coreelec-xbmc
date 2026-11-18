@@ -157,6 +157,10 @@ struct SDriveJob
   std::condition_variable cond;
   bool done{false};
   bool abandoned{false};
+  //! 5.E2-12a D0.3: W did not run it at its dequeue (DEFERRED, HELD, DROPPED); main reads only
+  //! this after its wait. deferredReply: its later run's reply is a late one
+  OUTPUT::DriveReply verdict{OUTPUT::DriveReply::NONE};
+  bool deferredReply{false};
   bool guiSetKept{false}; //!< 5.E2-8b: GC's in-flight count kept at the give-up (W ends it)
 };
 } // namespace KODI::WINDOWING::AML
@@ -1049,14 +1053,39 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   job->graphicsPlane = m_graphicsPlane.get();
   job->guiLocked = m_guiLocked;
   job->hotplugTables = m_hotplugTables;
+  const uint64_t postedBefore = m_drivePosted;
   m_drivePosted = job->id;
+  const bool pickOrigin = origin && std::string_view(origin) == "user-pick";
   // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
   job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
               : job->originRm ? OUTPUT::Lane::MIDPLAY
                               : OUTPUT::Lane::SETTINGS;
 
   const auto posted = std::chrono::steady_clock::now();
-  OUTPUT::COutputWorker::Get().Post(job->lane, "mode set",
+  // 5.E2-12a D0.3: a request W defers, holds or drops answers main at once
+  const auto onVerdict = [job, pickOrigin](OUTPUT::COutputWorker::DeferVerdict verdict,
+                                           uint64_t reqId)
+  {
+    using V = OUTPUT::COutputWorker::DeferVerdict;
+    {
+      std::unique_lock lock(job->mutex);
+      job->verdict = verdict == V::DEFERRED ? OUTPUT::DriveReply::DEFERRED
+                     : verdict == V::HELD   ? OUTPUT::DriveReply::HELD
+                                            : OUTPUT::DriveReply::DROPPED;
+      job->deferredReply = verdict != V::DROPPED;
+      job->done = true;
+    }
+    job->cond.notify_all();
+    if (verdict == V::DEFERRED && pickOrigin)
+    {
+      DISPLAYSTATE::STxInboxEntry entry;
+      entry.kind = DISPLAYSTATE::STxInboxEntry::Kind::PICK_DEFERRED;
+      entry.reqId = reqId;
+      entry.res = job->res;
+      DISPLAYSTATE::PostTxInbox(std::move(entry));
+    }
+  };
+  OUTPUT::COutputWorker::Get().PostRequest(job->lane, "mode set",
                                     [this, job]
                                     {
                                       // a throw replies failed, and main is answered
@@ -1082,7 +1111,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                       {
                                         std::unique_lock lock(job->mutex);
                                         job->done = true;
-                                        late = job->abandoned;
+                                        late = job->abandoned || job->deferredReply;
                                         guiSetKept = job->guiSetKept;
                                       }
                                       job->cond.notify_all();
@@ -1099,7 +1128,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
                                         std::unique_lock lock(s_lateMutex);
                                         s_late.push_back(job);
                                       }
-                                    });
+                                    },
+                                    onVerdict);
 
   // design §4.5: the gfx lock released across the wait (every recursion level); ERROR at 5 s,
   // given up at 15 s
@@ -1119,6 +1149,19 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
         gaveUp = true;
       }
     }
+  }
+  // 5.E2-12a D0.3 (r2 M-1): not run now: nothing of the job is read (a replay may be writing it)
+  OUTPUT::DriveReply verdict;
+  {
+    std::unique_lock lock(job->mutex);
+    verdict = job->verdict;
+  }
+  if (verdict != OUTPUT::DriveReply::NONE)
+  {
+    m_drivePosted = postedBefore;
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} {}", job->id, OUTPUT::DriveReplyName(verdict));
+    OUTPUT::NoteDriveReply(verdict);
+    return false;
   }
   const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - posted)
@@ -2165,9 +2208,11 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
   for (const auto& job : late)
   {
     GUISNAPSHOT::NoteModeSeq(job->modeSeq);
+    // 5.E2-12a D0.6 (r1 H-5): by W's run order under fold, so a replayed request applies
+    const bool newestRun = job->runOrdinal >= m_appliedSet.runOrdinal;
     // 5.E2-8b D5: W ran it, so it counts for the latest test and the backups' freshness
     NoteAppliedReply(*job);
-    if (job->id != m_drivePosted)
+    if (aml_transaction_fold() ? !newestRun : job->id != m_drivePosted)
     {
       CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
                 job->id, OUTPUT::DriveReplyName(job->kind), m_drivePosted);

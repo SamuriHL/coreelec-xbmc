@@ -506,6 +506,9 @@ const char* CurrentRequestOrigin();
 const char* InternRequestOrigin(const std::string& origin);
 //! the request is RM's for a start the player holds (5.B2-6, Q6)
 bool DriveFilmStart();
+//! 5.E2-12a D0.5: main: the set being made is one W defers in a window (fold on, a user-pick or
+//! main-decision origin); posted: the open job is past NOT_POSTED (under skip amend GC drops it)
+bool WillDeferSet(bool posted);
 //! main: the RESOLUTION GC is setting, for a late reply's GC update (r1 L11)
 void NoteDriveResolution(int res);
 int DriveResolution();

@@ -190,7 +190,8 @@ bool aml_dv_core_outputs_dv();
 // True when a re-decided HDMI attr would be the native one rather than the DV
 // tunnel format (core disabled, or forced to HDR10/SDR output).
 bool aml_dv_core_leaves_native_wire();
-void aml_dv_set_vs10_mode(unsigned int mode);
+//! 5.E2-12a: false when W deferred, held or dropped the press (no trigger then)
+bool aml_dv_set_vs10_mode(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode);

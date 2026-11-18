@@ -1950,6 +1950,16 @@ const char* InternRequestOrigin(const std::string& origin)
   return "tmsg";
 }
 
+bool WillDeferSet(bool posted)
+{
+  if (!aml_transaction_fold() || (posted && !aml_transaction_amend()))
+    return false;
+  const char* origin = DriveOriginRm() ? (DriveFilmStart() ? "start-decision" : "main-decision")
+                                       : CurrentRequestOrigin();
+  return origin && (std::string_view(origin) == "user-pick" ||
+                    std::string_view(origin) == "main-decision");
+}
+
 bool DriveFilmStart()
 {
   return s_originStartHeld > 0;
