@@ -689,6 +689,26 @@ std::optional<SDarkRoute> CWinSystemAmlogic::DarkRouteOf(const SHotplugReply& re
   return route;
 }
 
+void CWinSystemAmlogic::PostOwedFilmEnded(const char* why)
+{
+  if (!aml_transaction_loss_in_start())
+    return;
+  // queued ahead of any re-queue posted after it (W is serial)
+  OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::RESTORE, "owed film ended",
+                                             [this, why]
+                                             {
+                                               if (!m_wOwedFilmRow)
+                                                 return;
+                                               CLog::Log(LOGINFO,
+                                                         "HOTPLUG owed restore: the film's row "
+                                                         "{} dropped ({})",
+                                                         DISPLAYSTATE::FactsString(
+                                                             *m_wOwedFilmRow),
+                                                         why);
+                                               m_wOwedFilmRow.reset();
+                                             });
+}
+
 void CWinSystemAmlogic::PostOwedRestoreCheck(const char* why, std::chrono::milliseconds after)
 {
   // posted whatever the flag reads now: W may be setting it in a deferral that read the job just

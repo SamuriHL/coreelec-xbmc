@@ -147,6 +147,9 @@ public:
   bool InSpanWalk() const { return m_spanWalk; }
   //! 5.E2-11 D2.6: at the open job's clear (START, an exit, the stop), W re-queues an owed
   //! Restore 1500 ms later
+  //! 5.E2-11 (code review B M-6): the player's file ended (stop, next file or open, reopen,
+  //! destroyed): W drops the film row an owed re-queue would target
+  void PostOwedFilmEnded(const char* why);
   void PostOwedRestoreCheck(const char* why,
                             std::chrono::milliseconds after = std::chrono::milliseconds(1500));
   //! how long the output has been disconnected (0 while connected)

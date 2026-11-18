@@ -3561,6 +3561,9 @@ void CVideoPlayer::TxOpenStart()
 
 void CVideoPlayer::TxReleaseJob(const char* why)
 {
+  // 5.E2-11 D2.6 (code review B M-6): the film W's owed re-queue would restore ends here
+  if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
+    winSystem->PostOwedFilmEnded(why);
   if (!m_txJob)
     return;
   // D5 (lifetime): no reply reaches this player after it; never waits on what W holds (the
