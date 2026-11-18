@@ -1359,6 +1359,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     job.kind = OUTPUT::DriveReply::DROPPED;
     return;
   }
+  // 5.E2-10 §4: a join's kept picture is not shown on the start's new mode
+  if (job.start && aml_frame_kept() && !aml_transaction_skip("keptdrop"))
+    aml_drop_kept_frame("start job output change");
   if (job.start)
     StartTestStopAt(*job.start, "parked", [] { return false; });
   job.parkMs = sinceStart();
