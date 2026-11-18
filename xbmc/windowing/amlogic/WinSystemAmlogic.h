@@ -284,6 +284,8 @@ protected:
   virtual std::optional<DISPLAYSTATE::ModeFacts> PendingStartRow() { return std::nullopt; }
   //! 5.E2-11 D3.1: W, a start's SETTLE carried to the next Restore: its committed row, the target
   virtual std::optional<DISPLAYSTATE::ModeFacts> CarriedStartRow() { return std::nullopt; }
+  //! W: a carried start that is no longer the open job ends (SettleDone CANCELLED)
+  virtual void DropStaleCarry() {}
   //! main: a reply's table into CDisplaySettings, and RES_DESKTOP's entry published for W
   //! (throwInside: the applythrow hook's "table")
   void ApplyHotplugTable(const SHotplugReply& reply, bool throwInside);

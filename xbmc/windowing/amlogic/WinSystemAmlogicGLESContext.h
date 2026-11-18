@@ -242,6 +242,7 @@ private:
   DISPLAYSTATE::ModeFacts m_wOwedStartRow;
   bool SettleCarry(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start);
   std::optional<DISPLAYSTATE::ModeFacts> CarriedStartRow() override;
+  void DropStaleCarry() override;
   //! 5.E2-11 D3.2, D3.3 (W): after a Restore's committed, connected set
   void RestoreInStart(const SDriveJob& job);
   //! m_resourceSection held, after a reset: RESTORED{T, e} for a Restore committed in STARTING

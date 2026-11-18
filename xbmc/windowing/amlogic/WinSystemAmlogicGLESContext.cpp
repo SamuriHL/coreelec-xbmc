@@ -1773,6 +1773,7 @@ bool CWinSystemAmlogicGLESContext::SettleCarry(const std::shared_ptr<DISPLAYSTAT
     return false;
   if (m_wOwedStart != start)
   {
+    DropStaleCarry();
     m_wOwedStart = start;
     m_wOwedStartRow = m_wStartCommit.row;
   }
@@ -1781,8 +1782,29 @@ bool CWinSystemAmlogicGLESContext::SettleCarry(const std::shared_ptr<DISPLAYSTAT
   return true;
 }
 
+void CWinSystemAmlogicGLESContext::DropStaleCarry()
+{
+  // a stop, Back, Next or exit since the carry: the start is no longer the open job
+  const auto open = DISPLAYSTATE::TxOpenJob();
+  if (m_wOwedStart && m_wOwedStart != open)
+  {
+    const auto start = std::exchange(m_wOwedStart, nullptr);
+    CLog::Log(LOGINFO, "SETTLE start T={} carry dropped: the start is no longer open", start->T);
+    start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
+  }
+  if (m_settle.carried && m_settle.start && m_settle.start != open)
+  {
+    const auto start = std::exchange(m_settle.start, nullptr);
+    m_settle.carried = false;
+    CLog::Log(LOGINFO, "SETTLE set={} start T={} carry dropped: the start is no longer open",
+              m_settle.ledgerSet, start->T);
+    start->SettleDone(DISPLAYSTATE::StartSettleKind::CANCELLED);
+  }
+}
+
 std::optional<DISPLAYSTATE::ModeFacts> CWinSystemAmlogicGLESContext::CarriedStartRow()
 {
+  DropStaleCarry();
   // carried, or riding on a Restore's armed SETTLE (a second loss in it: the same row)
   if (!m_wOwedStart && !(m_settle.armed && m_settle.carried && m_settle.start))
     return std::nullopt;
