@@ -167,6 +167,15 @@ namespace
 // stays in the back buffer
 constexpr int GUI_LOCK_CAP = 4;
 
+// 5.E2-11 D3.1: a committed row against the carried start's, as the Restore's target is chosen
+// (WSA SameFacts: the mode string in any case, the refresh within 0.01 Hz)
+bool SameRow(const DISPLAYSTATE::ModeFacts& a, const DISPLAYSTATE::ModeFacts& b)
+{
+  return StringUtils::EqualsNoCase(a.strId, b.strId) && a.screenWidth == b.screenWidth &&
+         a.screenHeight == b.screenHeight && std::abs(a.refresh - b.refresh) < 0.01f &&
+         a.dwFlags == b.dwFlags;
+}
+
 // 5.E2-8b test hooks (transaction_stopat, transaction_startdelay): the Start job waits on W for
 // up to ms, ended early by `release` or W's stop
 void StartTestWait(int ms, const std::function<bool()>& release)
@@ -1948,7 +1957,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   settle.start = job.start;
   settle.carried = false;
   if (carried.start && job.kind == OUTPUT::DriveReply::DONE &&
-      DISPLAYSTATE::FactsOf(job.res) == m_wOwedStartRow &&
+      SameRow(DISPLAYSTATE::FactsOf(job.res), m_wOwedStartRow) &&
       DISPLAYSTATE::TxOpenJob() == carried.start)
   {
     settle.start = std::exchange(carried.start, nullptr);
@@ -2288,7 +2297,9 @@ void CWinSystemAmlogicGLESContext::RestoreInStart(const SDriveJob& job)
   const auto word = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
   const bool starting =
       word.state == OUTPUT::COutputWorker::WordState::STARTING && word.t == start->T;
-  if (!starting && m_wOwedStart != start)
+  // a carried Restore only when it committed the start's row (else the start ends at its settle)
+  if (!starting &&
+      (m_wOwedStart != start || !SameRow(DISPLAYSTATE::FactsOf(job.res), m_wOwedStartRow)))
     return;
   // P re-shows the pre-roll once per value (the next picture as the still)
   const uint64_t count = (start->restoreCommit.load() >> 32) + 1;
