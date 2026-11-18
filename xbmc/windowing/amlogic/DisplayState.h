@@ -323,6 +323,7 @@ struct SOutputDone
   uint64_t T = 0;
   bool committed = false;
   uint64_t seq = 0;
+  unsigned int jobSeq = 0; //!< 5.E2-12a D2.1: the job's amend number
 };
 //! W: the job's one final reply (D5 step 5)
 enum class StartSettleKind
@@ -343,6 +344,7 @@ struct SSettleDone
   uint64_t T = 0;
   uint32_t e = 0;
   StartSettleKind kind = StartSettleKind::DONE;
+  unsigned int jobSeq = 0;
 };
 //! main's answer to RM (RM::TxAdoptAnswer's form, mapped one to one by the sink)
 enum class StartAnswer
@@ -369,6 +371,7 @@ struct STxAdopted
 {
   uint64_t T = 0;
   StartAdoptForm form = StartAdoptForm::FAILED;
+  unsigned int jobSeq = 0;
 };
 //! P's receiver, registered on the job at the post and cleared at the player's exit. Each call
 //! is made under the job's sink mutex: it must only queue (no wait, no lock that P holds while
@@ -391,6 +394,8 @@ struct SStartJob
   std::atomic<StartJobState> state{StartJobState::NOT_POSTED};
   uint64_t T = 0;
   unsigned int gen = 0;
+  //! 5.E2-12a D2.1: 0 for the start's job, n for its amend n (every reply but RESTORED carries it)
+  unsigned int seq = 0;
   // the request, by value (D5)
   RESOLUTION_INFO res;
   int resIndex = -1;

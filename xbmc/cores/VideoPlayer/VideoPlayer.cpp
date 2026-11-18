@@ -873,6 +873,7 @@ struct STxReply
   uint32_t e = 0;
   bool committed = false;
   uint64_t seq = 0;
+  unsigned int jobSeq = 0; //!< 5.E2-12a D2.1 (RESTORED: none, keyed on T only)
   DISPLAYSTATE::StartSettleKind settle = DISPLAYSTATE::StartSettleKind::DONE;
   DISPLAYSTATE::StartAdoptForm form = DISPLAYSTATE::StartAdoptForm::FAILED;
 };
@@ -938,6 +939,7 @@ public:
     r.T = reply.T;
     r.committed = reply.committed;
     r.seq = reply.seq;
+    r.jobSeq = reply.jobSeq;
     Put(r);
   }
   void OnSettleDone(const DISPLAYSTATE::SSettleDone& reply) override
@@ -946,6 +948,7 @@ public:
     r.kind = STxReply::Kind::SETTLE_DONE;
     r.T = reply.T;
     r.settle = reply.kind;
+    r.jobSeq = reply.jobSeq;
     Put(r);
   }
   bool OnAdoptAnswer(unsigned int gen, DISPLAYSTATE::StartAnswer answer) override
@@ -959,6 +962,7 @@ public:
     r.kind = STxReply::Kind::ADOPTED;
     r.T = reply.T;
     r.form = reply.form;
+    r.jobSeq = reply.jobSeq;
     Put(r);
   }
   void OnRestoreSettled(uint64_t T, uint32_t e) override
@@ -3573,12 +3577,15 @@ void CVideoPlayer::TxDeferPass()
     }
     m_txStickyTarget = e.res;
     m_txStickyReqId = e.reqId;
-    m_txAmendPending = m_txStep == TxStep::POSTED;
+    // decided and not posted yet (WAIT_GUI): amended once posted
+    m_txAmendPending = m_txStep == TxStep::POSTED || m_txStep == TxStep::WAIT_GUI;
     CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}) for T={}{}", e.reqId, e.res.strMode,
               m_txJob->T, m_txAmendPending ? ": after the post" : "");
   }
   if (!m_txDeferF)
     return;
+  if (m_txAmendPending && TxOpen() && m_txJob && m_txStep == TxStep::POSTED)
+    TxPostAmend("user-pick");
   if (OUTPUT::COutputWorker::Get().DeferCarried(m_txDeferF))
   {
     if (m_txCarriedAt != std::chrono::steady_clock::time_point{} &&
@@ -3597,8 +3604,100 @@ void CVideoPlayer::TxDeferPass()
   }
 }
 
+// 5.E2-12a D2: DECIDE again after the post; a different output is a new Start job of the same T
+// that overtakes an uncommitted job, or follows a committed one inside the start's freeze
+void CVideoPlayer::TxPostAmend(const char* origin)
+{
+  m_txAmendPending = false;
+  if (!TxOpen() || !m_txJob || m_txStep != TxStep::POSTED || !aml_transaction_amend())
+    return;
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  CRenderManager::SStartStereo stereo;
+  stereo.stream = m_txJobFacts.stereoMode;
+  stereo.target = m_txJob->stereo;
+  CRenderManager::SStartResolve r = m_renderManager.ResolveStart(
+      m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen, nullptr, &stereo);
+  if (r.exclusion)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} amend ({}): {}: replayed at StartDone", m_txJob->T, origin,
+              r.exclusion);
+    return;
+  }
+  const bool sticky = TxApplySticky(r, latest, false);
+  const auto folded = [this, sticky]
+  {
+    if (!sticky)
+      return;
+    OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+    CLog::Log(LOGINFO, "NOTICE folded user-pick id={} (amend)", m_txStickyReqId);
+    m_txStickyTarget.reset();
+  };
+  const DISPLAYSTATE::SStartJob& old = *m_txJob;
+  if (r.info.strId == old.res.strId && r.info.dwFlags == old.res.dwFlags &&
+      std::abs(r.info.fRefreshRate - old.res.fRefreshRate) < 0.01f && r.hdrType == old.hdrType)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} amend: same decision ({})", old.T, origin);
+    folded();
+    return;
+  }
+  if (m_txAmends >= 3)
+  {
+    CLog::Log(LOGERROR, "TXSTART T={} amend bound ({}): replayed at StartDone", old.T, origin);
+    if (sticky)
+      m_txStickyTarget.reset();
+    return;
+  }
+  auto amend = std::make_shared<DISPLAYSTATE::SStartJob>();
+  amend->T = old.T;
+  amend->gen = old.gen;
+  amend->seq = m_txAmends + 1;
+  amend->res = r.info;
+  amend->resIndex = static_cast<int>(r.res);
+  amend->stereo = r.stereo;
+  if (amend->stereo == RenderStereoMode::HARDWAREBASED)
+    amend->res.iHeight = r.info.iScreenHeight * 2 + r.info.iBlanking;
+  amend->hdrType = r.hdrType;
+  amend->fullScreen = m_txFullScreen;
+  // the re-clock arm was taken by the start's DECIDE
+  amend->fracRequest = old.fracRequest;
+  amend->filmStart = r.filmStart;
+  amend->tweakMs = r.tweakMs;
+  if (const auto state = DISPLAYSTATE::Get())
+  {
+    amend->capsEpoch = state->capsEpoch;
+    amend->sinkSig = state->sinkSig;
+  }
+  const bool overtaken = DISPLAYSTATE::StartJobDropForAmend(*m_txJob, amend->seq);
+  if (!DISPLAYSTATE::ReplaceTxOpenJob(m_txJob, amend))
+    return;
+  ++m_txAmends;
+  // the old job's later replies go nowhere; those already queued are dropped by seq
+  m_txJob->ClearSink();
+  CLog::Log(LOGINFO, "TXSTART T={} amend {}/3 ({}): {} -> {}{}", old.T, m_txAmends, origin,
+            old.res.strMode, r.info.strMode, overtaken ? "" : " (after the committed job)");
+  m_txJob = amend;
+  m_txSettle.reset();
+  m_txAdopt.reset();
+  m_txOutputDone = false;
+  m_txJobFacts.fps = r.fps;
+  m_txJobFacts.width = r.width;
+  m_txJobFacts.height = r.height;
+  m_txJobFacts.stereoMode = r.stereoMode;
+  m_txJobFacts.hdrType = r.hdrType;
+  amend->SetSink(m_txSink.get());
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!DISPLAYSTATE::StartJobQueue(*amend) || !winSystem || !winSystem->PostStartJob(amend))
+  {
+    EndTransactionToLegacy("no worker", CRenderManager::TxHow::RERAISE,
+                           CRenderManager::TxNeed::JOB_OK);
+    return;
+  }
+  folded();
+}
+
 bool CVideoPlayer::TxApplySticky(CRenderManager::SStartResolve& r,
-                                 const DISPLAYSTATE::DecideInputs& latest)
+                                 const DISPLAYSTATE::DecideInputs& latest,
+                                 bool markFolded)
 {
   if (!m_txStickyTarget)
     return false;
@@ -3611,8 +3710,11 @@ bool CVideoPlayer::TxApplySticky(CRenderManager::SStartResolve& r,
     r.res = static_cast<RESOLUTION>(index);
     r.info = info;
     r.change = r.res != latest.res.videoResolution;
-    OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
-    CLog::Log(LOGINFO, "NOTICE folded user-pick id={} ({})", m_txStickyReqId, info.strMode);
+    if (markFolded)
+    {
+      OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+      CLog::Log(LOGINFO, "NOTICE folded user-pick id={} ({})", m_txStickyReqId, info.strMode);
+    }
     return true;
   }
   CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): not in the table, replayed at StartDone",
@@ -4316,8 +4418,15 @@ void CVideoPlayer::TxHintContradicted(const CRenderManager::STxNotice& picture, 
   // the 12 s cap is re-armed for main's set (a no-op once CN is open)
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
-  EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
-                         CRenderManager::TxNeed::FRESH);
+  // 5.E2-12a D2.7 (E29C-1): the picture's decision amends the hint job inside the start
+  if (aml_transaction_amend() && m_txStep == TxStep::POSTED && m_txAmends < 3)
+  {
+    TxHintClear();
+    TxPostAmend("picture");
+  }
+  else
+    EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
+                           CRenderManager::TxNeed::FRESH);
   // code review H1: RM configured the picture before P saw it start; its PLAYER_STARTED follows,
   // and no start on audio may come before it (the first-picture wait bounds it to 1 s again)
   if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
@@ -4490,6 +4599,14 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
         r.settle == DISPLAYSTATE::StartSettleKind::DROPPED && m_txJob && r.T == m_txJob->T &&
         std::exchange(m_txEndedLeft, false) && m_txEndedGen && m_txEndedGen == m_txJob->gen)
       m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::FAILED);
+    return;
+  }
+  // 5.E2-12a D2.1 (r2 M-5): an overtaken or superseded job's reply, queued before its sink was
+  // cleared; RESTORED is the word's (START's e), never filtered
+  if (r.kind != STxReply::Kind::RESTORED && r.jobSeq != m_txJob->seq)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} reply {} of job {} dropped (job {} is current)", r.T, what,
+              r.jobSeq, m_txJob->seq);
     return;
   }
   switch (r.kind)

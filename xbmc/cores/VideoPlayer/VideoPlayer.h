@@ -1178,7 +1178,9 @@ protected:
   //! the StartDone step (D4): outcome is an OUTPUT::COutputWorker::DeferOutcome
   void TxStartDone(int outcome, const char* why);
   //! D1.3: the sticky target replaces the resolved row when the table has it
-  bool TxApplySticky(CRenderManager::SStartResolve& r, const DISPLAYSTATE::DecideInputs& latest);
+  bool TxApplySticky(CRenderManager::SStartResolve& r,
+                     const DISPLAYSTATE::DecideInputs& latest,
+                     bool markFolded = true);
   //! D2: a different decision after the post: a new Start job of the same T
   void TxPostAmend(const char* origin);
   std::unique_ptr<CTxStartSink> m_txSink;

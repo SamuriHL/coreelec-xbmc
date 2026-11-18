@@ -1178,7 +1178,7 @@ void SStartJob::OutputDone(bool committed, uint64_t seq)
             seq);
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
-    m_sink->OnOutputDone({T, committed, seq});
+    m_sink->OnOutputDone({T, committed, seq, this->seq});
   else
     CLog::Log(LOGINFO, "TXSTART T={} output done: no sink (the player has exited)", T);
 }
@@ -1196,7 +1196,7 @@ void SStartJob::SettleDone(StartSettleKind kind)
   CLog::Log(LOGINFO, "TXSTART settle done T={} kind={}", T, StartSettleKindName(kind));
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
-    m_sink->OnSettleDone({T, e, kind});
+    m_sink->OnSettleDone({T, e, kind, seq});
   else
     CLog::Log(LOGINFO, "TXSTART T={} settle done: no sink (the player has exited)", T);
 }
@@ -1227,7 +1227,7 @@ void SStartJob::TxAdopted(StartAdoptForm form)
   CLog::Log(LOGINFO, "TXSTART adopted T={} {}", T, StartAdoptFormName(form));
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
-    m_sink->OnTxAdopted({T, form});
+    m_sink->OnTxAdopted({T, form, seq});
 }
 
 bool StartJobQueue(SStartJob& job)
