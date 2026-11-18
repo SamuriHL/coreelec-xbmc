@@ -3444,6 +3444,21 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
   const char* caller = std::string_view(site) == "flush" && m_txFlushCaller ? m_txFlushCaller : "";
   CLog::Log(LOGINFO, "TRANSACTION ended to legacy ({}) T={} set={}{}{}", site, m_txWordT.load(),
             m_txEngagedGen, *caller ? " caller=" : "", caller);
+  // 5.E2-11 D1.8: an exit inside a span (not stop, next file or the error exit) joins it with
+  // today's freeze; HoldIfDisplayLost tests the span under the walk's lock. P's edge first
+  bool spanDisc = std::exchange(m_txSpanDiscLost, false);
+  m_txSpanSeen = m_txInSpan = false;
+  if (applySpeed && !m_displayLost && aml_transaction_loss_in_start())
+  {
+    auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+    if (winSystem && winSystem->HoldIfDisplayLost(this))
+    {
+      spanDisc = false; // the freeze owns disc time
+      CLog::Log(LOGINFO, "TXLOSS exit inside the span: today's freeze");
+    }
+  }
+  if (spanDisc && !m_displayLost)
+    m_discTime.SetDisplayLost(false);
   // 5.E2-9b D1.4: the speed pending in the start is applied at the exit (not at stop, next file
   // or the error exit). While lost a pause takes the loss conversion's speeds without its
   // callbacks; any other speed is kept for the 15 s conversion or the first pass back
@@ -4764,6 +4779,7 @@ void CVideoPlayer::TxSpanPass()
     m_txSpanSeen = true;
     m_txSpanOpenedAt = now;
     m_txSpanE = word.e;
+    m_txSpanSpeedTaken = m_txSpanConverted = false;
     // D:222: P feeds the span to disc time
     m_discTime.SetDisplayLost(true);
     m_txSpanDiscLost = true;
@@ -4775,6 +4791,35 @@ void CVideoPlayer::TxSpanPass()
   m_txGateLostSeen = true;
   m_txSettleLostSeen = true;
   TxLostFailedPass();
+  TxSpanConvertPass();
+}
+
+// 5.E2-11 D1.6: the 15 s conversion inside a start: a pending pause, START held as a pause by
+// 9b's sync commit; a speed taken in this span stands (D1.7)
+void CVideoPlayer::TxSpanConvertPass()
+{
+  if (!m_txInSpan || m_txSpanConverted || m_txSpanSpeedTaken)
+    return;
+  if (m_txSkipPausestart)
+  {
+    m_txSpanConverted = true;
+    CLog::Log(LOGINFO, "TXLOSS start conversion off (skip pausestart)");
+    return;
+  }
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem || winSystem->DisconnectedForMs() < 15000 ||
+      UserSpeed() == DVD_PLAYSPEED_PAUSE || !CanPause())
+    return;
+  m_txSpanConverted = true;
+  CLog::Log(LOGINFO, "VideoPlayer: display lost for {} ms, now an ordinary pause",
+            winSystem->DisconnectedForMs());
+  m_txPendingSpeed = m_playSpeed == DVD_PLAYSPEED_PAUSE ? INT_MIN : DVD_PLAYSPEED_PAUSE;
+  m_txPendingTempo = false;
+  // an ordinary pause: disc time runs through it
+  if (std::exchange(m_txSpanDiscLost, false))
+    m_discTime.SetDisplayLost(false);
+  ConvertToPauseCallbacks();
+  CLog::Log(LOGINFO, "TXLOSS start converted: pause pending (START held as a pause)");
 }
 
 // 5.E2-3 (log only): the §4.7 boundary the transaction path would take at CN's arm or opening.
@@ -9693,6 +9738,12 @@ void CVideoPlayer::HandleSetSpeed(const std::shared_ptr<CDVDMsg>& pMsg)
 {
   const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
   const int speed = msg->GetSpeed();
+  // 5.E2-11 D1.7: a speed change taken in a row-9 span stands over its 15 s conversion
+  if (m_txInSpan && speed != UserSpeed())
+  {
+    m_txSpanSpeedTaken = true;
+    CLog::Log(LOGINFO, "TXLOSS speed {} taken in this span: no 15 s pause conversion", speed);
+  }
   // 5.E2-9b D3: a speed change ends the overlays' wait for T0 (a play in the lead does not)
   if (speed != m_playSpeed)
     m_renderManager.SetTxGraphicsFrom(0);

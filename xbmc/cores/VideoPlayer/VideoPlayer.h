@@ -1321,6 +1321,10 @@ protected:
   //! D1.3: P's edge dropped; disc time back unless a freeze owns it
   void TxSpanEdgeClear(const char* why);
   const char* TxSpanStateName(bool starting) const;
+  //! D1.6, D1.7: the span's own 15 s conversion, once per span; a speed taken in it stands
+  void TxSpanConvertPass();
+  bool m_txSpanConverted = false;
+  bool m_txSpanSpeedTaken = false;
   //! D1.5: START as the word CAS STARTING{T, e, no span} -> NONE under the player guard, with
   //! only START's irreversible steps; on a P-decided engaged open with TxLossInStartOn()
   bool TxGuardedStartOn() const;
