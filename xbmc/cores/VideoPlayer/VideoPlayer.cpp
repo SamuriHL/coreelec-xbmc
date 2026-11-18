@@ -4463,6 +4463,7 @@ void CVideoPlayer::Prepare(bool nextFile)
   }
   m_txPendingSpeed = INT_MIN;
   m_txPendingTempo = m_txSkipPausestart = false;
+  m_txInboxSpeedLoss = 0;
   m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
   m_txNoticeKind.clear();
   m_txNoticePoint.clear();
@@ -12152,6 +12153,7 @@ void CVideoPlayer::TxFreezeEnded()
   m_txInboxHeldLogged.clear();
   m_txInboxFrontLogged = false;
   m_txInboxPauseTaken = false;
+  m_txInboxSpeedLoss = 0;
 }
 
 void CVideoPlayer::TxClearAtEnd(const char* why)
@@ -12596,6 +12598,13 @@ void CVideoPlayer::TxInboxPass()
     if (msg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
       const int speed = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(msg)->GetSpeed();
+      // gate E29B-1 item 4: a speed change taken in this loss stands over its 15 s conversion
+      if (speed != UserSpeed())
+      {
+        m_txInboxSpeedLoss = m_txVsyncGen.load(std::memory_order_acquire);
+        CLog::Log(LOGINFO, "TXLOSS speed {} taken in this loss stands (no 15 s conversion)",
+                  speed);
+      }
       HandleSetSpeed(msg);
       m_txInboxTaking = false;
       if (speed == DVD_PLAYSPEED_PAUSE)
@@ -12714,6 +12723,7 @@ void CVideoPlayer::TxFrozenPass()
     auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
     if (winSystem && winSystem->DisconnectedForMs() >= 15000 &&
         UserSpeed() != DVD_PLAYSPEED_PAUSE && CanPause() &&
+        m_txInboxSpeedLoss != m_txVsyncGen.load(std::memory_order_acquire) &&
         OUTPUT::COutputWorker::Get().WordConverting(ownT,
                                                     ToWordHead(WordHeadNow(LossState::LOST))))
     {

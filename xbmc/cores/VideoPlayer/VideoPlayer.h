@@ -985,6 +985,9 @@ protected:
   bool m_txInboxHoldKept = false;
   double m_txInboxHoldValue = 0.0;
   bool m_txInboxPauseTaken = false;
+  //! gate E29B-1 item 4: the loss (m_txVsyncGen, one per freeze and re-freeze) in which the
+  //! inbox took a speed change; that loss's 15 s conversion leaves it standing. 0 = none
+  uint64_t m_txInboxSpeedLoss = 0;
   bool m_txInboxFrontLogged = false;
   int m_txInboxTook = 0;
   std::vector<std::string> m_txInboxHeldLogged;
