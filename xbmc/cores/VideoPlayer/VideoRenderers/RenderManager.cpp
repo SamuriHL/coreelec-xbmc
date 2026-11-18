@@ -4122,12 +4122,16 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
     r.exclusion = "3D start";
     return r;
   }
-  if (mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) == ADJUST_REFRESHRATE_OFF)
+  // 5.E2-10 9d (E28B-4): with refresh switching off the start keeps the incumbent mode; W's
+  // compare still sets one for an HDR type, stereo or wire change, as main's CreateNewWindow
+  r.refreshOff =
+      mirror.GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) == ADJUST_REFRESHRATE_OFF;
+  if (r.refreshOff && aml_transaction_skip("refreshoff"))
   {
     r.exclusion = "refresh off";
     return r;
   }
-  r.mayChooseMode = fps > 0.0f;
+  r.mayChooseMode = fps > 0.0f && !r.refreshOff;
   r.held = r.mayChooseMode && aml_disc_mode_hold();
   const ResolutionInputs& in = latest.res;
   RESOLUTION res;

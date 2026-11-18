@@ -429,6 +429,7 @@ public:
     int height = 0;
     std::string stereoMode;
     bool mayChooseMode = false;
+    bool refreshOff = false; //!< 5.E2-10 9d: adjust refresh rate off: the incumbent mode
     bool held = false; //!< the disc mode hold
     bool anchor = false; //!< the count sets the disc-mode anchor
   };

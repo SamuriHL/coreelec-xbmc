@@ -3612,9 +3612,9 @@ void CVideoPlayer::TxDecide()
   if (hint)
     m_txHintFacts = facts;
   // step 6
-  CLog::Log(LOGINFO, "DECIDE start set={} T={} {} frac={} hdr={} tweak={:.1f} (P)",
+  CLog::Log(LOGINFO, "DECIDE start set={} T={} {} frac={} hdr={} tweak={:.1f} (P){}",
             m_txEngagedGen, job.T, r.info.strMode, r.frac ? 1 : 0, static_cast<int>(r.hdrType),
-            r.tweakMs);
+            r.tweakMs, r.refreshOff ? " (refresh off)" : "");
   // step 7
   TxTryPost();
 }
