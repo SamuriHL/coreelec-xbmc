@@ -663,6 +663,7 @@ bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
   }
   const bool again = std::exchange(m_wOwedRequeue, false);
   m_wOwedDeferredAgain = again;
+  m_wOwedRoute = DarkRouteOf(reply);
   m_wRestoreOwed = true;
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
@@ -675,6 +676,17 @@ bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
               "HOTPLUG restore deferred to the start T={} (job {}): caps done, no commit (row 10b)",
               job->T, DISPLAYSTATE::StartJobStateName(state));
   return true;
+}
+
+std::optional<SDarkRoute> CWinSystemAmlogic::DarkRouteOf(const SHotplugReply& reply)
+{
+  if (!OUTPUT::DarkRoutingOn() || reply.read.source == HpdSource::DRM)
+    return std::nullopt;
+  SDarkRoute route;
+  route.cb = reply.read.source == HpdSource::CB;
+  route.seq = reply.read.seq;
+  route.noReceiptSince = [this, upTo = reply.upTo] { return m_receiptSeq.load() == upTo; };
+  return route;
 }
 
 void CWinSystemAmlogic::PostOwedRestoreCheck(const char* why, std::chrono::milliseconds after)
@@ -1475,7 +1487,15 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   std::optional<size_t> videoRow;
   // 5.E2-8b D5 step 4: after an engaged start's commit and before main's adopt (GC's video row is
   // still the GUI's), the film's committed row; 5.E2-11 D3.1: while its SETTLE is carried
-  const std::optional<DISPLAYSTATE::ModeFacts> carriedRow = CarriedStartRow();
+  std::optional<DISPLAYSTATE::ModeFacts> carriedRow = CarriedStartRow();
+  // 5.E2-11 D2.6: the owed re-queue while the film plays and none of its sets committed: the row
+  // its last marked set asked for (the deferral reset the record, GC's row may be the GUI's)
+  if (!carriedRow && !m_wJobStartRow && m_wOwedRequeue && m_wOwedFilmRow && gui.videoPlaying)
+  {
+    carriedRow = m_wOwedFilmRow;
+    CLog::Log(LOGINFO, "HOTPLUG job {}: owed restore target the film's decided row {}",
+              reply.replyId, DISPLAYSTATE::FactsString(*m_wOwedFilmRow));
+  }
   const std::optional<DISPLAYSTATE::ModeFacts>& startRow = carriedRow ? carriedRow : m_wJobStartRow;
   if (startRow)
     CLog::Log(LOGINFO, "HOTPLUG job {}: restore target the start's committed row {}",

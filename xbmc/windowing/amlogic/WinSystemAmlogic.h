@@ -173,6 +173,14 @@ protected:
   bool m_wOwedRequeue{false};
   bool m_wOwedDeferredAgain{false}; //!< the re-queue met a new open start (it discharges)
   std::chrono::milliseconds m_wOwedRetryDelay{1000};
+  //! W: the deferring read's dark route (B3-9a), for the forced set that discharges the debt on
+  //! an unbound connector (D2.6's routing commit); a later event's seq refuses it when stale
+  std::optional<SDarkRoute> m_wOwedRoute;
+  //! W: the film's row a marked film set asked for (the Start job's, main's rm set's): the owed
+  //! re-queue's target while the film plays with nothing of its own committed
+  std::optional<DISPLAYSTATE::ModeFacts> m_wOwedFilmRow;
+  //! the dark route of a hotplug job's read (nullopt: a DRM read, or dark routing off)
+  std::optional<SDarkRoute> DarkRouteOf(const SHotplugReply& reply);
   //! W: the job decided on older caps: its row off W's table or another sink (D2.5)
   bool StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start);
   //! 5.E2-11 (review B M-5), W: the DV_LED value a Start job's set takes (W's clamp on the sink's

@@ -1271,7 +1271,15 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // always commits, with the Restore's flags: lost walk, SETTLE, the reset, the handler
   job.restoreOwed = (job.start || job.own || job.hotplug) && m_wRestoreOwed.load();
   if (job.restoreOwed)
-    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} discharges the owed restore (forced)", job.id);
+  {
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} discharges the owed restore (forced{})", job.id,
+              !job.route && m_wOwedRoute ? ", the deferred read's dark route" : "");
+    // D2.6: a dark, unbound link takes the routing commit, as the Restore it replaces would
+    if (!job.route && m_wOwedRoute)
+      job.route = m_wOwedRoute;
+    if (job.start || (job.own && job.originRm))
+      m_wOwedFilmRow = DISPLAYSTATE::FactsOf(job.res);
+  }
   const bool force_mode_switch_by_hotplug = job.hotplug || job.restoreOwed;
   const bool force_mode_switch_by_wire = display->aml_output_wire_stale();
 
@@ -1563,6 +1571,11 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     CLog::Log(LOGINFO, "OUTPUTDRIVE request {} not committed (no display): the owed restore "
                        "ends, the reconnect restores",
               job.id);
+  if (!m_wRestoreOwed)
+  {
+    m_wOwedRoute.reset();
+    m_wOwedFilmRow.reset();
+  }
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
@@ -2238,14 +2251,7 @@ void CWinSystemAmlogicGLESContext::RunRestoreOnW(SHotplugReply& reply,
   job->hdrType = backups.hdrType;
   job->nativeGUI = backups.nativeGUI;
   job->hotplug = true;
-  if (OUTPUT::DarkRoutingOn() && reply.read.source != HpdSource::DRM)
-  {
-    SDarkRoute route;
-    route.cb = reply.read.source == HpdSource::CB;
-    route.seq = reply.read.seq;
-    route.noReceiptSince = [this, upTo = reply.upTo] { return m_receiptSeq.load() == upTo; };
-    job->route = std::move(route);
-  }
+  job->route = DarkRouteOf(reply);
   job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   job->uiFormat = m_wUiFormat;
   job->lane = OUTPUT::Lane::RESTORE;
