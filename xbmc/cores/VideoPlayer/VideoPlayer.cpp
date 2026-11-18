@@ -3585,12 +3585,14 @@ bool CVideoPlayer::TxClearOpenJob(const char* why)
 {
   if (!DISPLAYSTATE::ClearTxOpenJob(m_txJob))
     return false;
-  // 5.E2-11 D2.6: a Restore still owed is re-queued through the deferral test; at once after an
-  // exit or a release (the legacy start waits for it), 1500 ms after START
+  // 5.E2-11 D2.6: a Restore still owed is re-queued through the deferral test: at once only when
+  // no set of this player follows (stop, destroyed); else 1500 ms, so the next file's job or main's
+  // decision pays it in one commit (an exit's legacy start is held until then)
+  const std::string_view site = why;
   if (auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
-    winSystem->PostOwedRestoreCheck(why, std::string_view(why) == "START"
-                                             ? std::chrono::milliseconds(1500)
-                                             : std::chrono::milliseconds(0));
+    winSystem->PostOwedRestoreCheck(why, site == "stop" || site == "player destroyed"
+                                             ? std::chrono::milliseconds(0)
+                                             : std::chrono::milliseconds(1500));
   return true;
 }
 
