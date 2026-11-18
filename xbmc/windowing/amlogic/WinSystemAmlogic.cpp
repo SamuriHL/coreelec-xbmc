@@ -589,6 +589,14 @@ void CWinSystemAmlogic::OpenLostSpan()
     m_lostRetryDelay = std::chrono::milliseconds(1000);
     m_lostRetry.Set(m_lostRetryDelay);
   }
+  // 5.E2-11 gate 2 (D2.6): the deferred read's dark route belonged to the link that is gone; a
+  // set on the dead link must not take it (it would read connected and discharge the owed Restore
+  // there). The Restore stays owed: the reconnect's read brings a new route. W's own field (W hotplug)
+  else if (m_wOwedRoute)
+  {
+    CLog::Log(LOGINFO, "HOTPLUG owed restore: the deferred read's dark route dropped (a new loss)");
+    m_wOwedRoute.reset();
+  }
   CLog::Log(LOGINFO, "CWinSystemAmlogic: output disconnected, display lost until it is back");
   LedgerBegin("lost span");
   // 5.B3-7a (O3): the span's fan-out is a new lost generation; a reset armed before it drops
@@ -1229,6 +1237,21 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
         CLog::Log(LOGINFO, "HOTPLUG job {}: the video's mode record {} reset (the start's commit is "
                            "not adopted yet)",
                   reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode));
+        m_wVideoMode.reset();
+        m_wVideoModeReply = 0;
+      }
+      return;
+    }
+    // 5.E2-11 gate 2: from OPEN to START's CAS the film has no mode yet and GC's row is the GUI's
+    // (a loss in PRIME recorded the GUI's 24 Hz; after an exit to legacy the reconnect restored
+    // it). None is taken or kept there; the first job after the start (or its exit) records
+    if (const uint32_t openT = UnstartedStartJobT())
+    {
+      if (m_wVideoMode)
+      {
+        CLog::Log(LOGINFO, "HOTPLUG job {}: the video's mode record {} reset (the start T={} has "
+                           "not started)",
+                  reply.replyId, DISPLAYSTATE::FactsString(*m_wVideoMode), openT);
         m_wVideoMode.reset();
         m_wVideoModeReply = 0;
       }
