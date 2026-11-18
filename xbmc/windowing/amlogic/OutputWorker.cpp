@@ -955,12 +955,6 @@ void COutputWorker::DeferPosted(uint32_t f)
     m_deferPosted = true;
 }
 
-bool COutputWorker::DeferWindowOpen(uint32_t f) const
-{
-  std::lock_guard listLock(m_listMutex);
-  return f && m_deferF == f;
-}
-
 bool COutputWorker::DeferCarried(uint32_t f) const
 {
   std::lock_guard listLock(m_listMutex);

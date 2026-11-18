@@ -470,9 +470,15 @@ std::vector<STxInboxEntry> TakeTxInbox();
 //! 5.E2-12a D2.2: the open job old -> amend (false: old is not the open job)
 bool ReplaceTxOpenJob(const std::shared_ptr<SStartJob>& old,
                       const std::shared_ptr<SStartJob>& amend);
-//! 5.E2-12a D2.4: P's overtake of the open job by an amend: QUEUED|PARKING -> DROPPED (true also
-//! when already DROPPED); false at COMMITTED
-bool StartJobDropForAmend(SStartJob& job, unsigned int amend);
+//! 5.E2-12a D2.4: P's overtake of the open job by an amend: QUEUED|PARKING -> DROPPED. COMMITTED:
+//! no amend (code review H-2, H-5); DROPPED: dropped by another (GC's set W does not defer: M-2)
+enum class AmendOvertake
+{
+  OVERTAKEN,
+  COMMITTED,
+  DROPPED,
+};
+AmendOvertake StartJobDropForAmend(SStartJob& job, unsigned int amend);
 //! main: GC's set inside main's adopt of a W reply (the Start job's, or a hotplug Restore's
 //! ADOPT form) is on main's stack (it is not a GUI set, D9)
 bool InStartAdopt();

@@ -1249,15 +1249,15 @@ bool StartJobDropForGuiSet(SStartJob& job, const char* by)
   return true;
 }
 
-bool StartJobDropForAmend(SStartJob& job, unsigned int amend)
+AmendOvertake StartJobDropForAmend(SStartJob& job, unsigned int amend)
 {
   StartJobState found;
   if (job.Cas({StartJobState::QUEUED, StartJobState::PARKING}, StartJobState::DROPPED, &found))
   {
     CLog::Log(LOGINFO, "TXSTART job T={} overtaken by amend {}", job.T, amend);
-    return true;
+    return AmendOvertake::OVERTAKEN;
   }
-  return found == StartJobState::DROPPED;
+  return found == StartJobState::DROPPED ? AmendOvertake::DROPPED : AmendOvertake::COMMITTED;
 }
 
 bool StartJobDropForExit(SStartJob& job, const char* by)

@@ -274,7 +274,6 @@ public:
   //! P's StartDone step (D4): closes the window on f and replays or drops its requests in one
   //! step under m_mutex and the list lock (SEGMENT keeps them, carried); idempotent on f
   SDeferCounts DeferClose(uint32_t f, DeferOutcome outcome);
-  bool DeferWindowOpen(uint32_t f) const;
   //! the window of f is carried (no T yet)
   bool DeferCarried(uint32_t f) const;
   //! P: a deferred request folded into the start's decision (D1.3): never replayed

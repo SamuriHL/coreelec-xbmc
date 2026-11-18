@@ -3352,6 +3352,10 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
   }
   TxHintClear(); // 5.E2-9c (r5 M2)
   TxRestoreAudioTimeCap("START"); // 5.E2-9c D6
+  // 5.E2-12a (code review H-1): an unheld START has no lead: the window closes at once; a held
+  // one sets its lead end after this, on this thread
+  if (m_txLeadEndNs == INT64_MAX)
+    m_txLeadEndNs = 0;
   CLog::Log(LOGINFO, "TRANSACTION START T={} set={} ({})", m_txWordT.load(), m_txEngagedGen,
             point);
   // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
@@ -3558,32 +3562,47 @@ void CVideoPlayer::TxStartDone(int outcome, const char* why)
 // 5.E2-12a D1, D4.2: W's entries, then the landed close and a carry's bound; every loop pass
 void CVideoPlayer::TxDeferPass()
 {
+  // the gate hook's repeats fire in every phase (code review G-4)
+  if (m_txRequestAtLeft > 0 && std::chrono::steady_clock::now() >= m_txRequestAtNext)
+    TxRequestFire();
   if (!aml_transaction_fold())
     return;
+  const uint32_t wordF =
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
   for (const DISPLAYSTATE::STxInboxEntry& e : DISPLAYSTATE::TakeTxInbox())
   {
     if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_RAN)
     {
+      // code review L-4: another file's press raises nothing here
+      if (e.f && e.f != wordF)
+        continue;
       // r2 M-2: the replayed press has written the VS10 mode; the wire is re-decided now
       CLog::Log(LOGINFO, "TXSTART vs10 request {} ran: its trigger raised", e.reqId);
       TriggerVs10Resolution();
       continue;
     }
-    if (!m_txDeferF || !TxOpen() || !m_txJob)
+    // code review H-3: a pick in a carried window's gap (or a superseded start) is the next
+    // decision's sticky target; only a closed window or a START replays it
+    if (!m_txDeferF || m_txStarted)
     {
       CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): replayed at StartDone", e.reqId,
                 e.res.strMode);
       continue;
     }
+    // code review H-4: the last pick wins; an older one is superseded (never replayed)
+    if (m_txStickyTarget && m_txStickyReqId && m_txStickyReqId != e.reqId)
+    {
+      OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+      CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId, e.reqId);
+    }
     m_txStickyTarget = e.res;
     m_txStickyReqId = e.reqId;
     // decided and not posted yet (WAIT_GUI): amended once posted
-    m_txAmendPending = m_txStep == TxStep::POSTED || m_txStep == TxStep::WAIT_GUI;
+    m_txAmendPending =
+        TxOpen() && (m_txStep == TxStep::POSTED || m_txStep == TxStep::WAIT_GUI);
     CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}) for T={}{}", e.reqId, e.res.strMode,
-              m_txJob->T, m_txAmendPending ? ": after the post" : "");
+              m_txWordT.load(), m_txAmendPending ? ": after the post" : "");
   }
-  if (m_txRequestAtLeft > 0 && std::chrono::steady_clock::now() >= m_txRequestAtNext)
-    TxRequestFire();
   if (!m_txDeferF)
     return;
   if (m_txAmendPending && TxOpen() && m_txJob && m_txStep == TxStep::POSTED)
@@ -3675,11 +3694,21 @@ void CVideoPlayer::TxRequestFire()
 
 // 5.E2-12a D2: DECIDE again after the post; a different output is a new Start job of the same T
 // that overtakes an uncommitted job, or follows a committed one inside the start's freeze
-void CVideoPlayer::TxPostAmend(const char* origin)
+bool CVideoPlayer::TxPostAmend(const char* origin)
 {
   m_txAmendPending = false;
   if (!TxOpen() || !m_txJob || m_txStep != TxStep::POSTED || !aml_transaction_amend())
-    return;
+    return false;
+  // code review H-2 (zero tolerance): once CN's gate is open the sink may be open: no second
+  // commit before START; the pick replays after START as one mid-play set
+  const auto noAmend = [this, origin](const char* why)
+  {
+    CLog::Log(LOGINFO, "TXSTART T={} no amend ({}): {}", m_txJob->T, origin, why);
+    m_txStickyTarget.reset();
+    return false;
+  };
+  if (!m_startGateShut)
+    return noAmend("CN's gate is open");
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
   CRenderManager::SStartStereo stereo;
   stereo.stream = m_txJobFacts.stereoMode;
@@ -3687,11 +3716,7 @@ void CVideoPlayer::TxPostAmend(const char* origin)
   CRenderManager::SStartResolve r = m_renderManager.ResolveStart(
       m_txEngagedGen, latest, m_txRootAtOpen, m_txFullScreen, nullptr, &stereo);
   if (r.exclusion)
-  {
-    CLog::Log(LOGINFO, "TXSTART T={} amend ({}): {}: replayed at StartDone", m_txJob->T, origin,
-              r.exclusion);
-    return;
-  }
+    return noAmend(r.exclusion);
   const bool sticky = TxApplySticky(r, latest, false);
   const auto folded = [this, sticky]
   {
@@ -3707,14 +3732,14 @@ void CVideoPlayer::TxPostAmend(const char* origin)
   {
     CLog::Log(LOGINFO, "TXSTART T={} amend: same decision ({})", old.T, origin);
     folded();
-    return;
+    return true;
   }
   if (m_txAmends >= 3)
   {
     CLog::Log(LOGERROR, "TXSTART T={} amend bound ({}): replayed at StartDone", old.T, origin);
     if (sticky)
       m_txStickyTarget.reset();
-    return;
+    return false;
   }
   auto amend = std::make_shared<DISPLAYSTATE::SStartJob>();
   amend->T = old.T;
@@ -3736,14 +3761,21 @@ void CVideoPlayer::TxPostAmend(const char* origin)
     amend->capsEpoch = state->capsEpoch;
     amend->sinkSig = state->sinkSig;
   }
-  const bool overtaken = DISPLAYSTATE::StartJobDropForAmend(*m_txJob, amend->seq);
+  // code review H-2, H-5: a committed job (its commit on the wire, its adopt possibly answered)
+  // is never followed by an amend; a job another set dropped keeps that set's exit (M-2)
+  const DISPLAYSTATE::AmendOvertake overtake =
+      DISPLAYSTATE::StartJobDropForAmend(*m_txJob, amend->seq);
+  if (overtake == DISPLAYSTATE::AmendOvertake::COMMITTED)
+    return noAmend("the job is committed");
+  if (overtake == DISPLAYSTATE::AmendOvertake::DROPPED)
+    return noAmend("the job was dropped by another set");
   if (!DISPLAYSTATE::ReplaceTxOpenJob(m_txJob, amend))
-    return;
+    return false;
   ++m_txAmends;
   // the old job's later replies go nowhere; those already queued are dropped by seq
   m_txJob->ClearSink();
-  CLog::Log(LOGINFO, "TXSTART T={} amend {}/3 ({}): {} -> {}{}", old.T, m_txAmends, origin,
-            old.res.strMode, r.info.strMode, overtaken ? "" : " (after the committed job)");
+  CLog::Log(LOGINFO, "TXSTART T={} amend {}/3 ({}): {} -> {}", old.T, m_txAmends, origin,
+            old.res.strMode, r.info.strMode);
   m_txJob = amend;
   m_txSettle.reset();
   m_txAdopt.reset();
@@ -3759,9 +3791,10 @@ void CVideoPlayer::TxPostAmend(const char* origin)
   {
     EndTransactionToLegacy("no worker", CRenderManager::TxHow::RERAISE,
                            CRenderManager::TxNeed::JOB_OK);
-    return;
+    return true;
   }
   folded();
+  return true;
 }
 
 bool CVideoPlayer::TxApplySticky(CRenderManager::SStartResolve& r,
@@ -3815,9 +3848,14 @@ void CVideoPlayer::TxOpenStart()
   // r2 N-M4: another player's job is replaced only after its own exit or START released it
   if (!DISPLAYSTATE::PublishTxOpenJob(job))
   {
-    // a reopen's window stays for the exit's StartDone; a first open's had nothing yet
+    // a reopen's window stays for the exit's StartDone; a first open's closes as legacy (code
+    // review M-4: a pick W deferred in between replays), then the previous key is put back
     if (deferF && deferPrev.f != deferF)
-      OUTPUT::COutputWorker::Get().DeferRestoreKey(deferPrev);
+    {
+      OUTPUT::COutputWorker::Get().DeferClose(deferF, OUTPUT::COutputWorker::DeferOutcome::LEGACY);
+      if (deferPrev.f)
+        OUTPUT::COutputWorker::Get().DeferRestoreKey(deferPrev);
+    }
     // E2-8b NOTE: D2 names no fallback; this start keeps E2-8a's (main decides), as skip decide
     CLog::Log(LOGWARNING, "TXSTART set={} T={} decision on main (another start job is open)",
               m_txEngagedGen, job->T);
@@ -4492,12 +4530,9 @@ void CVideoPlayer::TxHintContradicted(const CRenderManager::STxNotice& picture, 
   m_startGateSince = std::chrono::steady_clock::now();
   m_startGateStarveSince = {};
   // 5.E2-12a D2.7 (E29C-1): the picture's decision amends the hint job inside the start
-  if (aml_transaction_amend() && m_txStep == TxStep::POSTED && m_txAmends < 3)
-  {
-    TxHintClear();
-    TxPostAmend("picture");
-  }
-  else
+  // code review M-1: an amend not posted (gate open, committed, exclusion) exits as today
+  if (!(aml_transaction_amend() && m_txStep == TxStep::POSTED && m_txAmends < 3 &&
+        m_startGateShut && (TxHintClear(), TxPostAmend("picture"))))
     EndTransactionToLegacy("input changed", CRenderManager::TxHow::RERAISE,
                            CRenderManager::TxNeed::FRESH);
   // code review H1: RM configured the picture before P saw it start; its PLAYER_STARTED follows,
