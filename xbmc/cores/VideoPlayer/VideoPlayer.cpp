@@ -4455,10 +4455,11 @@ void CVideoPlayer::Prepare(bool nextFile)
   // NORMAL posted above notifies the return to 1x, as transaction_off's applied speed does
   m_txDroppedSpeed = INT_MIN;
   if (m_txPendingSpeed != INT_MIN && m_txPendingSpeed != DVD_PLAYSPEED_PAUSE &&
-      m_txPendingSpeed != DVD_PLAYSPEED_NORMAL && IsPlaying())
+      m_txPendingSpeed != DVD_PLAYSPEED_NORMAL && nextFile && IsPlaying())
   {
     m_txDroppedSpeed = m_txPendingSpeed;
-    CLog::Log(LOGINFO, "TXSTART speed {} dropped by the next file (1x notified at the next speed)",
+    CLog::Log(LOGINFO, "TXSTART pending FF/RW/tempo {} dropped at the next file (the next speed "
+                       "change notifies it)",
               m_txDroppedSpeed);
   }
   m_txPendingSpeed = INT_MIN;
@@ -12602,7 +12603,7 @@ void CVideoPlayer::TxInboxPass()
       if (speed != UserSpeed())
       {
         m_txInboxSpeedLoss = m_txVsyncGen.load(std::memory_order_acquire);
-        CLog::Log(LOGINFO, "TXLOSS speed {} taken in this loss stands (no 15 s conversion)",
+        CLog::Log(LOGINFO, "TXLOSS speed {} taken in this loss: no 15 s pause conversion in this loss",
                   speed);
       }
       HandleSetSpeed(msg);
