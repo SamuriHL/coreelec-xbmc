@@ -1002,7 +1002,9 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
           ++counts.dropped;
           drops.emplace_back(std::move(job.onVerdict), job.reqId);
         }
-        else if (job.folded)
+        // a folded pick's effect is in the landed start's job; an exit replays it (a same-mode
+        // set when the start had committed it)
+        else if (job.folded && outcome == DeferOutcome::LANDED)
           ++counts.folded;
         else
         {

@@ -3508,6 +3508,117 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
       CLog::Log(LOGINFO, "TXSTART speed {} kept at the exit ({}): the display is lost", pending,
                 site);
   }
+  // 5.E2-12a D4.2: the window's close (the stop's comes after the word's stop, in OnExit)
+  using Outcome = OUTPUT::COutputWorker::DeferOutcome;
+  const std::string_view exitSite(site);
+  if (exitSite == "next file")
+    TxStartDone(static_cast<int>(Outcome::NEXT_FILE), site);
+  else if (exitSite == "segment transition")
+    TxStartDone(static_cast<int>(Outcome::SEGMENT), site);
+  else if (exitSite != "stop")
+    TxStartDone(static_cast<int>(Outcome::LEGACY), site);
+}
+
+// 5.E2-12a D4 (docs/phase5_e2_12_impl.md): StartDone, the window's only close
+void CVideoPlayer::TxStartDone(int outcome, const char* why)
+{
+  using Outcome = OUTPUT::COutputWorker::DeferOutcome;
+  if (!m_txDeferF || !aml_transaction_fold())
+    return;
+  const auto o = static_cast<Outcome>(outcome);
+  const uint32_t T = m_txWordT.load();
+  const OUTPUT::COutputWorker::SDeferCounts counts =
+      OUTPUT::COutputWorker::Get().DeferClose(m_txDeferF, o);
+  if (o == Outcome::SEGMENT)
+  {
+    m_txCarriedAt = std::chrono::steady_clock::now();
+    CLog::Log(LOGINFO, "TXSTART T={} StartDone ({}): {} carried to the next segment", T, why,
+              counts.replayed);
+    return;
+  }
+  CLog::Log(LOGINFO, "TXSTART T={} StartDone ({}): {} replayed, {} folded, {} dropped", T, why,
+            counts.replayed, counts.folded, counts.dropped);
+  m_txDeferF = 0;
+  m_txCarriedAt = {};
+  m_txStickyTarget.reset();
+  m_txStickyReqId = 0;
+  m_txAmendPending = false;
+  // D4.3: a main decision dropped in the window is made again, once, now that main is let in
+  if (counts.mainDropped && o != Outcome::STOP && o != Outcome::NEXT_FILE)
+  {
+    std::string stereomode;
+    m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode, "replay");
+  }
+}
+
+// 5.E2-12a D1, D4.2: W's entries, then the landed close and a carry's bound; every loop pass
+void CVideoPlayer::TxDeferPass()
+{
+  if (!aml_transaction_fold())
+    return;
+  for (const DISPLAYSTATE::STxInboxEntry& e : DISPLAYSTATE::TakeTxInbox())
+  {
+    if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_RAN)
+    {
+      // r2 M-2: the replayed press has written the VS10 mode; the wire is re-decided now
+      CLog::Log(LOGINFO, "TXSTART vs10 request {} ran: its trigger raised", e.reqId);
+      TriggerVs10Resolution();
+      continue;
+    }
+    if (!m_txDeferF || !TxOpen() || !m_txJob)
+    {
+      CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): replayed at StartDone", e.reqId,
+                e.res.strMode);
+      continue;
+    }
+    m_txStickyTarget = e.res;
+    m_txStickyReqId = e.reqId;
+    m_txAmendPending = m_txStep == TxStep::POSTED;
+    CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}) for T={}{}", e.reqId, e.res.strMode,
+              m_txJob->T, m_txAmendPending ? ": after the post" : "");
+  }
+  if (!m_txDeferF)
+    return;
+  if (OUTPUT::COutputWorker::Get().DeferCarried(m_txDeferF))
+  {
+    if (m_txCarriedAt != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - m_txCarriedAt > std::chrono::seconds(12))
+      TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::LEGACY),
+                  "carry ended: no segment open in 12 s");
+    return;
+  }
+  if (m_txStarted)
+  {
+    timespec mono{};
+    clock_gettime(CLOCK_MONOTONIC, &mono);
+    const int64_t now = static_cast<int64_t>(mono.tv_sec) * 1000000000LL + mono.tv_nsec;
+    if (now >= m_txLeadEndNs)
+      TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::LANDED), "landed");
+  }
+}
+
+bool CVideoPlayer::TxApplySticky(CRenderManager::SStartResolve& r,
+                                 const DISPLAYSTATE::DecideInputs& latest)
+{
+  if (!m_txStickyTarget)
+    return false;
+  const RESOLUTION_INFO& t = *m_txStickyTarget;
+  for (const auto& [index, info] : latest.res.infos)
+  {
+    if (index < RES_DESKTOP || info.strId != t.strId || info.dwFlags != t.dwFlags ||
+        std::abs(info.fRefreshRate - t.fRefreshRate) > 0.01f)
+      continue;
+    r.res = static_cast<RESOLUTION>(index);
+    r.info = info;
+    r.change = r.res != latest.res.videoResolution;
+    OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+    CLog::Log(LOGINFO, "NOTICE folded user-pick id={} ({})", m_txStickyReqId, info.strMode);
+    return true;
+  }
+  CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): not in the table, replayed at StartDone",
+            m_txStickyReqId, t.strMode);
+  m_txStickyTarget.reset();
+  return false;
 }
 
 // 5.E2-8b D2: OPEN on an engaged start P decides. The job is created with the open's T and
@@ -3520,9 +3631,22 @@ void CVideoPlayer::TxOpenStart()
   auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
   job->T = m_txWordT.load();
   job->gen = m_txEngagedGen;
+  // 5.E2-12a §1 (r2 L-1, r3 M-C): the window before the publish; a reopen of its file keeps the
+  // key and re-keys only after a successful publish
+  OUTPUT::COutputWorker::SDeferKey deferPrev;
+  uint32_t deferF = 0;
+  if (aml_transaction_fold())
+  {
+    deferF = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+    if (deferF)
+      deferPrev = OUTPUT::COutputWorker::Get().DeferOpen(deferF, static_cast<uint32_t>(job->T));
+  }
   // r2 N-M4: another player's job is replaced only after its own exit or START released it
   if (!DISPLAYSTATE::PublishTxOpenJob(job))
   {
+    // a reopen's window stays for the exit's StartDone; a first open's had nothing yet
+    if (deferF && deferPrev.f != deferF)
+      OUTPUT::COutputWorker::Get().DeferRestoreKey(deferPrev);
     // E2-8b NOTE: D2 names no fallback; this start keeps E2-8a's (main decides), as skip decide
     CLog::Log(LOGWARNING, "TXSTART set={} T={} decision on main (another start job is open)",
               m_txEngagedGen, job->T);
@@ -3535,6 +3659,21 @@ void CVideoPlayer::TxOpenStart()
     }
     return;
   }
+  if (deferF)
+  {
+    if (deferPrev.f == deferF)
+      OUTPUT::COutputWorker::Get().DeferReKey(deferF, static_cast<uint32_t>(job->T));
+    else
+    {
+      m_txStickyTarget.reset();
+      m_txStickyReqId = 0;
+    }
+    m_txDeferF = deferF;
+    m_txCarriedAt = {};
+    m_txLeadEndNs = INT64_MAX;
+  }
+  m_txAmends = 0;
+  m_txAmendPending = false;
   if (!m_txSink)
     m_txSink = std::make_unique<CTxStartSink>(m_messenger, m_renderManager);
   m_txJob = std::move(job);
@@ -3953,6 +4092,7 @@ void CVideoPlayer::TxDecide()
     EndTransactionToLegacy(r.exclusion, How::RERAISE, Need::JOB_OK);
     return;
   }
+  TxApplySticky(r, latest);
   // step 4: the arm consumed (today's "consumed ... may re-clock" line), nothing counted
   m_renderManager.TxTakeArm(m_txEngagedGen, r, hint);
   // step 5 (r2 N-M2): disc time held from DECIDE, the 13 s bounds armed
@@ -4065,6 +4205,8 @@ void CVideoPlayer::TxTryPost()
     return;
   }
   m_txStep = TxStep::POSTED;
+  if (m_txDeferF)
+    OUTPUT::COutputWorker::Get().DeferPosted(m_txDeferF);
   m_txPostedAt = std::chrono::steady_clock::now();
   m_txBoundInCommitLogged = false;
   m_txLostAt = {};
@@ -5595,6 +5737,7 @@ void CVideoPlayer::TxStartAfterGuard(TxStartPath path, const STxStartDone& done,
     if (path == TxStartPath::SCHEDULED && !m_State.streamsReady)
       OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::STARTING, 0, "start held",
                                                     static_cast<int>(StartPhase::NONE));
+    m_txLeadEndNs = done.lead > 0.0 ? done.discRunNs : 0;
     if (done.lead > 0.0)
       OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, done.discRunNs,
                                                     "scheduled start",
@@ -5695,6 +5838,7 @@ void CVideoPlayer::ReleaseHeldStart(const char* why)
   if (aml_transaction_shadow_on())
   {
     using StartPhase = OUTPUT::COutputWorker::StartPhase;
+    m_txLeadEndNs = lead > 0.0 ? discRunNs : 0;
     if (lead > 0.0)
       OUTPUT::COutputWorker::Get().ShadowStartPhase(this, StartPhase::LEADING, discRunNs,
                                                     "scheduled start",
@@ -6328,6 +6472,7 @@ void CVideoPlayer::Process()
     if (aml_transaction_shadow_on())
       SampleWord();
     TxSpanPass();
+    TxDeferPass();
     // check display lost
     if (m_displayLost)
     {
@@ -9019,6 +9164,8 @@ void CVideoPlayer::OnExit()
     OUTPUT::COutputWorker::Get().ShadowStartPhase(this, OUTPUT::COutputWorker::StartPhase::NONE,
                                                   0, "stop");
   }
+  // 5.E2-12a D4.2 (r1 M-6): after the word's stop
+  TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::STOP), "stop");
   m_renderManager.ArmTestStall("stop");
 
   ClearPendingElPackets();
@@ -9194,6 +9341,8 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
     EndTransactionToLegacy("next file", CRenderManager::TxHow::NONE,
                            CRenderManager::TxNeed::NONE_NEEDED, false);
   TxNoPictureSummary("next file");
+  // 5.E2-12a D4.2: a window still open or carried past an earlier exit
+  TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::NEXT_FILE), "next file");
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;

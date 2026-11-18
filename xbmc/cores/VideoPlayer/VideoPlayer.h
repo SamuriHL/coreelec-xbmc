@@ -1165,6 +1165,22 @@ protected:
   };
   //! D2: the open's Start job (null: main decides this open)
   std::shared_ptr<DISPLAYSTATE::SStartJob> m_txJob;
+  // 5.E2-12a (docs/phase5_e2_12_impl.md D1, D2, D4): W's deferral window for this player's
+  // file, its close, the pick folded into DECIDE and the amends
+  uint32_t m_txDeferF = 0; //!< the window's file (0: none open)
+  int64_t m_txLeadEndNs = 0; //!< the lead's end (CLOCK_MONOTONIC ns); 0: no lead
+  std::chrono::steady_clock::time_point m_txCarriedAt; //!< a carried window's start
+  std::optional<RESOLUTION_INFO> m_txStickyTarget; //!< a deferred pick's target, by value
+  uint64_t m_txStickyReqId = 0;
+  unsigned int m_txAmends = 0;
+  bool m_txAmendPending = false; //!< a pick after the post waits for its amend (TxDeferPass)
+  void TxDeferPass();
+  //! the StartDone step (D4): outcome is an OUTPUT::COutputWorker::DeferOutcome
+  void TxStartDone(int outcome, const char* why);
+  //! D1.3: the sticky target replaces the resolved row when the table has it
+  bool TxApplySticky(CRenderManager::SStartResolve& r, const DISPLAYSTATE::DecideInputs& latest);
+  //! D2: a different decision after the post: a new Start job of the same T
+  void TxPostAmend(const char* origin);
   std::unique_ptr<CTxStartSink> m_txSink;
   TxStep m_txStep = TxStep::NONE;
   bool m_txOpenPending = false; //!< D2: engaged before Prepare's WordOpen: OPEN after it
