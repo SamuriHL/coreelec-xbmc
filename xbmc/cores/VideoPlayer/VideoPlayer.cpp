@@ -2675,6 +2675,10 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
   if (TxOpen())
     EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
                            CRenderManager::TxNeed::LATER);
+  // 5.E2-10 D1: the next set's reopen class
+  m_txSegClass = transition == EBdTransition::DRAIN           ? TxSegClass::DRAIN
+                 : transition == EBdTransition::DISCARD_CLOSE ? TxSegClass::DISCARD_CLOSE
+                                                              : TxSegClass::KEEPALIVE;
   CloseDemuxer();
 
   m_syncStartPtsWait.reset();
@@ -2883,6 +2887,8 @@ void CVideoPlayer::CheckHeldStart()
 
 void CVideoPlayer::ArmStartGate(const char* where)
 {
+  const TxSegClass segClass = std::exchange(m_txSegClass, TxSegClass::NONE);
+  m_txReopenCandidateGen = 0;
   // 5.E2-8a (D5): a later set while the engaged start is open ends it first
   if (TxOpen())
     EndTransactionToLegacy("later set", CRenderManager::TxHow::OWED, CRenderManager::TxNeed::LATER);
@@ -2905,7 +2911,7 @@ void CVideoPlayer::ArmStartGate(const char* where)
   const bool arm =
       hasVideo && m_startGateEnabled &&
       (startFullScreen || CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
-  LogTransactionShadow(arm, hasVideo, startFullScreen, where);
+  LogTransactionShadow(arm, hasVideo, startFullScreen, where, segClass);
   if (!arm)
   {
     // the last set's gate ends with it; its audio is closed or flushed by now
@@ -2939,72 +2945,38 @@ void CVideoPlayer::ArmStartGate(const char* where)
   // no-video first-play)
   const bool txFirstSet = !m_txGateSetSeen && !m_State.streamsReady;
   m_txGateSetSeen = true;
-  if (m_renderManager.ArmTxPictureGate(m_startGateGen, txFirstSet, "new set"))
+  // 5.E2-10 D1 item 3: a later set's reopen verdict, before its picture gate; a KEEPALIVE set's
+  // waits for the reuse compare (its gate is no candidate: a MATCH never holds pictures)
+  bool txReopen = false;
+  if (!txFirstSet && segClass != TxSegClass::NONE && aml_transaction_loss_base())
+  {
+    if (segClass == TxSegClass::KEEPALIVE)
+      m_txReopenCandidateGen = m_startGateGen;
+    else
+      txReopen = TxReopenAllowed(where, segClass);
+  }
+  if (m_renderManager.ArmTxPictureGate(m_startGateGen, txFirstSet || txReopen, "new set"))
     TxRestoreDecoderSpeed("new set");
+  if (txReopen)
+  {
+    TxResetStart(true);
+    m_txReopenOpen = true;
+    TxEngage(segClass == TxSegClass::DRAIN ? "reopen drain" : "reopen discard-close", false);
+  }
   // 5.E2-8a (D1): P's verdict for the file's first set; graphics are held from here
-  if (txFirstSet && aml_transaction_loss_base())
+  else if (txFirstSet && aml_transaction_loss_base())
   {
     const char* refused = TxEngageRefusal(where);
     // 5.E2-8b D1/D2: P decides the start unless transaction_skip decide (E2-8a's start); its
     // DECIDE reads the inputs main publishes at OpenFile, so without the publish no engage
     // E2-8b NOTE: D2's "TRANSACTION legacy-open (no decide inputs)" is logged in E2-8a's refusal
     // form, "TXSTART set=N legacy-open (no decide inputs; <where>)"
-    const bool decideOnP = !aml_transaction_skip("decide");
-    if (!refused && decideOnP && !DISPLAYSTATE::DecideShadowOn())
+    if (!refused && !aml_transaction_skip("decide") && !DISPLAYSTATE::DecideShadowOn())
       refused = "no decide inputs";
     if (refused)
       CLog::Log(LOGINFO, "TXSTART set={} legacy-open ({}; {})", m_startGateGen, refused, where);
     else
-    {
-      m_txEngaged = true;
-      m_txEngagedGen = m_startGateGen;
-      const STransactionHooks hooks = aml_transaction_hooks();
-      m_txCapForce = hooks.capForce;
-      m_txAudioFullForce = hooks.audioFullForce;
-      // 5.E2-9b D1.6: a speed inside this start is applied at once, as transaction_off
-      m_txSkipPausestart = aml_transaction_skip("pausestart");
-      // 5.E2-9c D1, D2
-      m_txSkipPrimebound = aml_transaction_skip("primebound");
-      m_txSkipReadon = m_txSkipPrimebound || aml_transaction_skip("readon");
-      m_txReadOn = TxReadOn::IDLE;
-      m_txMenuDomain = false;
-#if defined(HAVE_LIBBLURAY)
-      if (m_pInputBluray)
-        m_txMenuDomain = m_pInputBluray->IsMenuDomainVideo();
-#endif
-      TxTestHooksAtEngage();
-      // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
-      if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
-      {
-        m_txNoticeKind = hooks.noticeAt.substr(0, at);
-        m_txNoticePoint = hooks.noticeAt.substr(at + 1);
-        if ((m_txNoticeKind != "trigger" && m_txNoticeKind != "changed") ||
-            (m_txNoticePoint != "prime" && m_txNoticePoint != "posted" &&
-             m_txNoticePoint != "settle"))
-        {
-          CLog::Log(LOGWARNING, "TXTEST noticeat '{}' not understood", hooks.noticeAt);
-          m_txNoticeKind.clear();
-        }
-      }
-      m_renderManager.SetTxStartHeld(true);
-      m_renderManager.SetTxEngagedGen(m_startGateGen);
-      CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
-                startFullScreen ? "requested" : "gui");
-      // 5.E2-8b D2: main shut out and the Start job created, at the engage when the open's T
-      // exists, else right after Prepare's WordOpen (no configure can run before it)
-      // E2-8b NOTE: the first file's arm comes before WordOpen (E2-8a code review H1), and the
-      // job's T is fixed before TxOpenJob publishes it; the shut follows by a few statements
-      m_txEndedGen = 0;
-      if (decideOnP)
-      {
-        // r3 L3: the arm's fullscreen term, always true on an engaged open
-        m_txFullScreen = true;
-        if (m_txWordOpened)
-          TxOpenStart();
-        else
-          m_txOpenPending = true;
-      }
-    }
+      TxEngage(where, startFullScreen);
   }
   m_startGateOpenedAt = {};
   m_startGateSince = std::chrono::steady_clock::now();
@@ -3025,12 +2997,135 @@ void CVideoPlayer::ArmStartGate(const char* where)
   }
 }
 
+// 5.E2-10 D1 item 7: a KEEPALIVE set's verdict at the reuse compare, before the reopen
+void CVideoPlayer::TxKeepaliveVerdict(bool reuse)
+{
+  if (!m_txReopenCandidateGen || m_txReopenCandidateGen != m_startGateGen)
+    return;
+  m_txReopenCandidateGen = 0;
+  if (reuse)
+  {
+    CLog::Log(LOGINFO, "TRANSACTION reuse match T={} set={}", m_txWordT.load(), m_startGateGen);
+    return;
+  }
+  constexpr const char* where = "reopen keepalive reuse-fail";
+  if (!m_startGateShut || !TxReopenAllowed(where, TxSegClass::KEEPALIVE))
+    return;
+  if (m_renderManager.ArmTxPictureGate(m_startGateGen, true, "keepalive reopen"))
+    TxRestoreDecoderSpeed("keepalive reopen");
+  TxResetStart(true);
+  m_txReopenOpen = true;
+  TxEngage(where, false);
+  // r1 L-3: the PRIME bound and CN's caps count from the compare
+  m_startGateSince = std::chrono::steady_clock::now();
+  m_startGateStarveSince = {};
+}
+
+const char* CVideoPlayer::TxSegClassName(TxSegClass cls)
+{
+  switch (cls)
+  {
+    case TxSegClass::DRAIN:
+      return "drain";
+    case TxSegClass::DISCARD_CLOSE:
+      return "discard-close";
+    case TxSegClass::KEEPALIVE:
+      return "keepalive";
+    default:
+      return "none";
+  }
+}
+
+bool CVideoPlayer::TxReopenAllowed(const char* where, TxSegClass cls)
+{
+  const char* refused = nullptr;
+  if (aml_transaction_skip("segment"))
+    refused = "skip segment";
+  // r1 M-1, sc M-6: main's set or its retry for an earlier exit is still running
+  else if (m_txEndedGen && !m_renderManager.TxOutcomeResolved(m_txEndedGen))
+    refused = "earlier exit unresolved";
+  else
+  {
+    m_txEndedGen = 0;
+    refused = TxEngageRefusal(where);
+    if (!refused && !aml_transaction_skip("decide") && !DISPLAYSTATE::DecideShadowOn())
+      refused = "no decide inputs";
+    if (!refused)
+    {
+      const uint32_t t = OUTPUT::COutputWorker::Get().WordReopen(m_txWordT.load(), TxOpen(),
+                                                                 TxSegClassName(cls));
+      if (t)
+        m_txWordT = t;
+      else
+        refused = "word busy";
+    }
+  }
+  if (!refused)
+    return true;
+  CLog::Log(LOGINFO, "TXSTART set={} legacy-open ({}; {})", m_startGateGen, refused, where);
+  return false;
+}
+
+void CVideoPlayer::TxEngage(const char* where, bool startFullScreen)
+{
+  const bool decideOnP = !aml_transaction_skip("decide");
+  m_txEngaged = true;
+  m_txEngagedGen = m_startGateGen;
+  const STransactionHooks hooks = aml_transaction_hooks();
+  m_txCapForce = hooks.capForce;
+  m_txAudioFullForce = hooks.audioFullForce;
+  // 5.E2-9b D1.6: a speed inside this start is applied at once, as transaction_off
+  m_txSkipPausestart = aml_transaction_skip("pausestart");
+  // 5.E2-9c D1, D2
+  m_txSkipPrimebound = aml_transaction_skip("primebound");
+  m_txSkipReadon = m_txSkipPrimebound || aml_transaction_skip("readon");
+  m_txReadOn = TxReadOn::IDLE;
+  m_txMenuDomain = false;
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputBluray)
+    m_txMenuDomain = m_pInputBluray->IsMenuDomainVideo();
+#endif
+  TxTestHooksAtEngage();
+  // E2-8b NOTE: E2-13's owed|posted words carry no '@' and are left to E2-13
+  if (const auto at = hooks.noticeAt.find('@'); at != std::string::npos)
+  {
+    m_txNoticeKind = hooks.noticeAt.substr(0, at);
+    m_txNoticePoint = hooks.noticeAt.substr(at + 1);
+    if ((m_txNoticeKind != "trigger" && m_txNoticeKind != "changed") ||
+        (m_txNoticePoint != "prime" && m_txNoticePoint != "posted" &&
+         m_txNoticePoint != "settle"))
+    {
+      CLog::Log(LOGWARNING, "TXTEST noticeat '{}' not understood", hooks.noticeAt);
+      m_txNoticeKind.clear();
+    }
+  }
+  m_renderManager.SetTxStartHeld(true);
+  m_renderManager.SetTxEngagedGen(m_startGateGen);
+  CLog::Log(LOGINFO, "TXSTART set={} engaged ({}, fullscreen {})", m_startGateGen, where,
+            startFullScreen ? "requested" : "gui");
+  // 5.E2-8b D2: main shut out and the Start job created, at the engage when the open's T
+  // exists, else right after Prepare's WordOpen (no configure can run before it)
+  // E2-8b NOTE: the first file's arm comes before WordOpen (E2-8a code review H1), and the
+  // job's T is fixed before TxOpenJob publishes it; the shut follows by a few statements
+  m_txEndedGen = 0;
+  if (decideOnP)
+  {
+    // r3 L3: the arm's fullscreen term, always true on an engaged open
+    m_txFullScreen = true;
+    if (m_txWordOpened)
+      TxOpenStart();
+    else
+      m_txOpenPending = true;
+  }
+}
+
 // 5.E2-1 (plan §3, log only): what the transaction's per-open matrix would say for this set.
 // Reads P's own members and latched switches; takes no lock and changes no playback state.
 void CVideoPlayer::LogTransactionShadow(bool arm,
                                         bool hasVideo,
                                         bool startFullScreen,
-                                        const char* where)
+                                        const char* where,
+                                        TxSegClass segClass)
 {
   if (!aml_transaction_shadow_on())
     return;
@@ -3046,8 +3141,10 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
     why = "no video";
   else if (!arm)
     why = "windowed";
-  else if (!firstSet)
-    why = "segment, before E2-10";
+  else if (!firstSet && segClass == TxSegClass::KEEPALIVE)
+    why = "keepalive: at the compare";
+  else if (!firstSet && segClass == TxSegClass::NONE)
+    why = "later set";
   else if (!m_scheduledStart)
     why = "scheduled start off";
   else if (!aml_transaction_on())
@@ -3056,9 +3153,10 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
   const unsigned int set = arm ? m_startGateGen + 1 : m_startGateGen;
   if (!why)
     CLog::Log(LOGINFO,
-              "TRANSACTION shadow set={} T={} engaged ({}, fullscreen {}; worker, renderer: "
+              "TRANSACTION shadow set={} T={} engaged ({}{}, fullscreen {}; worker, renderer: "
               "n/a at the arm)",
-              set, ++m_txShadowSerial, where, startFullScreen ? "requested" : "gui");
+              set, ++m_txShadowSerial, firstSet ? "" : "reopen ",
+              firstSet ? where : TxSegClassName(segClass), startFullScreen ? "requested" : "gui");
   else
     CLog::Log(LOGINFO, "TRANSACTION shadow set={} T={} legacy-open ({}; {})", set,
               m_txShadowSerial, why, where);
@@ -3290,9 +3388,21 @@ void CVideoPlayer::TxOpenStart()
   m_txJob = std::move(job);
   m_txStep = TxStep::NONE;
   m_txRootAtOpen = DISPLAYSTATE::FullScreenRoot();
-  // r5 L3: the open message's snapshot (OpenFile on main), not read from main here
-  m_txExitsAtOpen = m_txMsgExits;
-  m_txOpenInputsSeq = m_txMsgInputsSeq;
+  if (m_txReopenOpen)
+  {
+    // 5.E2-10 D1 item 6: the inputs can be minutes old: DECIDE waits for a forced publish
+    m_txExitsAtOpen = DISPLAYSTATE::FullScreenExits();
+    m_txReopenSeq = DISPLAYSTATE::GetDecideInputs().seq;
+    m_txOpenInputsSeq = m_txReopenSeq + 1;
+    m_txReopenOpenAt = std::chrono::steady_clock::now();
+    DISPLAYSTATE::RequestDecideInputs();
+  }
+  else
+  {
+    // r5 L3: the open message's snapshot (OpenFile on main), not read from main here
+    m_txExitsAtOpen = m_txMsgExits;
+    m_txOpenInputsSeq = m_txMsgInputsSeq;
+  }
   m_renderManager.TxShutMain(m_txEngagedGen, m_txJob->T);
   CLog::Log(LOGINFO,
             "TXSTART set={} T={} OPEN: decision on P (inputs seq {}, fullscreen exits {}, root {})",
@@ -3348,6 +3458,15 @@ void CVideoPlayer::TxDecide()
   }
   // D2 (r4 M1): main's open publishes the inputs forced; an open not made through OpenFile
   // carries none
+  // 5.E2-10 D1 item 6: a reopen reads its inputs untaken until the forced publish (1 s bound)
+  if (m_txReopenOpen && DISPLAYSTATE::GetDecideInputs().seq < m_txOpenInputsSeq &&
+      std::chrono::steady_clock::now() - m_txReopenOpenAt < 1s)
+  {
+    if (!std::exchange(m_txReopenWaitLogged, true))
+      CLog::Log(LOGINFO, "TXSTART set={} T={} reopen inputs: waiting for a publish after seq {}",
+                m_txEngagedGen, m_txJob->T, m_txReopenSeq);
+    return;
+  }
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs(true);
   if (!m_txOpenInputsSeq || latest.seq < m_txOpenInputsSeq)
   {
@@ -4928,6 +5047,56 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
+void CVideoPlayer::TxResetStart(bool reopen)
+{
+  m_txStarted = m_txExited = m_txSyncPassed = m_txWordStarting = false;
+  m_txReprimed = m_txExc1Done = m_txLostSinceArm = m_txGateLostSeen = false;
+  TxHintClear();
+  m_txStep = TxStep::NONE;
+  m_txJobFacts = {};
+  m_txJobFactsSet = m_txGuiWaitLogged = m_txWindowWaitLogged = m_txBoundMetCommit =
+      m_txOutputDone = false;
+  m_txSettle.reset();
+  m_txAdopt.reset();
+  m_txPostedAt = m_txLostAt = {};
+  m_txLostPaused = {};
+  m_txNoticeKind.clear();
+  m_txNoticePoint.clear();
+  m_txLossAtUntil = {};
+  m_txReopenOpen = m_txReopenInStart = m_txReopenWaitLogged = false;
+  if (reopen)
+  {
+    // the engage sets the hook, read-on and menu-domain flags itself; the word's open, the
+    // set flags, the pending speed, the audio time cap and the disc-time hold are kept
+    TxReleaseJob("reopen");
+    return;
+  }
+  m_txShadowSetSeen = false;
+  m_txGateSetSeen = false;
+  m_txEngaged = m_txDiscHeld = false;
+  m_txEngagedGen = 0;
+  m_txCapForce = m_txAudioFullForce = false;
+  m_txPendingSpeed = INT_MIN;
+  m_txPendingTempo = m_txSkipPausestart = false;
+  m_txInboxSpeedLoss = 0;
+  m_txSkipReadon = m_txSkipPrimebound = m_txMenuDomain = m_txReadOnBypassed = false;
+  m_txReadOn = TxReadOn::IDLE;
+  // 5.E2-9c D6: the hooks end with the file
+  TxRestoreAudioTimeCap("file end");
+  m_txNoPictureSettleMs = -1;
+  if (m_VideoPlayerVideo)
+    m_VideoPlayerVideo->SetTxNoPicture(0);
+  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
+  // 5.E2-8b: the last open's job is released by its stop or next file; P's start state reset
+  TxReleaseJob("next open");
+  m_txOpenPending = m_txWordOpened = m_txFullScreen = m_txRootAtOpen = false;
+  m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
+  m_txSegClass = TxSegClass::NONE;
+  m_txReopenCandidateGen = 0;
+  m_discMenuOnly = false;
+  m_menuOnlyCandidateSince = {};
+}
+
 void CVideoPlayer::Prepare(bool nextFile)
 {
   // a start-pts defer window belongs to the previous open's sync attempt
@@ -4938,13 +5107,6 @@ void CVideoPlayer::Prepare(bool nextFile)
   m_processInfo->SetTempo(1.0);
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
-  m_txShadowSetSeen = false;
-  m_txGateSetSeen = false;
-  m_txEngaged = m_txWordStarting = m_txDiscHeld = false;
-  m_txStarted = m_txExited = m_txSyncPassed = false;
-  m_txEngagedGen = 0;
-  m_txCapForce = m_txAudioFullForce = m_txLostSinceArm = false;
-  m_txReprimed = m_txExc1Done = m_txGateLostSeen = false;
   // gate E29B-1 item 5b: a dropped FF/RW/tempo speed was already notified at its request; the
   // NORMAL posted above notifies the return to 1x, as transaction_off's applied speed does
   m_txDroppedSpeed = INT_MIN;
@@ -4956,35 +5118,7 @@ void CVideoPlayer::Prepare(bool nextFile)
                        "change notifies it)",
               m_txDroppedSpeed);
   }
-  m_txPendingSpeed = INT_MIN;
-  m_txPendingTempo = m_txSkipPausestart = false;
-  m_txInboxSpeedLoss = 0;
-  m_txSkipReadon = m_txSkipPrimebound = m_txMenuDomain = m_txReadOnBypassed = false;
-  m_txReadOn = TxReadOn::IDLE;
-  TxHintClear();
-  // 5.E2-9c D6: the hooks end with the file
-  TxRestoreAudioTimeCap("file end");
-  m_txNoPictureSettleMs = -1;
-  if (m_VideoPlayerVideo)
-    m_VideoPlayerVideo->SetTxNoPicture(0);
-  m_renderManager.SetTxGraphicsFrom(0); // 5.E2-9b D3: next file
-  m_txNoticeKind.clear();
-  m_txNoticePoint.clear();
-  m_txLossAtUntil = {};
-  // 5.E2-8b: the last open's job is released by its stop or next file; P's start state reset
-  TxReleaseJob("next open");
-  m_txStep = TxStep::NONE;
-  m_txOpenPending = m_txWordOpened = m_txFullScreen = m_txRootAtOpen = false;
-  m_txExitsAtOpen = m_txOpenInputsSeq = m_txGuiSetSnap = 0;
-  m_txJobFacts = {};
-  m_txJobFactsSet = m_txGuiWaitLogged = m_txWindowWaitLogged = m_txBoundMetCommit =
-      m_txOutputDone = false;
-  m_txSettle.reset();
-  m_txAdopt.reset();
-  m_txPostedAt = m_txLostAt = {};
-  m_txLostPaused = {};
-  m_discMenuOnly = false;
-  m_menuOnlyCandidateSince = {};
+  TxResetStart(false);
   m_CurrentVideo.hint.Clear();
   m_CurrentAudio.hint.Clear();
   m_CurrentSubtitle.hint.Clear();
@@ -10219,6 +10353,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     // running rate is the feature's
     if (reuse && m_CurrentVideo.hint.stills && hint.reclockEligible)
       m_renderManager.ArmContentReclock(true);
+    TxKeepaliveVerdict(reuse);
   }
   // one-shot: each open decision consumes its own flag (streams may be opened
   // lazily per-packet in either order when the disc dictates them, so the

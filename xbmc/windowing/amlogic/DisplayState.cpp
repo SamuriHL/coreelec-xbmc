@@ -1610,6 +1610,7 @@ DecideInputs s_decide;
 std::string s_decideKey;
 std::chrono::steady_clock::time_point s_decideTickAt;
 std::atomic<bool> s_decidePending{false};
+std::atomic<bool> s_decideForce{false};
 
 // what makes two takes the same: every input the choice reads, as text
 std::string DecideKey(const DecideInputs& d)
@@ -1680,7 +1681,16 @@ void PublishDecideInputsTick()
   if (now - s_decideTickAt < std::chrono::milliseconds(250))
     return;
   s_decideTickAt = now;
-  PublishDecideInputs("pump");
+  const bool force = s_decideForce.exchange(false);
+  PublishDecideInputs(force ? "request" : "pump", force);
+}
+
+void RequestDecideInputs()
+{
+  if (!DecideShadowOn())
+    return;
+  s_decideForce = true;
+  s_decidePending = true;
 }
 
 DecideInputs GetDecideInputs(bool taken)

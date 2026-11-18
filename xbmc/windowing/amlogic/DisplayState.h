@@ -292,6 +292,8 @@ void PublishDecideInputs(const char* why, bool force = false, bool open = false)
 void PublishDecideInputsTick();
 //! P: the published inputs; taken ends the pump's re-publishes for this open
 DecideInputs GetDecideInputs(bool taken = false);
+//! 5.E2-10 (D1 item 6): P, a reopen or the 3D answer: the pump runs again, its next publish forced
+void RequestDecideInputs();
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);

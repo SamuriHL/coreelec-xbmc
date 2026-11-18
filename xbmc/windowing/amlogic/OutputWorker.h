@@ -148,6 +148,9 @@ public:
   //! P, a file's open (today's start: row 29, or 28+29 for a next file); mirror is the player's
   //! own loss state. The new T, or 0 when the CAS failed
   uint32_t WordOpen(uint32_t ownT, WordState mirror);
+  //! 5.E2-10 (D1 item 5): P, a disc reopen: NONE or STARTING{own T}, no span -> NONE{new T},
+  //! F kept (row 3 inside an open start, else row 1). The new T, or 0 when refused
+  uint32_t WordReopen(uint32_t ownT, bool reopenInStart, const char* cls);
   //! the FREEZE body begins (OnLostDisplay past its early returns); newcomer: on P (row 29)
   bool WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head);
   //! the FREEZE body done, the player's state LOST

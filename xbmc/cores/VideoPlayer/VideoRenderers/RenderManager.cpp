@@ -3508,6 +3508,16 @@ void CRenderManager::TxLaterSet(unsigned int gen)
   m_txCommitInFlight = false;
 }
 
+bool CRenderManager::TxOutcomeResolved(unsigned int gen)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  const SStartOutcome& o = m_txOutcome;
+  return !gen || o.gen != gen || !o.exited ||
+         (o.answer != TxAnswer::NONE && o.answer != TxAnswer::RECOVERING) ||
+         o.need == TxNeed::NONE_NEEDED;
+}
+
 void CRenderManager::TxFileEnded(unsigned int gen)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");

@@ -392,6 +392,35 @@ uint32_t COutputWorker::WordOpen(uint32_t ownT, WordState mirror)
   return opened ? t : 0;
 }
 
+uint32_t COutputWorker::WordReopen(uint32_t ownT, bool reopenInStart, const char* cls)
+{
+  if (!ownT)
+    return 0;
+  uint32_t t = (m_wordT.fetch_add(1) + 1) & WORD_T_MASK;
+  if (!t)
+    t = (m_wordT.fetch_add(1) + 1) & WORD_T_MASK;
+  const char* row = reopenInStart ? "3" : "1";
+  std::string note;
+  const bool reopened = WordApply(
+      [&](const SWord& w)
+      {
+        if (w.t != ownT || !w.f || w.spanOpen ||
+            !(w.state == WordState::NONE || w.state == WordState::STARTING))
+        {
+          Step step = Skip(row, WordOwned("NONE or STARTING without a span", ownT));
+          step.explained = "the reopen goes legacy";
+          return step;
+        }
+        SWord n = w;
+        n.t = t;
+        n.state = WordState::NONE;
+        n.sub = false;
+        note = StringUtils::Format("reopen T={} -> T={} F={} ({})", ownT, t, w.f, cls);
+        return Apply(n, row, note.c_str());
+      });
+  return reopened ? t : 0;
+}
+
 bool COutputWorker::WordFreezeBody(uint32_t ownT, bool newcomer, const SWordHead& head)
 {
   return WordApply(

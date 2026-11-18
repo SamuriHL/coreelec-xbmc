@@ -339,6 +339,9 @@ public:
   //! E2-8b D5b (code review A-M1): P, a later set's arm after an exit (the gen P kept from it):
   //! an outcome still unresolved (commit-in-flight) is resolved as D8's `later` row
   void TxLaterSet(unsigned int gen);
+  //! 5.E2-10 (D1 item 3): an exit's outcome no longer awaits main's answer (no record of the
+  //! gen, not past the drop CAS, answered, or none needed), so a reopen may replace the record
+  bool TxOutcomeResolved(unsigned int gen);
   //! E2-8b D5: W's OutputDone reached P: C's pre-roll term for the shut gen
   void SetTxOutputDone(unsigned int gen);
   //! E2-8b D8: P, a KEEPALIVE later set's arm (it never configures): the owed mark raised.

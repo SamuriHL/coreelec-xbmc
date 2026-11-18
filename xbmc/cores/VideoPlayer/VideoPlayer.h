@@ -1063,6 +1063,31 @@ protected:
   std::chrono::steady_clock::time_point m_txLossAtUntil{}; //!< transaction_lossat's window
   const char* m_txFlushCaller = nullptr; //!< D5: the next FlushBuffers' caller, for the exit line
   const char* TxEngageRefusal(const char* where);
+  //! 5.E2-10 (D1 item 2): the engage, at the file's first set or a reopen
+  void TxEngage(const char* where, bool startFullScreen);
+  //! 5.E2-10 (D1 item 4): an open's start state reset (Prepare), or a reopen's explicit list
+  void TxResetStart(bool reopen);
+  // 5.E2-10 (docs/phase5_e2_10_impl.md): a disc reopen
+  enum class TxSegClass
+  {
+    NONE,
+    DRAIN,
+    DISCARD_CLOSE,
+    KEEPALIVE,
+  };
+  static const char* TxSegClassName(TxSegClass cls);
+  //! D1 item 1: BdSegmentTransition's class, taken by the next ArmStartGate (one-shot)
+  TxSegClass m_txSegClass = TxSegClass::NONE;
+  //! D1 item 7: a KEEPALIVE set whose verdict waits for the reuse compare (0: none)
+  unsigned int m_txReopenCandidateGen = 0;
+  bool m_txReopenOpen = false; //!< D1 item 6: this start is a reopen: DECIDE waits for a publish
+  bool m_txReopenInStart = false; //!< the reopen superseded an open start
+  bool m_txReopenWaitLogged = false;
+  uint64_t m_txReopenSeq = 0; //!< D1 item 6: the inputs' seq at the reopen's OPEN
+  std::chrono::steady_clock::time_point m_txReopenOpenAt{};
+  //! D1 items 3, 5: a reopen's refusals and its word step; false: the set is legacy (logged)
+  bool TxReopenAllowed(const char* where, TxSegClass cls);
+  void TxKeepaliveVerdict(bool reuse);
   //! D2/D3 at CN's decided or unchanged opening; false while transaction_lossat holds the opening
   bool TxDecided(bool modeDecided);
   void TxStartPoint(const char* point);
@@ -1237,7 +1262,8 @@ protected:
   //! D5b: the job's sink cleared and TxOpenJob released (stop, next file, destruction)
   void TxReleaseJob(const char* why);
   unsigned int m_txShadowSerial = 0;
-  void LogTransactionShadow(bool arm, bool hasVideo, bool startFullScreen, const char* where);
+  void LogTransactionShadow(
+      bool arm, bool hasVideo, bool startFullScreen, const char* where, TxSegClass segClass);
   //! 5.E2-3: this player's T in the shadow display word (0: none); read by the announcing thread
   std::atomic<uint32_t> m_txWordT{0};
   //! 5.E2-5 (shadow): the CN set ResolveOutput last ran for
