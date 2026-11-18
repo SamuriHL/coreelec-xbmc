@@ -5512,6 +5512,8 @@ void CVideoPlayer::TxReleaseClock(STxStartDone& done)
       done.lead = SCHEDULED_START_LEAD;
       done.discRunNs = done.startNs;
       m_txLeadT0Ns = done.startNs;
+      // 5.E2-9b D3 (E28B-1): the overlays withheld to T0, stored before the holds clear below
+      m_renderManager.SetTxGraphicsFrom(done.startNs);
     }
   }
   else
@@ -5542,13 +5544,13 @@ void CVideoPlayer::TxStartAfterGuard(TxStartPath path, const STxStartDone& done,
   {
     CLog::Log(LOGINFO, "VideoPlayer: scheduled start: clock {:.3f} at {} ns ({:.0f} ms from now)",
               done.startClock / DVD_TIME_BASE, done.startNs, done.lead * 1000.0);
-    // 5.E2-9b D3 (E28B-1): the overlays withheld to T0, unless a loss after the guard already
-    // cancelled the schedule (RESUME's landing governs them then). A read, not a CAS: a loss
-    // right after it costs only a past overlay instant (r4 L-6)
-    if (!m_displayLost)
-      m_renderManager.SetTxGraphicsFrom(done.startNs);
-    else
+    // a loss after the guard cancelled the schedule: RESUME's landing governs the overlays, not
+    // this T0. A read, not a CAS: a loss right after it costs only a past overlay instant (r4 L-6)
+    if (m_displayLost)
+    {
+      m_renderManager.SetTxGraphicsFrom(0);
       CLog::Log(LOGINFO, "TXSTART overlays not withheld: the schedule was cancelled by a loss");
+    }
   }
   if (m_txEngaged && m_txSyncPassed && !m_State.streamsReady)
     SignalStreamsReady();
