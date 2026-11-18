@@ -662,6 +662,7 @@ bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
     m_wVideoModeReply = 0;
   }
   const bool again = std::exchange(m_wOwedRequeue, false);
+  m_wOwedDeferredAgain = again;
   m_wRestoreOwed = true;
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
@@ -676,19 +677,25 @@ bool CWinSystemAmlogic::DeferRestore(SHotplugReply& reply, bool retry)
   return true;
 }
 
-void CWinSystemAmlogic::PostOwedRestoreCheck(const char* why)
+void CWinSystemAmlogic::PostOwedRestoreCheck(const char* why, std::chrono::milliseconds after)
 {
-  if (!m_wRestoreOwed)
+  // posted whatever the flag reads now: W may be setting it in a deferral that read the job just
+  // before this clear; W tests it when the check runs
+  if (!aml_transaction_loss_in_start())
     return;
-  OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "owed restore", 1500ms,
+  OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "owed restore", after,
                                          [this, why] { OwedRestoreCheck(why); });
 }
 
 void CWinSystemAmlogic::OwedRestoreCheck(const char* why)
 {
+  DropStaleCarry();
   // the flag alone decides (a failed discharging set leaves it set)
   if (!m_wRestoreOwed)
+  {
+    m_wOwedRetryDelay = 1000ms;
     return;
+  }
   bool replyQueued;
   {
     std::unique_lock lock(m_replyMutex);
@@ -704,8 +711,21 @@ void CWinSystemAmlogic::OwedRestoreCheck(const char* why)
   }
   CLog::Log(LOGINFO, "HOTPLUG owed restore re-queued ({})", why);
   m_wOwedRequeue = true;
+  m_wOwedDeferredAgain = false;
   RunHotplugJob(true);
   m_wOwedRequeue = false;
+  // still owed with no span and no new start to discharge it (a disconnected or <= 1-mode read):
+  // checked again with P5-9's back-off
+  if (m_wRestoreOwed && !m_lostOpen && !m_wOwedDeferredAgain)
+  {
+    const std::chrono::milliseconds wait = m_wOwedRetryDelay;
+    m_wOwedRetryDelay = std::min(m_wOwedRetryDelay * 2, std::chrono::milliseconds(30000));
+    CLog::Log(LOGINFO, "HOTPLUG owed restore still owed: checked again in {} ms", wait.count());
+    OUTPUT::COutputWorker::Get().PostAfter(OUTPUT::Lane::RESTORE, "owed restore", wait,
+                                           [this, why] { OwedRestoreCheck(why); });
+  }
+  else
+    m_wOwedRetryDelay = 1000ms;
 }
 
 bool CWinSystemAmlogic::DisplayResetAllowed() const

@@ -150,7 +150,8 @@ public:
   uint32_t SinkSig() const { return m_wSinkSig.load(); }
   //! 5.E2-11 D2.6: at the open job's clear (START, an exit, the stop), W re-queues an owed
   //! Restore 1500 ms later
-  void PostOwedRestoreCheck(const char* why);
+  void PostOwedRestoreCheck(const char* why,
+                            std::chrono::milliseconds after = std::chrono::milliseconds(1500));
   //! how long the output has been disconnected (0 while connected)
   int64_t DisconnectedForMs() const;
   //! calls the resource's OnLostDisplay() when a span is open; true if it did
@@ -173,6 +174,8 @@ protected:
   std::atomic_bool m_wRestoreOwed{false};
   //! W: the owed check's RunHotplugJob (a deferral trigger)
   bool m_wOwedRequeue{false};
+  bool m_wOwedDeferredAgain{false}; //!< the re-queue met a new open start (it discharges)
+  std::chrono::milliseconds m_wOwedRetryDelay{1000};
   //! W: the open Start job's sink as the last caps step read it (D2.5)
   bool StartJobCapsChanged(const DISPLAYSTATE::SStartJob& start);
   std::string m_framebuffer_name;
