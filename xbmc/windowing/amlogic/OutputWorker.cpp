@@ -911,6 +911,9 @@ COutputWorker::SDeferKey COutputWorker::DeferOpen(uint32_t f, uint32_t t)
   {
     std::lock_guard listLock(m_listMutex);
     previous = {m_deferF, m_deferT};
+    // code review r2 N-2: another start's window is never overwritten (that start keeps it)
+    if (m_deferF && m_deferF != f)
+      return previous;
     if (m_deferF != f)
     {
       m_deferF = f;
@@ -988,9 +991,13 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
     else
     {
       const bool abort = outcome == DeferOutcome::STOP || outcome == DeferOutcome::NEXT_FILE;
+      // code review r2 N-2: only the closing file's requests
+      std::vector<std::pair<Lane, Job>> kept;
       for (auto& [lane, job] : m_deferred)
       {
-        if (abort || std::string_view(job.origin) == "main-decision")
+        if (job.reqF != f)
+          kept.emplace_back(lane, std::move(job));
+        else if (abort || std::string_view(job.origin) == "main-decision")
         {
           counts.mainDropped |= std::string_view(job.origin) == "main-decision";
           ++counts.dropped;
@@ -1007,7 +1014,7 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
           InsertByIdLocked(lane, std::move(job));
         }
       }
-      m_deferred.clear();
+      m_deferred = std::move(kept);
       if (abort)
       {
         for (auto it = m_after.begin(); it != m_after.end();)

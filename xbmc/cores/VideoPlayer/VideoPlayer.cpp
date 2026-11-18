@@ -3590,7 +3590,8 @@ void CVideoPlayer::TxDeferPass()
       continue;
     }
     // code review H-4: the last pick wins; an older one is superseded (never replayed)
-    if (m_txStickyTarget && m_txStickyReqId && m_txStickyReqId != e.reqId)
+    // code review r2 N-1: by the id alone (a no-amend or a bound resets the target, not the id)
+    if (m_txStickyReqId && m_txStickyReqId != e.reqId)
     {
       OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
       CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId, e.reqId);
@@ -3844,6 +3845,9 @@ void CVideoPlayer::TxOpenStart()
     deferF = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
     if (deferF)
       deferPrev = OUTPUT::COutputWorker::Get().DeferOpen(deferF, static_cast<uint32_t>(job->T));
+    // code review r2 N-2: another start's window is open: this start defers nothing
+    if (deferPrev.f && deferPrev.f != deferF)
+      deferF = 0;
   }
   // r2 N-M4: another player's job is replaced only after its own exit or START released it
   if (!DISPLAYSTATE::PublishTxOpenJob(job))
