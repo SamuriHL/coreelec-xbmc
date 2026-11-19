@@ -295,6 +295,8 @@ public:
   //! replays the held VS10 presses (marked replayed) or, with drop, drops them
   SHeldClear ClearHeld(uint32_t f, const char* why, bool drop);
   std::optional<DISPLAYSTATE::ModeFacts> HeldOutput(uint32_t f) const;
+  //! 5.E2-12b-2 (code review L-2): f's no-video screen is held (12b-1's step or row 3c)
+  bool HeldFor(uint32_t f) const;
   //! the busy mark's T (0: W idle)
   uint32_t BusyT() const;
   // 5.E2-12b-2 (docs/phase5_e2_12b2_impl.md D4, D5): a segment gap during playback and R4's owed
@@ -306,8 +308,11 @@ public:
   bool MarkOwedFor(uint32_t f) const;
   //! the owed mark cleared; its held jobs re-queued (re-verdicted at their dequeue)
   void TakeOwed(uint32_t f);
-  //! W: a committed non-Restore set of the gap's or the owed file refreshes the target (r2 M-1)
-  void RefreshTarget(const DISPLAYSTATE::ModeFacts& mode);
+  //! W: every committed non-Restore set of file f is W's last commit (code review H-1: the pin's
+  //! fallback when the link is out); while f's gap or mark is open it refreshes the target (r2 M-1)
+  void RefreshTarget(uint32_t f, const DISPLAYSTATE::ModeFacts& mode);
+  //! the stop / a next file: f's last commit forgotten (F wraps)
+  void ForgetCommitted(uint32_t f);
 
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
@@ -407,6 +412,11 @@ private:
   uint32_t m_markOwedF = 0;
   //! the gap's / the owed mark's Restore target (the held record's is m_heldOutput)
   std::optional<DISPLAYSTATE::ModeFacts> m_pinnedOutput;
+  //! code review H-1: W's last committed non-Restore mode and its file (list lock)
+  uint32_t m_lastCommitF = 0;
+  std::optional<DISPLAYSTATE::ModeFacts> m_lastCommitted;
+  //! the pin for f: the wire's mode, else W's last commit for f (list lock held)
+  bool PinLocked(uint32_t f, const DISPLAYSTATE::ModeFacts& wire);
   //! a job of f re-queued by the gap's or the mark's step (m_mutex held)
   int RequeueAfterOfLocked(uint32_t f, bool drop, std::vector<std::pair<VerdictFn, uint64_t>>& drops);
   uint64_t m_abortReqId = 0;

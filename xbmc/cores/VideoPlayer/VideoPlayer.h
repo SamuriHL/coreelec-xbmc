@@ -1199,6 +1199,10 @@ protected:
   void TxRow3cPoint(int point);
   int m_txOwedPoint = 0; //!< R4: the point owed, taken at the next NONE{T}
   bool m_txRow3cHeld = false; //!< this file's screen held by row 3c
+  //! code review M-1: the file's F captured before WordStop zeroes it (the stop's / next file's
+  //! clears); 0 = read the live word
+  uint32_t m_txStopF = 0;
+  uint32_t TxClearF();
   //! gate hook transaction_resumedelay: the real freeze's start (steady ns) the drain side keys on
   std::atomic<int64_t> m_txFreezeAtNs{0};
   std::atomic_bool m_txResumeDelayLogged{false};

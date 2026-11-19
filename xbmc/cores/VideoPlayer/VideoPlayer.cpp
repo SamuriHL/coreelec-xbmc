@@ -3582,14 +3582,17 @@ void CVideoPlayer::TxRow3cPoint(int point)
   if (!aml_disc_screen_hold() || !m_pInputBluray || TxOpen() || m_txNoVideoCarry)
     return;
   const auto w = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
-  if (!w.f || (point > 1 && m_txRow3cHeld))
+  // code review L-2: a screen 12b-1's step already holds is not re-held
+  if (!w.f || (point > 1 && (m_txRow3cHeld || OUTPUT::COutputWorker::Get().HeldFor(w.f))))
     return;
   DISPLAYSTATE::ModeFacts wire;
   if (const auto state = DISPLAYSTATE::Get(); state && state->connected && !state->strId.empty())
     wire = {state->strId, state->screenWidth, state->screenHeight, state->refresh, state->dwFlags};
-  if (w.state != WS::NONE && w.state != WS::STARTING && w.state != WS::LEADING)
+  if ((w.state != WS::NONE && w.state != WS::STARTING && w.state != WS::LEADING) ||
+      (w.state == WS::NONE && w.spanOpen))
   {
-    // errata E4: a frozen word at the point: the step at the next NONE{T}
+    // errata E4: a frozen word (or an open span, code review L-3) at the point: the step at the
+    // next NONE{T} without a span
     if (!m_txOwedPoint || point > m_txOwedPoint)
     {
       m_txOwedPoint = point;
@@ -3598,7 +3601,7 @@ void CVideoPlayer::TxRow3cPoint(int point)
     }
     return;
   }
-  if (w.state != WS::NONE || w.spanOpen)
+  if (w.state != WS::NONE)
     return;
   if (point == 1)
   {
@@ -3757,6 +3760,15 @@ void CVideoPlayer::TxStartDone(int outcome, const char* why)
   }
 }
 
+// code review M-1: the file's F for the stop's / a next file's clears: the one captured before
+// WordStop zeroed the word's, else the live word's (a late stop, a next file on a live word)
+uint32_t CVideoPlayer::TxClearF()
+{
+  if (const uint32_t f = std::exchange(m_txStopF, 0))
+    return f;
+  return OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+}
+
 // 5.E2-12a D1, D4.2: W's entries, then the landed close and a carry's bound; every loop pass
 void CVideoPlayer::TxDeferPass()
 {
@@ -3771,10 +3783,12 @@ void CVideoPlayer::TxDeferPass()
     const auto w = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
     if (w.state == OUTPUT::COutputWorker::WordState::NONE && !w.spanOpen)
     {
+      // code review H-2: the point's step (the gap, or the hold) first, so the owed jobs meet its
+      // verdict when TakeOwed re-queues them (never an ungated commit between segments)
       const int point = std::exchange(m_txOwedPoint, 0);
-      OUTPUT::COutputWorker::Get().TakeOwed(w.f);
       CLog::Log(LOGINFO, "TRANSACTION noVideoMarkOwed taken at point ({})", point);
       TxRow3cPoint(point);
+      OUTPUT::COutputWorker::Get().TakeOwed(w.f);
     }
   }
   const uint32_t wordF =
@@ -9677,26 +9691,27 @@ void CVideoPlayer::OnExit()
   if (aml_transaction_shadow_on())
   {
     if (const uint32_t wordT = txLateStop ? 0 : m_txWordT.exchange(0))
+    {
+      m_txStopF = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
       OUTPUT::COutputWorker::Get().WordStop(wordT);
+    }
     OUTPUT::COutputWorker::Get().ShadowStartPhase(this, OUTPUT::COutputWorker::StartPhase::NONE,
                                                   0, "stop");
   }
   // 5.E2-12a D4.2 (r1 M-6): after the word's stop
   TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::STOP), "stop");
   // 5.E2-12b D3: the disc session's hold ends with the stop (held presses dropped)
+  // code review M-1 (TWIN of 12b-1's stop clear): the F captured before WordStop
+  const uint32_t stopF = TxClearF();
   if (aml_disc_screen_hold())
   {
-    OUTPUT::COutputWorker::Get().ClearHeld(
-        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "stop", true);
+    OUTPUT::COutputWorker::Get().ClearHeld(stopF, "stop", true);
     TxNoVideoReset("stop");
-    {
-      const uint32_t f =
-          OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
-      OUTPUT::COutputWorker::Get().TakeOwed(f);
-      OUTPUT::COutputWorker::Get().GapClose(f, "stop", true);
-      m_txOwedPoint = 0;
-      m_txRow3cHeld = false;
-    }
+    OUTPUT::COutputWorker::Get().TakeOwed(stopF);
+    OUTPUT::COutputWorker::Get().GapClose(stopF, "stop", true);
+    OUTPUT::COutputWorker::Get().ForgetCommitted(stopF);
+    m_txOwedPoint = 0;
+    m_txRow3cHeld = false;
     m_txNoVideoCapped = false;
   }
   m_renderManager.ArmTestStall("stop");
@@ -9876,20 +9891,17 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   TxNoPictureSummary("next file");
   // 5.E2-12a D4.2: a window still open or carried past an earlier exit
   TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::NEXT_FILE), "next file");
+  // code review M-1 (TWIN): the inbox's next file stopped the word first (F captured there)
+  const uint32_t nextF = TxClearF();
   if (aml_disc_screen_hold())
   {
-    OUTPUT::COutputWorker::Get().ClearHeld(
-        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "next file",
-        true);
+    OUTPUT::COutputWorker::Get().ClearHeld(nextF, "next file", true);
     TxNoVideoReset("next file");
-    {
-      const uint32_t f =
-          OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
-      OUTPUT::COutputWorker::Get().TakeOwed(f);
-      OUTPUT::COutputWorker::Get().GapClose(f, "next file", true);
-      m_txOwedPoint = 0;
-      m_txRow3cHeld = false;
-    }
+    OUTPUT::COutputWorker::Get().TakeOwed(nextF);
+    OUTPUT::COutputWorker::Get().GapClose(nextF, "next file", true);
+    OUTPUT::COutputWorker::Get().ForgetCommitted(nextF);
+    m_txOwedPoint = 0;
+    m_txRow3cHeld = false;
     m_txNoVideoCapped = false;
   }
   if (txEndedGen)
@@ -15213,7 +15225,10 @@ void CVideoPlayer::TxFrozenPass()
     TxConvertStep2();
   // row 28: the ABORT CAS first, then HEAD's next file with the clear before Prepare (D7)
   if (const uint32_t wordT = m_txWordT.exchange(0))
+  {
+    m_txStopF = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
     OUTPUT::COutputWorker::Get().WordStop(wordT);
+  }
   m_txClearBeforePrepare = true;
   HandleOpenFile(msg);
 }

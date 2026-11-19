@@ -964,7 +964,9 @@ void COutputWorker::HoldRecord(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
     std::lock_guard listLock(m_listMutex);
     m_heldF = f;
     m_heldOutput = mode;
-    m_heldDroppedMain = false;
+    // code review L-1: a main decision dropped in f's gap or under its mark keeps its re-raise
+    if (m_gapF != f && m_markOwedF != f)
+      m_heldDroppedMain = false;
   }
   CLog::Log(LOGINFO, "HELD F={} record held at {}", f, DISPLAYSTATE::FactsString(mode));
 }
@@ -1044,15 +1046,35 @@ int COutputWorker::RequeueAfterOfLocked(uint32_t f,
   return n;
 }
 
+bool COutputWorker::PinLocked(uint32_t f, const DISPLAYSTATE::ModeFacts& wire)
+{
+  if (!wire.strId.empty())
+  {
+    m_pinnedOutput = wire;
+    return false;
+  }
+  // code review H-1: the link is out (no wire): Q2b's fallback, the mode W committed last for
+  // this file; never the GUI's or a reset video record
+  if (f && m_lastCommitF == f && m_lastCommitted && !m_lastCommitted->strId.empty())
+  {
+    m_pinnedOutput = m_lastCommitted;
+    return true;
+  }
+  return false;
+}
+
 void COutputWorker::GapOpen(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
 {
+  std::string target;
+  bool fromCommit = false;
   {
     std::lock_guard listLock(m_listMutex);
     m_gapF = f;
-    if (!mode.strId.empty())
-      m_pinnedOutput = mode;
+    fromCommit = PinLocked(f, mode);
+    target = m_pinnedOutput ? DISPLAYSTATE::FactsString(*m_pinnedOutput) : "none";
   }
-  CLog::Log(LOGINFO, "GAP F={} open (target {})", f, DISPLAYSTATE::FactsString(mode));
+  CLog::Log(LOGINFO, "GAP F={} open (target {}{})", f, target,
+            fromCommit ? ", W's last commit" : "");
 }
 
 COutputWorker::SHeldClear COutputWorker::GapClose(uint32_t f, const char* why, bool drop)
@@ -1084,13 +1106,16 @@ COutputWorker::SHeldClear COutputWorker::GapClose(uint32_t f, const char* why, b
 
 void COutputWorker::MarkOwed(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
 {
+  std::string target;
+  bool fromCommit = false;
   {
     std::lock_guard listLock(m_listMutex);
     m_markOwedF = f;
-    if (!mode.strId.empty())
-      m_pinnedOutput = mode;
+    fromCommit = PinLocked(f, mode);
+    target = m_pinnedOutput ? DISPLAYSTATE::FactsString(*m_pinnedOutput) : "none";
   }
-  CLog::Log(LOGINFO, "OWED F={} mark set (target {})", f, DISPLAYSTATE::FactsString(mode));
+  CLog::Log(LOGINFO, "OWED F={} mark set (target {}{})", f, target,
+            fromCommit ? ", W's last commit" : "");
 }
 
 bool COutputWorker::MarkOwedFor(uint32_t f) const
@@ -1109,21 +1134,45 @@ void COutputWorker::TakeOwed(uint32_t f)
     if (!f || m_markOwedF != f)
       return;
     m_markOwedF = 0;
-    // r1 L-2: re-queued (replayed): each meets the gap's or the held verdict at its dequeue
-    if (m_gapF != f && m_heldF != f)
+    // code review H-2: P takes the point's step (GapOpen / HoldRecord) before this; a gap keeps
+    // its jobs for its own close, anything else is re-queued (replayed) and meets the held
+    // verdict, or the window's, at its dequeue
+    if (m_gapF != f)
+    {
       m_pinnedOutput.reset();
-    if (m_gapF != f && m_heldF != f)
       n = RequeueAfterOfLocked(f, false, drops);
+    }
     m_cond.notify_all();
   }
   CLog::Log(LOGINFO, "OWED F={} mark taken: {} re-queued", f, n);
 }
 
-void COutputWorker::RefreshTarget(const DISPLAYSTATE::ModeFacts& mode)
+void COutputWorker::RefreshTarget(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
 {
   std::lock_guard listLock(m_listMutex);
-  if ((m_gapF || m_markOwedF) && !mode.strId.empty())
+  if (!f || mode.strId.empty())
+    return;
+  m_lastCommitF = f;
+  m_lastCommitted = mode;
+  // code review L-4: only the gap's / the mark's own file re-pins
+  if (f == m_gapF || f == m_markOwedF)
     m_pinnedOutput = mode;
+}
+
+void COutputWorker::ForgetCommitted(uint32_t f)
+{
+  std::lock_guard listLock(m_listMutex);
+  if (f && m_lastCommitF == f)
+  {
+    m_lastCommitF = 0;
+    m_lastCommitted.reset();
+  }
+}
+
+bool COutputWorker::HeldFor(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  return f && m_heldF == f;
 }
 
 uint32_t COutputWorker::BusyT() const
@@ -1641,7 +1690,14 @@ void COutputWorker::Process()
       bool afterWaiting;
       {
         std::lock_guard listLock(m_listMutex);
-        afterWaiting = !m_after.empty();
+        // code review M-1: the gap's / the owed mark's jobs wait for their step's notify, not a
+        // 50 ms poll
+        afterWaiting = std::any_of(m_after.begin(), m_after.end(),
+                                   [this](const auto& entry)
+                                   {
+                                     const uint32_t f = entry.second.reqF;
+                                     return !f || (f != m_gapF && f != m_markOwedF);
+                                   });
       }
       // 5.E2-12a D6: the after-list re-checks the word (its NONE wakes no one)
       if (afterWaiting && (!timedDue || *timedDue > std::chrono::steady_clock::now() + std::chrono::milliseconds(50)))

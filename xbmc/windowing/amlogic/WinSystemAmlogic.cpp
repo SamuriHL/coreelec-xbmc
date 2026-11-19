@@ -1594,6 +1594,9 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   // 5.E2-12b D0: a held no-video screen's mode first (W's own copy, list lock only)
   const std::optional<DISPLAYSTATE::ModeFacts> heldMode = OUTPUT::COutputWorker::Get().HeldOutput(
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f);
+  if (heldMode)
+    CLog::Log(LOGINFO, "HOTPLUG job {}: restore target W's held / pinned mode {}", reply.replyId,
+              DISPLAYSTATE::FactsString(*heldMode));
   const std::optional<DISPLAYSTATE::ModeFacts>& videoMode =
       heldMode ? heldMode : (startRow ? startRow : m_wVideoMode);
   if (videoMode)
