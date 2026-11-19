@@ -2791,6 +2791,9 @@ void CVideoPlayer::BdSegmentTransition(bool glided)
     CTxDrainSite txSite(m_txDrainSite, "BdSegmentTransition");
     CloseStream(m_CurrentVideo, drain);
   }
+  // 5.E2-12b-2 D4 point (1): the video close returned
+  if (transition == EBdTransition::DRAIN || transition == EBdTransition::DISCARD_CLOSE)
+    TxRow3cPoint(1);
   // the close is synchronous: an arm the decoder did not take must not reach
   // a later close (a stop blanks)
   aml_keep_frame_arm(false);
@@ -3573,6 +3576,48 @@ void CVideoPlayer::TxNoVideoReset(const char* why)
   m_txNoVideoWire.reset();
 }
 
+void CVideoPlayer::TxRow3cPoint(int point)
+{
+  using WS = OUTPUT::COutputWorker::WordState;
+  if (!aml_disc_screen_hold() || !m_pInputBluray || TxOpen() || m_txNoVideoCarry)
+    return;
+  const auto w = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+  if (!w.f || (point > 1 && m_txRow3cHeld))
+    return;
+  DISPLAYSTATE::ModeFacts wire;
+  if (const auto state = DISPLAYSTATE::Get(); state && state->connected && !state->strId.empty())
+    wire = {state->strId, state->screenWidth, state->screenHeight, state->refresh, state->dwFlags};
+  if (w.state != WS::NONE && w.state != WS::STARTING && w.state != WS::LEADING)
+  {
+    // errata E4: a frozen word at the point: the step at the next NONE{T}
+    if (!m_txOwedPoint || point > m_txOwedPoint)
+    {
+      m_txOwedPoint = point;
+      OUTPUT::COutputWorker::Get().MarkOwed(w.f, wire);
+      CLog::Log(LOGINFO, "TRANSACTION noVideoMarkOwed set at point ({})", point);
+    }
+    return;
+  }
+  if (w.state != WS::NONE || w.spanOpen)
+    return;
+  if (point == 1)
+  {
+    OUTPUT::COutputWorker::Get().GapOpen(w.f, wire);
+    TxRequestAt("gap");
+    return;
+  }
+  // points 2, 3: the screen held at W's pinned target (the film's mode), else the wire's
+  const auto pinned = OUTPUT::COutputWorker::Get().HeldOutput(w.f);
+  const DISPLAYSTATE::ModeFacts mode = pinned ? *pinned : wire;
+  if (mode.strId.empty())
+    return;
+  OUTPUT::COutputWorker::Get().HoldRecord(w.f, mode);
+  OUTPUT::COutputWorker::Get().GapClose(w.f, "held", false);
+  m_txRow3cHeld = true;
+  CLog::Log(LOGINFO, "TRANSACTION row 3c F={} at point ({}): record held at {}", w.f, point,
+            DISPLAYSTATE::FactsString(mode));
+}
+
 void CVideoPlayer::TxNoVideoNoteWire()
 {
   if (m_txNoVideoWire)
@@ -3720,6 +3765,18 @@ void CVideoPlayer::TxDeferPass()
     TxRequestFire();
   if (!aml_transaction_fold())
     return;
+  // 5.E2-12b-2 D5: R4's owed point taken at the next NONE{T}
+  if (m_txOwedPoint)
+  {
+    const auto w = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord());
+    if (w.state == OUTPUT::COutputWorker::WordState::NONE && !w.spanOpen)
+    {
+      const int point = std::exchange(m_txOwedPoint, 0);
+      OUTPUT::COutputWorker::Get().TakeOwed(w.f);
+      CLog::Log(LOGINFO, "TRANSACTION noVideoMarkOwed taken at point ({})", point);
+      TxRow3cPoint(point);
+    }
+  }
   const uint32_t wordF =
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
   // the last pick wins (code review H-4, r2 N-1): by the request id alone, before and after START
@@ -3848,6 +3905,12 @@ void CVideoPlayer::TxRequestFire()
                                         : ACTION_VS10_ORIGINAL;
     messenger->PostMsg(TMSG_GUI_ACTION, WINDOW_INVALID, -1,
                        static_cast<void*>(new CAction(action)));
+  }
+  else if (kind == "back" && messenger)
+  {
+    // r2 M-4: a real Back (GC leaves fullscreen), not a bare desktop set
+    messenger->PostMsg(TMSG_GUI_ACTION, WINDOW_INVALID, -1,
+                       static_cast<void*>(new CAction(ACTION_NAV_BACK)));
   }
   else if (kind == "main")
   {
@@ -7016,6 +7079,9 @@ void CVideoPlayer::Process()
         else if (waitState == 1 && TxOpen())
           EndTransactionToLegacy("no-playlist screen", CRenderManager::TxHow::OWED,
                                  CRenderManager::TxNeed::LATER);
+        // 5.E2-12b-2 D4 point (2): during playback (no start open or carried)
+        else if (!TxOpen() && !m_txNoVideoCarry)
+          TxRow3cPoint(2);
         // a screen with no playlist: no picture will come for a waiting page
         if (m_menuPageWaiting)
         {
@@ -7078,6 +7144,9 @@ void CVideoPlayer::Process()
         // 5.E2-12b D2 point (2): at once (a DISCARD_KEEPALIVE reaches only this point, E2)
         if (m_txNoVideoHold && !m_txNoVideoStep)
           m_txNoVideoStep = "novideo";
+        // 5.E2-12b-2 D4 point (3): during playback
+        else if (!m_txNoVideoHold && !TxOpen() && !m_txNoVideoCarry)
+          TxRow3cPoint(3);
       }
       // a segment without video: no picture will come for a waiting page
       if (m_menuPageWaiting && m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
@@ -9620,6 +9689,14 @@ void CVideoPlayer::OnExit()
     OUTPUT::COutputWorker::Get().ClearHeld(
         OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "stop", true);
     TxNoVideoReset("stop");
+    {
+      const uint32_t f =
+          OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+      OUTPUT::COutputWorker::Get().TakeOwed(f);
+      OUTPUT::COutputWorker::Get().GapClose(f, "stop", true);
+      m_txOwedPoint = 0;
+      m_txRow3cHeld = false;
+    }
     m_txNoVideoCapped = false;
   }
   m_renderManager.ArmTestStall("stop");
@@ -9805,6 +9882,14 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
         OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "next file",
         true);
     TxNoVideoReset("next file");
+    {
+      const uint32_t f =
+          OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+      OUTPUT::COutputWorker::Get().TakeOwed(f);
+      OUTPUT::COutputWorker::Get().GapClose(f, "next file", true);
+      m_txOwedPoint = 0;
+      m_txRow3cHeld = false;
+    }
     m_txNoVideoCapped = false;
   }
   if (txEndedGen)
@@ -12008,6 +12093,19 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (m_txNoVideoHold || m_txNoVideoCarry || m_txNoVideoStep)
       TxNoVideoReset("video open");
     m_txNoVideoCapped = false;
+    // 5.E2-12b-2 D4: the gap ends (its picks fold into this title's start; RM re-raised once)
+    const uint32_t gapF =
+        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+    OUTPUT::COutputWorker::Get().TakeOwed(gapF);
+    const OUTPUT::COutputWorker::SHeldClear gap =
+        OUTPUT::COutputWorker::Get().GapClose(gapF, "video open", false);
+    if (gap.mainDropped && !cleared.mainDropped)
+    {
+      std::string stereomode;
+      m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode, "gap clear");
+    }
+    m_txOwedPoint = 0;
+    m_txRow3cHeld = false;
   }
 #if defined(HAVE_LIBBLURAY)
   // a video stream covers the disc's background plane
@@ -14140,6 +14238,10 @@ void CVideoPlayer::OnLostDisplay()
     m_txLossPicture = audioInited && holdFrom != DVD_NOPTS_VALUE ? holdFrom : 0.0;
     m_txBodyDone = false;
     m_txHeldAsPause = false;
+    m_txFreezeAtNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    m_txResumeDelayLogged = false;
     m_txFreezeReal.store(true, std::memory_order_release);
   }
   // 5.E2-2: the mark first, before the stream players are held and the clock pauses, so no P
@@ -14671,8 +14773,24 @@ void CVideoPlayer::TxSetDrainHook(StreamType type, const char* site)
     // the segment closes, OpenDefaultStreams, CheckBetterStream: RESUME runs in the wait, the
     // guard by try-lock, never a blocking wait here (errata E5)
     const std::string where = std::string("drain:") + site;
-    hook = [this, where]
+    // gate hook transaction_resumedelay (E2-12b-2 A4, r2 M-3): read once; keyed on this freeze;
+    // only the drain side's RESUME is withheld (P's loop RESUME never); inert at 0
+    const int resumeDelayMs = aml_transaction_hooks().resumeDelayMs;
+    hook = [this, where, resumeDelayMs]
     {
+      if (resumeDelayMs > 0 && m_displayLost && m_txFreezeReal.load())
+      {
+        const int64_t at = m_txFreezeAtNs.load();
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+        if (at && now - at < static_cast<int64_t>(resumeDelayMs) * 1000000)
+        {
+          if (!m_txResumeDelayLogged.exchange(true))
+            CLog::Log(LOGWARNING, "TXTEST resumedelay {}: the drain-side RESUME withheld", resumeDelayMs);
+          return EDrainHeld::NOT_HELD;
+        }
+      }
       if (m_displayLost && m_txFreezeReal.load())
       {
         const uint32_t ownT = m_txWordT.load();

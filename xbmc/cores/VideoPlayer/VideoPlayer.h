@@ -1193,6 +1193,15 @@ protected:
   void TxNoVideoReset(const char* why);
   //! the wire mode when the hold begins (connected only)
   void TxNoVideoNoteWire();
+  // 5.E2-12b-2 (docs/phase5_e2_12b2_impl.md D4, D5): row 3c during playback
+  //! point 1 (a DRAIN/DISCARD_CLOSE's video close), 2 (the deferred-demux wait), 3 (a segment
+  //! without video): a gap, a held record, or R4's owed mark
+  void TxRow3cPoint(int point);
+  int m_txOwedPoint = 0; //!< R4: the point owed, taken at the next NONE{T}
+  bool m_txRow3cHeld = false; //!< this file's screen held by row 3c
+  //! gate hook transaction_resumedelay: the real freeze's start (steady ns) the drain side keys on
+  std::atomic<int64_t> m_txFreezeAtNs{0};
+  std::atomic_bool m_txResumeDelayLogged{false};
   // 5.E2-12a (docs/phase5_e2_12_impl.md D1, D2, D4): W's deferral window for this player's
   // file, its close, the pick folded into DECIDE and the amends
   uint32_t m_txDeferF = 0; //!< the window's file (0: none open)
