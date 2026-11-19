@@ -2946,6 +2946,14 @@ void CVideoPlayer::ArmStartGate(const char* where)
       arm && !txFirstSet && segClass != TxSegClass::NONE && aml_transaction_loss_base();
   // 5.E2-12b D1 (R1, errata E1; r1 H-1, H-2): a no-video set of an open or carried committed start
   // keeps the start and CN's gate: no later-set exit, no gate end; row 3b's step opens it
+  // gate hook transaction_novideo (E2-12b rows 3, 4): the first later Blu-ray set has no video
+  if (m_pInputBluray && hasVideo && m_txGateSetSeen && aml_transaction_hooks().noVideo &&
+      !std::exchange(m_txNoVideoHookDone, true))
+  {
+    hasVideo = false;
+    m_txNoVideoForced = true;
+    CLog::Log(LOGWARNING, "TXTEST novideo: this set treated as having no video ({})", where);
+  }
   if (aml_disc_screen_hold() && !hasVideo && m_pInputBluray && TxNoVideoInStart())
   {
     m_txNoVideoHold = true;
@@ -7021,8 +7029,12 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
+      // gate hook transaction_novideo: its forced set's video stream is not kept open
+      const bool hookNoVideo = std::exchange(m_txNoVideoForced, false);
+      if (hookNoVideo && m_CurrentVideo.id >= 0)
+        CloseStream(m_CurrentVideo, false);
       // a segment without video: no picture replaces a kept one
-      if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
+      if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0 || hookNoVideo)
       {
         aml_drop_kept_frame("segment without video");
         // 5.E2-12b D2 point (2): at once (a DISCARD_KEEPALIVE reaches only this point, E2)

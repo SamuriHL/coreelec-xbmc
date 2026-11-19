@@ -1180,6 +1180,10 @@ protected:
   bool m_txNoVideoHeld = false;
   bool m_txNoVideoOwedPosted = false;
   bool m_txNoVideoWaitLogged = false;
+  //! gate hook transaction_novideo: the first later Blu-ray set of the file is treated as having no
+  //! video (its video stream not opened), once
+  bool m_txNoVideoForced = false;
+  bool m_txNoVideoHookDone = false;
   //! an engaged start of this file is open, or carried committed, and CN's gate is shut
   bool TxNoVideoInStart() const;
   void TxNoVideoStepPass();
