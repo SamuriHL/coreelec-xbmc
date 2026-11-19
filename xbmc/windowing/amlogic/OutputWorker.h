@@ -298,6 +298,8 @@ public:
   void ReplaceHeldOutput(const DISPLAYSTATE::ModeFacts& mode);
   //! the busy mark's T (0: W idle)
   uint32_t BusyT() const;
+  //! a request of f waits in a request lane (code review H-2: row 3b's replays)
+  bool RequestsQueued(uint32_t f) const;
 
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied

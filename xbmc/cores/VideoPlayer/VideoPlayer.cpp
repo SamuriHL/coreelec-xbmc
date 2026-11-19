@@ -2954,9 +2954,11 @@ void CVideoPlayer::ArmStartGate(const char* where)
     m_txNoVideoForced = true;
     CLog::Log(LOGWARNING, "TXTEST novideo: this set treated as having no video ({})", where);
   }
-  if (aml_disc_screen_hold() && !hasVideo && m_pInputBluray && TxNoVideoInStart())
+  if (aml_disc_screen_hold() && !hasVideo && m_pInputBluray && TxNoVideoInStart() &&
+      !m_txNoVideoCapped)
   {
     m_txNoVideoHold = true;
+    TxNoVideoNoteWire();
     CLog::Log(LOGINFO, "TRANSACTION no-video set, gate kept for T={} ({})", m_txWordT.load(),
               TxOpen() ? "open" : "carried");
     return;
@@ -3567,7 +3569,17 @@ void CVideoPlayer::TxNoVideoReset(const char* why)
   m_txNoVideoSince = {};
   m_txNoVideoStep = nullptr;
   m_txNoVideoWaitState = 0;
-  m_txNoVideoHeld = m_txNoVideoOwedPosted = m_txNoVideoWaitLogged = false;
+  m_txNoVideoHeld = m_txNoVideoOwedPosted = m_txNoVideoWaitLogged = m_txNoVideoClosed = false;
+  m_txNoVideoWire.reset();
+}
+
+void CVideoPlayer::TxNoVideoNoteWire()
+{
+  if (m_txNoVideoWire)
+    return;
+  if (const auto state = DISPLAYSTATE::Get(); state && state->connected && !state->strId.empty())
+    m_txNoVideoWire = std::make_shared<DISPLAYSTATE::ModeFacts>(DISPLAYSTATE::ModeFacts{
+        state->strId, state->screenWidth, state->screenHeight, state->refresh, state->dwFlags});
 }
 
 // row 3b's step (D2.3-D2.6), a P-loop state: the waits, then the end
@@ -3584,16 +3596,43 @@ void CVideoPlayer::TxNoVideoStepPass()
   const bool committed = job && job->state.load() == State::COMMITTED;
   const bool settled =
       TxOpen() ? m_txSettle.has_value() : (m_txNoVideoCarry && m_txNoVideoCarry->settled);
-  // Q1 (r2 M-A): the held mode is W's last committed mode
+  // Q1 (r2 M-A): the held mode is W's last committed mode; never an empty one (code review M-1):
+  // the job's row if it committed, else the wire mode noted when the hold began, else a wait
+  if (m_txNoVideoClosed)
+  {
+    // code review H-2 (zero tolerance): the start is closed; its replayed requests commit and
+    // settle before CN opens, so no re-lock comes with the sink open
+    if (OUTPUT::COutputWorker::Get().RequestsQueued(F) || OUTPUT::COutputWorker::Get().BusyT() ||
+        (winSystem && winSystem->SettleArmed()))
+    {
+      if (!std::exchange(m_txNoVideoWaitLogged, true))
+        CLog::Log(LOGINFO, "TXSTART row 3b waits for the replayed requests");
+      return;
+    }
+    CLog::Log(LOGINFO, "TXSTART row 3b: CN opens (the replays done)");
+    TxNoVideoReset("row 3b");
+    m_renderManager.SetTxStartHeld(false);
+    m_discTime.SetTxHeld(false);
+    OpenStartGate("transaction: no-video start ended", false);
+    return;
+  }
   if (!m_txNoVideoHeld)
   {
-    DISPLAYSTATE::ModeFacts mode;
+    TxNoVideoNoteWire();
+    std::optional<DISPLAYSTATE::ModeFacts> mode;
     if (committed)
       mode = DISPLAYSTATE::FactsOf(job->res);
-    else if (const auto state = DISPLAYSTATE::Get(); state && state->connected)
-      mode = {state->strId, state->screenWidth, state->screenHeight, state->refresh,
-              state->dwFlags};
-    OUTPUT::COutputWorker::Get().HoldRecord(F, mode);
+    else if (m_txNoVideoWire)
+      mode = *m_txNoVideoWire;
+    if (!mode)
+    {
+      if (!std::exchange(m_txNoVideoWaitLogged, true))
+        CLog::Log(LOGINFO, "TXSTART T={} row 3b waits for the display (no mode to hold)",
+                  m_txWordT.load());
+      return;
+    }
+    m_txNoVideoWaitLogged = false;
+    OUTPUT::COutputWorker::Get().HoldRecord(F, *mode);
     m_txNoVideoHeld = true;
   }
   const char* waitFor = nullptr;
@@ -3638,10 +3677,9 @@ void CVideoPlayer::TxNoVideoStepPass()
                            CRenderManager::TxNeed::NONE_NEEDED);
   if (job)
     job->ClearSink();
-  TxNoVideoReset("row 3b");
-  m_renderManager.SetTxStartHeld(false);
-  m_discTime.SetTxHeld(false);
-  OpenStartGate("transaction: no-video start ended", false);
+  // the close's replays (12a's StartDone) are queued now: CN waits for them (next passes)
+  m_txNoVideoClosed = true;
+  m_txNoVideoWaitLogged = false;
 }
 
 // 5.E2-12a D4 (docs/phase5_e2_12_impl.md): StartDone, the window's only close
@@ -5618,6 +5656,7 @@ void CVideoPlayer::CheckStartGate()
       return;
     CLog::Log(LOGWARNING, "TRANSACTION no-video hold: CN's 12 s cap opens the gate");
     TxNoVideoReset("cap");
+    m_txNoVideoCapped = true;
   }
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
@@ -6958,9 +6997,10 @@ void CVideoPlayer::Process()
       if (const int waitState = DiscWaitState(true))
       {
         // 5.E2-12b D2 point (1): the wait (1 or 2) for 3 s inside a start is row 3b (Q3's own timer)
-        if (aml_disc_screen_hold() && TxNoVideoInStart())
+        if (aml_disc_screen_hold() && TxNoVideoInStart() && !m_txNoVideoCapped)
         {
           m_txNoVideoHold = true;
+          TxNoVideoNoteWire();
           const auto now = std::chrono::steady_clock::now();
           if (m_txNoVideoSince == std::chrono::steady_clock::time_point{})
           {
@@ -9582,6 +9622,7 @@ void CVideoPlayer::OnExit()
     OUTPUT::COutputWorker::Get().ClearHeld(
         OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "stop", true);
     TxNoVideoReset("stop");
+    m_txNoVideoCapped = false;
   }
   m_renderManager.ArmTestStall("stop");
 
@@ -9766,6 +9807,7 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
         OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "next file",
         true);
     TxNoVideoReset("next file");
+    m_txNoVideoCapped = false;
   }
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
@@ -11967,6 +12009,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     }
     if (m_txNoVideoHold || m_txNoVideoCarry || m_txNoVideoStep)
       TxNoVideoReset("video open");
+    m_txNoVideoCapped = false;
   }
 #if defined(HAVE_LIBBLURAY)
   // a video stream covers the disc's background plane

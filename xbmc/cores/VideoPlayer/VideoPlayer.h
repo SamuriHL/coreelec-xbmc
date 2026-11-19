@@ -42,6 +42,7 @@
 namespace DISPLAYSTATE
 {
 struct SStartJob;
+struct ModeFacts;
 enum class StartSettleKind;
 enum class StartAdoptForm;
 } // namespace DISPLAYSTATE
@@ -1180,6 +1181,9 @@ protected:
   bool m_txNoVideoHeld = false;
   bool m_txNoVideoOwedPosted = false;
   bool m_txNoVideoWaitLogged = false;
+  bool m_txNoVideoClosed = false; //!< code review H-2: the start closed, its replays still running
+  bool m_txNoVideoCapped = false; //!< code review L-3: the cap opened this set's gate
+  std::shared_ptr<DISPLAYSTATE::ModeFacts> m_txNoVideoWire; //!< the wire mode when the hold began
   //! gate hook transaction_novideo: the first later Blu-ray set of the file is treated as having no
   //! video (its video stream not opened), once
   bool m_txNoVideoForced = false;
@@ -1188,6 +1192,8 @@ protected:
   bool TxNoVideoInStart() const;
   void TxNoVideoStepPass();
   void TxNoVideoReset(const char* why);
+  //! the wire mode when the hold begins (connected only)
+  void TxNoVideoNoteWire();
   // 5.E2-12a (docs/phase5_e2_12_impl.md D1, D2, D4): W's deferral window for this player's
   // file, its close, the pick folded into DECIDE and the amends
   uint32_t m_txDeferF = 0; //!< the window's file (0: none open)

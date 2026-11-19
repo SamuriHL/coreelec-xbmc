@@ -846,11 +846,20 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
                                                          std::string& why) const
 {
   using enum WordState;
-  // 5.E2-12b D0 (Q2): a held no-video screen keeps its mode
-  if (m_heldF && job.reqF == m_heldF && job.origin && aml_disc_screen_hold())
+  const bool windowExit = job.origin && std::string_view(job.origin) == "window-exit";
+  if (!DeferrableOrigin(job.origin) && !windowExit)
+    return Verdict::RUN;
+  if (m_abortF && job.reqF == m_abortF && job.reqId <= m_abortReqId)
+  {
+    why = StringUtils::Format("ABORT floor F={}", m_abortF);
+    return Verdict::DROP;
+  }
+  // 5.E2-12b D0 (Q2), after the ABORT floor (code review M-2): a held no-video screen keeps its
+  // mode; a pick falls through to 12a's rules (a dead link holds it)
+  if (m_heldF && job.reqF == m_heldF && aml_disc_screen_hold())
   {
     const std::string_view o(job.origin);
-    if (o == "window-exit" || o == "main-decision")
+    if (windowExit || o == "main-decision")
     {
       m_heldDroppedMain |= o == "main-decision";
       why = "held record";
@@ -861,15 +870,10 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
       why = "held record";
       return Verdict::HELD_LIST;
     }
-    return Verdict::RUN;
   }
-  if (!DeferrableOrigin(job.origin))
+  // Back's own set is never deferred (E2-12a M-7)
+  if (windowExit)
     return Verdict::RUN;
-  if (m_abortF && job.reqF == m_abortF && job.reqId <= m_abortReqId)
-  {
-    why = StringUtils::Format("ABORT floor F={}", m_abortF);
-    return Verdict::DROP;
-  }
   if (m_deferF && job.reqF == m_deferF &&
       (std::string_view(job.origin) != "vs10" || m_deferPosted))
     return Verdict::DEFER;
@@ -973,7 +977,8 @@ COutputWorker::SHeldClear COutputWorker::ClearHeld(uint32_t f, const char* why, 
 std::optional<DISPLAYSTATE::ModeFacts> COutputWorker::HeldOutput(uint32_t f) const
 {
   std::lock_guard listLock(m_listMutex);
-  if (!f || m_heldF != f)
+  // code review M-1: an empty record is no target
+  if (!f || m_heldF != f || !m_heldOutput || m_heldOutput->strId.empty())
     return std::nullopt;
   return m_heldOutput;
 }
@@ -989,6 +994,16 @@ void COutputWorker::ReplaceHeldOutput(const DISPLAYSTATE::ModeFacts& mode)
     m_heldOutput = mode;
   }
   CLog::Log(LOGINFO, "HELD F={} record held at {} (a pick)", f, DISPLAYSTATE::FactsString(mode));
+}
+
+bool COutputWorker::RequestsQueued(uint32_t f) const
+{
+  std::unique_lock lock(m_mutex);
+  for (const Lane l : {Lane::MIDPLAY, Lane::SETTINGS})
+    for (const Job& job : m_lanes[static_cast<size_t>(l)])
+      if (job.reqId && job.reqF == f)
+        return true;
+  return false;
 }
 
 uint32_t COutputWorker::BusyT() const
@@ -1520,7 +1535,10 @@ void COutputWorker::Process()
     const uint64_t lowest = shadow && job.reqId ? LowestRequestLocked(&lowestLane) : 0;
     const Lane jobLane = static_cast<Lane>(lane - m_lanes.data());
     // 5.E2-12a D0.2: a deferrable request W does not run now
-    if (shadow && job.origin && DeferrableOrigin(job.origin) && aml_transaction_fold())
+    // code review H-1: Back's `window-exit` set reaches the verdict too (a held screen drops it)
+    if (shadow && job.origin &&
+        (DeferrableOrigin(job.origin) || std::string_view(job.origin) == "window-exit") &&
+        aml_transaction_fold())
     {
       const uint64_t value = LoadWord();
       std::string why;
