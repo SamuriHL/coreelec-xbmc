@@ -297,6 +297,17 @@ public:
   std::optional<DISPLAYSTATE::ModeFacts> HeldOutput(uint32_t f) const;
   //! the busy mark's T (0: W idle)
   uint32_t BusyT() const;
+  // 5.E2-12b-2 (docs/phase5_e2_12b2_impl.md D4, D5): a segment gap during playback and R4's owed
+  // mark, each with the Restore target it pins (W's last committed mode; Q2b)
+  void GapOpen(uint32_t f, const DISPLAYSTATE::ModeFacts& mode);
+  //! the gap's held jobs re-queued (marked replayed) or, with drop, dropped
+  SHeldClear GapClose(uint32_t f, const char* why, bool drop);
+  void MarkOwed(uint32_t f, const DISPLAYSTATE::ModeFacts& mode);
+  bool MarkOwedFor(uint32_t f) const;
+  //! the owed mark cleared; its held jobs re-queued (re-verdicted at their dequeue)
+  void TakeOwed(uint32_t f);
+  //! W: a committed non-Restore set of the gap's or the owed file refreshes the target (r2 M-1)
+  void RefreshTarget(const DISPLAYSTATE::ModeFacts& mode);
 
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
@@ -392,6 +403,12 @@ private:
   std::optional<DISPLAYSTATE::ModeFacts> m_heldOutput;
   std::vector<std::pair<Lane, Job>> m_heldList;
   mutable bool m_heldDroppedMain = false;
+  uint32_t m_gapF = 0;
+  uint32_t m_markOwedF = 0;
+  //! the gap's / the owed mark's Restore target (the held record's is m_heldOutput)
+  std::optional<DISPLAYSTATE::ModeFacts> m_pinnedOutput;
+  //! a job of f re-queued by the gap's or the mark's step (m_mutex held)
+  int RequeueAfterOfLocked(uint32_t f, bool drop, std::vector<std::pair<VerdictFn, uint64_t>>& drops);
   uint64_t m_abortReqId = 0;
   uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job
   bool m_busy = false;

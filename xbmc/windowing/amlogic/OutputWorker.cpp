@@ -854,6 +854,22 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
     why = StringUtils::Format("ABORT floor F={}", m_abortF);
     return Verdict::DROP;
   }
+  // 5.E2-12b-2 D4, D5: in a segment gap or while R4's mark is owed the file's requests wait for
+  // the next video open (or the step); RM's decision is dropped (old facts) and re-raised there
+  if ((m_gapF && job.reqF == m_gapF) || (m_markOwedF && job.reqF == m_markOwedF))
+  {
+    if (aml_disc_screen_hold())
+    {
+      if (std::string_view(job.origin) == "main-decision")
+      {
+        m_heldDroppedMain = true;
+        why = m_gapF == job.reqF ? "gap" : "owed mark";
+        return Verdict::DROP;
+      }
+      why = m_gapF == job.reqF ? "gap" : "owed mark";
+      return Verdict::HOLD;
+    }
+  }
   // 5.E2-12b D0 (Q2), after the ABORT floor (code review M-2): a held no-video screen keeps its
   // mode; a pick falls through to 12a's rules (a dead link holds it)
   if (m_heldF && job.reqF == m_heldF && aml_disc_screen_hold())
@@ -922,13 +938,22 @@ void COutputWorker::RequeueAfterLocked()
     const SWord word = UnpackWord(LoadWord());
     if (word.state != WordState::NONE || word.spanOpen)
       return;
+    // 5.E2-12b-2: the gap's and the owed mark's jobs wait for their own step (r1 M-2: no spin)
+    std::vector<std::pair<Lane, Job>> kept;
     for (auto& [lane, job] : m_after)
     {
+      if (job.reqF && (job.reqF == m_gapF || job.reqF == m_markOwedF))
+      {
+        kept.emplace_back(lane, std::move(job));
+        continue;
+      }
       job.replayed = true;
       InsertByIdLocked(lane, std::move(job));
+      ++n;
     }
-    n = m_after.size();
-    m_after.clear();
+    m_after = std::move(kept);
+    if (!n)
+      return;
   }
   CLog::Log(LOGINFO, "DEFER after-list re-queued: {}", n);
 }
@@ -985,9 +1010,120 @@ std::optional<DISPLAYSTATE::ModeFacts> COutputWorker::HeldOutput(uint32_t f) con
 {
   std::lock_guard listLock(m_listMutex);
   // code review M-1: an empty record is no target
-  if (!f || m_heldF != f || !m_heldOutput || m_heldOutput->strId.empty())
-    return std::nullopt;
-  return m_heldOutput;
+  if (f && m_heldF == f && m_heldOutput && !m_heldOutput->strId.empty())
+    return m_heldOutput;
+  // 5.E2-12b-2 Q2b: the gap's / the owed mark's pinned target
+  if (f && (m_gapF == f || m_markOwedF == f) && m_pinnedOutput && !m_pinnedOutput->strId.empty())
+    return m_pinnedOutput;
+  return std::nullopt;
+}
+
+int COutputWorker::RequeueAfterOfLocked(uint32_t f,
+                                        bool drop,
+                                        std::vector<std::pair<VerdictFn, uint64_t>>& drops)
+{
+  int n = 0;
+  std::vector<std::pair<Lane, Job>> kept;
+  for (auto& [lane, job] : m_after)
+  {
+    if (job.reqF != f)
+    {
+      kept.emplace_back(lane, std::move(job));
+      continue;
+    }
+    ++n;
+    if (drop)
+    {
+      drops.emplace_back(std::move(job.onVerdict), job.reqId);
+      continue;
+    }
+    job.replayed = true;
+    InsertByIdLocked(lane, std::move(job));
+  }
+  m_after = std::move(kept);
+  return n;
+}
+
+void COutputWorker::GapOpen(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
+{
+  {
+    std::lock_guard listLock(m_listMutex);
+    m_gapF = f;
+    if (!mode.strId.empty())
+      m_pinnedOutput = mode;
+  }
+  CLog::Log(LOGINFO, "GAP F={} open (target {})", f, DISPLAYSTATE::FactsString(mode));
+}
+
+COutputWorker::SHeldClear COutputWorker::GapClose(uint32_t f, const char* why, bool drop)
+{
+  SHeldClear counts;
+  std::vector<std::pair<VerdictFn, uint64_t>> drops;
+  {
+    std::unique_lock lock(m_mutex);
+    std::lock_guard listLock(m_listMutex);
+    if (!f || m_gapF != f)
+      return counts;
+    m_gapF = 0;
+    if (!m_markOwedF)
+      m_pinnedOutput.reset();
+    const int n = RequeueAfterOfLocked(f, drop, drops);
+    (drop ? counts.dropped : counts.replayed) = n;
+    counts.mainDropped = m_heldDroppedMain && !m_heldF;
+    if (!m_heldF)
+      m_heldDroppedMain = false;
+    m_cond.notify_all();
+  }
+  for (auto& [fn, id] : drops)
+    if (fn)
+      fn(DeferVerdict::DROPPED, id, f);
+  CLog::Log(LOGINFO, "GAP F={} closed ({}): {} re-queued, {} dropped{}", f, why, counts.replayed,
+            counts.dropped, counts.mainDropped ? ", a main decision dropped" : "");
+  return counts;
+}
+
+void COutputWorker::MarkOwed(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
+{
+  {
+    std::lock_guard listLock(m_listMutex);
+    m_markOwedF = f;
+    if (!mode.strId.empty())
+      m_pinnedOutput = mode;
+  }
+  CLog::Log(LOGINFO, "OWED F={} mark set (target {})", f, DISPLAYSTATE::FactsString(mode));
+}
+
+bool COutputWorker::MarkOwedFor(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  return f && m_markOwedF == f;
+}
+
+void COutputWorker::TakeOwed(uint32_t f)
+{
+  std::vector<std::pair<VerdictFn, uint64_t>> drops;
+  int n = 0;
+  {
+    std::unique_lock lock(m_mutex);
+    std::lock_guard listLock(m_listMutex);
+    if (!f || m_markOwedF != f)
+      return;
+    m_markOwedF = 0;
+    // r1 L-2: re-queued (replayed): each meets the gap's or the held verdict at its dequeue
+    if (m_gapF != f && m_heldF != f)
+      m_pinnedOutput.reset();
+    if (m_gapF != f && m_heldF != f)
+      n = RequeueAfterOfLocked(f, false, drops);
+    m_cond.notify_all();
+  }
+  CLog::Log(LOGINFO, "OWED F={} mark taken: {} re-queued", f, n);
+}
+
+void COutputWorker::RefreshTarget(const DISPLAYSTATE::ModeFacts& mode)
+{
+  std::lock_guard listLock(m_listMutex);
+  if ((m_gapF || m_markOwedF) && !mode.strId.empty())
+    m_pinnedOutput = mode;
 }
 
 uint32_t COutputWorker::BusyT() const

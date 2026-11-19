@@ -1627,6 +1627,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (aml_transaction_loss_in_start() && job.kind == OUTPUT::DriveReply::DONE &&
       (job.start || (job.own && job.originRm)))
     RecordVideoModeAtCommit(job.res, job.id);
+  // 5.E2-12b-2 (r2 M-1): a committed set (not a Restore) refreshes a gap's / an owed mark's target
+  if (job.kind == OUTPUT::DriveReply::DONE && !job.hotplug && aml_disc_screen_hold())
+    OUTPUT::COutputWorker::Get().RefreshTarget(DISPLAYSTATE::FactsOf(job.res));
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
