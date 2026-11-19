@@ -870,6 +870,13 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
       why = "held record";
       return Verdict::HELD_LIST;
     }
+    // gate re-check DECISION: a pick on a held screen takes effect at the next film (folded into
+    // its start), never as a set on the screen
+    if (o == "user-pick")
+    {
+      why = "held record: pending";
+      return Verdict::HELD_PICK;
+    }
   }
   // Back's own set is never deferred (E2-12a M-7)
   if (windowExit)
@@ -960,6 +967,22 @@ COutputWorker::SHeldClear COutputWorker::ClearHeld(uint32_t f, const char* why, 
       InsertByIdLocked(lane, std::move(job));
     }
     m_heldList.clear();
+    if (m_heldPick)
+    {
+      Job& job = m_heldPick->second;
+      if (drop)
+      {
+        ++counts.dropped;
+        drops.emplace_back(std::move(job.onVerdict), job.reqId);
+      }
+      else
+      {
+        job.replayed = true;
+        ++counts.replayed;
+        InsertByIdLocked(m_heldPick->first, std::move(job));
+      }
+      m_heldPick.reset();
+    }
     counts.mainDropped = m_heldDroppedMain;
     m_heldF = 0;
     m_heldOutput.reset();
@@ -981,29 +1004,6 @@ std::optional<DISPLAYSTATE::ModeFacts> COutputWorker::HeldOutput(uint32_t f) con
   if (!f || m_heldF != f || !m_heldOutput || m_heldOutput->strId.empty())
     return std::nullopt;
   return m_heldOutput;
-}
-
-void COutputWorker::ReplaceHeldOutput(const DISPLAYSTATE::ModeFacts& mode)
-{
-  uint32_t f = 0;
-  {
-    std::lock_guard listLock(m_listMutex);
-    if (!m_heldF)
-      return;
-    f = m_heldF;
-    m_heldOutput = mode;
-  }
-  CLog::Log(LOGINFO, "HELD F={} record held at {} (a pick)", f, DISPLAYSTATE::FactsString(mode));
-}
-
-bool COutputWorker::RequestsQueued(uint32_t f) const
-{
-  std::unique_lock lock(m_mutex);
-  for (const Lane l : {Lane::MIDPLAY, Lane::SETTINGS})
-    for (const Job& job : m_lanes[static_cast<size_t>(l)])
-      if (job.reqId && job.reqF == f)
-        return true;
-  return false;
 }
 
 uint32_t COutputWorker::BusyT() const
@@ -1104,15 +1104,41 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
     else
     {
       const bool abort = outcome == DeferOutcome::STOP || outcome == DeferOutcome::NEXT_FILE;
+      const bool noVideo = outcome == DeferOutcome::NO_VIDEO;
       // code review r2 N-2: only the closing file's requests
       std::vector<std::pair<Lane, Job>> kept;
       for (auto& [lane, job] : m_deferred)
       {
         if (job.reqF != f)
           kept.emplace_back(lane, std::move(job));
+        // gate re-check DECISION (row 3b): nothing replays; the newest pick pends on the held record,
+        // a VS10 press is held with it, a main decision is dropped (the clear re-raises RM)
+        else if (noVideo && std::string_view(job.origin) == "user-pick")
+        {
+          if (m_heldPick && m_heldPick->second.reqId > job.reqId)
+          {
+            ++counts.dropped;
+            drops.emplace_back(std::move(job.onVerdict), job.reqId);
+            continue;
+          }
+          if (m_heldPick)
+          {
+            ++counts.dropped;
+            drops.emplace_back(std::move(m_heldPick->second.onVerdict), m_heldPick->second.reqId);
+          }
+          m_heldPick.emplace(lane, std::move(job));
+          ++counts.folded;
+        }
+        else if (noVideo && std::string_view(job.origin) == "vs10")
+        {
+          m_heldList.emplace_back(lane, std::move(job));
+          ++counts.folded;
+        }
         else if (abort || std::string_view(job.origin) == "main-decision")
         {
           counts.mainDropped |= std::string_view(job.origin) == "main-decision";
+          if (noVideo && std::string_view(job.origin) == "main-decision")
+            m_heldDroppedMain = true;
           ++counts.dropped;
           drops.push_back({std::move(job.onVerdict), job.reqId, job.reqF});
         }
@@ -1549,6 +1575,7 @@ void COutputWorker::Process()
       const char* origin = job.origin;
       std::shared_ptr<Result> result = job.result;
       uint32_t deferT = 0;
+      std::optional<std::pair<VerdictFn, uint64_t>> olderPick;
       {
         std::lock_guard listLock(m_listMutex);
         verdict = DeferVerdictLocked(job, UnpackWord(value), why);
@@ -1559,6 +1586,13 @@ void COutputWorker::Process()
           m_after.emplace_back(jobLane, std::move(job));
         else if (verdict == Verdict::HELD_LIST)
           m_heldList.emplace_back(jobLane, std::move(job));
+        else if (verdict == Verdict::HELD_PICK)
+        {
+          // newest wins: the older pending pick is answered dropped (after the release)
+          if (m_heldPick)
+            olderPick.emplace(std::move(m_heldPick->second.onVerdict), m_heldPick->second.reqId);
+          m_heldPick.emplace(jobLane, std::move(job));
+        }
         else if (verdict == Verdict::DROP)
           onVerdict = std::move(job.onVerdict);
       }
@@ -1579,6 +1613,11 @@ void COutputWorker::Process()
           std::lock_guard listLock(m_listMutex);
           onVerdict = m_heldList.back().second.onVerdict;
         }
+        else if (verdict == Verdict::HELD_PICK)
+        {
+          std::lock_guard listLock(m_listMutex);
+          onVerdict = m_heldPick->second.onVerdict;
+        }
         if (result)
         {
           result->notRun = true;
@@ -1587,17 +1626,21 @@ void COutputWorker::Process()
         }
         lock.unlock();
         const DeferVerdict kind =
-            verdict == Verdict::DEFER                                     ? DeferVerdict::DEFERRED
-            : verdict == Verdict::HOLD || verdict == Verdict::HELD_LIST ? DeferVerdict::HELD
-                                                                          : DeferVerdict::DROPPED;
+            verdict == Verdict::DEFER ? DeferVerdict::DEFERRED
+            : verdict == Verdict::HOLD || verdict == Verdict::HELD_LIST ||
+                    verdict == Verdict::HELD_PICK
+                ? DeferVerdict::HELD
+                : DeferVerdict::DROPPED;
         CLog::Log(LOGINFO, "DEFER T={} id={} {} F={}: {}{}", deferT, reqId, origin, reqF,
                   kind == DeferVerdict::DEFERRED   ? "deferred"
-                  : verdict == Verdict::HELD_LIST ? "held"
+                  : verdict == Verdict::HELD_LIST || verdict == Verdict::HELD_PICK ? "held"
                   : kind == DeferVerdict::HELD     ? "held (after-list)"
                                                    : "dropped",
                   why.empty() ? "" : " (" + why + ")");
         if (onVerdict)
           onVerdict(kind, reqId, reqF);
+        if (olderPick && olderPick->first)
+          olderPick->first(DeferVerdict::DROPPED, olderPick->second, reqF);
         lock.lock();
         continue;
       }

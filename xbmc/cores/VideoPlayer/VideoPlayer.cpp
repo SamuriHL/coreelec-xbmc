@@ -3569,7 +3569,7 @@ void CVideoPlayer::TxNoVideoReset(const char* why)
   m_txNoVideoSince = {};
   m_txNoVideoStep = nullptr;
   m_txNoVideoWaitState = 0;
-  m_txNoVideoHeld = m_txNoVideoOwedPosted = m_txNoVideoWaitLogged = m_txNoVideoClosed = false;
+  m_txNoVideoHeld = m_txNoVideoOwedPosted = m_txNoVideoWaitLogged = false;
   m_txNoVideoWire.reset();
 }
 
@@ -3598,24 +3598,6 @@ void CVideoPlayer::TxNoVideoStepPass()
       TxOpen() ? m_txSettle.has_value() : (m_txNoVideoCarry && m_txNoVideoCarry->settled);
   // Q1 (r2 M-A): the held mode is W's last committed mode; never an empty one (code review M-1):
   // the job's row if it committed, else the wire mode noted when the hold began, else a wait
-  if (m_txNoVideoClosed)
-  {
-    // code review H-2 (zero tolerance): the start is closed; its replayed requests commit and
-    // settle before CN opens, so no re-lock comes with the sink open
-    if (OUTPUT::COutputWorker::Get().RequestsQueued(F) || OUTPUT::COutputWorker::Get().BusyT() ||
-        (winSystem && winSystem->SettleArmed()))
-    {
-      if (!std::exchange(m_txNoVideoWaitLogged, true))
-        CLog::Log(LOGINFO, "TXSTART row 3b waits for the replayed requests");
-      return;
-    }
-    CLog::Log(LOGINFO, "TXSTART row 3b: CN opens (the replays done)");
-    TxNoVideoReset("row 3b");
-    m_renderManager.SetTxStartHeld(false);
-    m_discTime.SetTxHeld(false);
-    OpenStartGate("transaction: no-video start ended", false);
-    return;
-  }
   if (!m_txNoVideoHeld)
   {
     TxNoVideoNoteWire();
@@ -3671,15 +3653,32 @@ void CVideoPlayer::TxNoVideoStepPass()
             "TRANSACTION row 3b T={} at {} (wait state {}, {} ms, {}): record held at {}",
             m_txWordT.load(), point, waitState, graceMs, open ? "open" : "carried",
             held ? DISPLAYSTATE::FactsString(*held) : std::string("(none)"));
+  // gate re-check DECISION: nothing replays at the step. The window (open or carried) closes with
+  // its newest pick pending on the held record (applied at the clear, folded into the next start),
+  // a VS10 press held, a main decision dropped; so no set can commit between here and CN's open
+  // but the owed Restore the waits above saw paid and settled
+  if (m_txDeferF)
+  {
+    const OUTPUT::COutputWorker::SDeferCounts c = OUTPUT::COutputWorker::Get().DeferClose(
+        m_txDeferF, OUTPUT::COutputWorker::DeferOutcome::NO_VIDEO);
+    CLog::Log(LOGINFO, "TXSTART T={} StartDone (no-video): {} pending on the held record, {} dropped",
+              m_txWordT.load(), c.folded, c.dropped);
+    m_txDeferF = 0;
+    m_txCarriedAt = {};
+    m_txStickyTarget.reset();
+    m_txStickyReqId = 0;
+    m_txAmendPending = false;
+  }
   // D2.5/D2.6: the start ends with nothing owed; replies still queued are logged only
   if (open)
     EndTransactionToLegacy("no-video screen", CRenderManager::TxHow::NONE,
                            CRenderManager::TxNeed::NONE_NEEDED);
   if (job)
     job->ClearSink();
-  // the close's replays (12a's StartDone) are queued now: CN waits for them (next passes)
-  m_txNoVideoClosed = true;
-  m_txNoVideoWaitLogged = false;
+  TxNoVideoReset("row 3b");
+  m_renderManager.SetTxStartHeld(false);
+  m_discTime.SetTxHeld(false);
+  OpenStartGate("transaction: no-video start ended", false);
 }
 
 // 5.E2-12a D4 (docs/phase5_e2_12_impl.md): StartDone, the window's only close

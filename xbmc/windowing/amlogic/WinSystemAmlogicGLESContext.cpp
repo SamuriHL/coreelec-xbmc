@@ -161,7 +161,6 @@ struct SDriveJob
   //! this after its wait. deferredReply: its later run's reply is a late one
   OUTPUT::DriveReply verdict{OUTPUT::DriveReply::NONE};
   bool deferredReply{false};
-  bool pickOrigin{false}; //!< 5.E2-12b: a user-pick (on a held screen its commit is the held mode)
   bool guiSetKept{false}; //!< 5.E2-8b: GC's in-flight count kept at the give-up (W ends it)
 };
 } // namespace KODI::WINDOWING::AML
@@ -1057,7 +1056,6 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   const uint64_t postedBefore = m_drivePosted;
   m_drivePosted = job->id;
   const bool pickOrigin = origin && std::string_view(origin) == "user-pick";
-  job->pickOrigin = pickOrigin;
   // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
   job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
               : job->originRm ? OUTPUT::Lane::MIDPLAY
@@ -1629,9 +1627,6 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (aml_transaction_loss_in_start() && job.kind == OUTPUT::DriveReply::DONE &&
       (job.start || (job.own && job.originRm)))
     RecordVideoModeAtCommit(job.res, job.id);
-  // 5.E2-12b Q2: a pick committed on a held no-video screen becomes its held mode
-  if (job.pickOrigin && job.kind == OUTPUT::DriveReply::DONE && aml_disc_screen_hold())
-    OUTPUT::COutputWorker::Get().ReplaceHeldOutput(DISPLAYSTATE::FactsOf(job.res));
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end

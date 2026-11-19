@@ -1181,7 +1181,6 @@ protected:
   bool m_txNoVideoHeld = false;
   bool m_txNoVideoOwedPosted = false;
   bool m_txNoVideoWaitLogged = false;
-  bool m_txNoVideoClosed = false; //!< code review H-2: the start closed, its replays still running
   bool m_txNoVideoCapped = false; //!< code review L-3: the cap opened this set's gate
   std::shared_ptr<DISPLAYSTATE::ModeFacts> m_txNoVideoWire; //!< the wire mode when the hold began
   //! gate hook transaction_novideo: the first later Blu-ray set of the file is treated as having no
