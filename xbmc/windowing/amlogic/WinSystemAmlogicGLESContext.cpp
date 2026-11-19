@@ -2214,8 +2214,14 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     NoteAppliedReply(*job);
     if (aml_transaction_fold() ? !newestRun : job->id != m_drivePosted)
     {
-      CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
-                job->id, OUTPUT::DriveReplyName(job->kind), m_drivePosted);
+      if (aml_transaction_fold())
+        CLog::Log(LOGINFO,
+                  "OUTPUTDRIVE request {} late reply {} not applied: an older run ({} < {})",
+                  job->id, OUTPUT::DriveReplyName(job->kind), job->runOrdinal,
+                  m_appliedSet.runOrdinal);
+      else
+        CLog::Log(LOGERROR, "OUTPUTDRIVE request {} late reply {} not applied: request {} since",
+                  job->id, OUTPUT::DriveReplyName(job->kind), m_drivePosted);
       continue;
     }
     // 5.B3-7b (O2, r6 M1): a torn-down late reply rebuilds only at C's current epoch; a W Restore

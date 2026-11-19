@@ -3585,6 +3585,15 @@ void CVideoPlayer::TxDeferPass()
     // decision's sticky target; only a closed window or a START replays it
     if (!m_txDeferF || m_txStarted)
     {
+      // gate run 2: picks in the lead also supersede each other (one replay, the newest)
+      if (m_txDeferF && m_txStickyReqId && m_txStickyReqId != e.reqId)
+      {
+        OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+        CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId,
+                  e.reqId);
+      }
+      if (m_txDeferF)
+        m_txStickyReqId = e.reqId;
       CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): replayed at StartDone", e.reqId,
                 e.res.strMode);
       continue;
