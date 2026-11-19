@@ -234,7 +234,7 @@ public:
     DROPPED,
   };
   //! the poster's callback for a request W did not run at its dequeue; on W or P, no lock held
-  using VerdictFn = std::function<void(DeferVerdict verdict, uint64_t reqId)>;
+  using VerdictFn = std::function<void(DeferVerdict verdict, uint64_t reqId, uint32_t reqF)>;
   //! Post with a verdict callback
   void PostRequest(Lane lane, const char* name, std::function<void()> fn, VerdictFn onVerdict);
   //! Run with a verdict callback; false (fn not run now) when W deferred, held or dropped it.

@@ -975,7 +975,13 @@ void COutputWorker::DeferMarkFolded(uint64_t reqId)
 COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome outcome)
 {
   SDeferCounts counts;
-  std::vector<std::pair<VerdictFn, uint64_t>> drops;
+  struct SDrop
+  {
+    VerdictFn fn;
+    uint64_t reqId;
+    uint32_t reqF;
+  };
+  std::vector<SDrop> drops;
   uint32_t T = 0;
   {
     std::unique_lock lock(m_mutex);
@@ -1001,7 +1007,7 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
         {
           counts.mainDropped |= std::string_view(job.origin) == "main-decision";
           ++counts.dropped;
-          drops.emplace_back(std::move(job.onVerdict), job.reqId);
+          drops.push_back({std::move(job.onVerdict), job.reqId, job.reqF});
         }
         // a folded pick's effect is in the landed start's job; an exit replays it (a same-mode
         // set when the start had committed it)
@@ -1022,7 +1028,7 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
           if (it->second.reqF == f)
           {
             ++counts.dropped;
-            drops.emplace_back(std::move(it->second.onVerdict), it->second.reqId);
+            drops.push_back({std::move(it->second.onVerdict), it->second.reqId, it->second.reqF});
             it = m_after.erase(it);
           }
           else
@@ -1038,9 +1044,9 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
     }
     m_cond.notify_all();
   }
-  for (auto& [fn, id] : drops)
-    if (fn)
-      fn(DeferVerdict::DROPPED, id);
+  for (auto& drop : drops)
+    if (drop.fn)
+      drop.fn(DeferVerdict::DROPPED, drop.reqId, drop.reqF);
   return counts;
 }
 
@@ -1472,7 +1478,7 @@ void COutputWorker::Process()
                                                  : "dropped",
                   why.empty() ? "" : " (" + why + ")");
         if (onVerdict)
-          onVerdict(kind, reqId);
+          onVerdict(kind, reqId, reqF);
         lock.lock();
         continue;
       }

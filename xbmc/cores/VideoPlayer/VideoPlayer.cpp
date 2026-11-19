@@ -3569,13 +3569,27 @@ void CVideoPlayer::TxDeferPass()
     return;
   const uint32_t wordF =
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+  // the last pick wins (code review H-4, r2 N-1): by the request id alone, before and after START
+  const auto supersede = [this](uint64_t newer)
+  {
+    if (m_txStickyReqId && m_txStickyReqId != newer)
+    {
+      OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
+      CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId, newer);
+    }
+    m_txStickyReqId = newer;
+  };
   for (const DISPLAYSTATE::STxInboxEntry& e : DISPLAYSTATE::TakeTxInbox())
   {
+    // code review r2 addendum: another file's entry (a stale one after a Next) is never this
+    // file's target or trigger
+    if (e.f && e.f != wordF)
+    {
+      CLog::Log(LOGINFO, "NOTICE request {} of F={} ignored (F={} open)", e.reqId, e.f, wordF);
+      continue;
+    }
     if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_RAN)
     {
-      // code review L-4: another file's press raises nothing here
-      if (e.f && e.f != wordF)
-        continue;
       // r2 M-2: the replayed press has written the VS10 mode; the wire is re-decided now
       CLog::Log(LOGINFO, "TXSTART vs10 request {} ran: its trigger raised", e.reqId);
       TriggerVs10Resolution();
@@ -3586,27 +3600,14 @@ void CVideoPlayer::TxDeferPass()
     if (!m_txDeferF || m_txStarted)
     {
       // gate run 2: picks in the lead also supersede each other (one replay, the newest)
-      if (m_txDeferF && m_txStickyReqId && m_txStickyReqId != e.reqId)
-      {
-        OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
-        CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId,
-                  e.reqId);
-      }
       if (m_txDeferF)
-        m_txStickyReqId = e.reqId;
+        supersede(e.reqId);
       CLog::Log(LOGINFO, "NOTICE user-pick id={} ({}): replayed at StartDone", e.reqId,
                 e.res.strMode);
       continue;
     }
-    // code review H-4: the last pick wins; an older one is superseded (never replayed)
-    // code review r2 N-1: by the id alone (a no-amend or a bound resets the target, not the id)
-    if (m_txStickyReqId && m_txStickyReqId != e.reqId)
-    {
-      OUTPUT::COutputWorker::Get().DeferMarkFolded(m_txStickyReqId);
-      CLog::Log(LOGINFO, "NOTICE user-pick id={} superseded by id={}", m_txStickyReqId, e.reqId);
-    }
+    supersede(e.reqId);
     m_txStickyTarget = e.res;
-    m_txStickyReqId = e.reqId;
     // decided and not posted yet (WAIT_GUI): amended once posted
     m_txAmendPending =
         TxOpen() && (m_txStep == TxStep::POSTED || m_txStep == TxStep::WAIT_GUI);

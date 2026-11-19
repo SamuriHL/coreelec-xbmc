@@ -1064,7 +1064,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   const auto posted = std::chrono::steady_clock::now();
   // 5.E2-12a D0.3: a request W defers, holds or drops answers main at once
   const auto onVerdict = [job, pickOrigin](OUTPUT::COutputWorker::DeferVerdict verdict,
-                                           uint64_t reqId)
+                                           uint64_t reqId, uint32_t reqF)
   {
     using V = OUTPUT::COutputWorker::DeferVerdict;
     {
@@ -1081,6 +1081,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
       DISPLAYSTATE::STxInboxEntry entry;
       entry.kind = DISPLAYSTATE::STxInboxEntry::Kind::PICK_DEFERRED;
       entry.reqId = reqId;
+      entry.f = reqF;
       entry.res = job->res;
       DISPLAYSTATE::PostTxInbox(std::move(entry));
     }
