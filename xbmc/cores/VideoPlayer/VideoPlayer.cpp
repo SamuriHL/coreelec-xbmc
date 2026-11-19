@@ -3539,6 +3539,103 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     TxStartDone(static_cast<int>(Outcome::LEGACY), site);
 }
 
+// 5.E2-12b D1, D2 (docs/phase5_e2_12b_impl.md)
+bool CVideoPlayer::TxNoVideoInStart() const
+{
+  if (!m_startGateShut)
+    return false;
+  if (TxOpen())
+    return true;
+  return m_txNoVideoCarry && m_txNoVideoCarry->job &&
+         m_txNoVideoCarry->job->state.load() == DISPLAYSTATE::StartJobState::COMMITTED;
+}
+
+void CVideoPlayer::TxNoVideoReset(const char* why)
+{
+  if (m_txNoVideoHold || m_txNoVideoStep)
+    CLog::Log(LOGINFO, "TXSTART row 3b state reset ({})", why);
+  m_txNoVideoCarry.reset();
+  m_txNoVideoHold = false;
+  m_txNoVideoSince = {};
+  m_txNoVideoStep = nullptr;
+  m_txNoVideoWaitState = 0;
+  m_txNoVideoHeld = m_txNoVideoOwedPosted = m_txNoVideoWaitLogged = false;
+}
+
+// row 3b's step (D2.3-D2.6), a P-loop state: the waits, then the end
+void CVideoPlayer::TxNoVideoStepPass()
+{
+  if (!m_txNoVideoStep)
+    return;
+  using State = DISPLAYSTATE::StartJobState;
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  const uint32_t F =
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+  const std::shared_ptr<DISPLAYSTATE::SStartJob> job =
+      TxOpen() ? m_txJob : (m_txNoVideoCarry ? m_txNoVideoCarry->job : nullptr);
+  const bool committed = job && job->state.load() == State::COMMITTED;
+  const bool settled =
+      TxOpen() ? m_txSettle.has_value() : (m_txNoVideoCarry && m_txNoVideoCarry->settled);
+  // Q1 (r2 M-A): the held mode is W's last committed mode
+  if (!m_txNoVideoHeld)
+  {
+    DISPLAYSTATE::ModeFacts mode;
+    if (committed)
+      mode = DISPLAYSTATE::FactsOf(job->res);
+    else if (const auto state = DISPLAYSTATE::Get(); state && state->connected)
+      mode = {state->strId, state->screenWidth, state->screenHeight, state->refresh,
+              state->dwFlags};
+    OUTPUT::COutputWorker::Get().HoldRecord(F, mode);
+    m_txNoVideoHeld = true;
+  }
+  const char* waitFor = nullptr;
+  if (committed && !settled)
+    waitFor = "the Start job's SettleDone";
+  else if (winSystem &&
+           (winSystem->RestoreOwed() || winSystem->IsLostSpanOpen() || winSystem->SettleArmed()))
+  {
+    // r1 H-6, r2 H-B: the owed Restore (now to the held mode) commits and settles first
+    if (winSystem->RestoreOwed() && !winSystem->IsLostSpanOpen() && !m_txNoVideoOwedPosted)
+    {
+      m_txNoVideoOwedPosted = true;
+      winSystem->PostOwedRestoreCheck("row 3b", std::chrono::milliseconds(0));
+    }
+    waitFor = "the owed Restore";
+  }
+  else if (OUTPUT::COutputWorker::Get().BusyT())
+    waitFor = "W's job";
+  if (waitFor)
+  {
+    if (!std::exchange(m_txNoVideoWaitLogged, true))
+      CLog::Log(LOGINFO, "TXSTART T={} row 3b waits for {}", m_txWordT.load(), waitFor);
+    return;
+  }
+  const char* point = m_txNoVideoStep;
+  const int waitState = m_txNoVideoWaitState;
+  const int64_t graceMs =
+      m_txNoVideoSince == std::chrono::steady_clock::time_point{}
+          ? 0
+          : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                  m_txNoVideoSince)
+                .count();
+  const bool open = TxOpen();
+  const auto held = OUTPUT::COutputWorker::Get().HeldOutput(F);
+  CLog::Log(LOGINFO,
+            "TRANSACTION row 3b T={} at {} (wait state {}, {} ms, {}): record held at {}",
+            m_txWordT.load(), point, waitState, graceMs, open ? "open" : "carried",
+            held ? DISPLAYSTATE::FactsString(*held) : std::string("(none)"));
+  // D2.5/D2.6: the start ends with nothing owed; replies still queued are logged only
+  if (open)
+    EndTransactionToLegacy("no-video screen", CRenderManager::TxHow::NONE,
+                           CRenderManager::TxNeed::NONE_NEEDED);
+  if (job)
+    job->ClearSink();
+  TxNoVideoReset("row 3b");
+  m_renderManager.SetTxStartHeld(false);
+  m_discTime.SetTxHeld(false);
+  OpenStartGate("transaction: no-video start ended", false);
+}
+
 // 5.E2-12a D4 (docs/phase5_e2_12_impl.md): StartDone, the window's only close
 void CVideoPlayer::TxStartDone(int outcome, const char* why)
 {
@@ -4727,6 +4824,9 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
   if (!m_txJob || r.T != m_txJob->T || !TxOpen() || m_txStep != TxStep::POSTED)
   {
     CLog::Log(LOGINFO, "TXSTART T={} {} after the start ended: logged", r.T, what);
+    // 5.E2-12b D2.2: the carried committed job's SettleDone ends row 3b's wait for it
+    if (m_txNoVideoCarry && r.T == m_txNoVideoCarry->T && r.kind == STxReply::Kind::SETTLE_DONE)
+      m_txNoVideoCarry->settled = true;
     // code review A-M1: a job GC dropped after a `left` exit took it past its CAS answers
     // nobody; its SettleDone{dropped} resolves the outcome as `failed` (logged if resolved)
     if (r.kind == STxReply::Kind::SETTLE_DONE &&
@@ -5495,6 +5595,22 @@ void CVideoPlayer::CheckStartGate()
   // 5.E2-10 §3: no pass on a superseded job
   if (!m_startGateShut || m_txSuperseded)
     return;
+  // 5.E2-12b D1 (r2 H-A): only row 3b's step opens a no-video hold; CN's 12 s cap, counted from
+  // the previous arm and re-armed while the display is lost, is its one bound
+  if (m_txNoVideoHold)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+    if (m_displayLost || m_txInSpan || (winSystem && winSystem->IsLostSpanOpen()))
+    {
+      m_startGateSince = now;
+      return;
+    }
+    if (now - m_startGateSince < 12s)
+      return;
+    CLog::Log(LOGWARNING, "TRANSACTION no-video hold: CN's 12 s cap opens the gate");
+    TxNoVideoReset("cap");
+  }
   using State = CRenderManager::ModeFirstState;
   // the state first: a mode set that loses the display lands before its count
   State state = m_renderManager.GetModeFirstState(m_startGateGen);
