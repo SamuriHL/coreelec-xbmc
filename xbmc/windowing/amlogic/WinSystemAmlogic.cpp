@@ -1591,7 +1591,11 @@ void CWinSystemAmlogic::HotplugJob(SHotplugReply& reply,
   if (startRow)
     CLog::Log(LOGINFO, "HOTPLUG job {}: restore target the start's committed row {}",
               reply.replyId, DISPLAYSTATE::FactsString(*startRow));
-  const std::optional<DISPLAYSTATE::ModeFacts>& videoMode = startRow ? startRow : m_wVideoMode;
+  // 5.E2-12b D0: a held no-video screen's mode first (W's own copy, list lock only)
+  const std::optional<DISPLAYSTATE::ModeFacts> heldMode = OUTPUT::COutputWorker::Get().HeldOutput(
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f);
+  const std::optional<DISPLAYSTATE::ModeFacts>& videoMode =
+      heldMode ? heldMode : (startRow ? startRow : m_wVideoMode);
   if (videoMode)
   {
     for (size_t i = 0; i < rows.size(); ++i)

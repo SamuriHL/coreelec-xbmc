@@ -846,6 +846,23 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
                                                          std::string& why) const
 {
   using enum WordState;
+  // 5.E2-12b D0 (Q2): a held no-video screen keeps its mode
+  if (m_heldF && job.reqF == m_heldF && job.origin && aml_disc_screen_hold())
+  {
+    const std::string_view o(job.origin);
+    if (o == "window-exit" || o == "main-decision")
+    {
+      m_heldDroppedMain |= o == "main-decision";
+      why = "held record";
+      return Verdict::DROP;
+    }
+    if (o == "vs10")
+    {
+      why = "held record";
+      return Verdict::HELD_LIST;
+    }
+    return Verdict::RUN;
+  }
   if (!DeferrableOrigin(job.origin))
     return Verdict::RUN;
   if (m_abortF && job.reqF == m_abortF && job.reqId <= m_abortReqId)
@@ -903,6 +920,81 @@ void COutputWorker::RequeueAfterLocked()
     m_after.clear();
   }
   CLog::Log(LOGINFO, "DEFER after-list re-queued: {}", n);
+}
+
+void COutputWorker::HoldRecord(uint32_t f, const DISPLAYSTATE::ModeFacts& mode)
+{
+  {
+    std::lock_guard listLock(m_listMutex);
+    m_heldF = f;
+    m_heldOutput = mode;
+    m_heldDroppedMain = false;
+  }
+  CLog::Log(LOGINFO, "HELD F={} record held at {}", f, DISPLAYSTATE::FactsString(mode));
+}
+
+COutputWorker::SHeldClear COutputWorker::ClearHeld(uint32_t f, const char* why, bool drop)
+{
+  SHeldClear counts;
+  std::vector<std::pair<VerdictFn, uint64_t>> drops;
+  {
+    std::unique_lock lock(m_mutex);
+    std::lock_guard listLock(m_listMutex);
+    if (!f || m_heldF != f)
+      return counts;
+    for (auto& [lane, job] : m_heldList)
+    {
+      if (drop)
+      {
+        ++counts.dropped;
+        drops.emplace_back(std::move(job.onVerdict), job.reqId);
+        continue;
+      }
+      // r2 M-C: a replayed VS10 press posts `vs10 ran` (its trigger)
+      job.replayed = true;
+      ++counts.replayed;
+      InsertByIdLocked(lane, std::move(job));
+    }
+    m_heldList.clear();
+    counts.mainDropped = m_heldDroppedMain;
+    m_heldF = 0;
+    m_heldOutput.reset();
+    m_heldDroppedMain = false;
+    m_cond.notify_all();
+  }
+  for (auto& [fn, id] : drops)
+    if (fn)
+      fn(DeferVerdict::DROPPED, id, f);
+  CLog::Log(LOGINFO, "HELD F={} cleared ({}): {} replayed, {} dropped{}", f, why, counts.replayed,
+            counts.dropped, counts.mainDropped ? ", a main decision dropped" : "");
+  return counts;
+}
+
+std::optional<DISPLAYSTATE::ModeFacts> COutputWorker::HeldOutput(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  if (!f || m_heldF != f)
+    return std::nullopt;
+  return m_heldOutput;
+}
+
+void COutputWorker::ReplaceHeldOutput(const DISPLAYSTATE::ModeFacts& mode)
+{
+  uint32_t f = 0;
+  {
+    std::lock_guard listLock(m_listMutex);
+    if (!m_heldF)
+      return;
+    f = m_heldF;
+    m_heldOutput = mode;
+  }
+  CLog::Log(LOGINFO, "HELD F={} record held at {} (a pick)", f, DISPLAYSTATE::FactsString(mode));
+}
+
+uint32_t COutputWorker::BusyT() const
+{
+  std::lock_guard listLock(m_listMutex);
+  return m_busy ? m_busyT : 0;
 }
 
 COutputWorker::SDeferKey COutputWorker::DeferOpen(uint32_t f, uint32_t t)
@@ -1447,6 +1539,8 @@ void COutputWorker::Process()
           m_deferred.emplace_back(jobLane, std::move(job));
         else if (verdict == Verdict::HOLD)
           m_after.emplace_back(jobLane, std::move(job));
+        else if (verdict == Verdict::HELD_LIST)
+          m_heldList.emplace_back(jobLane, std::move(job));
         else if (verdict == Verdict::DROP)
           onVerdict = std::move(job.onVerdict);
       }
@@ -1462,6 +1556,11 @@ void COutputWorker::Process()
           std::lock_guard listLock(m_listMutex);
           onVerdict = m_after.back().second.onVerdict;
         }
+        else if (verdict == Verdict::HELD_LIST)
+        {
+          std::lock_guard listLock(m_listMutex);
+          onVerdict = m_heldList.back().second.onVerdict;
+        }
         if (result)
         {
           result->notRun = true;
@@ -1469,13 +1568,15 @@ void COutputWorker::Process()
           m_doneCond.notify_all();
         }
         lock.unlock();
-        const DeferVerdict kind = verdict == Verdict::DEFER  ? DeferVerdict::DEFERRED
-                                  : verdict == Verdict::HOLD ? DeferVerdict::HELD
-                                                             : DeferVerdict::DROPPED;
+        const DeferVerdict kind =
+            verdict == Verdict::DEFER                                     ? DeferVerdict::DEFERRED
+            : verdict == Verdict::HOLD || verdict == Verdict::HELD_LIST ? DeferVerdict::HELD
+                                                                          : DeferVerdict::DROPPED;
         CLog::Log(LOGINFO, "DEFER T={} id={} {} F={}: {}{}", deferT, reqId, origin, reqF,
-                  kind == DeferVerdict::DEFERRED ? "deferred"
-                  : kind == DeferVerdict::HELD   ? "held (after-list)"
-                                                 : "dropped",
+                  kind == DeferVerdict::DEFERRED   ? "deferred"
+                  : verdict == Verdict::HELD_LIST ? "held"
+                  : kind == DeferVerdict::HELD     ? "held (after-list)"
+                                                   : "dropped",
                   why.empty() ? "" : " (" + why + ")");
         if (onVerdict)
           onVerdict(kind, reqId, reqF);
@@ -1932,7 +2033,7 @@ namespace
 {
 thread_local const char* t_requestOrigin = nullptr;
 // start-recovery: a Start adopt's recovery set (E2-8b code review B-L2), never a hotplug's
-constexpr const char* REQUEST_ORIGINS[] = {"user-pick", "window-rule",    "test",
+constexpr const char* REQUEST_ORIGINS[] = {"user-pick", "window-rule", "window-exit", "test",
                                            "recovery",  "start-recovery", "off-main (unscoped)"};
 } // namespace
 

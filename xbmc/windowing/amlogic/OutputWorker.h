@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "DisplayState.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -280,6 +282,23 @@ public:
   void DeferMarkFolded(uint64_t reqId);
   static bool DeferrableOrigin(const char* origin);
 
+  // 5.E2-12b D0 (docs/phase5_e2_12b_impl.md): a no-video disc screen's held record, keyed on F,
+  // under the list lock; P sets and clears it, W's verdict and Restore read it
+  struct SHeldClear
+  {
+    int replayed = 0;
+    int dropped = 0;
+    bool mainDropped = false;
+  };
+  void HoldRecord(uint32_t f, const DISPLAYSTATE::ModeFacts& mode);
+  //! replays the held VS10 presses (marked replayed) or, with drop, drops them
+  SHeldClear ClearHeld(uint32_t f, const char* why, bool drop);
+  std::optional<DISPLAYSTATE::ModeFacts> HeldOutput(uint32_t f) const;
+  //! W: a user-pick committed on a held screen becomes its held mode
+  void ReplaceHeldOutput(const DISPLAYSTATE::ModeFacts& mode);
+  //! the busy mark's T (0: W idle)
+  uint32_t BusyT() const;
+
 private:
   //! read, decide, CAS, log; a lost race re-reads and re-decides (bounded). True when applied
   bool WordApply(const std::function<SWordStep(const SWord&)>& decide,
@@ -335,6 +354,7 @@ private:
     DEFER,
     HOLD,
     DROP,
+    HELD_LIST, //!< 5.E2-12b: a VS10 press on a held screen, kept until the clear
   };
   Verdict DeferVerdictLocked(const Job& job, const SWord& word, std::string& why) const;
   //! a moved job back into its lane by request id (m_mutex held)
@@ -368,6 +388,11 @@ private:
   uint32_t m_deferT = 0; //!< its start (0: carried across a segment gap)
   bool m_deferPosted = false;
   uint32_t m_abortF = 0; //!< the ABORT floor: requests of the stopped file posted before it
+  // 5.E2-12b D0
+  uint32_t m_heldF = 0;
+  std::optional<DISPLAYSTATE::ModeFacts> m_heldOutput;
+  std::vector<std::pair<Lane, Job>> m_heldList;
+  mutable bool m_heldDroppedMain = false;
   uint64_t m_abortReqId = 0;
   uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job
   bool m_busy = false;

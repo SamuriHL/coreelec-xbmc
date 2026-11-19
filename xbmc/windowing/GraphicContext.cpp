@@ -392,7 +392,8 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
     if (allowResolutionChangeOnStop && !bTriggerUpdateRes)
     {
 #if defined(HAS_LIBAMCODEC)
-      OUTPUT::CRequestOrigin requestOrigin("window-rule");
+      // 5.E2-12b Q2: Back's own desktop set is `window-exit` (a held no-video screen drops it)
+      OUTPUT::CRequestOrigin requestOrigin(exiting ? "window-exit" : "window-rule");
       // 5.E2-8b D9: Back's own desktop set does not drop an open Start job
       std::optional<DISPLAYSTATE::CFullScreenExitSet> exitSet;
       if (exiting)

@@ -141,6 +141,10 @@ public:
   //! design §18.24 (P5-8): a lost display, held from the disconnect until a
   //! reset with the display connected again
   bool IsLostSpanOpen() const { return m_lostOpen.load(); }
+  //! 5.E2-12b D2.4: a Restore deferred to a start is still owed
+  bool RestoreOwed() const { return m_wRestoreOwed.load(); }
+  //! 5.E2-12b D2.4: W's SETTLE (a set's display reset) is armed
+  virtual bool SettleArmed() const { return false; }
   //! 5.E2-11 D1.1: the open Start job's T while it is not started (0: none)
   uint32_t UnstartedStartJobT() const;
   //! 5.E2-11 gate 2: T of the open start job before its commit (NOT_POSTED, QUEUED, PARKING), else 0

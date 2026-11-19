@@ -228,6 +228,9 @@ private:
   void SettleWaitsMainEnds();
   //! W only
   SSettle m_settle;
+  //! 5.E2-12b D2.4: m_settle.armed for P's no-video step (written beside it)
+  std::atomic_bool m_settleArmedPub{false};
+  bool SettleArmed() const override { return m_settleArmedPub.load(); }
   //! W, 5.V2-10: the request W's set job committed (DONE) or found no display for (NOT_COMMITTED)
   uint64_t m_settleCommitted{0};
   //! main: the request whose handler reached the reset (its new surface is up)

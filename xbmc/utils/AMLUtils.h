@@ -493,6 +493,9 @@ bool aml_transaction_loss_in_start();
 bool aml_transaction_fold();
 //! 5.E2-12a D2: fold and no transaction_skip amend
 bool aml_transaction_amend();
+//! 5.E2-12b (docs/phase5_e2_12b_impl.md Q5): no-video disc screens held: fold and no
+//! special://profile/discscreenhold_off (read once)
+bool aml_disc_screen_hold();
 //! 5.E2-7b (docs/phase5_e2_7b_impl.md D1, r3 N-L2): the frozen inbox's session predicate,
 //! latched once: the real loss path, no transaction_skip inbox, and the codec speed fix (no file
 //! is checked per frozen pass)

@@ -161,6 +161,7 @@ struct SDriveJob
   //! this after its wait. deferredReply: its later run's reply is a late one
   OUTPUT::DriveReply verdict{OUTPUT::DriveReply::NONE};
   bool deferredReply{false};
+  bool pickOrigin{false}; //!< 5.E2-12b: a user-pick (on a held screen its commit is the held mode)
   bool guiSetKept{false}; //!< 5.E2-8b: GC's in-flight count kept at the give-up (W ends it)
 };
 } // namespace KODI::WINDOWING::AML
@@ -1056,6 +1057,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   const uint64_t postedBefore = m_drivePosted;
   m_drivePosted = job->id;
   const bool pickOrigin = origin && std::string_view(origin) == "user-pick";
+  job->pickOrigin = pickOrigin;
   // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
   job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
               : job->originRm ? OUTPUT::Lane::MIDPLAY
@@ -1627,6 +1629,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (aml_transaction_loss_in_start() && job.kind == OUTPUT::DriveReply::DONE &&
       (job.start || (job.own && job.originRm)))
     RecordVideoModeAtCommit(job.res, job.id);
+  // 5.E2-12b Q2: a pick committed on a held no-video screen becomes its held mode
+  if (job.pickOrigin && job.kind == OUTPUT::DriveReply::DONE && aml_disc_screen_hold())
+    OUTPUT::COutputWorker::Get().ReplaceHeldOutput(DISPLAYSTATE::FactsOf(job.res));
   if (job.start)
     StartCommitted(job, committed);
   // step 7: the unpark, at the hold's end
@@ -1837,6 +1842,7 @@ void CWinSystemAmlogicGLESContext::SettleSupersede(const SDriveJob& job)
                 .count(),
             m_ledgerLost.load());
   settle.armed = false;
+  m_settleArmedPub = false;
   ++settle.gen;
   m_resetPending = false;
   if (const auto start = std::exchange(settle.start, nullptr))
@@ -1912,6 +1918,7 @@ void CWinSystemAmlogicGLESContext::SettleCancel(const char* why, bool lostGen)
   CLog::Log(LOGINFO, "SETTLE set={} request={} dropped: {}", settle.ledgerSet, settle.request,
             why);
   settle.armed = false;
+  m_settleArmedPub = false;
   ++settle.gen;
   m_resetPending = false;
   if (const auto start = std::exchange(settle.start, nullptr))
@@ -2009,6 +2016,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   SettleWaitsMainEnds();
   const uint64_t gen = ++settle.gen;
   settle.armed = true;
+  m_settleArmedPub = true;
   settle.request = job.id;
   settle.ledgerSet = job.ledgerSet;
   settle.lostGen = job.lostGen;
@@ -2032,6 +2040,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
                                               [this, gen] { SettleCheck(gen); }))
   {
     settle.armed = false;
+    m_settleArmedPub = false;
     if (settle.carried)
       carried.start = settle.start;
     settle.start.reset();
@@ -2139,6 +2148,7 @@ void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
     }
     SettleWaitsMainEnds();
     settle.armed = false;
+    m_settleArmedPub = false;
     m_resetPending = false;
     if (settle.delay.count() > 0)
       CLog::Log(LOGINFO, "CWinSystemAmlogic: display reset {} ms after the mode set ({})",

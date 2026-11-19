@@ -3270,6 +3270,12 @@ bool aml_transaction_amend()
   return aml_transaction_fold() && !aml_transaction_skip("amend");
 }
 
+bool aml_disc_screen_hold()
+{
+  static const bool off = XFILE::CFile::Exists("special://profile/discscreenhold_off");
+  return aml_transaction_fold() && !off;
+}
+
 bool aml_transaction_inbox()
 {
   return s_transactionLatched.load(std::memory_order_acquire) &&
