@@ -2944,6 +2944,15 @@ void CVideoPlayer::ArmStartGate(const char* where)
   const bool txFirstSet = !m_txGateSetSeen && !m_State.streamsReady;
   const bool reopenCandidate =
       arm && !txFirstSet && segClass != TxSegClass::NONE && aml_transaction_loss_base();
+  // 5.E2-12b D1 (R1, errata E1; r1 H-1, H-2): a no-video set of an open or carried committed start
+  // keeps the start and CN's gate: no later-set exit, no gate end; row 3b's step opens it
+  if (aml_disc_screen_hold() && !hasVideo && m_pInputBluray && TxNoVideoInStart())
+  {
+    m_txNoVideoHold = true;
+    CLog::Log(LOGINFO, "TRANSACTION no-video set, gate kept for T={} ({})", m_txWordT.load(),
+              TxOpen() ? "open" : "carried");
+    return;
+  }
   if (TxOpen() && !(m_txSuperseded && reopenCandidate))
     EndTransactionToLegacy("later set", CRenderManager::TxHow::OWED, CRenderManager::TxNeed::LATER);
   // 5.E2-8b D8 (r2 N-L8): a KEEPALIVE reuse later set never configures: the owed mark of the
@@ -3151,6 +3160,9 @@ void CVideoPlayer::TxSupersede(TxSegClass cls)
   CLog::Log(LOGINFO, "TXSTART set={} T={} row 3: reopen ({}) after the job's commit: ended to "
                      "legacy",
             m_txEngagedGen, m_txJob->T, TxSegClassName(cls));
+  // 5.E2-12b D2.2 (r1 H-2): the committed job's SettleDone stays visible across the transition
+  if (aml_disc_screen_hold() && m_txJob)
+    m_txNoVideoCarry = STxNoVideoCarry{m_txJob, m_txJob->T, m_txSettle.has_value()};
   EndTransactionToLegacy("segment transition", CRenderManager::TxHow::OWED,
                          CRenderManager::TxNeed::LATER);
 }
@@ -6718,6 +6730,7 @@ void CVideoPlayer::Process()
       SampleWord();
     TxSpanPass();
     TxDeferPass();
+    TxNoVideoStepPass();
     // check display lost
     if (m_displayLost)
     {
@@ -6820,8 +6833,25 @@ void CVideoPlayer::Process()
       // the disc's graphics until it starts one (see Prepare)
       if (const int waitState = DiscWaitState(true))
       {
+        // 5.E2-12b D2 point (1): the wait (1 or 2) for 3 s inside a start is row 3b (Q3's own timer)
+        if (aml_disc_screen_hold() && TxNoVideoInStart())
+        {
+          m_txNoVideoHold = true;
+          const auto now = std::chrono::steady_clock::now();
+          if (m_txNoVideoSince == std::chrono::steady_clock::time_point{})
+          {
+            m_txNoVideoSince = now;
+            CLog::Log(LOGINFO, "TXSTART T={} row 3b grace starts (wait state {})",
+                      m_txWordT.load(), waitState);
+          }
+          else if (!m_txNoVideoStep && now - m_txNoVideoSince >= 3s)
+          {
+            m_txNoVideoStep = "wait";
+            m_txNoVideoWaitState = waitState;
+          }
+        }
         // 5.E2-8a (D5): a BD-J screen with no playlist (1) before START
-        if (waitState == 1 && TxOpen())
+        else if (waitState == 1 && TxOpen())
           EndTransactionToLegacy("no-playlist screen", CRenderManager::TxHow::OWED,
                                  CRenderManager::TxNeed::LATER);
         // a screen with no playlist: no picture will come for a waiting page
@@ -6838,6 +6868,8 @@ void CVideoPlayer::Process()
         continue;
       }
       m_menuOnlyCandidateSince = {};
+      if (!m_txNoVideoStep)
+        m_txNoVideoSince = {};
 
       // transaction_reopendelay (5.E2-10): the OPEN after a supersede waits, P keeps running
       if (m_txReopenDelayUntil != std::chrono::steady_clock::time_point{})
@@ -6875,7 +6907,12 @@ void CVideoPlayer::Process()
         OpenDefaultStreams();
       // a segment without video: no picture replaces a kept one
       if (m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
+      {
         aml_drop_kept_frame("segment without video");
+        // 5.E2-12b D2 point (2): at once (a DISCARD_KEEPALIVE reaches only this point, E2)
+        if (m_txNoVideoHold && !m_txNoVideoStep)
+          m_txNoVideoStep = "novideo";
+      }
       // a segment without video: no picture will come for a waiting page
       if (m_menuPageWaiting && m_SelectionStreams.CountType(StreamType::VIDEO) == 0)
       {
@@ -9411,6 +9448,13 @@ void CVideoPlayer::OnExit()
   }
   // 5.E2-12a D4.2 (r1 M-6): after the word's stop
   TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::STOP), "stop");
+  // 5.E2-12b D3: the disc session's hold ends with the stop (held presses dropped)
+  if (aml_disc_screen_hold())
+  {
+    OUTPUT::COutputWorker::Get().ClearHeld(
+        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "stop", true);
+    TxNoVideoReset("stop");
+  }
   m_renderManager.ArmTestStall("stop");
 
   ClearPendingElPackets();
@@ -9588,6 +9632,13 @@ void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
   TxNoPictureSummary("next file");
   // 5.E2-12a D4.2: a window still open or carried past an earlier exit
   TxStartDone(static_cast<int>(OUTPUT::COutputWorker::DeferOutcome::NEXT_FILE), "next file");
+  if (aml_disc_screen_hold())
+  {
+    OUTPUT::COutputWorker::Get().ClearHeld(
+        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, "next file",
+        true);
+    TxNoVideoReset("next file");
+  }
   if (txEndedGen)
     m_renderManager.TxFileEnded(txEndedGen);
   m_txEndedGen = 0;
@@ -11775,6 +11826,20 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
   m_HasVideo = true;
   m_discMenuOnly = false;
+  // 5.E2-12b D3 (Q4, r1 H-4): a video stream ends the hold (a KEEPALIVE reuse MATCH included)
+  if (aml_disc_screen_hold())
+  {
+    const OUTPUT::COutputWorker::SHeldClear cleared = OUTPUT::COutputWorker::Get().ClearHeld(
+        OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f,
+        "video open", false);
+    if (cleared.mainDropped)
+    {
+      std::string stereomode;
+      m_renderManager.TriggerUpdateResolution(0, 0, 0, stereomode, "held clear");
+    }
+    if (m_txNoVideoHold || m_txNoVideoCarry || m_txNoVideoStep)
+      TxNoVideoReset("video open");
+  }
 #if defined(HAVE_LIBBLURAY)
   // a video stream covers the disc's background plane
   if (std::shared_ptr<CDVDInputStreamBluray> bluray =

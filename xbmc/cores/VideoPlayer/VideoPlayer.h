@@ -1165,6 +1165,25 @@ protected:
   };
   //! D2: the open's Start job (null: main decides this open)
   std::shared_ptr<DISPLAYSTATE::SStartJob> m_txJob;
+  // 5.E2-12b (docs/phase5_e2_12b_impl.md D1-D3): a no-video screen inside a start (row 3b)
+  struct STxNoVideoCarry
+  {
+    std::shared_ptr<DISPLAYSTATE::SStartJob> job; //!< the start's committed job, ended at a transition
+    uint64_t T = 0;
+    bool settled = false; //!< its SettleDone was read
+  };
+  std::optional<STxNoVideoCarry> m_txNoVideoCarry;
+  bool m_txNoVideoHold = false; //!< CN's gate kept shut for row 3b's step
+  std::chrono::steady_clock::time_point m_txNoVideoSince; //!< the wait's grace (Q3)
+  const char* m_txNoVideoStep = nullptr; //!< row 3b's step pending: "wait" or "novideo"
+  int m_txNoVideoWaitState = 0;
+  bool m_txNoVideoHeld = false;
+  bool m_txNoVideoOwedPosted = false;
+  bool m_txNoVideoWaitLogged = false;
+  //! an engaged start of this file is open, or carried committed, and CN's gate is shut
+  bool TxNoVideoInStart() const;
+  void TxNoVideoStepPass();
+  void TxNoVideoReset(const char* why);
   // 5.E2-12a (docs/phase5_e2_12_impl.md D1, D2, D4): W's deferral window for this player's
   // file, its close, the pick folded into DECIDE and the amends
   uint32_t m_txDeferF = 0; //!< the window's file (0: none open)
