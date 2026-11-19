@@ -251,7 +251,7 @@ public:
     STOP,
     NEXT_FILE,
     SEGMENT, //!< a committed start's segment transition: the window carried open (D4.4)
-    NO_VIDEO, //!< 5.E2-12b row 3b: nothing replays; the newest pick pends on the held record
+    NO_VIDEO, //!< 5.E2-12b row 3b: nothing replays; picks dropped (the next title decides)
   };
   struct SDeferKey
   {
@@ -354,7 +354,6 @@ private:
     HOLD,
     DROP,
     HELD_LIST, //!< 5.E2-12b: a VS10 press on a held screen, kept until the clear
-    HELD_PICK, //!< 5.E2-12b: a pick on a held screen: the pending pick (newest wins)
   };
   Verdict DeferVerdictLocked(const Job& job, const SWord& word, std::string& why) const;
   //! a moved job back into its lane by request id (m_mutex held)
@@ -392,8 +391,6 @@ private:
   uint32_t m_heldF = 0;
   std::optional<DISPLAYSTATE::ModeFacts> m_heldOutput;
   std::vector<std::pair<Lane, Job>> m_heldList;
-  //! the held record's pending pick (newest wins), applied at the clear (never on the screen)
-  std::optional<std::pair<Lane, Job>> m_heldPick;
   mutable bool m_heldDroppedMain = false;
   uint64_t m_abortReqId = 0;
   uint32_t m_busyT = 0; //!< W's busy mark: the word's T while W runs a job

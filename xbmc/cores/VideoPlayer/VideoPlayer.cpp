@@ -3653,16 +3653,15 @@ void CVideoPlayer::TxNoVideoStepPass()
             "TRANSACTION row 3b T={} at {} (wait state {}, {} ms, {}): record held at {}",
             m_txWordT.load(), point, waitState, graceMs, open ? "open" : "carried",
             held ? DISPLAYSTATE::FactsString(*held) : std::string("(none)"));
-  // gate re-check DECISION: nothing replays at the step. The window (open or carried) closes with
-  // its newest pick pending on the held record (applied at the clear, folded into the next start),
-  // a VS10 press held, a main decision dropped; so no set can commit between here and CN's open
-  // but the owed Restore the waits above saw paid and settled
+  // nothing replays at the step: the window (open or carried) closes with its picks dropped (the
+  // next title decides: always its native mode), a VS10 press held, a main decision dropped; so no
+  // set can commit between here and CN's open but the owed Restore the waits above saw settled
   if (m_txDeferF)
   {
     const OUTPUT::COutputWorker::SDeferCounts c = OUTPUT::COutputWorker::Get().DeferClose(
         m_txDeferF, OUTPUT::COutputWorker::DeferOutcome::NO_VIDEO);
-    CLog::Log(LOGINFO, "TXSTART T={} StartDone (no-video): {} pending on the held record, {} dropped",
-              m_txWordT.load(), c.folded, c.dropped);
+    CLog::Log(LOGINFO, "TXSTART T={} StartDone (no-video): {} held, {} dropped", m_txWordT.load(),
+              c.folded, c.dropped);
     m_txDeferF = 0;
     m_txCarriedAt = {};
     m_txStickyTarget.reset();

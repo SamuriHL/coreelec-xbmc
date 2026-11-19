@@ -870,12 +870,12 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
       why = "held record";
       return Verdict::HELD_LIST;
     }
-    // gate re-check DECISION: a pick on a held screen takes effect at the next film (folded into
-    // its start), never as a set on the screen
+    // ruling (always the title's native mode): a pick on a held screen is dropped; the next
+    // title decides on its own
     if (o == "user-pick")
     {
-      why = "held record: pending";
-      return Verdict::HELD_PICK;
+      why = "no-video screen: the next title decides";
+      return Verdict::DROP;
     }
   }
   // Back's own set is never deferred (E2-12a M-7)
@@ -967,22 +967,6 @@ COutputWorker::SHeldClear COutputWorker::ClearHeld(uint32_t f, const char* why, 
       InsertByIdLocked(lane, std::move(job));
     }
     m_heldList.clear();
-    if (m_heldPick)
-    {
-      Job& job = m_heldPick->second;
-      if (drop)
-      {
-        ++counts.dropped;
-        drops.emplace_back(std::move(job.onVerdict), job.reqId);
-      }
-      else
-      {
-        job.replayed = true;
-        ++counts.replayed;
-        InsertByIdLocked(m_heldPick->first, std::move(job));
-      }
-      m_heldPick.reset();
-    }
     counts.mainDropped = m_heldDroppedMain;
     m_heldF = 0;
     m_heldOutput.reset();
@@ -1089,6 +1073,7 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
     uint32_t reqF;
   };
   std::vector<SDrop> drops;
+  std::vector<std::pair<uint64_t, uint32_t>> pickDrops;
   uint32_t T = 0;
   {
     std::unique_lock lock(m_mutex);
@@ -1111,23 +1096,13 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
       {
         if (job.reqF != f)
           kept.emplace_back(lane, std::move(job));
-        // gate re-check DECISION (row 3b): nothing replays; the newest pick pends on the held record,
-        // a VS10 press is held with it, a main decision is dropped (the clear re-raises RM)
+        // row 3b (ruling: always the title's native mode): nothing replays; a pick is dropped (the
+        // next title decides), a VS10 press held, a main decision dropped (the clear re-raises RM)
         else if (noVideo && std::string_view(job.origin) == "user-pick")
         {
-          if (m_heldPick && m_heldPick->second.reqId > job.reqId)
-          {
-            ++counts.dropped;
-            drops.emplace_back(std::move(job.onVerdict), job.reqId);
-            continue;
-          }
-          if (m_heldPick)
-          {
-            ++counts.dropped;
-            drops.emplace_back(std::move(m_heldPick->second.onVerdict), m_heldPick->second.reqId);
-          }
-          m_heldPick.emplace(lane, std::move(job));
-          ++counts.folded;
+          ++counts.dropped;
+          pickDrops.push_back({job.reqId, T});
+          drops.push_back({std::move(job.onVerdict), job.reqId, job.reqF});
         }
         else if (noVideo && std::string_view(job.origin) == "vs10")
         {
@@ -1177,6 +1152,10 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
     }
     m_cond.notify_all();
   }
+  for (const auto& [id, t] : pickDrops)
+    CLog::Log(LOGINFO, "DEFER T={} id={} user-pick F={}: dropped (no-video screen: the next title "
+                       "decides)",
+              t, id, f);
   for (auto& drop : drops)
     if (drop.fn)
       drop.fn(DeferVerdict::DROPPED, drop.reqId, drop.reqF);
@@ -1575,7 +1554,6 @@ void COutputWorker::Process()
       const char* origin = job.origin;
       std::shared_ptr<Result> result = job.result;
       uint32_t deferT = 0;
-      std::optional<std::pair<VerdictFn, uint64_t>> olderPick;
       {
         std::lock_guard listLock(m_listMutex);
         verdict = DeferVerdictLocked(job, UnpackWord(value), why);
@@ -1586,13 +1564,7 @@ void COutputWorker::Process()
           m_after.emplace_back(jobLane, std::move(job));
         else if (verdict == Verdict::HELD_LIST)
           m_heldList.emplace_back(jobLane, std::move(job));
-        else if (verdict == Verdict::HELD_PICK)
-        {
-          // newest wins: the older pending pick is answered dropped (after the release)
-          if (m_heldPick)
-            olderPick.emplace(std::move(m_heldPick->second.onVerdict), m_heldPick->second.reqId);
-          m_heldPick.emplace(jobLane, std::move(job));
-        }
+
         else if (verdict == Verdict::DROP)
           onVerdict = std::move(job.onVerdict);
       }
@@ -1613,11 +1585,7 @@ void COutputWorker::Process()
           std::lock_guard listLock(m_listMutex);
           onVerdict = m_heldList.back().second.onVerdict;
         }
-        else if (verdict == Verdict::HELD_PICK)
-        {
-          std::lock_guard listLock(m_listMutex);
-          onVerdict = m_heldPick->second.onVerdict;
-        }
+
         if (result)
         {
           result->notRun = true;
@@ -1627,20 +1595,16 @@ void COutputWorker::Process()
         lock.unlock();
         const DeferVerdict kind =
             verdict == Verdict::DEFER ? DeferVerdict::DEFERRED
-            : verdict == Verdict::HOLD || verdict == Verdict::HELD_LIST ||
-                    verdict == Verdict::HELD_PICK
-                ? DeferVerdict::HELD
+            : verdict == Verdict::HOLD || verdict == Verdict::HELD_LIST ? DeferVerdict::HELD
                 : DeferVerdict::DROPPED;
         CLog::Log(LOGINFO, "DEFER T={} id={} {} F={}: {}{}", deferT, reqId, origin, reqF,
                   kind == DeferVerdict::DEFERRED   ? "deferred"
-                  : verdict == Verdict::HELD_LIST || verdict == Verdict::HELD_PICK ? "held"
+                  : verdict == Verdict::HELD_LIST ? "held"
                   : kind == DeferVerdict::HELD     ? "held (after-list)"
                                                    : "dropped",
                   why.empty() ? "" : " (" + why + ")");
         if (onVerdict)
           onVerdict(kind, reqId, reqF);
-        if (olderPick && olderPick->first)
-          olderPick->first(DeferVerdict::DROPPED, olderPick->second, reqF);
         lock.lock();
         continue;
       }
