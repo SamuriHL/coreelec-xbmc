@@ -657,6 +657,8 @@ public:
                                        bool tweakToAudio);
   //! 5.V2-4b: the video side composes the display timing (V's configured renderers)
   static bool ComposesTiming();
+  //! 5.G-3 (code review r1 S5): this renderer composes its timing now (main's Configure clears it)
+  bool ComposingTiming() const { return m_composing.load(); }
 
 protected:
   //! 5.V2-4b: V's picture facts for the timing, from one swap, as one word

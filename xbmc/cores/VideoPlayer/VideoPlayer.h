@@ -1244,7 +1244,6 @@ protected:
   std::vector<SMidJob> m_midJobs;
   struct
   {
-    unsigned int decides = 0; //!< the DECIDEs made (each job's seq)
     uint64_t counted = 0; //!< decisions counted at their AVCHANGE (§4.3 d; S8 i)
     bool owedAtFullscreen = false;
     uint64_t owedSeq = 0;
@@ -1259,7 +1258,8 @@ protected:
   void TxMidPlayPass();
   void TxMidDecide(const char* why);
   void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
-  void TxMidPost(SMidJob& j, const char* reply);
+  //! count false: the AVCHANGE only (a failed set's retry counts at its own reply)
+  void TxMidPost(SMidJob& j, const char* reply, bool count = true);
   bool TxMidBusy() const;
   //! §4.3 e: a seek's sync commit on the path holds for P's decision
   bool TxMidHoldPending();
