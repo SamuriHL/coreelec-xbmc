@@ -2944,7 +2944,8 @@ void CVideoPlayer::ArmBdjStartForSegment()
     }
 }
 
-void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
+void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions,
+                             std::optional<uint64_t> midSeq)
 {
   // only a user pause keeps the output's audio (design §16.22)
   m_clock.SetHoldFrom(0.0);
@@ -2954,7 +2955,8 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
   // 5.B2-2: the count read with the pending test; without it today's snapshot.
   // 5.E3: none for a P-decided open (main shut out): only the 12 s cap applies
   const bool txStart = TxOpen() && m_txJob;
-  if (txStart)
+  m_startHeldMidSeq = midSeq;
+  if (txStart || midSeq)
     m_startHeldDecisions.reset();
   else
     m_startHeldDecisions = decisions.value_or(m_renderManager.GetResolutionDecisions());
@@ -2977,6 +2979,9 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
   if (txStart)
     CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (transaction start)",
               m_clock.GetClock() / DVD_TIME_BASE);
+  else if (midSeq)
+    CLog::Log(LOGINFO, "MIDPLAY hold at sync commit seq={} clock {:.3f}", *midSeq,
+              m_clock.GetClock() / DVD_TIME_BASE);
   else
     CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {}{})",
               m_clock.GetClock() / DVD_TIME_BASE, *m_startHeldDecisions,
@@ -2988,7 +2993,14 @@ void CVideoPlayer::CheckHeldStart()
   if (!m_startHeld || m_displayLost || m_txInSpan)
     return;
   const auto held = std::chrono::steady_clock::now() - m_startHeldSince;
-  if (m_startHeldDecisions && m_renderManager.GetResolutionDecisions() != *m_startHeldDecisions)
+  if (m_startHeldMidSeq && m_midTx.counted != *m_startHeldMidSeq)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY hold released seq={}", m_midTx.counted);
+    m_startHeldMidSeq.reset();
+    ReleaseHeldStart("output mode decided");
+  }
+  else if (m_startHeldDecisions &&
+           m_renderManager.GetResolutionDecisions() != *m_startHeldDecisions)
     ReleaseHeldStart("output mode decided");
   else if (held > 12s)
     ReleaseHeldStart("no mode decision in 12s");
@@ -3528,6 +3540,18 @@ bool CVideoPlayer::TxMidBusy() const
 {
   return std::any_of(m_midJobs.begin(), m_midJobs.end(),
                      [](const SMidJob& j) { return j.path; });
+}
+
+bool CVideoPlayer::TxMidHoldPending()
+{
+  // S8 ii: a job POSTED or FROZEN, or a decision due while fullscreen; owed at fullscreen alone
+  // does not hold (a seek with the GUI over the video)
+  if (TxMidBusy() || m_midTx.handback)
+    return true;
+  if (!m_midTx.redecide && !m_midTx.retryDue && !m_renderManager.TxMidNoticesPending())
+    return false;
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  return latest.fullScreenVideo && latest.fullScreenRoot;
 }
 
 void CVideoPlayer::TxMidPost(SMidJob& j, const char* reply)
@@ -8729,9 +8753,12 @@ void CVideoPlayer::HandlePlaySpeed()
       // 5.E3: a P-decided open's sync commit schedules: main is shut out until START
       // (TxShutMain), so RM's decision could only end a hold at the 12 s fallback
       const bool txSync = TxOpen() && m_txJob;
+      // 5.G-3 (§4.3 e): on the path session P decides: its job or a due decision holds
+      const bool midSync = !txSync && m_txMidPath;
       const bool holdStart = !txSync && m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
                              videoPictured &&
-                             m_renderManager.IsResolutionUpdatePending(heldDecisions);
+                             (midSync ? TxMidHoldPending()
+                                      : m_renderManager.IsResolutionUpdatePending(heldDecisions));
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
       // ahead with the audio landing there. The clock starts at the first
@@ -8848,7 +8875,9 @@ void CVideoPlayer::HandlePlaySpeed()
         m_caching = CACHESTATE_DONE;
         m_clock.SetSpeedAdjust(0);
         // scheduleStart alone never read the count: today's snapshot (r1 L3)
-        HoldStart(holdStart ? heldDecisions : std::nullopt);
+        HoldStart(holdStart ? heldDecisions : std::nullopt,
+                  holdStart && midSync ? std::optional<uint64_t>(m_midTx.counted)
+                                       : std::nullopt);
         // 5.E2-4: a file's held start is inside the window until its release (E2-4 review H1);
         // a seek's resync is no start (5.E2-11: a guarded START's after the guard)
         if (!txGuarded && aml_transaction_shadow_on() && !m_State.streamsReady)

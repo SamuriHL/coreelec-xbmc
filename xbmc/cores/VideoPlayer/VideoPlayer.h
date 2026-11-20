@@ -576,7 +576,9 @@ protected:
   void BdSegmentTransition(bool glided = false);
   //! real_player E1 (docs/real_player_disc_session_design.md §3): a start is
   //! committed with the clock paused until the output mode is final
-  void HoldStart(std::optional<unsigned int> decisions);
+  //! 5.G-3: midSeq, a path session's hold: released when P's count passes it
+  void HoldStart(std::optional<unsigned int> decisions,
+                 std::optional<uint64_t> midSeq = std::nullopt);
   void ReleaseAudioSessionHold();
   void CheckHeldStart();
   //! a user resume landing on the timeline like a start (design §16.21)
@@ -1259,6 +1261,8 @@ protected:
   void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
   void TxMidPost(SMidJob& j, const char* reply);
   bool TxMidBusy() const;
+  //! §4.3 e: a seek's sync commit on the path holds for P's decision
+  bool TxMidHoldPending();
   //! the stop: every job's sink cleared
   void TxMidClearJobs();
   //! the StartDone step (D4): outcome is an OUTPUT::COutputWorker::DeferOutcome
@@ -1528,6 +1532,7 @@ protected:
   std::atomic_bool m_audioSessionHold{false}; //!< design 5 debug flag (special://profile/audiohold)
   bool m_startHeldSawLost = false;
   std::optional<unsigned int> m_startHeldDecisions; //!< unset: a P-decided open's hold (5.E3)
+  std::optional<uint64_t> m_startHeldMidSeq; //!< 5.G-3: a path session's hold
   double m_startReleasedClock = DVD_NOPTS_VALUE; //!< clock at the last release
   //! disc segment generation (6.1): advances at every BdSegmentTransition
   unsigned int m_segmentGen = 0;
