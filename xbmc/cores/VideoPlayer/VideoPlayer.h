@@ -1216,6 +1216,12 @@ protected:
   unsigned int m_txAmends = 0;
   bool m_txAmendPending = false; //!< a pick after the post waits for its amend (TxDeferPass)
   void TxDeferPass();
+  // 5.G-2 (docs/phase5_g0_design.md §4.0): the mid-play path session, from a P-decided set's
+  // START to the next set's arm, the stop or the next file (a shadow only in G-2)
+  bool m_txMidPath = false;
+  uint32_t m_txMidPathT = 0;
+  void TxMidPlayStart();
+  void TxMidPlayEnd(const char* why);
   //! the StartDone step (D4): outcome is an OUTPUT::COutputWorker::DeferOutcome
   void TxStartDone(int outcome, const char* why);
   //! D1.3: the sticky target replaces the resolved row when the table has it

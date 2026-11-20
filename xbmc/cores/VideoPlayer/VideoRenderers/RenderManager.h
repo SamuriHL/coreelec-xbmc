@@ -452,13 +452,19 @@ public:
                              bool rootAtOpen,
                              bool fullScreen,
                              const SStartFacts* facts = nullptr,
-                             const SStartStereo* stereo = nullptr);
+                             const SStartStereo* stereo = nullptr,
+                             bool log = true);
   //! 5.E2-10 9d: the configured picture's stereo mode, as ResolveStart reads it
   std::string TxPictureStereoMode();
   //! E2-8b D4 step 4: the frac arm consumed for the start (today's `consumed` line), kept with
   //! its original time for a reraise or a failed hand-back; r.frac becomes the arm taken
   //! (5.E2-9c D3, r4 H1, r5 M3: on a hint DECIDE OR'd with the hint's, and that one recorded)
   void TxTakeArm(unsigned int gen, SStartResolve& r, bool hintDecide = false);
+  //! 5.G-2 (docs/phase5_g0_design.md §4.2): P, while its path session plays: main's mid-play
+  //! decisions against ResolveStart, logged "MIDPLAY shadow"
+  void TxMidShadowPass(uint32_t T);
+  //! 5.G-2: P, at path on and its end: main's records not yet compared are dropped
+  void TxMidShadowReset();
   //! E2-8b D4: UpdateResolution's render timeout for the start's decision (elapsed since the
   //! configure or trigger, as main measures it; 5.E2-9c D3: or since `from`)
   //! 5.E2-11 D1.3: notBefore, a later reference (a span's close) when set
@@ -781,6 +787,22 @@ protected:
     bool armed = false;
     std::chrono::steady_clock::time_point armedAt;
   } m_decideFacts;
+  //! 5.G-2: main's decision on the path session: facts, arm and inputs at its consume
+  struct SMidShadow
+  {
+    uint64_t seq = 0;
+    SStartFacts facts; //!< frac: the arm main consumed
+    std::shared_ptr<const DISPLAYSTATE::DecideInputs> live; //!< main's own read; seq: published
+    std::shared_ptr<const DISPLAYSTATE::DecideInputs> published; //!< what P would read
+    std::shared_ptr<const DISPLAYSTATE::DisplayState> committed; //!< W's last commit
+    RESOLUTION res = RES_INVALID;
+    bool frac = false;
+    const char* reply = "none";
+    bool noChange = false;
+  };
+  std::deque<SMidShadow> m_midShadow; //!< m_statelock
+  uint64_t m_midShadowSeq = 0; //!< m_statelock
+  std::atomic<bool> m_midShadowReady{false};
 #endif
   std::atomic<unsigned int> m_modeFirstCfgGen{0};
   std::atomic<unsigned int> m_modeFirstDecidedGen{0};

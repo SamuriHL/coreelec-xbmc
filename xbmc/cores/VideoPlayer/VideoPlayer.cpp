@@ -2937,6 +2937,7 @@ void CVideoPlayer::CheckHeldStart()
 
 void CVideoPlayer::ArmStartGate(const char* where)
 {
+  TxMidPlayEnd("later set");
   const TxSegClass segClass = std::exchange(m_txSegClass, TxSegClass::NONE);
   m_txReopenCandidateGen = 0;
   bool hasVideo = m_pDemuxer && m_SelectionStreams.CountType(StreamType::VIDEO) > 0;
@@ -3397,6 +3398,7 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
   {
     m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::START,
                                CRenderManager::TxNeed::NONE);
+    TxMidPlayStart();
     TxClearOpenJob("START");
     m_txEndedGen = 0;
     // the job's tweak: ReleaseHeldStart's ApplyAudioOffset lands RM's tweak, composed from W's
@@ -3405,6 +3407,37 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
     CLog::Log(LOGINFO, "TXSTART T={} tweak job {:.1f} ms, landed {:.1f} ms", m_txJob->T,
               m_txJob->tweakMs, m_renderManager.GetLatencyTweak());
   }
+}
+
+void CVideoPlayer::TxMidPlayStart()
+{
+  if (!aml_midplaytx_on())
+    return;
+  const uint32_t T = m_txWordT.load();
+  const char* off = !DISPLAYSTATE::DecideShadowOn() ? "decide shadow off"
+                    : !m_renderManager.TxPictureStereoMode().empty() ? "stereoscopic (G-D4)"
+                    : !m_processInfo->IsVideoHwDecoder()             ? "software decode"
+                                                                      : nullptr;
+  if (off)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", T, off);
+    return;
+  }
+  m_renderManager.TxMidShadowReset();
+  m_txMidPath = true;
+  m_txMidPathT = T;
+  DISPLAYSTATE::PublishMidPlayPath(
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, true);
+  CLog::Log(LOGINFO, "MIDPLAY path on T={}", T);
+}
+
+void CVideoPlayer::TxMidPlayEnd(const char* why)
+{
+  if (!std::exchange(m_txMidPath, false))
+    return;
+  DISPLAYSTATE::PublishMidPlayPath(0, false);
+  m_renderManager.TxMidShadowReset();
+  CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", m_txMidPathT, why);
 }
 
 void CVideoPlayer::TxStartRelease(int64_t discRunNs)
@@ -6978,6 +7011,8 @@ void CVideoPlayer::Process()
       SampleWord();
     TxSpanPass();
     TxDeferPass();
+    if (m_txMidPath)
+      m_renderManager.TxMidShadowPass(m_txMidPathT);
     TxNoVideoStepPass();
     // check display lost
     if (m_displayLost)
@@ -9679,6 +9714,7 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
+  TxMidPlayEnd("stop");
   // 5.E2-8a (D5): a stop before START, ahead of the word's stop and the closes
   // 5.E2-8b D5b (r10 L3, r12 M2): a stop after an earlier exit: RM drops what the ended start
   // still owes (need none-needed, commit-in-flight, a hand-back trigger)
@@ -9891,6 +9927,7 @@ void CVideoPlayer::OnExit()
 // can take a next file (docs/phase5_e2_7_impl.md D3, D7)
 void CVideoPlayer::HandleOpenFile(const std::shared_ptr<CDVDMsg>& pMsg)
 {
+  TxMidPlayEnd("next file");
   // 5.E2-8a (D5): a next file before the engaged start's START
   // 5.E2-8b D5b: a next file after an earlier exit, before BeginFile clears RM's record
   const unsigned int txEndedGen = TxOpen() ? 0 : m_txEndedGen;

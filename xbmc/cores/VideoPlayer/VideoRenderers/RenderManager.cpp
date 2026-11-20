@@ -3688,6 +3688,17 @@ void CRenderManager::UpdateResolution()
         // 5.B2-5b: W's reply was failed or failed(park)
         bool setFailed = false;
         const char* setFailedReply = "";
+        // 5.G-2: the mid-play shadow's inputs, read before m_statelock
+        std::optional<SMidShadow> midShadow;
+        std::shared_ptr<DISPLAYSTATE::DecideInputs> midLive;
+        std::shared_ptr<const DISPLAYSTATE::DecideInputs> midPublished;
+        if (DISPLAYSTATE::MidPlayPath().on)
+        {
+          midLive = std::make_shared<DISPLAYSTATE::DecideInputs>(DISPLAYSTATE::TakeDecideInputs());
+          midPublished =
+              std::make_shared<const DISPLAYSTATE::DecideInputs>(DISPLAYSTATE::GetDecideInputs());
+          midLive->seq = midPublished->seq;
+        }
 #endif
         // 5.E2-8b test (displaystate_mainstall "straddle <ms>"): a pass that began unshut
         if (!m_txShutGen.load() && TestMainStall("straddle"))
@@ -3729,6 +3740,22 @@ void CRenderManager::UpdateResolution()
             CLog::Log(LOGINFO, "CRenderManager - frac re-clock arm expired");
             fracArmed = false;
           }
+#if defined(HAS_LIBAMCODEC)
+          if (midLive && !modeFirstGen)
+          {
+            SMidShadow& m = midShadow.emplace();
+            m.seq = ++m_midShadowSeq;
+            m.facts.fps = fps;
+            m.facts.width = width;
+            m.facts.height = height;
+            m.facts.stereoMode = stereoMode;
+            m.facts.hdrType = hdrType;
+            m.facts.frac = fracArmed;
+            m.live = std::move(midLive);
+            m.published = std::move(midPublished);
+            m.committed = DISPLAYSTATE::Get();
+          }
+#endif
         }
 
         const RenderStereoMode user_stereo_mode =
@@ -3845,6 +3872,18 @@ void CRenderManager::UpdateResolution()
 #if defined(HAS_LIBAMCODEC)
           if (mainDecision)
             DecideShadowRecord(modeFirstGen, false, *mainDecision);
+          if (midShadow)
+          {
+            uint64_t seq = 0;
+            const OUTPUT::DriveReply reply = OUTPUT::LastDriveReply(seq);
+            midShadow->res = res;
+            midShadow->frac = fracReclock;
+            if (seq != replySeq)
+            {
+              midShadow->reply = OUTPUT::DriveReplyName(reply);
+              midShadow->noChange = reply == OUTPUT::DriveReply::DONE_NO_CHANGE;
+            }
+          }
 #endif
           TestMainStall("after-set");
           TestStall("after-set", true);
@@ -3864,6 +3903,13 @@ void CRenderManager::UpdateResolution()
             std::unique_lock lock(m_statelock);
             CMainHold hold("UpdateResolution");
             renderer = m_pRenderer;
+#if defined(HAS_LIBAMCODEC)
+            if (midShadow && DISPLAYSTATE::MidPlayPath().on)
+            {
+              m_midShadow.push_back(std::move(*midShadow));
+              m_midShadowReady = true;
+            }
+#endif
           }
           if (renderer)
             renderer->Update();
@@ -3980,6 +4026,25 @@ std::string DecideSideText(const CRenderManager::DecideSide& side)
                              static_cast<int>(side.res), side.mode, side.change, side.frac,
                              side.filmStart, side.hdr, side.note);
 }
+
+// 5.G-2 (r2 N1): W's last committed mode by value in the inputs' table, as ApplyStartReply's
+// throw path finds it; GC's when not connected or not in the table
+RESOLUTION MidIncumbent(const ResolutionInputs& in,
+                        const std::shared_ptr<const DISPLAYSTATE::DisplayState>& state)
+{
+  if (state && state->connected)
+    for (const auto& [index, info] : in.infos)
+      if (index >= RES_DESKTOP && StringUtils::EqualsNoCase(info.strId, state->strId) &&
+          std::abs(info.fRefreshRate - state->refresh) < 0.01f && info.dwFlags == state->dwFlags)
+        return static_cast<RESOLUTION>(index);
+  CLog::Log(LOGINFO, "MIDPLAY incumbent {} not in the table: GC's",
+            !state              ? "(no state)"
+            : !state->connected ? "(not connected)"
+                                : DISPLAYSTATE::FactsString({state->strId, state->screenWidth,
+                                                             state->screenHeight, state->refresh,
+                                                             state->dwFlags}));
+  return in.videoResolution;
+}
 } // namespace
 
 void CRenderManager::DecideShadowPlayer(unsigned int gen,
@@ -4077,7 +4142,8 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
                                                            bool rootAtOpen,
                                                            bool fullScreen,
                                                            const SStartFacts* facts,
-                                                           const SStartStereo* stereo)
+                                                           const SStartStereo* stereo,
+                                                           bool log)
 {
   // main is shut out: RM's current facts (a notice before the post is folded into them)
   float fps;
@@ -4153,9 +4219,9 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
   if (!r.mayChooseMode)
     res = in.videoResolution;
   else if (aml_disc_mode_hold())
-    res = HeldShadow(in, fps, in.videoResolution, is3D, width, height, true);
+    res = HeldShadow(in, fps, in.videoResolution, is3D, width, height, log);
   else
-    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, true);
+    res = CResolutionUtils::ChooseBestResolution(in, fps, width, height, is3D, log);
   r.res = res;
   r.info = in.Info(res);
   r.change = res != in.videoResolution;
@@ -4178,8 +4244,9 @@ CRenderManager::SStartResolve CRenderManager::ResolveStart(unsigned int gen,
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, hdrDisplay && r.hdrType != StreamHdrType::HDR_TYPE_NONE,
           r.info.iScreenHeight));
-  CLog::Log(LOGDEBUG, "CRenderManager::ResolveStart - set {} mode {} frac {} tweak {:.1f}ms", gen,
-            r.info.strMode, r.frac, r.tweakMs);
+  if (log)
+    CLog::Log(LOGDEBUG, "CRenderManager::ResolveStart - set {} mode {} frac {} tweak {:.1f}ms",
+              gen, r.info.strMode, r.frac, r.tweakMs);
   return r;
 }
 
@@ -4231,6 +4298,53 @@ void CRenderManager::TxTakeArm(unsigned int gen, SStartResolve& r, bool hintDeci
                      : (r.held ? "menu hold, no re-clock" : "refresh switching off"));
   if (m_txOutcome.gen == gen)
     m_txOutcome.anchor = r.anchor;
+}
+
+void CRenderManager::TxMidShadowReset()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  m_midShadow.clear();
+  m_midShadowReady = false;
+}
+
+void CRenderManager::TxMidShadowPass(uint32_t T)
+{
+  if (!m_midShadowReady.exchange(false))
+    return;
+  std::deque<SMidShadow> records;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    records.swap(m_midShadow);
+  }
+  for (SMidShadow& m : records)
+  {
+    // the inputs as published at main's consume, with W's committed mode as the incumbent
+    DISPLAYSTATE::DecideInputs in = *m.published;
+    const RESOLUTION incumbent = MidIncumbent(in.res, m.committed);
+    in.res.videoResolution = incumbent;
+    const SStartResolve r = ResolveStart(0, in, in.fullScreenRoot,
+                                         in.fullScreenVideo && in.fullScreenRoot, &m.facts,
+                                         nullptr, false);
+    // main's arm, not the one RM holds now
+    const bool frac = m.facts.frac && r.mayChooseMode && !r.held;
+    std::string what;
+    if (r.exclusion)
+      what = r.exclusion;
+    else if (r.res != m.res)
+      what = "res";
+    else if (frac != m.frac)
+      what = "frac";
+    else if (const char* field = DISPLAYSTATE::DecideInputsDiff(in, *m.live); *field)
+      what = StringUtils::Format("inputs:{}, seq {}", field, m.live->seq);
+    else if (m.noChange && r.res != incumbent)
+      what = "no change off the incumbent";
+    CLog::Log(LOGINFO, "MIDPLAY shadow seq={} T={} main={}/{}/{} p={}/{} {}", m.seq, T,
+              static_cast<int>(m.res), m.frac ? 1 : 0, m.reply,
+              r.exclusion ? std::string("-") : std::to_string(static_cast<int>(r.res)),
+              frac ? 1 : 0, what.empty() ? "agree" : StringUtils::Format("DISAGREE({})", what));
+  }
 }
 
 void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side)
