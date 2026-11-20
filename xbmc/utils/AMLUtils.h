@@ -500,6 +500,9 @@ bool aml_disc_screen_hold();
 //! latched once: the real loss path, no transaction_skip inbox, and the codec speed fix (no file
 //! is checked per frozen pass)
 bool aml_transaction_inbox();
+//! 5.G-1 (docs/phase5_g0_design.md §4.0): mid-play sets take the transaction's path: the real
+//! loss path and fold, unless special://profile/midplaytx_off; latched once with the inbox
+bool aml_midplaytx_on();
 //! 5.E2's test hooks (plan §9), read with the latch; all off by default and unused in E2-1
 struct STransactionHooks
 {

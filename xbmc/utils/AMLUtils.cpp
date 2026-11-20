@@ -3025,6 +3025,8 @@ std::atomic<bool> s_transactionLossBase{false};
 const char* s_transactionLossReason = "not latched";
 // 5.E2-7b: the frozen inbox's session predicate (docs/phase5_e2_7b_impl.md D1, r3 N-L2)
 std::atomic<bool> s_transactionInbox{false};
+// 5.G-1: the mid-play transaction switch (docs/phase5_g0_design.md §4.0)
+std::atomic<bool> s_transactionMidPlay{false};
 
 int TransactionHookMs(const char* name)
 {
@@ -3207,6 +3209,12 @@ void aml_transaction_latch()
             s_transactionSkip.end();
         s_transactionInbox = s_transactionLossBase.load() && !resumeSkipped && !inboxSkipped &&
                              codecSpeedFix;
+        // the real loss path and fold (the loss base includes the transaction and its shadows)
+        const bool midPlayOff = XFILE::CFile::Exists("special://profile/midplaytx_off");
+        const bool foldSkipped = std::find(s_transactionSkip.begin(), s_transactionSkip.end(),
+                                           "fold") != s_transactionSkip.end();
+        s_transactionMidPlay =
+            s_transactionLossBase.load() && !resumeSkipped && !foldSkipped && !midPlayOff;
         s_transactionLatched.store(true, std::memory_order_release);
         CLog::Log(LOGINFO,
                   "TRANSACTION {} ({}) matrix=outputworker {}, displaystate {}, outputdrive {}, "
@@ -3241,6 +3249,14 @@ void aml_transaction_latch()
                     : resumeSkipped                 ? "transaction_skip resume"
                     : inboxSkipped                  ? "transaction_skip inbox"
                                                     : "no codec speed fix");
+        if (on)
+          CLog::Log(LOGINFO, "TRANSACTION midplaytx {} ({})",
+                    s_transactionMidPlay.load() ? "on" : "off",
+                    s_transactionMidPlay.load()     ? "the real loss path, fold on"
+                    : midPlayOff                    ? "midplaytx_off"
+                    : !s_transactionLossBase.load() ? lossReason
+                    : resumeSkipped                 ? "transaction_skip resume"
+                                                    : "transaction_skip fold");
       });
 }
 
@@ -3280,6 +3296,12 @@ bool aml_transaction_inbox()
 {
   return s_transactionLatched.load(std::memory_order_acquire) &&
          s_transactionInbox.load(std::memory_order_relaxed);
+}
+
+bool aml_midplaytx_on()
+{
+  return s_transactionLatched.load(std::memory_order_acquire) &&
+         s_transactionMidPlay.load(std::memory_order_relaxed);
 }
 
 const char* aml_transaction_loss_reason()
