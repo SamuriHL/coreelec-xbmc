@@ -898,6 +898,8 @@ CRenderManager::TxAnswer ToTxAnswer(DISPLAYSTATE::StartAnswer answer)
       return R::RECOVERING;
     case A::RECOVERED:
       return R::RECOVERED;
+    case A::NO_CHANGE: // 5.G-3: a mid-play job's only, never a Start job's
+      break;
   }
   return R::FAILED;
 }

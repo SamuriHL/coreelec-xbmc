@@ -799,6 +799,9 @@ const char* RequestOrigin(const char* name)
   // 5.E2-8b: DECIDE's Start job (lane 3)
   if (job == "start job")
     return "start-decision";
+  // 5.G-3 (docs/phase5_g0_design.md §4.0): P's mid-play decision
+  if (job == "midplay job")
+    return "p-midplay";
   if (job == "mode set")
   {
     // posted on main, where RM's scope is counted
@@ -809,6 +812,13 @@ const char* RequestOrigin(const char* name)
     return "main (unscoped)";
   }
   return nullptr;
+}
+
+// 5.G-3 (§4.0): P's mid-play job is dropped, held and re-raised as main's decision is
+bool MainDecisionClass(const char* origin)
+{
+  const std::string_view o(origin);
+  return o == "main-decision" || o == "p-midplay";
 }
 } // namespace
 
@@ -838,7 +848,7 @@ bool COutputWorker::DeferrableOrigin(const char* origin)
   if (!origin)
     return false;
   const std::string_view o(origin);
-  return o == "user-pick" || o == "main-decision" || o == "vs10";
+  return o == "user-pick" || MainDecisionClass(origin) || o == "vs10";
 }
 
 COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
@@ -860,7 +870,7 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
   {
     if (aml_disc_screen_hold())
     {
-      if (std::string_view(job.origin) == "main-decision")
+      if (MainDecisionClass(job.origin))
       {
         m_heldDroppedMain = true;
         why = m_gapF == job.reqF ? "gap" : "owed mark";
@@ -875,9 +885,9 @@ COutputWorker::Verdict COutputWorker::DeferVerdictLocked(const Job& job,
   if (m_heldF && job.reqF == m_heldF && aml_disc_screen_hold())
   {
     const std::string_view o(job.origin);
-    if (windowExit || o == "main-decision")
+    if (windowExit || MainDecisionClass(job.origin))
     {
-      m_heldDroppedMain |= o == "main-decision";
+      m_heldDroppedMain |= MainDecisionClass(job.origin);
       why = "held record";
       return Verdict::DROP;
     }
@@ -1294,10 +1304,10 @@ COutputWorker::SDeferCounts COutputWorker::DeferClose(uint32_t f, DeferOutcome o
           m_heldList.emplace_back(lane, std::move(job));
           ++counts.folded;
         }
-        else if (abort || std::string_view(job.origin) == "main-decision")
+        else if (abort || MainDecisionClass(job.origin))
         {
-          counts.mainDropped |= std::string_view(job.origin) == "main-decision";
-          if (noVideo && std::string_view(job.origin) == "main-decision")
+          counts.mainDropped |= MainDecisionClass(job.origin);
+          if (noVideo && MainDecisionClass(job.origin))
             m_heldDroppedMain = true;
           ++counts.dropped;
           drops.push_back({std::move(job.onVerdict), job.reqId, job.reqF});
@@ -1570,22 +1580,24 @@ void COutputWorker::Post(Lane lane, const char* name, std::function<void()> fn, 
   m_cond.notify_all();
 }
 
-void COutputWorker::PostRequest(Lane lane,
-                                const char* name,
-                                std::function<void()> fn,
-                                VerdictFn onVerdict)
+uint64_t COutputWorker::PostRequest(Lane lane,
+                                    const char* name,
+                                    std::function<void()> fn,
+                                    VerdictFn onVerdict)
 {
   std::unique_lock lock(m_mutex);
   if (!m_running || m_stop)
   {
     lock.unlock();
     fn();
-    return;
+    return 0;
   }
   m_lanes[static_cast<size_t>(lane)].push_back(
       {name, std::move(fn), 0, m_nextId++, {}, 0, nullptr, 0, std::move(onVerdict), false, false});
   TagRequestLocked(lane, m_lanes[static_cast<size_t>(lane)].back());
+  const uint64_t reqId = m_lanes[static_cast<size_t>(lane)].back().reqId;
   m_cond.notify_all();
+  return reqId;
 }
 
 bool COutputWorker::RunRequest(Lane lane,

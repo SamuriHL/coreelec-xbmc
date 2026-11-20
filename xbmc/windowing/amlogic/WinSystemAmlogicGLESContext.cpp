@@ -196,7 +196,8 @@ void StartTestStopAt(const DISPLAYSTATE::SStartJob& start,
                      const char* point,
                      const std::function<bool()>& release)
 {
-  if (aml_transaction_hooks().stopAt != point)
+  // 5.G-3: the Start job's hooks; a mid-play job is main's mid-play set, which has none
+  if (start.midplay || aml_transaction_hooks().stopAt != point)
     return;
   CLog::Log(LOGWARNING, "TXTEST stopat {} T={}", point, start.T);
   const auto from = std::chrono::steady_clock::now();
@@ -1249,7 +1250,7 @@ void CWinSystemAmlogicGLESContext::ReportDriveSet(
             "off_ms={} lost_ms={} commit_ms={} engage_ms={} wait_ms={} handler_ms={} "
             "uiepoch={} off={} guiLocked {}{}",
             job.id, job.ledgerSet,
-            job.start      ? "start"
+            job.start      ? (job.start->midplay ? "p-midplay" : "start")
             : job.originRm ? "rm"
             : job.hotplug  ? "hotplug"
                            : "main",
@@ -1434,7 +1435,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     return;
   }
   // 5.E2-10 §4: a join's kept picture is not shown on the start's new mode
-  if (job.start && aml_frame_kept() && !aml_transaction_skip("keptdrop"))
+  if (job.start && !job.start->midplay && aml_frame_kept() && !aml_transaction_skip("keptdrop"))
     aml_drop_kept_frame("start job output change");
   if (job.start)
     StartTestStopAt(*job.start, "parked", [] { return false; });
@@ -1537,7 +1538,8 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   if (!lostFirst)
     lostWalk();
   // 5.E2-9a (transaction_commitstall, D7): W hangs inside the Start job's commit, after its walk
-  if (job.start)
+  const bool startHooks = job.start && !job.start->midplay;
+  if (startHooks)
     if (const int ms = aml_transaction_hooks().commitStallMs; ms > 0)
     {
       CLog::Log(LOGWARNING, "TXTEST commitstall {} ms T={} request {}", ms, job.start->T, job.id);
@@ -1555,7 +1557,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     OUTPUT::COutputWorker::Get().WordCommitAhead(open ? static_cast<uint32_t>(open->T) : 0);
   }
   // 5.E2-8b (transaction_commitfail): the Start job's commit fails, nothing written
-  const bool commitFail = job.start && aml_transaction_hooks().commitFail;
+  const bool commitFail = startHooks && aml_transaction_hooks().commitFail;
   if (commitFail)
     CLog::Log(LOGWARNING, "TXTEST commitfail T={} request {}", job.start->T, job.id);
   const bool committed =
@@ -1604,7 +1606,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   job.engageMs = sinceStart();
   // transaction_notcommitted: only the reply's kind; the word keeps the real display state
   const bool forceNotCommitted =
-      committed && !notConnected && job.start && aml_transaction_hooks().notCommitted;
+      committed && !notConnected && startHooks && aml_transaction_hooks().notCommitted;
   if (forceNotCommitted)
     CLog::Log(LOGWARNING, "TXTEST notcommitted T={} request {}", job.start->T, job.id);
   job.kind = !committed                       ? OUTPUT::DriveReply::FAILED
@@ -2070,6 +2072,7 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
             settle.delay.count(),
             !lockWait       ? (atOnce ? ", at once (delay 0)" : "")
             : job.filmStart ? ", sink lock wait (film start at delay 0)"
+            : job.start     ? ", sink lock wait (mid-play at delay 0, origin=p-midplay)"
             : job.originRm  ? ", sink lock wait (mid-play at delay 0, origin=main-decision)"
                             : ", sink lock wait (mid-play at delay 0, origin=user-pick)");
 }
@@ -2453,7 +2456,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
       // code review A-M1: answered, so RM's commit-in-flight does not outlive the start
       CLog::Log(LOGERROR, "TXSTART T={} recovery set request {} failed: answer failed",
                 recovery.job->T, recovery.id);
-      recovery.job->AdoptAnswer(DISPLAYSTATE::StartAnswer::FAILED);
+      recovery.job->AdoptAnswer(recovery.job->midplay ? DISPLAYSTATE::StartAnswer::FAILED_SET
+                                                      : DISPLAYSTATE::StartAnswer::FAILED);
     }
   }
   while (true)
@@ -2796,14 +2800,48 @@ bool CWinSystemAmlogicGLESContext::PostStartJob(
   return true;
 }
 
+bool CWinSystemAmlogicGLESContext::PostMidPlayJob(
+    const std::shared_ptr<DISPLAYSTATE::SStartJob>& start)
+{
+  // PostRequest runs a request inline when W does not run: never on P
+  if (!m_wHotplug || start->state != DISPLAYSTATE::StartJobState::QUEUED ||
+      !OUTPUT::COutputWorker::Get().Active())
+  {
+    CLog::Log(LOGINFO, "MIDPLAY job seq={} not posted: {}", start->seq,
+              !m_wHotplug ? "the hotplug on W is not live" : "W not running");
+    return false;
+  }
+  // the verdict reaches P's inbox (no capture of the player: it may run after the player's end)
+  const unsigned int jobSeq = start->seq;
+  const uint64_t reqId = OUTPUT::COutputWorker::Get().PostRequest(
+      OUTPUT::Lane::MIDPLAY, "midplay job", [this, start] { RunStartJob(start); },
+      [jobSeq](OUTPUT::COutputWorker::DeferVerdict verdict, uint64_t reqId, uint32_t)
+      {
+        using Mid = DISPLAYSTATE::STxInboxEntry::Mid;
+        DISPLAYSTATE::STxInboxEntry e;
+        e.kind = DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY;
+        e.reqId = reqId;
+        e.jobSeq = jobSeq;
+        e.mid = verdict == OUTPUT::COutputWorker::DeferVerdict::DEFERRED ? Mid::DEFERRED
+                : verdict == OUTPUT::COutputWorker::DeferVerdict::HELD   ? Mid::HELD
+                                                                          : Mid::DROPPED;
+        DISPLAYSTATE::PostTxInbox(std::move(e));
+      });
+  CLog::Log(LOGINFO, "MIDPLAY job seq={} request={} @ {:.3f} hdr={} frac={} reqId={} posted",
+            start->seq, start->res.strId, start->res.fRefreshRate,
+            static_cast<int>(start->hdrType), start->fracRequest ? 1 : 0, reqId);
+  return true;
+}
+
 void CWinSystemAmlogicGLESContext::RunStartJob(
     const std::shared_ptr<DISPLAYSTATE::SStartJob>& start)
 {
   using State = DISPLAYSTATE::StartJobState;
   using Settle = DISPLAYSTATE::StartSettleKind;
   // 5.E2-11 D2.4: a queued job waits for the display span on its lane (W free); its state is
-  // untouched, so P's and GC's drops still work. transaction_queuehold holds it the same way
-  if (start->state.load() == State::QUEUED)
+  // untouched, so P's and GC's drops still work. transaction_queuehold holds it the same way.
+  // 5.G-3: a mid-play job is not re-posted (a re-post would re-tag it): OW's verdict holds it
+  if (start->state.load() == State::QUEUED && !start->midplay)
   {
     const auto now = std::chrono::steady_clock::now();
     const int holdMs = aml_transaction_hooks().queueHoldMs;
@@ -2855,7 +2893,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   }
   auto job = std::make_shared<SDriveJob>();
   job->start = start;
-  job->lane = OUTPUT::Lane::START;
+  job->lane = start->midplay ? OUTPUT::Lane::MIDPLAY : OUTPUT::Lane::START;
   const auto queueReply = [this, &job]
   {
     std::unique_lock lock(m_replyMutex);
@@ -2880,7 +2918,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
     return;
   }
 
-  if (const int delayMs = aml_transaction_hooks().startDelayMs)
+  if (const int delayMs = start->midplay ? 0 : aml_transaction_hooks().startDelayMs)
   {
     CLog::Log(LOGWARNING, "TXTEST startdelay {} T={}", delayMs, start->T);
     StartTestWait(delayMs, [&start] { return start->state.load() != State::PARKING; });
@@ -2902,6 +2940,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   job->nativeGUI = backups.nativeGUI;
   job->fracRequest = start->fracRequest;
   job->filmStart = start->filmStart;
+  job->midLock = start->midplay;
   job->delay = OUTPUT::CSettingsMirror::Get().GetInt("videoscreen.delayrefreshchange");
   job->uiFormat = m_wUiFormat;
   job->backups = {backups.hdrType, backups.stereo, backups.fullScreen, backups.nativeGUI,
@@ -2912,8 +2951,9 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   start->ran = true;
   start->adoptPending = true;
   // 5.E2-11 (review B M-5): the wire takes W's DV_LED clamp, as the Restore's (H5)
+  // 5.G-3: a mid-play job reads DV_LED as main's mid-play set does
   std::optional<OUTPUT::CSettingsMirror::CScopedValue> led;
-  if (aml_transaction_loss_in_start())
+  if (aml_transaction_loss_in_start() && !start->midplay)
     if (const std::optional<int> dvLed = StartJobDvLed())
       led.emplace(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, *dvLed);
   try
@@ -2995,7 +3035,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   using Answer = DISPLAYSTATE::StartAnswer;
   using Form = DISPLAYSTATE::StartAdoptForm;
   DISPLAYSTATE::SStartJob& start = *job->start;
-  if (const int stallMs = aml_transaction_hooks().adoptStallMs)
+  if (const int stallMs = start.midplay ? 0 : aml_transaction_hooks().adoptStallMs)
   {
     CLog::Log(LOGWARNING, "TXTEST adoptstall {} T={}", stallMs, start.T);
     std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
@@ -3026,6 +3066,15 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   GUISNAPSHOT::NoteModeSeq(job->modeSeq);
   const bool failed =
       job->kind == OUTPUT::DriveReply::FAILED || job->kind == OUTPUT::DriveReply::FAILED_PARK;
+
+  // 5.G-3 (§4.3 c): a mid-play no-change moves nothing on main (no GC set, no WINDOW_RESIZE)
+  if (start.midplay && job->kind == OUTPUT::DriveReply::DONE_NO_CHANGE)
+  {
+    NoteAppliedReply(*job);
+    OUTPUT::NoteDriveReply(job->kind);
+    answer(Answer::NO_CHANGE, Form::NO_CHANGE);
+    return;
+  }
 
   // the latest test (r14 L5): no applied reply W ran after this job
   if (job->runOrdinal < m_appliedSet.runOrdinal)
@@ -3137,16 +3186,20 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   {
     DISPLAYSTATE::SetInStartAdopt(true);
     m_adoptJob = job;
-    if (aml_transaction_hooks().adoptThrow == "before")
+    if (!start.midplay && aml_transaction_hooks().adoptThrow == "before")
     {
       CLog::Log(LOGWARNING, "TXTEST adoptthrow before T={}", start.T);
       throw std::runtime_error("test throw before the adopt");
     }
+    // 5.G-3: main's mid-play order (RM's SetHDRType before its set), and no re-map, whose
+    // second WINDOW_RESIZE main's mid-play set never sends
+    if (start.midplay)
+      gfx.SetHDRType(job->hdrType);
     gfx.SetVideoResolution(static_cast<RESOLUTION>(index), true);
     adopted = !m_adoptJob;
     m_adoptJob.reset();
     DISPLAYSTATE::SetInStartAdopt(false);
-    if (adopted)
+    if (adopted && !start.midplay)
     {
       step = "re-map";
       gfx.ApplyModeChange(static_cast<RESOLUTION>(index));

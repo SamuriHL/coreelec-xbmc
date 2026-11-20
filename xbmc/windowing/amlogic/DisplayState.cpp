@@ -1101,6 +1101,8 @@ const char* StartAdoptFormName(StartAdoptForm form)
       return "failed";
     case StartAdoptForm::RECOVERING:
       return "recovering";
+    case StartAdoptForm::NO_CHANGE:
+      return "no change";
   }
   return "?";
 }
@@ -1125,6 +1127,8 @@ const char* StartAnswerName(StartAnswer answer)
       return "recovering";
     case StartAnswer::RECOVERED:
       return "recovered";
+    case StartAnswer::NO_CHANGE:
+      return "no change";
   }
   return "?";
 }

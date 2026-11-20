@@ -301,6 +301,7 @@ private:
 
   // 5.E2-8b: the Start job (docs/phase5_e2_8b_impl.md D4 step 7, D5, D5b)
   bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start) override;
+  bool PostMidPlayJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& start) override;
   //! W: an engaged start's committed row while it is the wire's and main's adopt of it is owed
   std::optional<DISPLAYSTATE::ModeFacts> PendingStartRow() override;
   //! W: the job on Lane::START, built as RunRestoreOnW builds its set

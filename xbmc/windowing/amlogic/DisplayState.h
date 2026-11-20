@@ -377,6 +377,7 @@ enum class StartAnswer
   FAILED_SET, //!< the job's own set failed (kind FAILED/FAILED_PARK)
   RECOVERING,
   RECOVERED,
+  NO_CHANGE, //!< 5.G-3: a mid-play job's no-change reply (no GC set)
 };
 //! main's adopt, to P after the answer (and after the answer's PLAYER_AVCHANGE put)
 enum class StartAdoptForm
@@ -386,6 +387,7 @@ enum class StartAdoptForm
   BEHIND_GUI,
   FAILED,
   RECOVERING,
+  NO_CHANGE, //!< 5.G-3
 };
 const char* StartAdoptFormName(StartAdoptForm form);
 struct STxAdopted
@@ -426,6 +428,8 @@ struct SStartJob
   bool fracRequest = false;
   bool filmStart = true;
   double tweakMs = 0.0;
+  //! 5.G-3 (docs/phase5_g0_design.md §4.3 c): P's mid-play job on Lane::MIDPLAY
+  bool midplay = false;
   //! W: the job's mode set ran (false: dropped, or discarded unrun at W's stop: answer failed)
   std::atomic_bool ran{false};
   //! W sets it when the job runs; main's answer (any form) clears it
@@ -481,10 +485,24 @@ struct STxInboxEntry
   {
     PICK_DEFERRED, //!< a user-pick deferred in the window: its target by value
     VS10_RAN, //!< a replayed or re-queued VS10 press has run: raise its trigger
+    MIDPLAY, //!< 5.G-3: OW's verdict on, or a reply of, P's mid-play job jobSeq (f 0)
   } kind = Kind::PICK_DEFERRED;
   uint64_t reqId = 0;
   uint32_t f = 0;
   RESOLUTION_INFO res;
+  enum class Mid
+  {
+    DEFERRED,
+    HELD,
+    DROPPED,
+    OUTPUT_DONE,
+    SETTLE_DONE,
+    ADOPTED,
+  } mid = Mid::DROPPED;
+  unsigned int jobSeq = 0;
+  bool committed = false;
+  StartSettleKind settle = StartSettleKind::DONE;
+  StartAdoptForm form = StartAdoptForm::FAILED;
 };
 void PostTxInbox(STxInboxEntry entry);
 std::vector<STxInboxEntry> TakeTxInbox();

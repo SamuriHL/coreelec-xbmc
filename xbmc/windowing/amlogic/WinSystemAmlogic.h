@@ -171,6 +171,9 @@ public:
   //! inline; false when W does not run it (no worker, or no Restore inputs latched yet). Public
   //! from E2-8b C4: the player posts it
   virtual bool PostStartJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& job) { return false; }
+  //! 5.G-3, P: the mid-play job (QUEUED) as a "midplay job" request on Lane::MIDPLAY; OW's
+  //! verdicts and the job's replies reach P's inbox. False when W does not run
+  virtual bool PostMidPlayJob(const std::shared_ptr<DISPLAYSTATE::SStartJob>& job) { return false; }
 protected:
   //! no display reset inside an open span while the output is disconnected
   bool DisplayResetAllowed() const;
