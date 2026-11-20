@@ -466,6 +466,23 @@ bool CGraphicContext::IsValidResolution(RESOLUTION res)
   return false;
 }
 
+#if defined(HAS_LIBAMCODEC)
+namespace
+{
+// 5.G-3 (docs/phase5_g0_design.md §4.3 logs, r1 T1): the only log of a WINDOW_RESIZE; every
+// TTF font reload follows one. Main only
+void LogWindowResize(RESOLUTION res)
+{
+  static unsigned int count = 0;
+  const char* origin = DISPLAYSTATE::InStartAdopt() ? "adopt"
+                       : OUTPUT::DriveOriginRm()     ? "main-decision"
+                                                     : OUTPUT::CurrentRequestOrigin();
+  CLog::Log(LOGINFO, "GCRESIZE n={} res={} origin={}", ++count, static_cast<int>(res),
+            origin ? origin : "main");
+}
+} // namespace
+#endif
+
 // call SetVideoResolutionInternal and ensure its done from mainthread
 void CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
 {
@@ -605,6 +622,9 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     CServiceBroker::GetInputManager().SetMouseResolution(info_org.iWidth, info_org.iHeight, 1, 1);
 
     CGUIComponent *gui = CServiceBroker::GetGUI();
+#if defined(HAS_LIBAMCODEC)
+    LogWindowResize(res);
+#endif
     if (gui)
       gui->GetWindowManager().SendMessage(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_WINDOW_RESIZE);
   }
@@ -674,6 +694,9 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
   // update anyone that relies on sizing information
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
   CServiceBroker::GetInputManager().SetMouseResolution(info_org.iWidth, info_org.iHeight, 1, 1);
+#if defined(HAS_LIBAMCODEC)
+  LogWindowResize(res);
+#endif
   CServiceBroker::GetGUI()->GetWindowManager().SendMessage(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_WINDOW_RESIZE);
 }
 
