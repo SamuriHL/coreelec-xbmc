@@ -117,6 +117,8 @@ struct SDriveJob
   bool fracRequest{false}; //!< RM's re-clock request (its scope ends with RM's set call)
   bool originRm{false};
   bool filmStart{false}; //!< origin=rm for a start the player holds (5.B2-6, Q6)
+  //! 5.G-1: a mid-play main-decision or user-pick set: SETTLE waits on the sink lock at delay 0
+  bool midLock{false};
   int delay{0}; //!< videoscreen.delayrefreshchange, 0.1 s units
   uint32_t uiFormat{0};
   OUTPUT::Lane lane{OUTPUT::Lane::SETTINGS};
@@ -1056,6 +1058,9 @@ bool CWinSystemAmlogicGLESContext::SetFullScreenOnW(bool fullScreen, RESOLUTION_
   const uint64_t postedBefore = m_drivePosted;
   m_drivePosted = job->id;
   const bool pickOrigin = origin && std::string_view(origin) == "user-pick";
+  job->midLock = aml_midplaytx_on() && !job->hotplug &&
+                 ((job->originRm && !job->filmStart) || (!job->originRm && pickOrigin)) &&
+                 OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f != 0;
   // r1 L7: MidPlay for RM's decision, Restore for the hotplug set, Settings otherwise
   job->lane = job->hotplug    ? OUTPUT::Lane::RESTORE
               : job->originRm ? OUTPUT::Lane::MIDPLAY
@@ -1997,10 +2002,10 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
               job.ledgerSet, m_ledgerLost.load(), job.id);
     return;
   }
-  // at delay 0 main's handler resets at once, as today, except at a film start (Q6, D8)
-  // a start with no display (not-committed) keeps today's reset at once
+  // at delay 0 main's handler resets at once, as today, except at a film start (Q6, D8) and a
+  // mid-play set (G-1); a start with no display (not-committed) keeps today's reset at once
   const bool lockWait =
-      job.delay <= 0 && job.filmStart && job.kind == OUTPUT::DriveReply::DONE;
+      job.delay <= 0 && job.kind == OUTPUT::DriveReply::DONE && (job.filmStart || job.midLock);
   // 5.V2-10 (Q13): W arms it at delay 0 too, a start with no display included; main resets at
   // no delay
   const bool gatesOnW = OUTPUT::SettleGatesOnW();
@@ -2063,8 +2068,10 @@ void CWinSystemAmlogicGLESContext::SettleAfterJob(SDriveJob& job)
   job.settleArmed = true;
   CLog::Log(LOGINFO, "SETTLE set={} request={} armed: delay {} ms{}", job.ledgerSet, job.id,
             settle.delay.count(),
-            lockWait ? ", sink lock wait (film start at delay 0)"
-                     : (atOnce ? ", at once (delay 0)" : ""));
+            !lockWait       ? (atOnce ? ", at once (delay 0)" : "")
+            : job.filmStart ? ", sink lock wait (film start at delay 0)"
+            : job.originRm  ? ", sink lock wait (mid-play at delay 0, origin=main-decision)"
+                            : ", sink lock wait (mid-play at delay 0, origin=user-pick)");
 }
 
 void CWinSystemAmlogicGLESContext::SettleCheck(uint64_t gen)
