@@ -306,6 +306,7 @@ public:
   SHeldClear GapClose(uint32_t f, const char* why, bool drop);
   void MarkOwed(uint32_t f, const DISPLAYSTATE::ModeFacts& mode);
   bool MarkOwedFor(uint32_t f) const;
+  bool GapFor(uint32_t f) const;
   //! the owed mark cleared; its held jobs re-queued (re-verdicted at their dequeue)
   void TakeOwed(uint32_t f);
   //! W: every committed non-Restore set of file f is W's last commit (code review H-1: the pin's

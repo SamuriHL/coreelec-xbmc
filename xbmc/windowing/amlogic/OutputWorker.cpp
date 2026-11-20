@@ -1134,6 +1134,12 @@ bool COutputWorker::MarkOwedFor(uint32_t f) const
   return f && m_markOwedF == f;
 }
 
+bool COutputWorker::GapFor(uint32_t f) const
+{
+  std::lock_guard listLock(m_listMutex);
+  return f && m_gapF == f;
+}
+
 void COutputWorker::TakeOwed(uint32_t f)
 {
   std::vector<std::pair<VerdictFn, uint64_t>> drops;

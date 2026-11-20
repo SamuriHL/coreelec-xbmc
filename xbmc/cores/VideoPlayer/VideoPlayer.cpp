@@ -3897,6 +3897,17 @@ void CVideoPlayer::TxMidVs10Request(const DISPLAYSTATE::STxInboxEntry& e, uint32
     TxMidVs10ToMain(e.action, e.reqId, "after the path");
     return;
   }
+  // code review r1 B1: OW drops a mid-play job in a segment gap or owed mark but holds a vs10
+  // request and replays it (VS10_RAN): today's route, one decision as off
+  OUTPUT::COutputWorker& ow = OUTPUT::COutputWorker::Get();
+  if (aml_disc_screen_hold() && (ow.GapFor(e.f) || ow.MarkOwedFor(e.f)))
+  {
+    const unsigned int mode = e.vs10Mode;
+    CLog::Log(LOGINFO, "MIDPLAY vs10 request {} mode={}: today's write (segment gap)", e.reqId,
+              mode);
+    ow.PostRequest(OUTPUT::Lane::MIDPLAY, "vs10", [mode] { aml_dv_set_vs10_mode_now(mode); }, {});
+    return;
+  }
   if (m_midTx.vs10 >= 0)
     CLog::Log(LOGINFO, "MIDPLAY vs10 request {} superseded by request {}", m_midTx.vs10Id,
               e.reqId);
