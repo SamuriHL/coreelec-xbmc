@@ -2892,8 +2892,13 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
   m_cachingStall = false;
   m_startHeld = true;
   m_startReleasedClock = DVD_NOPTS_VALUE;
-  // 5.B2-2: the count read with the pending test; without it today's snapshot
-  m_startHeldDecisions = decisions.value_or(m_renderManager.GetResolutionDecisions());
+  // 5.B2-2: the count read with the pending test; without it today's snapshot.
+  // 5.E3: none for a P-decided open (main shut out): only the 12 s cap applies
+  const bool txStart = TxOpen() && m_txJob;
+  if (txStart)
+    m_startHeldDecisions.reset();
+  else
+    m_startHeldDecisions = decisions.value_or(m_renderManager.GetResolutionDecisions());
   m_startHeldSince = std::chrono::steady_clock::now();
   m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
   m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
@@ -2910,9 +2915,13 @@ void CVideoPlayer::HoldStart(std::optional<unsigned int> decisions)
       m_discTime.SetTxHeld(true);
     m_renderManager.ArmTxStartHeldBound();
   }
-  CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {}{})",
-            m_clock.GetClock() / DVD_TIME_BASE, m_startHeldDecisions,
-            decisions ? ", read with the pending test" : "");
+  if (txStart)
+    CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (transaction start)",
+              m_clock.GetClock() / DVD_TIME_BASE);
+  else
+    CLog::Log(LOGINFO, "VideoPlayer: E1 start held at clock {:.3f} (mode decisions so far {}{})",
+              m_clock.GetClock() / DVD_TIME_BASE, *m_startHeldDecisions,
+              decisions ? ", read with the pending test" : "");
 }
 
 void CVideoPlayer::CheckHeldStart()
@@ -2920,7 +2929,7 @@ void CVideoPlayer::CheckHeldStart()
   if (!m_startHeld || m_displayLost || m_txInSpan)
     return;
   const auto held = std::chrono::steady_clock::now() - m_startHeldSince;
-  if (m_renderManager.GetResolutionDecisions() != m_startHeldDecisions)
+  if (m_startHeldDecisions && m_renderManager.GetResolutionDecisions() != *m_startHeldDecisions)
     ReleaseHeldStart("output mode decided");
   else if (held > 12s)
     ReleaseHeldStart("no mode decision in 12s");
