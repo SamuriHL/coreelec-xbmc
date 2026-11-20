@@ -985,6 +985,63 @@ private:
   CRenderManager& m_renderManager;
 };
 
+// 5.G-3 (docs/phase5_g0_design.md §4.3 c): one mid-play job's receiver. Its replies go to P's
+// inbox (TxDeferPass takes it every pass, while frozen too); the adopt answer goes to RM on
+// main's stack
+class CTxMidSink : public DISPLAYSTATE::IStartJobSink
+{
+public:
+  CTxMidSink(CRenderManager& renderManager, unsigned int seq)
+    : m_renderManager(renderManager), m_seq(seq)
+  {
+  }
+  void OnOutputDone(const DISPLAYSTATE::SOutputDone& reply) override
+  {
+    DISPLAYSTATE::STxInboxEntry e = Entry(Mid::OUTPUT_DONE);
+    e.committed = reply.committed;
+    DISPLAYSTATE::PostTxInbox(std::move(e));
+  }
+  void OnSettleDone(const DISPLAYSTATE::SSettleDone& reply) override
+  {
+    DISPLAYSTATE::STxInboxEntry e = Entry(Mid::SETTLE_DONE);
+    e.settle = reply.kind;
+    DISPLAYSTATE::PostTxInbox(std::move(e));
+  }
+  bool OnAdoptAnswer(unsigned int, DISPLAYSTATE::StartAnswer answer) override
+  {
+    using A = DISPLAYSTATE::StartAnswer;
+    // P posts a no-change's and a failed set's at W's SettleDone; RECOVERED follows RECOVERING
+    const char* name = answer == A::NO_CHANGE    ? "DONE_NO_CHANGE"
+                       : answer == A::FAILED_SET ? "FAILED"
+                       : answer == A::RECOVERED  ? "DONE (recovered)"
+                       : answer == A::ADOPTED    ? "DONE"
+                                                 : "DONE (not adopted)";
+    return m_renderManager.TxMidAdoptAnswer(
+        m_seq, answer != A::NO_CHANGE && answer != A::FAILED_SET && answer != A::RECOVERED,
+        name);
+  }
+  void OnTxAdopted(const DISPLAYSTATE::STxAdopted& reply) override
+  {
+    DISPLAYSTATE::STxInboxEntry e = Entry(Mid::ADOPTED);
+    e.form = reply.form;
+    DISPLAYSTATE::PostTxInbox(std::move(e));
+  }
+  void OnRestoreSettled(uint64_t, uint32_t) override {}
+
+private:
+  using Mid = DISPLAYSTATE::STxInboxEntry::Mid;
+  DISPLAYSTATE::STxInboxEntry Entry(Mid mid) const
+  {
+    DISPLAYSTATE::STxInboxEntry e;
+    e.kind = DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY;
+    e.mid = mid;
+    e.jobSeq = m_seq;
+    return e;
+  }
+  CRenderManager& m_renderManager;
+  const unsigned int m_seq;
+};
+
 CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   : IPlayer(callback),
     CThread("VideoPlayer"),
@@ -3398,9 +3455,10 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
   // 5.E2-8b D7: main let back in, TxOpenJob released; withholding ends at START (E28B-1)
   if (m_txJob)
   {
+    const char* midOff = TxMidPlayOff();
     m_renderManager.TxOpenMain(m_txEngagedGen, CRenderManager::TxHow::START,
-                               CRenderManager::TxNeed::NONE);
-    TxMidPlayStart();
+                               CRenderManager::TxNeed::NONE, !midOff);
+    TxMidPlayStart(midOff);
     TxClearOpenJob("START");
     m_txEndedGen = 0;
     // the job's tweak: ReleaseHeldStart's ApplyAudioOffset lands RM's tweak, composed from W's
@@ -3411,21 +3469,30 @@ void CVideoPlayer::TxStartPoint(const char* point, bool guarded)
   }
 }
 
-void CVideoPlayer::TxMidPlayStart()
+const char* CVideoPlayer::TxMidPlayOff()
+{
+  if (!aml_midplaytx_on())
+    return "midplaytx off";
+  return !DISPLAYSTATE::DecideShadowOn()                    ? "decide shadow off"
+         : !m_renderManager.TxPictureStereoMode().empty() ? "stereoscopic (G-D4)"
+         : !m_processInfo->IsVideoHwDecoder()             ? "software decode"
+                                                          : nullptr;
+}
+
+void CVideoPlayer::TxMidPlayStart(const char* off)
 {
   if (!aml_midplaytx_on())
     return;
   const uint32_t T = m_txWordT.load();
-  const char* off = !DISPLAYSTATE::DecideShadowOn() ? "decide shadow off"
-                    : !m_renderManager.TxPictureStereoMode().empty() ? "stereoscopic (G-D4)"
-                    : !m_processInfo->IsVideoHwDecoder()             ? "software decode"
-                                                                      : nullptr;
   if (off)
   {
     CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", T, off);
     return;
   }
   m_renderManager.TxMidShadowReset();
+  m_midTx.owedAtFullscreen = m_midTx.redecide = m_midTx.redecideDue = false;
+  m_midTx.retried = m_midTx.retryDue = m_midTx.handback = m_midTx.openLogged = false;
+  m_midTx.chain = 0;
   m_txMidPath = true;
   m_txMidPathT = T;
   DISPLAYSTATE::PublishMidPlayPath(
@@ -3437,9 +3504,257 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
 {
   if (!std::exchange(m_txMidPath, false))
     return;
+  // r2 note b: a later set's arm raises what P still owes as the trigger; the stop and the next
+  // file drop it
+  const bool laterSet = std::string_view(why) == "later set";
+  const int n = m_renderManager.TxMidPlayEnd(
+      laterSet, m_midTx.owedAtFullscreen || m_midTx.redecide || m_midTx.retryDue);
   DISPLAYSTATE::PublishMidPlayPath(0, false);
   m_renderManager.TxMidShadowReset();
-  CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", m_txMidPathT, why);
+  // B1: the record reset; a job in flight runs to its replies (r2 note c), deciding nothing
+  for (SMidJob& j : m_midJobs)
+    j.path = false;
+  m_midTx.owedAtFullscreen = m_midTx.redecide = m_midTx.redecideDue = false;
+  m_midTx.retried = m_midTx.retryDue = m_midTx.handback = false;
+  m_midTx.chain = 0;
+  if (n < 0)
+    CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", m_txMidPathT, why);
+  else
+    CLog::Log(LOGINFO, "MIDPLAY path off T={} ({}), {} notices {}", m_txMidPathT, why, n,
+              laterSet ? "raised" : "dropped");
+}
+
+bool CVideoPlayer::TxMidBusy() const
+{
+  return std::any_of(m_midJobs.begin(), m_midJobs.end(),
+                     [](const SMidJob& j) { return j.path; });
+}
+
+void CVideoPlayer::TxMidPost(SMidJob& j, const char* reply)
+{
+  VideoParamsChange();
+  ++m_midTx.counted;
+  j.posted = true;
+  CLog::Log(LOGINFO, "MIDPLAY reply seq={} {} avchange posted (P)", j.job->seq, reply);
+}
+
+void CVideoPlayer::TxMidClearJobs()
+{
+  for (SMidJob& j : m_midJobs)
+    j.job->ClearSink();
+  m_midJobs.clear();
+}
+
+// 5.G-3 (§4.0, §4.3 c-f): OW's verdicts and the job's replies
+void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
+{
+  using Mid = DISPLAYSTATE::STxInboxEntry::Mid;
+  using Settle = DISPLAYSTATE::StartSettleKind;
+  const auto it = std::find_if(m_midJobs.begin(), m_midJobs.end(),
+                               [&e](const SMidJob& j) { return j.job->seq == e.jobSeq; });
+  if (it == m_midJobs.end())
+  {
+    CLog::Log(LOGINFO, "MIDPLAY job seq={} reply ignored (no record)", e.jobSeq);
+    return;
+  }
+  SMidJob& j = *it;
+  switch (e.mid)
+  {
+    case Mid::DEFERRED:
+    case Mid::HELD:
+      CLog::Log(LOGINFO, "MIDPLAY verdict reqId={} seq={} {}", e.reqId, e.jobSeq,
+                e.mid == Mid::DEFERRED ? "DEFERRED" : "HELD");
+      break;
+    case Mid::DROPPED:
+      // r2 N2: no redecide; the drop's own re-raise (gap / held clear, replay) is a notice
+      CLog::Log(LOGINFO, "MIDPLAY verdict reqId={} seq={} DROPPED", e.reqId, e.jobSeq);
+      j.settled = true;
+      j.main = false;
+      TxMidPost(j, "DROPPED");
+      if (j.path)
+        m_midTx.redecide = false;
+      break;
+    case Mid::OUTPUT_DONE:
+      // §4.3 f: the re-decide point of a commit (and of a no-change)
+      if (j.path)
+        m_midTx.redecideDue = true;
+      break;
+    case Mid::SETTLE_DONE:
+    {
+      j.settled = true;
+      const bool failed = e.settle == Settle::FAILED || e.settle == Settle::FAILED_PARK;
+      if (e.settle != Settle::NO_CHANGE && !failed && e.settle != Settle::DROPPED)
+        break;
+      j.main = e.settle != Settle::DROPPED;
+      TxMidPost(j, e.settle == Settle::NO_CHANGE ? "DONE_NO_CHANGE"
+                   : failed                      ? "FAILED"
+                                                 : "DROPPED (W)");
+      if (!j.path)
+        break;
+      m_midTx.redecideDue = true;
+      // W's drop set nothing: decided again
+      if (e.settle == Settle::DROPPED)
+        m_midTx.redecide = true;
+      if (!failed)
+        break;
+      // S9: one re-post, the arm restored as RM's rm retry
+      if (!std::exchange(m_midTx.retried, true))
+      {
+        m_renderManager.TxMidRestoreArm();
+        m_midTx.retryDue = true;
+        CLog::Log(LOGINFO, "MIDPLAY retry seq={}", e.jobSeq);
+      }
+      else
+      {
+        m_midTx.retried = false;
+        CLog::Log(LOGINFO, "MIDPLAY retry failed seq={}", e.jobSeq);
+      }
+      break;
+    }
+    case Mid::ADOPTED:
+      j.adopted = true;
+      // main posted it (TxMidAdoptAnswer): counted after GC's set, as RM's count
+      if (!j.posted && e.form != DISPLAYSTATE::StartAdoptForm::NO_CHANGE)
+      {
+        j.posted = true;
+        ++m_midTx.counted;
+      }
+      if (j.path && e.form != DISPLAYSTATE::StartAdoptForm::FAILED)
+        m_midTx.retried = false;
+      break;
+  }
+  if (j.settled && (j.adopted || !j.main))
+  {
+    j.job->ClearSink();
+    m_midJobs.erase(it);
+  }
+}
+
+// 5.G-3 (§4.3 b): after TxDeferPass, every pass (frozen too)
+void CVideoPlayer::TxMidPlayPass()
+{
+  if (!m_txMidPath)
+    return;
+  // S3 a: never beside an open start's TxStartGatePass (the B2 end makes it unreachable)
+  if (TxOpen())
+  {
+    if (!std::exchange(m_midTx.openLogged, true))
+      CLog::Log(LOGERROR, "MIDPLAY path on with a start open T={}", m_txMidPathT);
+    return;
+  }
+  std::vector<CRenderManager::STxNotice> notices;
+  if (m_renderManager.TxMidNoticesPending())
+    notices = m_renderManager.TakeTxNotices();
+  if (!notices.empty())
+  {
+    std::string kinds;
+    for (const CRenderManager::STxNotice& n : notices)
+      kinds += (kinds.empty() ? "" : ",") + std::string(n.kind);
+    CLog::Log(LOGINFO, "MIDPLAY notice {} T={}", kinds, m_txMidPathT);
+  }
+  // main's handed-back decision counts once it is done
+  if (m_midTx.handback && !m_renderManager.TxMidHandBackBusy())
+  {
+    m_midTx.handback = false;
+    ++m_midTx.counted;
+  }
+  const bool busy = TxMidBusy();
+  const bool due = std::exchange(m_midTx.redecideDue, false);
+  if (!notices.empty() && (busy || m_midTx.handback))
+    m_midTx.redecide = true;
+  const char* why = nullptr;
+  if (m_midTx.retryDue)
+    why = "retry";
+  else if (!notices.empty() && !busy)
+    why = "notice";
+  else if (m_midTx.redecide && (!busy || due))
+    why = "supersede";
+  else if (m_midTx.owedAtFullscreen && !busy &&
+           DISPLAYSTATE::DecideInputsSeq() > m_midTx.owedSeq)
+    why = "owed";
+  if (!why || m_midTx.handback)
+    return;
+  if (!busy)
+    m_midTx.chain = 0;
+  else if (!m_midTx.retryDue)
+  {
+    // the last job is kept; the decision waits for it
+    if (m_midTx.chain >= 3)
+    {
+      if (m_midTx.chain++ == 3)
+        CLog::Log(LOGINFO, "MIDPLAY chain cap T={}", m_txMidPathT);
+      return;
+    }
+    ++m_midTx.chain;
+  }
+  TxMidDecide(why);
+}
+
+// 5.G-3 (§4.3 b, c): one DECIDE, one job (W classifies it)
+void CVideoPlayer::TxMidDecide(const char* why)
+{
+  m_midTx.retryDue = false;
+  m_midTx.redecide = false;
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  // RM:3635's test: not fullscreen, owed (nothing posted, no AVCHANGE, as main's kept flag)
+  if (latest.seq && !(latest.fullScreenVideo && latest.fullScreenRoot))
+  {
+    if (!m_midTx.owedAtFullscreen || m_midTx.owedSeq != latest.seq)
+      CLog::Log(LOGINFO, "MIDPLAY owed at fullscreen inputs={}", latest.seq);
+    m_midTx.owedAtFullscreen = true;
+    m_midTx.owedSeq = latest.seq;
+    return;
+  }
+  if (std::exchange(m_midTx.owedAtFullscreen, false))
+    CLog::Log(LOGINFO, "MIDPLAY owed decided inputs={}", latest.seq);
+  CRenderManager::SStartResolve r = m_renderManager.TxMidResolve(latest);
+  if (r.exclusion)
+  {
+    m_midTx.handback = true;
+    m_renderManager.TxMidHandBack(r.exclusion);
+    return;
+  }
+  // S7: the arm consumed (and recorded for a retry) and the anchor, as main's consume
+  m_renderManager.TxTakeArm(0, r);
+  if (r.anchor)
+    aml_set_disc_mode_anchored(true);
+  auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
+  job->midplay = true;
+  job->T = m_txMidPathT;
+  job->gen = 0;
+  job->seq = ++m_midTx.decides;
+  job->res = r.info;
+  job->resIndex = static_cast<int>(r.res);
+  job->stereo = r.stereo;
+  if (job->stereo == RenderStereoMode::HARDWAREBASED)
+    job->res.iHeight = r.info.iScreenHeight * 2 + r.info.iBlanking;
+  job->hdrType = r.hdrType;
+  job->fullScreen = true;
+  job->fracRequest = r.frac;
+  job->filmStart = false;
+  job->tweakMs = r.tweakMs;
+  if (const auto state = DISPLAYSTATE::Get())
+  {
+    job->capsEpoch = state->capsEpoch;
+    job->sinkSig = state->sinkSig;
+  }
+  CLog::Log(LOGINFO, "MIDPLAY decide seq={} T={} res={} ({}) frac={} anchor={} sticky=- why={}",
+            job->seq, job->T, static_cast<int>(r.res), r.info.strMode, r.frac ? 1 : 0,
+            r.anchor ? 1 : 0, why);
+  SMidJob& j = m_midJobs.emplace_back();
+  j.job = job;
+  j.sink = std::make_unique<CTxMidSink>(m_renderManager, job->seq);
+  job->SetSink(j.sink.get());
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!DISPLAYSTATE::StartJobQueue(*job) || !winSystem || !winSystem->PostMidPlayJob(job))
+  {
+    // no worker: main decides it (its consume posts the AVCHANGE); the arm goes back with it
+    job->ClearSink();
+    m_midJobs.pop_back();
+    m_renderManager.TxMidRestoreArm();
+    m_midTx.handback = true;
+    m_renderManager.TxMidHandBack("no worker");
+  }
 }
 
 void CVideoPlayer::TxStartRelease(int64_t discRunNs)
@@ -3849,6 +4164,11 @@ void CVideoPlayer::TxDeferPass()
   };
   for (const DISPLAYSTATE::STxInboxEntry& e : DISPLAYSTATE::TakeTxInbox())
   {
+    if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY)
+    {
+      TxMidInbox(e);
+      continue;
+    }
     // code review r2 addendum: another file's entry (a stale one after a Next) is never this
     // file's target or trigger
     if (e.f && e.f != wordF)
@@ -7013,6 +7333,7 @@ void CVideoPlayer::Process()
       SampleWord();
     TxSpanPass();
     TxDeferPass();
+    TxMidPlayPass();
     if (m_txMidPath)
       m_renderManager.TxMidShadowPass(m_txMidPathT);
     TxNoVideoStepPass();
@@ -9717,6 +10038,7 @@ void CVideoPlayer::OnExit()
 {
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
   TxMidPlayEnd("stop");
+  TxMidClearJobs();
   // 5.E2-8a (D5): a stop before START, ahead of the word's stop and the closes
   // 5.E2-8b D5b (r10 L3, r12 M2): a stop after an earlier exit: RM drops what the ended start
   // still owes (need none-needed, commit-in-flight, a hand-back trigger)

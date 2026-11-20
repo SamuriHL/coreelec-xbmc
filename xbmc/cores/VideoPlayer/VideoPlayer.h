@@ -42,12 +42,15 @@
 namespace DISPLAYSTATE
 {
 struct SStartJob;
+struct STxInboxEntry;
 struct ModeFacts;
 enum class StartSettleKind;
 enum class StartAdoptForm;
 } // namespace DISPLAYSTATE
 //! 5.E2-8b: P's receiver of a Start job's replies (VideoPlayer.cpp)
 class CTxStartSink;
+//! 5.G-3: one mid-play job's receiver (VideoPlayer.cpp)
+class CTxMidSink;
 
 struct SPlayerState
 {
@@ -1217,11 +1220,47 @@ protected:
   bool m_txAmendPending = false; //!< a pick after the post waits for its amend (TxDeferPass)
   void TxDeferPass();
   // 5.G-2 (docs/phase5_g0_design.md §4.0): the mid-play path session, from a P-decided set's
-  // START to the next set's arm, the stop or the next file (a shadow only in G-2)
+  // START to the next set's arm, the stop or the next file; 5.G-3: P decides in it
   bool m_txMidPath = false;
   uint32_t m_txMidPathT = 0;
-  void TxMidPlayStart();
+  //! nullptr: a path session (main kept shut out at START), else why not
+  const char* TxMidPlayOff();
+  void TxMidPlayStart(const char* off);
   void TxMidPlayEnd(const char* why);
+  // 5.G-3 (§4.3): the MPT record (P only). A job runs to its replies past the path's end and
+  // posts its AVCHANGE (r2 note c); only the stop clears its sink
+  struct SMidJob
+  {
+    std::shared_ptr<DISPLAYSTATE::SStartJob> job;
+    std::unique_ptr<CTxMidSink> sink;
+    bool path = true; //!< the current path session's: its replies may DECIDE
+    bool settled = false; //!< W's SettleDone, or OW's DROPPED verdict
+    bool adopted = false;
+    bool main = true; //!< main answers it (W's drop and OW's are not)
+    bool posted = false; //!< its AVCHANGE posted and counted
+  };
+  std::vector<SMidJob> m_midJobs;
+  struct
+  {
+    unsigned int decides = 0; //!< the DECIDEs made (each job's seq)
+    uint64_t counted = 0; //!< decisions counted at their AVCHANGE (§4.3 d; S8 i)
+    bool owedAtFullscreen = false;
+    uint64_t owedSeq = 0;
+    bool redecide = false; //!< a notice while a job is in flight (§4.3 f)
+    bool redecideDue = false; //!< a job reached its OutputDone or a no-change/failed reply
+    int chain = 0;
+    bool retried = false; //!< S9: one re-post of a failed set
+    bool retryDue = false;
+    bool handback = false;
+    bool openLogged = false;
+  } m_midTx;
+  void TxMidPlayPass();
+  void TxMidDecide(const char* why);
+  void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
+  void TxMidPost(SMidJob& j, const char* reply);
+  bool TxMidBusy() const;
+  //! the stop: every job's sink cleared
+  void TxMidClearJobs();
   //! the StartDone step (D4): outcome is an OUTPUT::COutputWorker::DeferOutcome
   void TxStartDone(int outcome, const char* why);
   //! D1.3: the sticky target replaces the resolved row when the table has it

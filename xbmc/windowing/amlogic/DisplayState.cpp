@@ -1817,6 +1817,12 @@ DecideInputs GetDecideInputs(bool taken)
   return s_decide;
 }
 
+uint64_t DecideInputsSeq()
+{
+  std::unique_lock lock(s_decideMutex);
+  return s_decide.seq;
+}
+
 void PublishMidPlayPath(uint32_t f, bool on)
 {
   s_midPlayPath = (static_cast<uint64_t>(f) << 1) | (on ? 1 : 0);

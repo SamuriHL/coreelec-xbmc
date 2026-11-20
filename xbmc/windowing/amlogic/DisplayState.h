@@ -298,6 +298,8 @@ void PublishDecideInputsTick();
 DecideInputs GetDecideInputs(bool taken = false);
 //! 5.E2-10 (D1 item 6): P, a reopen or the 3D answer: the pump runs again, its next publish forced
 void RequestDecideInputs();
+//! 5.G-3: P, the published inputs' seq (no copy)
+uint64_t DecideInputsSeq();
 //! 5.G-2: main only: the inputs as PublishDecideInputs takes them (seq 0, not published)
 DecideInputs TakeDecideInputs();
 //! 5.G-2: the first field in which two takes differ, named as in the DECIDEINPUTS line; empty
