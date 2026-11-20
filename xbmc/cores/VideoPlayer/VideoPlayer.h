@@ -1250,7 +1250,6 @@ protected:
   bool m_txWindowWaitLogged = false;
   bool m_txBoundMetCommit = false; //!< D8: CN's cap or audio-full bound met a committed job
   // 5.E2-9a (docs/phase5_e2_9a_impl.md D2-D4)
-  bool m_txReprimed = false; //!< D2: a flush kept this open: its re-sync schedules, never holds
   bool m_txExc1Done = false; //!< transaction_exc1: the injected flush ran for this open
   bool m_txGateLostSeen = false; //!< D4 (E28A-8): CN's bounds re-armed when the display is back
   // 5.E2-9b D1 (P only, reset in Prepare): a speed requested inside the open start, applied at

@@ -5930,7 +5930,6 @@ void CVideoPlayer::TxReprime(const char* caller)
     if (m_txDiscHeld)
       m_discTime.SetTxHeld(true);
   }
-  m_txReprimed = true;
   // 5.E2-9c D1 (r3 M6): after the flush a stall gets the read-on again (forced stays off)
   if (m_txReadOn != TxReadOn::FORCED)
     m_txReadOn = TxReadOn::IDLE;
@@ -6533,7 +6532,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 void CVideoPlayer::TxResetStart(bool reopen)
 {
   m_txStarted = m_txExited = m_txSyncPassed = m_txWordStarting = false;
-  m_txReprimed = m_txExc1Done = m_txLostSinceArm = m_txGateLostSeen = false;
+  m_txExc1Done = m_txLostSinceArm = m_txGateLostSeen = false;
   TxHintClear();
   m_txStep = TxStep::NONE;
   m_txJobFacts = {};
@@ -8358,12 +8357,11 @@ void CVideoPlayer::HandlePlaySpeed()
       const bool videoPictured = m_CurrentVideo.starttime != DVD_NOPTS_VALUE &&
                                  (m_CurrentVideo.packets > 0 || m_scheduledStart);
       std::optional<unsigned int> heldDecisions;
-      // 5.E2-9a (D2, r2 N-L2): a re-PRIMEd P-decided open schedules: main is shut out until START,
-      // so a hold could only end at the 12 s fallback. 5.E2-10 D5 (P5-18): every P-decided open,
-      // so none is released on RM's decision count (9a's rule under transaction_skip segment)
-      const bool holdStart = m_heldStartEnabled && m_CurrentVideo.id >= 0 && videoPictured &&
-                             !((m_txReprimed || !aml_transaction_skip("segment")) && TxOpen() &&
-                               m_txJob) &&
+      // 5.E3: a P-decided open's sync commit schedules: main is shut out until START
+      // (TxShutMain), so RM's decision could only end a hold at the 12 s fallback
+      const bool txSync = TxOpen() && m_txJob;
+      const bool holdStart = !txSync && m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
+                             videoPictured &&
                              m_renderManager.IsResolutionUpdatePending(heldDecisions);
       // A start scheduled on the clock (design §15, step 2.2) that no mode set
       // holds: held and released at once, so it resumes on a vblank a lead
