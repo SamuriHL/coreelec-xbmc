@@ -41,6 +41,7 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #endif
 
@@ -125,6 +126,9 @@ void CStereoscopicsManager::SetStereoModeByUser(const RenderStereoMode mode)
 
   m_stereoModeSetByUser = mode;
   SetStereoMode(mode);
+#if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::PublishDecideInputsMidPlay("user 3D");
+#endif
 }
 
 void CStereoscopicsManager::SetStereoMode(const RenderStereoMode mode)

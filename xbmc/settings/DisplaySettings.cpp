@@ -550,7 +550,12 @@ void CDisplaySettings::OnSettingChanged(const std::shared_ptr<const CSetting>& s
 
   const std::string& settingId = setting->GetId();
   if (settingId == CSettings::SETTING_VIDEOSCREEN_WHITELIST)
+  {
     CResolutionUtils::PrintWhitelist();
+#if defined(HAS_LIBAMCODEC)
+    DISPLAYSTATE::PublishDecideInputsMidPlay("whitelist", true);
+#endif
+  }
 #if defined(HAS_LIBAMCODEC)
   // 5.B3-3: the committed value (OnSettingChanging published the incoming one; a vetoed change
   // calls it again with the old value)
@@ -602,6 +607,8 @@ void CDisplaySettings::SetCurrentResolution(RESOLUTION resolution, bool save /* 
 #if defined(HAS_LIBAMCODEC)
   // 5.B3-3: GuiInputs' GuiResolution (hotplugworker only; unchanged facts are not re-published)
   DISPLAYSTATE::PublishGuiResolution();
+  // 5.G-2: at main's pump, never under this function's locks
+  DISPLAYSTATE::PublishDecideInputsMidPlay("desktop resolution", true);
 #endif
 }
 

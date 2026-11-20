@@ -362,6 +362,12 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
   m_bFullScreenVideo = bOnOff;
   if (bOnOff)
     m_exitViewHeld = false;
+#if defined(HAS_LIBAMCODEC)
+  // 5.G-2 (B4): before the trigger below, so a mid-play decision reads the new window state; P's
+  // own call (OpenStream) needs none
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    DISPLAYSTATE::PublishDecideInputsMidPlay("fullscreen");
+#endif
 
   if (m_bFullScreenRoot)
   {
@@ -444,6 +450,9 @@ bool CGraphicContext::IsCalibrating() const
 void CGraphicContext::SetCalibrating(bool bOnOff)
 {
   m_bCalibrating = bOnOff;
+#if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::PublishDecideInputsMidPlay("calibrating");
+#endif
 }
 
 bool CGraphicContext::IsValidResolution(RESOLUTION res)
@@ -621,6 +630,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     TimingInputsWritten();
   }
 #if defined(HAS_LIBAMCODEC)
+  DISPLAYSTATE::PublishDecideInputsGcSet();
   OUTPUT::TestStopAt("7");
 #endif
 }

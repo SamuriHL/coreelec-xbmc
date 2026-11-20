@@ -298,6 +298,27 @@ void PublishDecideInputsTick();
 DecideInputs GetDecideInputs(bool taken = false);
 //! 5.E2-10 (D1 item 6): P, a reopen or the 3D answer: the pump runs again, its next publish forced
 void RequestDecideInputs();
+//! 5.G-2: main only: the inputs as PublishDecideInputs takes them (seq 0, not published)
+DecideInputs TakeDecideInputs();
+//! 5.G-2: the first field in which two takes differ, named as in the DECIDEINPUTS line; empty
+//! when none
+const char* DecideInputsDiff(const DecideInputs& a, const DecideInputs& b);
+
+// 5.G-2 (docs/phase5_g0_design.md §4.0): main's view of P's mid-play path session
+struct MidPlayPathState
+{
+  uint32_t f = 0;
+  bool on = false;
+};
+//! P: at path on and at its end
+void PublishMidPlayPath(uint32_t f, bool on);
+MidPlayPathState MidPlayPath();
+//! 5.G-2 (§4.2): a forced publish while the path session plays: on main at once, else (or
+//! deferred) at main's next pump
+void PublishDecideInputsMidPlay(const char* why, bool deferred = false);
+//! 5.G-2 (§4.2, r2 N1): main, the end of GC's set: forced with midplaytx on, a player word open
+//! and no start open
+void PublishDecideInputsGcSet();
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);

@@ -20,6 +20,7 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "guilib/GUIComponent.h"
+#include "messaging/ApplicationMessenger.h"
 #include "guilib/StereoscopicsManager.h"
 #include "windowing/WinSystem.h"
 
@@ -1670,6 +1671,10 @@ std::string s_decideKey;
 std::chrono::steady_clock::time_point s_decideTickAt;
 std::atomic<bool> s_decidePending{false};
 std::atomic<bool> s_decideForce{false};
+// 5.G-2: a mid-play publish asked off main, for main's pump
+std::atomic<const char*> s_decideMidWhy{nullptr};
+// 5.G-2: P's path session, f << 1 | on
+std::atomic<uint64_t> s_midPlayPath{0};
 
 // what makes two takes the same: every input the choice reads, as text
 std::string DecideKey(const DecideInputs& d)
@@ -1695,12 +1700,8 @@ bool DecideShadowOn()
   return aml_displaystate_on() && aml_transaction_shadow_on() && aml_presentation_validated();
 }
 
-void PublishDecideInputs(const char* why, bool force, bool open)
+DecideInputs TakeDecideInputs()
 {
-  if (!DecideShadowOn())
-    return;
-  if (open)
-    s_decidePending = true;
   // main only: GC, the display settings, the settings and the GUI's stereo manager
   DecideInputs d;
   d.res = ResolutionInputs::Take();
@@ -1710,6 +1711,56 @@ void PublishDecideInputs(const char* why, bool force, bool open)
   d.calibrating = gfx.IsCalibrating();
   if (auto* gui = CServiceBroker::GetGUI())
     d.userStereo = gui->GetStereoscopicsManager().GetStereoModeByUser();
+  return d;
+}
+
+const char* DecideInputsDiff(const DecideInputs& a, const DecideInputs& b)
+{
+  const ResolutionInputs& x = a.res;
+  const ResolutionInputs& y = b.res;
+  if (x.videoResolution != y.videoResolution)
+    return "video";
+  if (x.desktopResolution != y.desktopResolution)
+    return "desktop";
+  if (x.stereoMode != y.stereoMode)
+    return "stereo";
+  // the table as DecideKey reads it
+  const auto sameInfo = [](const auto& l, const auto& r)
+  {
+    return l.first == r.first && l.second.iScreenWidth == r.second.iScreenWidth &&
+           l.second.iScreenHeight == r.second.iScreenHeight &&
+           l.second.fRefreshRate == r.second.fRefreshRate && l.second.dwFlags == r.second.dwFlags;
+  };
+  if (x.resolutionInfoSize != y.resolutionInfoSize || x.infos.size() != y.infos.size() ||
+      !std::equal(x.infos.begin(), x.infos.end(), y.infos.begin(), sameInfo))
+    return "table";
+  if (x.whitelist != y.whitelist)
+    return "whitelist";
+  if (x.allowed != y.allowed)
+    return "allowed";
+  if (x.doubleRefreshRate != y.doubleRefreshRate || x.wholeNumber != y.wholeNumber ||
+      x.pulldown != y.pulldown)
+    return "whitelist flags";
+  if (x.overrides.size() != y.overrides.size())
+    return "overrides";
+  if (a.fullScreenVideo != b.fullScreenVideo)
+    return "fullscreen video";
+  if (a.fullScreenRoot != b.fullScreenRoot)
+    return "root";
+  if (a.calibrating != b.calibrating)
+    return "calibrating";
+  if (a.userStereo != b.userStereo)
+    return "user 3D";
+  return "";
+}
+
+void PublishDecideInputs(const char* why, bool force, bool open)
+{
+  if (!DecideShadowOn())
+    return;
+  if (open)
+    s_decidePending = true;
+  DecideInputs d = TakeDecideInputs();
   d.at = std::chrono::steady_clock::now();
   std::string key = DecideKey(d);
   // logged from these locals after the lock: P's read never waits on a log write (review L7)
@@ -1734,6 +1785,8 @@ void PublishDecideInputs(const char* why, bool force, bool open)
 
 void PublishDecideInputsTick()
 {
+  if (const char* why = s_decideMidWhy.exchange(nullptr); why && MidPlayPath().on)
+    PublishDecideInputs(why, true);
   if (!s_decidePending)
     return;
   const auto now = std::chrono::steady_clock::now();
@@ -1758,6 +1811,37 @@ DecideInputs GetDecideInputs(bool taken)
     s_decidePending = false;
   std::unique_lock lock(s_decideMutex);
   return s_decide;
+}
+
+void PublishMidPlayPath(uint32_t f, bool on)
+{
+  s_midPlayPath = (static_cast<uint64_t>(f) << 1) | (on ? 1 : 0);
+}
+
+MidPlayPathState MidPlayPath()
+{
+  const uint64_t v = s_midPlayPath.load();
+  return {static_cast<uint32_t>(v >> 1), (v & 1) != 0};
+}
+
+void PublishDecideInputsMidPlay(const char* why, bool deferred)
+{
+  if (!aml_midplaytx_on() || !MidPlayPath().on)
+    return;
+  const auto messenger = CServiceBroker::GetAppMessenger();
+  if (!deferred && messenger && messenger->IsProcessThread())
+    PublishDecideInputs(why, true);
+  else
+    s_decideMidWhy = why;
+}
+
+void PublishDecideInputsGcSet()
+{
+  // a start's DECIDE reads its own publishes (OPEN..START), so none is added there
+  if (aml_midplaytx_on() &&
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f != 0 &&
+      !TxOpenJob())
+    PublishDecideInputs("gc set", true);
 }
 
 } // namespace DISPLAYSTATE
