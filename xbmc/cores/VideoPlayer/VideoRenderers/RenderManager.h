@@ -334,7 +334,8 @@ public:
   void TxShutMain(unsigned int gen, uint64_t T);
   //! E2-8b D8/D7: P's exit (its first step after the CAS) or START: main let back in; `how` for
   //! a job not past its drop CAS (need NONE), else D5b's need (and commit-in-flight)
-  void TxOpenMain(unsigned int gen, TxHow how, TxNeed need);
+  //! 5.G-3 (§4.3 a): keepShut at START: main stays shut out for P's mid-play path session
+  void TxOpenMain(unsigned int gen, TxHow how, TxNeed need, bool keepShut = false);
   //! E2-8b D5/D5b: every adopt form (main, after GC's set, outside the gfx lock) and P's
   //! backstop (FAILED). True when it posted VideoParamsChange (the caller posts none)
   bool TxAdoptAnswer(unsigned int gen, TxAnswer form);
@@ -465,6 +466,26 @@ public:
   void TxMidShadowPass(uint32_t T);
   //! 5.G-2: P, at path on and its end: main's records not yet compared are dropped
   void TxMidShadowReset();
+  //! 5.G-3 (§4.0): P, the path session's end: main let back in, the notices raised as the
+  //! trigger (raise: a later set's arm; also when P owes a decision) or dropped. -1 when main
+  //! was not shut out for a path session, else the notices' count
+  int TxMidPlayEnd(bool raise, bool owed);
+  //! 5.G-3 (§4.3 b): P's DECIDE: ResolveStart on RM's facts and latest, W's last committed mode
+  //! as the incumbent
+  SStartResolve TxMidResolve(const DISPLAYSTATE::DecideInputs& latest);
+  //! 5.G-3: P, a notice is queued (no lock: P's every-pass test)
+  bool TxMidNoticesPending() const { return m_txNoticed.load(); }
+  //! 5.G-3 (§4.3 b): P hands one decision back to main (3D start, no inputs): one consume with
+  //! main still shut out after it
+  void TxMidHandBack(const char* why);
+  //! 5.G-3: main's handed-back decision is not yet consumed or done
+  bool TxMidHandBackBusy();
+  //! 5.G-3 (S9): P, a failed mid-play set's retry: the arm its DECIDE took, back
+  void TxMidRestoreArm();
+  //! 5.G-3 (§4.3 c, S5): main, a mid-play job's adopt answer (after GC's set returned): the
+  //! after-set tweak, then VideoParamsChange when post (P posts a no-change's or a failed
+  //! set's). Returns post
+  bool TxMidAdoptAnswer(unsigned int seq, bool post, const char* answer);
   //! E2-8b D4: UpdateResolution's render timeout for the start's decision (elapsed since the
   //! configure or trigger, as main measures it; 5.E2-9c D3: or since `from`)
   //! 5.E2-11 D1.3: notBefore, a later reference (a span's close) when set
@@ -850,11 +871,18 @@ protected:
   //! E2-8b D4/D8 (m_statelock held): the frac arm DECIDE took, back with its original time
   void RestoreTxArmLocked(const char* why);
   std::atomic<unsigned int> m_txShutGen{0}; //!< written under m_statelock; 0 = main decides
+  //! 5.G-3 (m_statelock): the shut is P's mid-play path session's (kept past START)
+  bool m_txMidShut = false;
+  bool m_txMidHandBack = false; //!< m_statelock: one consume handed back
+  std::atomic_bool m_txMidHandBackRunning{false}; //!< main: the handed-back pass runs
+  //! m_statelock held: "before START" (S2): a path session's shut is after START
+  bool TxBeforeStartLocked() const { return m_txShutGen && !m_txMidShut; }
   unsigned int m_txShutLoggedGen = 0; //!< main: the shut-out line once per gen
   bool m_txOwedDecision = false; //!< m_statelock: D8's owed mark
   std::atomic<unsigned int> m_txOutputGen{0}; //!< m_statelock: W's OutputDone reached P
   std::atomic_bool m_txCommitInFlight{false}; //!< m_statelock: D5b's inflight
   std::vector<STxNotice> m_txNotices; //!< m_statelock
+  std::atomic_bool m_txNoticed{false}; //!< 5.G-3: a notice queued since the last take
   struct
   {
     bool taken = false;

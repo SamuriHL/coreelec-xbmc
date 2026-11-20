@@ -830,7 +830,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       // 5.E2-9c D3 (r5 L2): the hint decision's compare before the "fps" raise; D4: a late
       // picture with its facts raises nothing
       const bool hintSame =
-          TxHintConfigureLocked(fps, "kept renderer") == TxHintResult::SAME && !m_txShutGen;
+          TxHintConfigureLocked(fps, "kept renderer") == TxHintResult::SAME &&
+          !TxBeforeStartLocked();
       if (m_fps != fps)
       {
         CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
@@ -1141,7 +1142,7 @@ bool CRenderManager::Configure()
     m_videostarted = std::chrono::steady_clock::now();
     // 5.E2-9c D3: V's side wrote the picture and left the arm pending; D4: a late picture with
     // its facts raises nothing
-    if (TxHintConfigureLocked(m_fps, "configure") != TxHintResult::SAME || m_txShutGen)
+    if (TxHintConfigureLocked(m_fps, "configure") != TxHintResult::SAME || TxBeforeStartLocked())
       RaiseTriggerLocked("configure");
     TagModeFirstConfigure();
     m_presentstep = PRESENT_IDLE;
@@ -1233,7 +1234,8 @@ bool CRenderManager::ConfigureOnV(const VideoPicture& picture,
       m_NumberBuffers = buffers;
       // 5.E2-9c D3; D4: a late picture with its facts raises nothing
       const bool hintSame =
-          TxHintConfigureLocked(fps, "configure on V") == TxHintResult::SAME && !m_txShutGen;
+          TxHintConfigureLocked(fps, "configure on V") == TxHintResult::SAME &&
+          !TxBeforeStartLocked();
       PromoteReclockArm();
 
       m_QueueSize = queueSize;
@@ -1701,6 +1703,8 @@ void CRenderManager::BeginFile()
                 m_txShutGen.load());
       m_txShutGen = 0;
     }
+    m_txMidShut = false;
+    m_txMidHandBack = false;
     m_txOutcome = {};
     m_txCommitInFlight = false;
     m_txArmTaken = {};
@@ -3156,6 +3160,7 @@ bool CRenderManager::RaiseTriggerLocked(const char* kind)
     m_txNotices.push_back({kind, m_fps, static_cast<int>(m_picture.iWidth),
                            static_cast<int>(m_picture.iHeight), m_picture.stereoMode,
                            m_picture.hdrType});
+    m_txNoticed = true;
     return false;
   }
   m_bTriggerUpdateResolution = true;
@@ -3173,6 +3178,8 @@ void CRenderManager::TxShutMain(unsigned int gen, uint64_t T)
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   m_txShutGen = gen;
+  m_txMidShut = false;
+  m_txMidHandBack = false;
   m_txNotices.clear();
   if (m_bTriggerUpdateResolution)
   {
@@ -3396,13 +3403,24 @@ void CRenderManager::RecoveryFailedTxOutcomeLocked(STxResolution& r)
   ResolveTxOutcomeLocked(r);
 }
 
-void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
+void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need, bool keepShut)
 {
   STxResolution r;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
-    const unsigned int shut = m_txShutGen.exchange(0);
+    keepShut = keepShut && how == TxHow::START;
+    const unsigned int shut = keepShut ? m_txShutGen.load() : m_txShutGen.exchange(0);
+    if (keepShut && shut)
+    {
+      // 5.G-3 (§4.3 a): the notices after the start's last take are folded, as off leaves them
+      m_txMidShut = true;
+      if (!m_txNotices.empty())
+        CLog::Log(LOGINFO, "MIDPLAY {} notice(s) at START folded", m_txNotices.size());
+      m_txNotices.clear();
+    }
+    else
+      m_txMidShut = false;
     // 5.E2-9c D3: an exit ends the hint job's owed picture; only START reads the record (r6 M1),
     // in this lock with the shut's exchange (r5 M1): a picture that configured after P's last
     // compare raised only notices
@@ -3411,7 +3429,11 @@ void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
       m_txHintPictureOwed = 0;
     else if (hintCompare == TxHintResult::DIFFERENT)
     {
-      m_bTriggerUpdateResolution = true;
+      // 5.G-3: a notice to P's path session
+      if (m_txMidShut)
+        RaiseTriggerLocked("configure");
+      else
+        m_bTriggerUpdateResolution = true;
       ++m_txLateContradicted;
       LogTxLatePictureLocked("configured before START");
     }
@@ -3423,7 +3445,7 @@ void CRenderManager::TxOpenMain(unsigned int gen, TxHow how, TxNeed need)
     {
       if (mine)
         o.closed = true;
-      const char* what = "none";
+      const char* what = m_txMidShut ? "none (kept shut: the mid-play path)" : "none";
       if (how == TxHow::RERAISE)
       {
         RestoreTxArmLocked("reraise");
@@ -3602,6 +3624,7 @@ std::vector<CRenderManager::STxNotice> CRenderManager::TakeTxNotices()
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
+  m_txNoticed = false;
   return std::exchange(m_txNotices, {});
 }
 
@@ -3710,7 +3733,9 @@ void CRenderManager::UpdateResolution()
           std::unique_lock lock(m_statelock);
           CMainHold hold("UpdateResolution");
           // E2-8b D3: P decides an engaged start
-          if (const unsigned int shut = m_txShutGen.load())
+          // 5.G-3: P handed one decision back: this consume runs, main stays shut out after it
+          if (const unsigned int shut = m_txShutGen.load();
+              shut && !std::exchange(m_txMidHandBack, false))
           {
             if (m_txShutLoggedGen != shut)
             {
@@ -3719,6 +3744,8 @@ void CRenderManager::UpdateResolution()
             }
             return;
           }
+          else if (shut)
+            m_txMidHandBackRunning = true;
           fps = m_fps;
           width = m_picture.iWidth;
           height = m_picture.iHeight;
@@ -3981,6 +4008,7 @@ void CRenderManager::UpdateResolution()
           CountModeFirstDecision(modeFirstGen);
         }
         m_playerPort->VideoParamsChange();
+        m_txMidHandBackRunning = false;
       }
     }
   }
@@ -4347,6 +4375,68 @@ void CRenderManager::TxMidShadowPass(uint32_t T)
   }
 }
 
+int CRenderManager::TxMidPlayEnd(bool raise, bool owed)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  // r2 N3: an open start's shut, a file before START or midplaytx_off is not the path's
+  if (!m_txMidShut)
+    return -1;
+  m_txShutGen = 0;
+  m_txMidShut = false;
+  m_txMidHandBack = false;
+  const int n = static_cast<int>(m_txNotices.size());
+  m_txNotices.clear();
+  // r2 note b: as HandBackTxLocked raises it; a stop or next file drops them (TxFileEnded's)
+  if (raise && (n || owed))
+    m_bTriggerUpdateResolution = true;
+  return n;
+}
+
+CRenderManager::SStartResolve CRenderManager::TxMidResolve(
+    const DISPLAYSTATE::DecideInputs& latest)
+{
+  // r2 N1: W's last committed mode, not GC's (main's publish lags W's commit)
+  DISPLAYSTATE::DecideInputs in = latest;
+  in.res.videoResolution = MidIncumbent(in.res, DISPLAYSTATE::Get());
+  return ResolveStart(0, in, in.fullScreenRoot, in.fullScreenVideo && in.fullScreenRoot);
+}
+
+void CRenderManager::TxMidHandBack(const char* why)
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  if (!m_txMidShut)
+    return;
+  m_txMidHandBack = true;
+  m_bTriggerUpdateResolution = true;
+  CLog::Log(LOGINFO, "MIDPLAY handback {}", why);
+}
+
+bool CRenderManager::TxMidHandBackBusy()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  return m_txMidHandBack || m_txMidHandBackRunning;
+}
+
+void CRenderManager::TxMidRestoreArm()
+{
+  MAINCOUPLING_ACCESSOR("RM m_statelock");
+  std::unique_lock lock(m_statelock);
+  RestoreTxArmLocked("midplay retry");
+}
+
+bool CRenderManager::TxMidAdoptAnswer(unsigned int seq, bool post, const char* answer)
+{
+  UpdateLatencyTweak("after-set");
+  if (post)
+    m_playerPort->VideoParamsChange();
+  CLog::Log(LOGINFO, "MIDPLAY reply seq={} {}{}", seq, answer,
+            post ? " avchange posted (main)" : "");
+  return post;
+}
+
 void CRenderManager::DecideShadowRecord(unsigned int gen, bool player, const DecideSide& side)
 {
   std::optional<DecideSide> other;
@@ -4654,8 +4744,8 @@ CRenderManager::TxHintResult CRenderManager::TxHintConfigureLocked(float fps, co
     PromoteReclockArm();
   }
   // D4 after START (main back in): its triggers are suppressed on the same facts (the caller),
-  // main's MidPlay set with the promoted arm on different ones
-  if (!m_txShutGen)
+  // main's MidPlay set with the promoted arm on different ones (5.G-3: P's DECIDE)
+  if (!TxBeforeStartLocked())
   {
     if (same)
       CLog::Log(LOGINFO, "TXSTART set={} late picture same as the hint decision", gen);
