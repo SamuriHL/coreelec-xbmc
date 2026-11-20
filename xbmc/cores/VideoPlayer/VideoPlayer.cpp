@@ -3513,10 +3513,13 @@ void CVideoPlayer::TxMidPlayStart(const char* off)
   m_midTx.chain = 0;
   m_midTx.vs10 = -1;
   m_midTx.vs10Fresh = false;
+  m_midTx.inputsDue = false;
+  m_midTx.inputsAtOn = DISPLAYSTATE::DecideInputsSeq();
   m_txMidPath = true;
   m_txMidPathT = T;
   DISPLAYSTATE::PublishMidPlayPath(
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f, true);
+  DISPLAYSTATE::PublishDecideInputsMidPlay("path on", true);
   CLog::Log(LOGINFO, "MIDPLAY path on T={}", T);
 }
 
@@ -3536,6 +3539,7 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
     j.path = false;
   m_midTx.owedAtFullscreen = m_midTx.redecide = m_midTx.redecideDue = false;
   m_midTx.retried = m_midTx.retryDue = m_midTx.handback = false;
+  m_midTx.inputsDue = false;
   m_midTx.chain = 0;
   // S4: a later set lets main in, so the press runs today's way there; the stop and the next
   // file drop it, as they drop the notices
@@ -3571,8 +3575,10 @@ bool CVideoPlayer::TxMidHoldPending()
   if (!m_midTx.handback && !m_midTx.redecide && !m_midTx.retryDue && m_midTx.vs10 < 0 &&
       !m_renderManager.TxMidNoticesPending())
     return false;
+  if (m_midTx.inputsDue)
+    return true;
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
-  return latest.fullScreenVideo && latest.fullScreenRoot;
+  return latest.seq <= m_midTx.inputsAtOn || (latest.fullScreenVideo && latest.fullScreenRoot);
 }
 
 void CVideoPlayer::TxMidPost(SMidJob& j, const char* reply, bool count)
@@ -3735,6 +3741,8 @@ void CVideoPlayer::TxMidPlayPass()
   else if (m_midTx.owedAtFullscreen && !busy &&
            DISPLAYSTATE::DecideInputsSeq() > m_midTx.owedSeq)
     why = "owed";
+  else if (m_midTx.inputsDue && !busy && DISPLAYSTATE::DecideInputsSeq() > m_midTx.inputsAtOn)
+    why = "path-on inputs";
   if (!why || m_midTx.handback)
     return;
   if (!busy)
@@ -3759,6 +3767,16 @@ void CVideoPlayer::TxMidDecide(const char* why)
   m_midTx.retryDue = false;
   m_midTx.redecide = false;
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  // the publish taken at path on is not in yet: decided once it is, never owed on START's
+  // pre-fullscreen inputs
+  if (latest.seq <= m_midTx.inputsAtOn)
+  {
+    if (!std::exchange(m_midTx.inputsDue, true))
+      CLog::Log(LOGINFO, "MIDPLAY decide waits for the path-on inputs (inputs={})", latest.seq);
+    return;
+  }
+  if (std::exchange(m_midTx.inputsDue, false))
+    CLog::Log(LOGINFO, "MIDPLAY path-on inputs={} in", latest.seq);
   // RM:3635's test: not fullscreen, owed (nothing posted, no AVCHANGE, as main's kept flag)
   if (latest.seq && !(latest.fullScreenVideo && latest.fullScreenRoot))
   {

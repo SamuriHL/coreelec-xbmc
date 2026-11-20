@@ -1258,6 +1258,10 @@ protected:
     bool retryDue = false;
     bool handback = false;
     bool openLogged = false;
+    //! the inputs' seq at path on: main's publish after it is the first that reads the film's
+    //! fullscreen state (START's switch came before the path)
+    uint64_t inputsAtOn = 0;
+    bool inputsDue = false; //!< a DECIDE waits for that publish
     //! 5.G-4 (§4.4): the newest VS10 press not yet carried by a job (-1: none)
     int vs10 = -1;
     int vs10Action = 0;
