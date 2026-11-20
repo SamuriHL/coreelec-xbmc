@@ -1266,7 +1266,7 @@ void aml_dv_apply_target_overrides(unsigned int mode)
               __FUNCTION__, max_nits);
 }
 
-static void aml_dv_set_vs10_mode_now(unsigned int mode)
+void aml_dv_set_vs10_mode_now(unsigned int mode)
 {
   // A BYPASS here drives the same kernel path CloseDecoder's per-segment write
   // does: six vsyncs later enable_amdv(0) runs, patch 0005 clears the session

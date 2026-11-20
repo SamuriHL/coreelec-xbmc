@@ -192,6 +192,8 @@ bool aml_dv_core_outputs_dv();
 bool aml_dv_core_leaves_native_wire();
 //! 5.E2-12a: false when W deferred, held or dropped the press (no trigger then)
 bool aml_dv_set_vs10_mode(unsigned int mode);
+//! 5.G-4: the VS10 write itself, on W (inside a mid-play job's freeze)
+void aml_dv_set_vs10_mode_now(unsigned int mode);
 // Resolve the stored "Dolby Vision" VS10 option (IPT) to the tunnel form the
 // current TV-led / player-led output setting actually needs.
 unsigned int aml_dv_resolve_tunnel_mode(unsigned int mode);

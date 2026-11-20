@@ -1332,6 +1332,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   }
   const bool force_mode_switch_by_hotplug = job.hotplug || job.restoreOwed;
   const bool force_mode_switch_by_wire = display->aml_output_wire_stale();
+  // 5.G-4 (docs/phase5_g0_design.md §4.4, G-D8): a VS10 press is written inside the freeze and
+  // always committed, so the wire's colour attributes follow the core
+  const int vs10 = job.start ? job.start->vs10 : -1;
 
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
@@ -1381,7 +1384,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
       job.backups.windowCreated && job.nativeGUI == job.backups.nativeGUI &&
       !force_mode_switch_by_hdr && !force_mode_switch_by_hotplug &&
       (!force_mode_switch_by_fractional_rate || heldFrac) && !force_mode_switch_by_stereo_mode &&
-      !force_mode_switch_by_wire)
+      !force_mode_switch_by_wire && vs10 < 0)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window{}",
               __FUNCTION__, heldFrac ? " (held 1000/1001 clock)" : "");
@@ -1519,7 +1522,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   {
     // same resolution, check frac rate and other parameter
     if (force_mode_switch_by_fractional_rate || force_mode_switch_by_hdr ||
-        force_mode_switch_by_wire)
+        force_mode_switch_by_wire || vs10 >= 0)
       force_mode_switch = true;
   }
 
@@ -1537,6 +1540,13 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // WSA CreateNewWindow: the lost walk (B2-5b's order), then the commit
   if (!lostFirst)
     lostWalk();
+  if (vs10 >= 0)
+  {
+    aml_dv_set_vs10_mode_now(static_cast<unsigned int>(vs10));
+    job.start->vs10Written = true;
+    CLog::Log(LOGINFO, "OUTPUTDRIVE request {} vs10 written inside the freeze (commit forced)",
+              job.id);
+  }
   // 5.E2-9a (transaction_commitstall, D7): W hangs inside the Start job's commit, after its walk
   const bool startHooks = job.start && !job.start->midplay;
   if (startHooks)
