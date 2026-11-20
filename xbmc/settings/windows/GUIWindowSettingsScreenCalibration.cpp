@@ -169,7 +169,8 @@ bool CGUIWindowSettingsScreenCalibration::OnMessage(CGUIMessage& message)
       CServiceBroker::GetWinSystem()->GetGfxContext().SetCalibrating(false);
       // reset our screen resolution to what it was initially
 #if defined(HAS_LIBAMCODEC)
-      OUTPUT::CRequestOrigin requestOrigin("user-pick");
+      // not a pick: a film start must not adopt this restore as its mode
+      OUTPUT::CRequestOrigin requestOrigin("window-rule");
 #endif
       CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(
           CDisplaySettings::GetInstance().GetCurrentResolution(), false);
