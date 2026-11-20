@@ -2356,6 +2356,8 @@ bool CRenderManager::GraphicsWithheld()
       return true;
   }
 #endif
+  // 5.E3: false on a P-decided open: the shut (TxShutMain) keeps the trigger down to START, and
+  // the adopt answer that opens CN sets m_sessionModeDecided. Kept for legacy, exits and 5.G
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
@@ -2992,7 +2994,9 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
 {
   // 5.B2-2 (P5-18's twin): the consume clears the trigger before its set runs, so
   // the set is pending until its count lands; flag and count are read under the
-  // lock that writes both, never in-flight with the new count
+  // lock that writes both, never in-flight with the new count.
+  // 5.E3: not asked on a P-decided open's commit (VP's txSync); kept for legacy opens and
+  // commits after START or an exit
   std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
 #if defined(HAS_LIBAMCODEC)
   if (HeldStartPendingWindow())
@@ -3619,6 +3623,8 @@ void CRenderManager::AbandonRmRetry(const char* why)
 
 void CRenderManager::UpdateResolution()
 {
+  // 5.E3: during a transaction the shut keeps the trigger down (a straddling pass returns at
+  // the shut check below); the start parts are kept for main's decisions, exits and 5.G
   if (m_bTriggerUpdateResolution)
   {
 #if defined(HAS_LIBAMCODEC)

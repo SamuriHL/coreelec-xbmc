@@ -703,6 +703,8 @@ void CRendererAML::PresentFrameOnC(int index,
   if (pts == m_prevVPts)
     return;
 
+  // 5.E3: the first-frame drop is off for the engaged open's first release (RM's
+  // m_txFirstRelease); kept for legacy and a mid-play renderer rebuild
   amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE && !startPicture,
                                  amli->m_sessionGen, &shown);
   codec = std::move(amli->m_amlCodec); // also marks the frame processed

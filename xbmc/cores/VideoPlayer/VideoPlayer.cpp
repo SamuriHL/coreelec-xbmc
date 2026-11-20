@@ -5838,7 +5838,8 @@ void CVideoPlayer::CheckStartGate()
       state = m_renderManager.GetModeFirstState(m_startGateGen);
   }
   // transaction_capforce / audiofullforce (E2-8a D8 item 3): the bounds forced on an engaged set
-  // 5.E2-8b D6: on P's open start RM's DECIDED/UNCHANGED do not open CN
+  // 5.E2-8b D6: on P's open start RM's DECIDED/UNCHANGED do not open CN (the m_txJob term).
+  // 5.E3: the RM opener is kept for legacy, exits and 5.G
   if ((state == State::DECIDED || state == State::UNCHANGED) &&
       !(TxOpen() && (m_txCapForce || m_txAudioFullForce || m_txJob)))
   {
@@ -5887,7 +5888,8 @@ void CVideoPlayer::CheckStartGate()
   }
   else
     m_startGateStarveSince = {};
-  // 5.E2-9c D2: before the post the PRIME bound replaces the 12 s cap for an unconfigured set
+  // 5.E2-9c D2: before the post the PRIME bound replaces the 12 s cap for an unconfigured set.
+  // 5.E3: the cap is kept: the only bound for a menu-domain, skip-primebound or WAIT_GUI open
   const bool primeBoundOnly = TxPrimeBoundOpen() && state == State::UNCONFIGURED &&
                               m_txStep == TxStep::NONE && !m_txHintDecide;
   if (!primeBoundOnly && now - m_startGateSince > 12s)
