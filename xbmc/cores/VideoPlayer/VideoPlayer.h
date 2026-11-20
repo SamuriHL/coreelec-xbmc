@@ -1240,6 +1240,10 @@ protected:
     bool adopted = false;
     bool main = true; //!< main answers it (W's drop and OW's are not)
     bool posted = false; //!< its AVCHANGE posted and counted
+    //! 5.G-4: the VS10 press it carries (job->vs10), and the file it was pressed on
+    int vs10Action = 0;
+    uint64_t vs10Id = 0;
+    uint32_t f = 0;
   };
   std::vector<SMidJob> m_midJobs;
   struct
@@ -1254,8 +1258,20 @@ protected:
     bool retryDue = false;
     bool handback = false;
     bool openLogged = false;
+    //! 5.G-4 (§4.4): the newest VS10 press not yet carried by a job (-1: none)
+    int vs10 = -1;
+    int vs10Action = 0;
+    uint64_t vs10Id = 0;
+    bool vs10Fresh = false; //!< taken this pass: decides as a notice does
   } m_midTx;
   void TxMidPlayPass();
+  //! 5.G-4 (§4.4): main, a VS10 press on the path session goes to P (false: today's call)
+  bool TxMidVs10Press(int action, unsigned int mode);
+  void TxMidVs10Request(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF);
+  //! S4: a press the path no longer takes runs today's way, on main
+  void TxMidVs10ToMain(int action, uint64_t id, const char* why);
+  //! a job that did not write its press hands it back
+  void TxMidVs10GiveBack(const SMidJob& j);
   void TxMidDecide(const char* why);
   void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
   //! count false: the AVCHANGE only (a failed set's retry counts at its own reply)

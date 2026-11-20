@@ -3511,6 +3511,8 @@ void CVideoPlayer::TxMidPlayStart(const char* off)
   m_midTx.owedAtFullscreen = m_midTx.redecide = m_midTx.redecideDue = false;
   m_midTx.retried = m_midTx.retryDue = m_midTx.handback = m_midTx.openLogged = false;
   m_midTx.chain = 0;
+  m_midTx.vs10 = -1;
+  m_midTx.vs10Fresh = false;
   m_txMidPath = true;
   m_txMidPathT = T;
   DISPLAYSTATE::PublishMidPlayPath(
@@ -3535,6 +3537,17 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
   m_midTx.owedAtFullscreen = m_midTx.redecide = m_midTx.redecideDue = false;
   m_midTx.retried = m_midTx.retryDue = m_midTx.handback = false;
   m_midTx.chain = 0;
+  // S4: a later set lets main in, so the press runs today's way there; the stop and the next
+  // file drop it, as they drop the notices
+  m_midTx.vs10Fresh = false;
+  if (m_midTx.vs10 >= 0)
+  {
+    if (laterSet)
+      TxMidVs10ToMain(m_midTx.vs10Action, m_midTx.vs10Id, "after the path");
+    else
+      CLog::Log(LOGINFO, "MIDPLAY vs10 request {} dropped ({})", m_midTx.vs10Id, why);
+    m_midTx.vs10 = -1;
+  }
   if (n < 0)
     CLog::Log(LOGINFO, "MIDPLAY path off T={} ({})", m_txMidPathT, why);
   else
@@ -3555,7 +3568,7 @@ bool CVideoPlayer::TxMidHoldPending()
   if (TxMidBusy())
     return true;
   // code review r1 S4: a hand-back too (main decides only fullscreen)
-  if (!m_midTx.handback && !m_midTx.redecide && !m_midTx.retryDue &&
+  if (!m_midTx.handback && !m_midTx.redecide && !m_midTx.retryDue && m_midTx.vs10 < 0 &&
       !m_renderManager.TxMidNoticesPending())
     return false;
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
@@ -3602,6 +3615,7 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
     case Mid::DROPPED:
       // r2 N2: no redecide; the drop's own re-raise (gap / held clear, replay) is a notice
       CLog::Log(LOGINFO, "MIDPLAY verdict reqId={} seq={} DROPPED", e.reqId, e.jobSeq);
+      TxMidVs10GiveBack(j);
       j.settled = true;
       j.main = false;
       TxMidPost(j, "DROPPED");
@@ -3619,6 +3633,7 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
       const bool failed = e.settle == Settle::FAILED || e.settle == Settle::FAILED_PARK;
       if (e.settle != Settle::NO_CHANGE && !failed && e.settle != Settle::DROPPED)
         break;
+      TxMidVs10GiveBack(j);
       j.main = e.settle != Settle::DROPPED;
       if (!j.path)
       {
@@ -3707,13 +3722,14 @@ void CVideoPlayer::TxMidPlayPass()
   }
   const bool busy = TxMidBusy();
   const bool due = std::exchange(m_midTx.redecideDue, false);
-  if (!notices.empty() && (busy || m_midTx.handback))
+  const bool vs10 = std::exchange(m_midTx.vs10Fresh, false);
+  if ((!notices.empty() || vs10) && (busy || m_midTx.handback))
     m_midTx.redecide = true;
   const char* why = nullptr;
   if (m_midTx.retryDue)
     why = "retry";
-  else if (!notices.empty() && !busy)
-    why = "notice";
+  else if ((!notices.empty() || vs10) && !busy)
+    why = notices.empty() ? "vs10" : "notice";
   else if (m_midTx.redecide && (!busy || due))
     why = "supersede";
   else if (m_midTx.owedAtFullscreen && !busy &&
@@ -3755,8 +3771,20 @@ void CVideoPlayer::TxMidDecide(const char* why)
   if (std::exchange(m_midTx.owedAtFullscreen, false))
     CLog::Log(LOGINFO, "MIDPLAY owed decided inputs={}", latest.seq);
   CRenderManager::SStartResolve r = m_renderManager.TxMidResolve(latest);
+  // a press main decides after: written today's way first (W's own vs10 request), so the
+  // hand-back's set follows it on the lane
+  const auto vs10Today = [this](const char* why)
+  {
+    const unsigned int mode = static_cast<unsigned int>(std::exchange(m_midTx.vs10, -1));
+    CLog::Log(LOGINFO, "MIDPLAY vs10 request {} mode={}: today's write ({})", m_midTx.vs10Id,
+              mode, why);
+    OUTPUT::COutputWorker::Get().PostRequest(
+        OUTPUT::Lane::MIDPLAY, "vs10", [mode] { aml_dv_set_vs10_mode_now(mode); }, {});
+  };
   if (r.exclusion)
   {
+    if (m_midTx.vs10 >= 0)
+      vs10Today(r.exclusion);
     m_midTx.handback = true;
     m_renderManager.TxMidHandBack(r.exclusion);
     return;
@@ -3798,18 +3826,118 @@ void CVideoPlayer::TxMidDecide(const char* why)
             r.anchor ? 1 : 0, why);
   SMidJob& j = m_midJobs.emplace_back();
   j.job = job;
+  j.f = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+  // S11: a BYPASS the disc session suppresses writes nothing: a plain DECIDE, no freeze
+  if (m_midTx.vs10 >= 0)
+  {
+    if (m_midTx.vs10 == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_BYPASS) &&
+        aml_dv_disc_engaged())
+    {
+      CLog::Log(LOGINFO, "MIDPLAY vs10 suppressed (disc BYPASS): plain decide request={} seq={}",
+                m_midTx.vs10Id, job->seq);
+      m_midTx.vs10 = -1;
+    }
+    else
+    {
+      job->vs10 = std::exchange(m_midTx.vs10, -1);
+      j.vs10Action = m_midTx.vs10Action;
+      j.vs10Id = m_midTx.vs10Id;
+      CLog::Log(LOGINFO, "MIDPLAY vs10 mode={} request={} seq={}", job->vs10, j.vs10Id,
+                job->seq);
+    }
+  }
   j.sink = std::make_unique<CTxMidSink>(m_renderManager, job->seq);
   job->SetSink(j.sink.get());
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (!DISPLAYSTATE::StartJobQueue(*job) || !winSystem || !winSystem->PostMidPlayJob(job))
   {
     // no worker: main decides it (its consume posts the AVCHANGE); the arm goes back with it
+    if (job->vs10 >= 0)
+    {
+      m_midTx.vs10 = job->vs10;
+      m_midTx.vs10Id = j.vs10Id;
+      vs10Today("no worker");
+    }
     job->ClearSink();
     m_midJobs.pop_back();
     m_renderManager.TxMidRestoreArm();
     m_midTx.handback = true;
     m_renderManager.TxMidHandBack("no worker");
   }
+}
+
+bool CVideoPlayer::TxMidVs10Press(int action, unsigned int mode)
+{
+  const DISPLAYSTATE::MidPlayPathState path = DISPLAYSTATE::MidPlayPath();
+  if (!path.on ||
+      path.f != OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f)
+    return false;
+  static std::atomic<uint64_t> s_vs10Id{0};
+  DISPLAYSTATE::STxInboxEntry e;
+  e.kind = DISPLAYSTATE::STxInboxEntry::Kind::VS10_REQUEST;
+  e.reqId = ++s_vs10Id;
+  e.f = path.f;
+  e.vs10Mode = mode;
+  e.action = action;
+  CLog::Log(LOGINFO, "MIDPLAY vs10 press request={} mode={} F={}: to P", e.reqId, mode, e.f);
+  DISPLAYSTATE::PostTxInbox(std::move(e));
+  return true;
+}
+
+void CVideoPlayer::TxMidVs10Request(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF)
+{
+  if (e.f != wordF)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY vs10 request {} of F={} ignored (F={} open)", e.reqId, e.f,
+              wordF);
+    return;
+  }
+  if (!m_txMidPath)
+  {
+    TxMidVs10ToMain(e.action, e.reqId, "after the path");
+    return;
+  }
+  if (m_midTx.vs10 >= 0)
+    CLog::Log(LOGINFO, "MIDPLAY vs10 request {} superseded by request {}", m_midTx.vs10Id,
+              e.reqId);
+  m_midTx.vs10 = static_cast<int>(e.vs10Mode);
+  m_midTx.vs10Action = e.action;
+  m_midTx.vs10Id = e.reqId;
+  m_midTx.vs10Fresh = true;
+  CLog::Log(LOGINFO, "MIDPLAY vs10 request {} mode={} taken", e.reqId, e.vs10Mode);
+}
+
+void CVideoPlayer::TxMidVs10ToMain(int action, uint64_t id, const char* why)
+{
+  CLog::Log(LOGINFO, "MIDPLAY vs10 request {} {}: to main", id, why);
+  if (const auto messenger = CServiceBroker::GetAppMessenger())
+    messenger->PostMsg(TMSG_GUI_ACTION, WINDOW_INVALID, -1,
+                       static_cast<void*>(new CAction(action)));
+}
+
+void CVideoPlayer::TxMidVs10GiveBack(const SMidJob& j)
+{
+  if (j.job->vs10 < 0 || j.job->vs10Written)
+    return;
+  const uint32_t f = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+  if (j.path && m_txMidPath)
+  {
+    // the next DECIDE carries it (no DECIDE of its own: a drop's re-raise brings it, r2 N2)
+    if (m_midTx.vs10 >= 0)
+      CLog::Log(LOGINFO, "MIDPLAY vs10 request {} not written: superseded by request {}",
+                j.vs10Id, m_midTx.vs10Id);
+    else
+    {
+      m_midTx.vs10 = j.job->vs10;
+      m_midTx.vs10Action = j.vs10Action;
+      m_midTx.vs10Id = j.vs10Id;
+      CLog::Log(LOGINFO, "MIDPLAY vs10 request {} not written: pending again", j.vs10Id);
+    }
+  }
+  else if (f == j.f)
+    TxMidVs10ToMain(j.vs10Action, j.vs10Id, "not written, after the path");
+  else
+    CLog::Log(LOGINFO, "MIDPLAY vs10 request {} not written: dropped (F={} open)", j.vs10Id, f);
 }
 
 void CVideoPlayer::TxStartRelease(int64_t discRunNs)
@@ -4222,6 +4350,11 @@ void CVideoPlayer::TxDeferPass()
     if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY)
     {
       TxMidInbox(e);
+      continue;
+    }
+    if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_REQUEST)
+    {
+      TxMidVs10Request(e, wordF);
       continue;
     }
     // code review r2 addendum: another file's entry (a stale one after a Next) is never this
@@ -13715,18 +13848,26 @@ bool CVideoPlayer::OnAction(const CAction &action)
     // for the new output through the same display lost/reset protocol a mode
     // change uses, so playback pauses and re-anchors across the re-clock.
     case ACTION_VS10_ORIGINAL:
+      if (TxMidVs10Press(action.GetID(), DOLBY_VISION_OUTPUT_MODE_BYPASS))
+        return true;
       if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS))
         TriggerVs10Resolution();
       return true;
     case ACTION_VS10_SDR:
+      if (TxMidVs10Press(action.GetID(), DOLBY_VISION_OUTPUT_MODE_SDR10))
+        return true;
       if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10))
         TriggerVs10Resolution();
       return true;
     case ACTION_VS10_HDR10:
+      if (TxMidVs10Press(action.GetID(), DOLBY_VISION_OUTPUT_MODE_HDR10))
+        return true;
       if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10))
         TriggerVs10Resolution();
       return true;
     case ACTION_VS10_DV:
+      if (TxMidVs10Press(action.GetID(), DOLBY_VISION_OUTPUT_MODE_IPT))
+        return true;
       if (aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT))
         TriggerVs10Resolution();
       return true;
