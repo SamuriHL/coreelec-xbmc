@@ -629,6 +629,14 @@ std::mutex s_layoutMutex;
 SSubtitleLayout s_layout;
 } // namespace
 
+void OVERLAY::ResetPublishedSubtitleLayout()
+{
+  std::unique_lock lock(s_layoutMutex);
+  const uint64_t gen = s_layout.gen;
+  s_layout = SSubtitleLayout();
+  s_layout.gen = gen + 1;
+}
+
 SSubtitleLayout OVERLAY::PublishedSubtitleLayout()
 {
   std::unique_lock lock(s_layoutMutex);
@@ -760,6 +768,10 @@ void CRenderer::SetTimedOnPlane(bool onPlane)
   m_frameSerial = 0;
   m_prevImageSpuCount = 0;
   ReleaseCache();
+  // review rA M3: a subtitle main drew leaves the GUI plane, or one main takes back is drawn;
+  // after a hand-back libass's first render reports its changes against G's last one
+  m_forceLibassChange = !onPlane;
+  MarkDirty();
 }
 
 void CRenderer::PrepareOverlays(int idx,
@@ -932,6 +944,8 @@ void CRenderer::PrepareOverlays(int idx,
     int currentChange = 0;
     e.renderedImages =
         ovAss.GetLibassHandler()->RenderImage(e.pts, rOpts, m_overlayStyle, &currentChange);
+    if (m_forceLibassChange && e.renderedImages)
+      currentChange = std::max(currentChange, 2);
     if (currentChange > 0)
     {
       // Persist on the overlay so a skipped GUI render does not drop the change.
@@ -948,6 +962,7 @@ void CRenderer::PrepareOverlays(int idx,
   // plane until the next subtitle arrived ("stuck until the next caption"). Any
   // change in the count means an overlay came or went, so repaint - a subtitle
   // leaving is caught even while the menu overlay stays up.
+  m_forceLibassChange = false;
   if (nImageSpu != m_prevImageSpuCount)
     doMarkDirty = true;
   m_prevImageSpuCount = nImageSpu;

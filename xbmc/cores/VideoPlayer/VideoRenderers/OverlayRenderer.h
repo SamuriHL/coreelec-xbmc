@@ -76,6 +76,8 @@ namespace OVERLAY {
   };
   //! any thread
   SSubtitleLayout PublishedSubtitleLayout();
+  //! RM, at a file's start: no style until main publishes this file's (G renders no libass)
+  void ResetPublishedSubtitleLayout();
   //! the options libass renders an overlay with in this layout, over these video rects
   KODI::SUBTITLES::STYLE::renderOpts LibassRenderOpts(const SSubtitleLayout& layout,
                                                       CDVDOverlayLibass& overlay,
@@ -313,6 +315,7 @@ namespace OVERLAY {
     uint64_t m_frameSerial{0};
     bool m_framed{false};
     bool m_timedOnPlane{false};
+    bool m_forceLibassChange{false};
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     // PQ destination (HDR composite / PQ GUI) the cached textures were
