@@ -91,6 +91,7 @@ void CRendererAML::EndRenderSession()
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
   CSysfsPath(OSD_PQ_PASSTHROUGH, 0);
+  DISPLAYSTATE::RegimeStop();
 }
 
 CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
@@ -195,7 +196,7 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
       DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
   ConfigureVideo(picture, fps, orientation, isHdrDisplay, dv_output_mode);
   ApplyGeometry();
-  ApplyGuiEncoding(picture, dv_output_mode, isHdrDisplay);
+  ApplyGuiEncoding(picture, dv_output_mode, isHdrDisplay, "configure");
   return true;
 }
 
@@ -263,7 +264,8 @@ const char* CRendererAML::GuiEncodingName() const
 
 void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
                                     unsigned int dv_output_mode,
-                                    bool isHdrDisplay)
+                                    bool isHdrDisplay,
+                                    const char* site)
 {
   // Configure the GUI/OSD encoding to match the ACTUAL video-plane output the
   // sink receives this stream, not the source hdrType. CAMLCodec::OpenDecoder
@@ -368,6 +370,9 @@ void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
   // against a UB820. So the scalar path is only ever safe under FORMAT_HDR8.
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
              gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
+
+  DISPLAYSTATE::ShadowMainRegime(site, encoding, composite, winSystem->UseLimitedColor(),
+                                 dv_output_mode, isHdrDisplay);
 }
 
 CRenderInfo CRendererAML::GetRenderInfo()

@@ -50,8 +50,12 @@ public:
   void ApplyGeometry();
   //! the required class for these inputs, stored for ConfigChanged (pure: no sysfs, no GL)
   void StoreGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
-  //! the GUI encoding (main: GL, sysfs) for the inputs StoreGuiEncoding stored
-  void ApplyGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
+  //! the GUI encoding (main: GL, sysfs) for the inputs StoreGuiEncoding stored; site names the
+  //! caller in the 5.G2 GT-2 shadow line
+  void ApplyGuiEncoding(const VideoPicture& picture,
+                        unsigned int dvOutputMode,
+                        bool isHdrDisplay,
+                        const char* site);
   //! 5.G2 GT-2: the class from the stream's facts alone, for W's published regime
   static DISPLAYSTATE::GuiEncoding ResolveGuiEncoding(StreamHdrType hdrType,
                                                       AVColorTransferCharacteristic transfer,

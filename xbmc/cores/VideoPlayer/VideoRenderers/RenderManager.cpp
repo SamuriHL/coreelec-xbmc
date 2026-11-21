@@ -1342,7 +1342,7 @@ bool CRenderManager::ApplyConfigureDuties()
         DISPLAYSTATE::HdrDisplay(CServiceBroker::GetWinSystem()->IsHDRDisplay());
     const unsigned int dvOutputMode = aml_dv_get_output_mode();
     aml->StoreGuiEncoding(picture, dvOutputMode, isHdrDisplay);
-    aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+    aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay, "duties");
     LogGuiEncoding("configure", 0, aml->GuiEncodingName(), m_playerGen, m_fileGen.load(),
                    startNs, "V's swap, no RM lock");
   }
@@ -6165,7 +6165,7 @@ void CRenderManager::ReencodeOnOutputChange()
     }
     if (reencoded)
     {
-      aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay);
+      aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay, "reencode");
       encoding = aml->GuiEncodingName();
     }
   }
