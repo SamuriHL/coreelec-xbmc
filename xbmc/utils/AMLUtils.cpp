@@ -3152,14 +3152,15 @@ void aml_transaction_latch()
           reason = "vconfigure off";
         else if (!geometryTick)
           reason = "geometrytick off";
-        else if (!optIn)
-          reason = "not enabled";
         else
         {
-          // E2-1: the n/a items below are not evaluated; nothing reads the switch yet
-          reason = "transaction_on, n/a items not evaluated";
+          // 5.G-6d: on by default where the matrix holds; transaction_off (above) is the exit
+          reason = "default, n/a items not evaluated";
           on = true;
         }
+        if (optIn)
+          CLog::Log(LOGWARNING,
+                    "TRANSACTION transaction_on does nothing: on by default (5.G-6d)");
         const auto onOff = [](bool v) { return v ? "on" : "off"; };
         // the per-open and per-stream switch files, as found at the latch (the open re-reads them)
         std::string files;

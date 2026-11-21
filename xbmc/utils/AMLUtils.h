@@ -470,8 +470,9 @@ struct SGeometryTickHooks
 SGeometryTickHooks aml_geometrytick_hooks();
 // 5.E2's switch (transaction; docs/phase5_e2_plan.md §3), latched once at W's start after the
 // hotplug switches (aml_transaction_latch) and logged as "TRANSACTION on|off (<reason>)
-// matrix=...". E2-1 (log only): opt-in by special://profile/transaction_on on every SoC (Q3);
-// transaction_off wins. Nothing reads it for behaviour yet. Off before the latch.
+// matrix=...". E2-1: opt-in by special://profile/transaction_on on every SoC (Q3).
+// 5.G-6d: on by default where the matrix holds; special://profile/transaction_off is the exit
+// and a transaction_on file does nothing. Off before the latch.
 void aml_transaction_latch();
 bool aml_transaction_on();
 //! the latch's reason ("not latched" before it)
