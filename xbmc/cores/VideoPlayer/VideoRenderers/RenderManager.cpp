@@ -4403,6 +4403,11 @@ CRenderManager::SStartResolve CRenderManager::TxMidResolve(
                       (in.fullScreenVideo && in.fullScreenRoot) || forceFullScreen);
 }
 
+RESOLUTION CRenderManager::TxMidIncumbent(const DISPLAYSTATE::DecideInputs& latest)
+{
+  return MidIncumbent(latest.res, DISPLAYSTATE::Get());
+}
+
 void CRenderManager::TxMidHandBack(const char* why)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");

@@ -3520,6 +3520,7 @@ void CVideoPlayer::TxMidPlayStart(const char* off)
   m_midTx.avOwed = m_midTx.retryAv = false;
   m_midTx.sticky.reset();
   m_midTx.pickDue = m_midTx.pickFresh = false;
+  m_midTx.settingDue = false;
   m_midTx.inputsAtOn = DISPLAYSTATE::DecideInputsSeq();
   m_txMidPath = true;
   m_txMidPathT = T;
@@ -3560,6 +3561,9 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
       CLog::Log(LOGINFO, "MIDPLAY pick id={} dropped ({})", m_midTx.pickId, why);
   }
   m_midTx.pickFresh = false;
+  // a setting not yet run: today's job (its body does nothing once DV is off)
+  if (std::exchange(m_midTx.settingDue, false))
+    TxMidSettingToday(m_midTx.settingName, "after the path");
   if (m_midTx.sticky)
   {
     CLog::Log(LOGINFO, "MIDPLAY pick sticky {} ended ({})", m_midTx.sticky->strMode, why);
@@ -3583,17 +3587,18 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
               laterSet ? "raised" : "dropped");
 }
 
-bool CVideoPlayer::TxMidBusy() const
+bool CVideoPlayer::TxMidBusy(bool decisions) const
 {
-  return std::any_of(m_midJobs.begin(), m_midJobs.end(),
-                     [](const SMidJob& j) { return j.path; });
+  return std::any_of(m_midJobs.begin(), m_midJobs.end(), [decisions](const SMidJob& j)
+                     { return j.path && !(decisions && j.setting); });
 }
 
 bool CVideoPlayer::TxMidHoldPending()
 {
   // S8 ii: a job POSTED or FROZEN, or a decision due while fullscreen; owed at fullscreen alone
-  // does not hold (a seek with the GUI over the video)
-  if (TxMidBusy())
+  // does not hold (a seek with the GUI over the video). 5.G-5: a setting job is no decision (the
+  // release waits for the count, which it does not bump)
+  if (TxMidBusy(true))
     return true;
   // code review r1 S4: a hand-back too (main decides only fullscreen)
   if (!m_midTx.handback && !m_midTx.redecide && !m_midTx.retryDue && m_midTx.vs10 < 0 &&
@@ -3610,12 +3615,15 @@ void CVideoPlayer::TxMidPost(SMidJob& j, const char* reply, bool count)
   // 5.G-5: a pick's job posts none, as today's direct set
   if (j.av)
     VideoParamsChange();
-  if (count)
+  // 5.G-5: a setting job is no decision: no seq bump (§4.5)
+  if (count && !j.setting)
     ++m_midTx.counted;
   j.posted = true;
   CLog::Log(LOGINFO, "MIDPLAY reply seq={} {} {}{}", j.job->seq, reply,
-            j.av ? "avchange posted (P)" : "no avchange (a pick's)",
-            count ? "" : ", counted at the retry's reply");
+            j.av        ? "avchange posted (P)"
+            : j.setting ? "no avchange (a setting's)"
+                        : "no avchange (a pick's)",
+            count || j.setting ? "" : ", counted at the retry's reply");
 }
 
 void CVideoPlayer::TxMidClearJobs()
@@ -3652,7 +3660,10 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
       j.settled = true;
       j.main = false;
       TxMidPost(j, "DROPPED");
-      if (j.path)
+      // 5.G-5: a dropped setting's body never ran: today's job runs it (never lost)
+      if (j.setting)
+        TxMidSettingToday(j.job->settingName ? j.job->settingName : "?", "job dropped");
+      else if (j.path)
         m_midTx.redecide = false;
       break;
     case Mid::OUTPUT_DONE:
@@ -3673,11 +3684,20 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
         TxMidPost(j, e.settle == Settle::NO_CHANGE ? "DONE_NO_CHANGE"
                      : failed                      ? "FAILED"
                                                    : "DROPPED (W)");
+        if (j.setting && e.settle == Settle::DROPPED)
+          TxMidSettingToday(j.job->settingName ? j.job->settingName : "?", "after the path");
         break;
       }
       m_midTx.redecideDue = true;
       // W's drop set nothing: decided again, and that job's reply posts and counts it (code
       // review r1 S2: one AVCHANGE, as off's one consume)
+      if (e.settle == Settle::DROPPED && j.setting)
+      {
+        // 5.G-5: the body did not run: posted again
+        m_midTx.settingDue = true;
+        CLog::Log(LOGINFO, "MIDPLAY reply seq={} DROPPED (W): setting posted again", e.jobSeq);
+        break;
+      }
       if (e.settle == Settle::DROPPED)
       {
         m_midTx.redecide = true;
@@ -3715,7 +3735,9 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
       if (!j.posted && e.form != DISPLAYSTATE::StartAdoptForm::NO_CHANGE)
       {
         j.posted = true;
-        ++m_midTx.counted;
+        // 5.G-5: a setting job is no decision
+        if (!j.setting)
+          ++m_midTx.counted;
       }
       if (j.path && e.form != DISPLAYSTATE::StartAdoptForm::FAILED)
         m_midTx.retried = false;
@@ -3782,6 +3804,15 @@ void CVideoPlayer::TxMidPlayPass()
     why = "owed";
   else if (m_midTx.inputsDue && !busy && DISPLAYSTATE::DecideInputsSeq() > m_midTx.inputsAtOn)
     why = "path-on inputs";
+  // 5.G-5 (§4.5, T10): a setting's job in a pass with no DECIDE, one at a time, after the start's
+  // window (OW would defer it and drop it at StartDone, re-raising a decision)
+  if (!why && m_midTx.settingDue && !m_midTx.handback && !m_txDeferF &&
+      std::none_of(m_midJobs.begin(), m_midJobs.end(),
+                   [](const SMidJob& j) { return j.path && j.setting; }))
+  {
+    TxMidSettingJob();
+    return;
+  }
   if (!why || m_midTx.handback)
     return;
   if (!busy)
@@ -4070,6 +4101,90 @@ void CVideoPlayer::TxMidPickToMain(int res, uint64_t id, const char* why)
     return;
   if (const auto messenger = CServiceBroker::GetAppMessenger())
     messenger->PostMsg(TMSG_SETVIDEORESOLUTION, res, 0, nullptr, "user-pick");
+}
+
+// 5.G-5 (§4.5, T10)
+void CVideoPlayer::TxMidSetting(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF)
+{
+  // S4: never dropped; the path ended (or another file opened): today's job
+  if (e.f != wordF || !m_txMidPath)
+  {
+    TxMidSettingToday(e.name, e.f != wordF ? "another file" : "after the path");
+    return;
+  }
+  // OW drops P's job in a segment gap or an owed mark and re-raises a decision
+  OUTPUT::COutputWorker& ow = OUTPUT::COutputWorker::Get();
+  if (aml_disc_screen_hold() && (ow.GapFor(e.f) || ow.MarkOwedFor(e.f)))
+  {
+    TxMidSettingToday(e.name, "segment gap");
+    return;
+  }
+  if (m_midTx.settingDue)
+    CLog::Log(LOGINFO, "MIDPLAY setting {} folded into {}", m_midTx.settingName, e.name);
+  m_midTx.settingDue = true;
+  m_midTx.settingName = e.name;
+}
+
+void CVideoPlayer::TxMidSettingToday(const std::string& name, const char* why)
+{
+  CLog::Log(LOGINFO, "MIDPLAY setting {} {}: today's job", name, why);
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting",
+                                    [] { CWinSystemAmlogic::ApplyVsvdbSetting(); });
+}
+
+// 5.G-5 (§4.5): not a DECIDE: the incumbent mode, no seq bump, no AVCHANGE (today's post none);
+// W runs the body inside G-4's freeze, then the forced commit and SETTLE
+void CVideoPlayer::TxMidSettingJob()
+{
+  m_midTx.settingDue = false;
+  const std::string name = m_midTx.settingName;
+  const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+  const auto state = DISPLAYSTATE::Get();
+  const RESOLUTION incumbent = m_renderManager.TxMidIncumbent(latest);
+  // a freeze needs a connected wire on a mode P's table has
+  if (!state || !state->connected || !latest.seq || !latest.res.infos.contains(incumbent))
+  {
+    TxMidSettingToday(name, "no committed mode");
+    return;
+  }
+  // the facts a decision would carry (HDR type, GUI stereo mode); the mode is the incumbent
+  const CRenderManager::SStartResolve r = m_renderManager.TxMidResolve(latest, true);
+  auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
+  job->midplay = true;
+  job->T = m_txMidPathT;
+  job->gen = 0;
+  job->seq = ++s_midJobSeq;
+  job->res = latest.res.infos.at(incumbent);
+  job->resIndex = static_cast<int>(incumbent);
+  job->stereo = r.stereo;
+  if (job->stereo == RenderStereoMode::HARDWAREBASED)
+    job->res.iHeight = job->res.iScreenHeight * 2 + job->res.iBlanking;
+  job->hdrType = r.hdrType;
+  job->fullScreen = true;
+  job->fracRequest = false;
+  job->filmStart = false;
+  job->capsEpoch = state->capsEpoch;
+  job->sinkSig = state->sinkSig;
+  job->setting = [] { CWinSystemAmlogic::ApplyVsvdbSetting(); };
+  // a static name for W's log: the job may outlive this record
+  static const char* const s_vsvdb = "vsvdb";
+  job->settingName = s_vsvdb;
+  CLog::Log(LOGINFO, "MIDPLAY setting {} job seq={} T={} res={} ({}): no decision", name,
+            job->seq, job->T, static_cast<int>(incumbent), job->res.strMode);
+  SMidJob& j = m_midJobs.emplace_back();
+  j.job = job;
+  j.av = false;
+  j.setting = true;
+  j.f = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
+  j.sink = std::make_unique<CTxMidSink>(m_renderManager, job->seq, false);
+  job->SetSink(j.sink.get());
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!DISPLAYSTATE::StartJobQueue(*job) || !winSystem || !winSystem->PostMidPlayJob(job))
+  {
+    job->ClearSink();
+    m_midJobs.pop_back();
+    TxMidSettingToday(name, "no worker");
+  }
 }
 
 bool CVideoPlayer::TxMidVs10Press(int action, unsigned int mode)
@@ -4578,6 +4693,11 @@ void CVideoPlayer::TxDeferPass()
         e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY_PICK_CLEAR)
     {
       TxMidPick(e, wordF);
+      continue;
+    }
+    if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::SETTING)
+    {
+      TxMidSetting(e, wordF);
       continue;
     }
     // code review r2 addendum: another file's entry (a stale one after a Next) is never this

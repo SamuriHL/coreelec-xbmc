@@ -2215,6 +2215,11 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
   // otherwise the new value is picked up at the next decoder open. aml_dv_apply_vsvdb
   // re-injects the updated block and re-latches it via an EDID re-parse.
+  // 5.G-5 (docs/phase5_g0_design.md §4.5, T10, S11): with a DV stream decoding on P's mid-play
+  // path session the body runs inside a freeze (P's setting job); otherwise today's job, whose
+  // body does nothing without DV
+  if (DvDecoding() && DISPLAYSTATE::PostMidPlaySetting(settingId))
+    return;
   OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting",
                                     [] { ApplyVsvdbSetting(); });
 }

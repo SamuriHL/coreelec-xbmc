@@ -475,6 +475,8 @@ public:
   //! pick sets at once, as today's direct set)
   SStartResolve TxMidResolve(const DISPLAYSTATE::DecideInputs& latest,
                              bool forceFullScreen = false);
+  //! 5.G-5 (§4.5): P's setting job's mode: W's last committed one on latest's table (r2 N1)
+  RESOLUTION TxMidIncumbent(const DISPLAYSTATE::DecideInputs& latest);
   //! 5.G-3: P, a notice is queued (no lock: P's every-pass test)
   bool TxMidNoticesPending() const { return m_txNoticed.load(); }
   //! 5.G-3 (§4.3 b): P hands one decision back to main (3D start, no inputs): one consume with

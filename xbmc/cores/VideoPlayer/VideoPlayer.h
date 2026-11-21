@@ -1247,6 +1247,8 @@ protected:
     //! 5.G-5 (§4.0 compat): it posts an AVCHANGE (a pick's alone does not: today's set posts none)
     bool av = true;
     bool armTaken = false; //!< its DECIDE took the frac arm (a retry restores it)
+    //! 5.G-5 (§4.5, T10): a setting job, not a DECIDE (no count, no AVCHANGE)
+    bool setting = false;
   };
   std::vector<SMidJob> m_midJobs;
   struct
@@ -1280,6 +1282,9 @@ protected:
     bool pickFresh = false; //!< taken this pass
     int pickIndex = -1; //!< the last pick's (or revert's) main index, for today's route
     uint64_t pickId = 0;
+    //! 5.G-5 (§4.5, T10): a VSVDB setting not yet run by a job (the body reads the settings live)
+    bool settingDue = false;
+    std::string settingName;
   } m_midTx;
   void TxMidPlayPass();
   //! 5.G-4 (§4.4): main, a VS10 press on the path session goes to P (false: today's call)
@@ -1300,7 +1305,12 @@ protected:
   void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
   //! count false: the AVCHANGE only (a failed set's retry counts at its own reply)
   void TxMidPost(SMidJob& j, const char* reply, bool count = true);
-  bool TxMidBusy() const;
+  //! decisions: setting jobs left out (a seek's hold waits for a mode decision only)
+  bool TxMidBusy(bool decisions = false) const;
+  //! 5.G-5 (§4.5, T10): a VSVDB setting from the inbox; its frozen job; today's job
+  void TxMidSetting(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF);
+  void TxMidSettingJob();
+  void TxMidSettingToday(const std::string& name, const char* why);
   //! §4.3 e: a seek's sync commit on the path holds for P's decision
   bool TxMidHoldPending();
   //! the stop: every job's sink cleared

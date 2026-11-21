@@ -326,6 +326,9 @@ void PublishDecideInputsGcSet();
 //! keep dialog's revert) while P's path session plays the open file: posted to P's inbox
 //! (true), else false: today's direct set
 bool PostMidPlayPick(int res, bool clear, const char* site);
+//! 5.G-5 (§4.5, T10): the VSVDB setting callback, a DV stream decoding (the caller's test): P's
+//! frozen setting job while its path session plays the open file (true), else false: today's
+bool PostMidPlaySetting(const std::string& name);
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);
@@ -504,11 +507,13 @@ struct STxInboxEntry
     VS10_REQUEST, //!< 5.G-4: main's VS10 press on the path session (vs10Mode, action; f)
     MIDPLAY_PICK, //!< 5.G-5: a pick on the path session: P's sticky target (res, resIndex; f)
     MIDPLAY_PICK_CLEAR, //!< 5.G-5 (S13): the keep dialog's revert (its res, for today's route)
+    SETTING, //!< 5.G-5 (T10): a VSVDB setting during DV playback on the path session (name; f)
   } kind = Kind::PICK_DEFERRED;
   uint64_t reqId = 0;
   uint32_t f = 0;
   RESOLUTION_INFO res;
   int resIndex = -1; //!< 5.G-5: main's index of res (a pick re-sent to main)
+  std::string name; //!< 5.G-5: the setting's id
   enum class Mid
   {
     DEFERRED,

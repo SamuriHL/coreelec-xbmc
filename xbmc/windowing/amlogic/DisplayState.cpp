@@ -1866,6 +1866,23 @@ bool PostMidPlayPick(int res, bool clear, const char* site)
   return true;
 }
 
+bool PostMidPlaySetting(const std::string& name)
+{
+  if (!aml_midplaytx_on())
+    return false;
+  const MidPlayPathState path = MidPlayPath();
+  if (!path.on ||
+      path.f != OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f)
+    return false;
+  STxInboxEntry e;
+  e.kind = STxInboxEntry::Kind::SETTING;
+  e.f = path.f;
+  e.name = name;
+  CLog::Log(LOGINFO, "MIDPLAY setting {} F={}: to P", name, e.f);
+  PostTxInbox(std::move(e));
+  return true;
+}
+
 void PublishDecideInputsGcSet()
 {
   // a start's DECIDE reads its own publishes (OPEN..START), so none is added there
