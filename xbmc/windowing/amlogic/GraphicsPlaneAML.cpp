@@ -16,6 +16,8 @@
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/GraphicsRasterAML.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -302,7 +304,10 @@ void CGraphicsPlaneAML::DeinitGL()
       glDeleteTextures(1, &texture.texture);
     if (m_program)
       glDeleteProgram(m_program);
+    if (m_raster)
+      m_raster->Deinit();
   }
+  m_raster.reset();
   m_textures.clear();
   m_program = 0;
   m_fence.reset();
@@ -681,6 +686,102 @@ void CGraphicsPlaneAML::DrawGraphics()
   glUseProgram(0);
 }
 
+void CGraphicsPlaneAML::InitRaster()
+{
+  const bool tick = XFILE::CFile::Exists("special://profile/graphicstick_on");
+  m_selfTest = XFILE::CFile::Exists("special://profile/gselftest");
+  // M5: without either file no new program is compiled and G is GT-2's
+  if (!tick && !m_selfTest)
+    return;
+  const bool failCompile = XFILE::CFile::Exists("special://profile/gselftest_failcompile");
+  if (m_selfTest)
+  {
+    XFILE::CFile file;
+    std::vector<uint8_t> buf;
+    if (file.LoadFile("special://profile/gselftest", buf) > 0)
+    {
+      const int every = std::atoi(std::string(buf.begin(), buf.end()).c_str());
+      if (every > 0)
+        m_selfTestEvery = every;
+    }
+  }
+  CLog::Log(LOGINFO, "GPROG on graphicstick_on={} gselftest={} every={} failcompile={}",
+            tick ? 1 : 0, m_selfTest ? 1 : 0, m_selfTestEvery, failCompile ? 1 : 0);
+
+  // the LUTs follow the regime's peak from the first draw; this one only seeds them
+  const DISPLAYSTATE::GraphicsRegime regime = DISPLAYSTATE::GetRegime();
+  m_raster = std::make_unique<CGraphicsRasterAML>(WIDTH, HEIGHT);
+  if (!m_raster->Init(regime.epoch ? regime.peak : 1.0f, failCompile))
+  {
+    // route C (UpdateTextures/DrawGraphics) is untouched; the new route cannot start
+    m_raster.reset();
+    CLog::Log(LOGWARNING, "GTICK off (programs)");
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, WIDTH, HEIGHT);
+}
+
+void CGraphicsPlaneAML::ShadowDraw()
+{
+  const DISPLAYSTATE::GraphicsRegime published = DISPLAYSTATE::GetRegime();
+  if (!published.epoch)
+  {
+    if (!m_shadowNoRegime)
+      CLog::Log(LOGINFO, "GSELFTEST real: no published regime (gregime_off?), not drawn");
+    m_shadowNoRegime = true;
+    return;
+  }
+  if (m_shown.images.empty())
+  {
+    m_raster->Retain({}, {});
+    return;
+  }
+
+  const int64_t start = MonotonicNs();
+  CGraphicsRasterAML::SRegime regime;
+  regime.epoch = published.epoch;
+  regime.encoding = published.encoding;
+  regime.limited = published.limited;
+  regime.peak = published.peak;
+  m_raster->ResetCounters();
+  const bool cold = m_raster->SetRegime(regime) || m_shadowComps == 0;
+  std::vector<std::shared_ptr<CDVDOverlay>> images;
+  std::vector<CGraphicsRasterAML::SImage> placed;
+  for (const std::shared_ptr<CDVDOverlay>& image : m_shown.images)
+  {
+    const CGraphicsRasterAML::STexture* texture = m_raster->Expand(image);
+    if (!texture)
+      continue;
+    // Place reads the texture's box only
+    STexture box;
+    box.width = texture->width;
+    box.height = texture->height;
+    box.crop = texture->crop;
+    const CRect rect = Place(static_cast<const CDVDOverlayImage&>(*image), box);
+    if (rect.IsEmpty())
+      continue;
+    images.push_back(image);
+    placed.push_back({texture, rect});
+  }
+  m_raster->Retain(m_shown.images, {});
+  const int64_t expanded = MonotonicNs();
+  const GLuint target = m_raster->DrawCheck(placed, {});
+  // offscreen and never submitted: the wait is this test's, the route will not make it
+  glFinish();
+  const int64_t end = MonotonicNs();
+  const unsigned int comp = ++m_shadowComps;
+  CLog::Log(LOGINFO,
+            "GDRAW comp={} regime={} epoch={} peak={:.4f} n={} misses={} px={} cold={} "
+            "expand_us={} draw_us={} total_us={}",
+            comp, DISPLAYSTATE::GuiEncodingName(regime.encoding), regime.epoch, regime.peak,
+            placed.size(), m_raster->Misses(), m_raster->ExpandedTexels(), cold ? 1 : 0,
+            (expanded - start) / 1000, (end - expanded) / 1000, (end - start) / 1000);
+  if (target && comp % static_cast<unsigned int>(m_selfTestEvery) == 0)
+    m_raster->CheckComposition("real/" + std::to_string(comp), images, placed, {});
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, WIDTH, HEIGHT);
+}
+
 void CGraphicsPlaneAML::Process()
 {
   OUTPUT::SetThreadRole("G");
@@ -691,12 +792,21 @@ void CGraphicsPlaneAML::Process()
     DeinitGL();
     return;
   }
+  if (!m_testPattern)
+    InitRaster();
 
   m_epoch = aml_presenter_epoch();
   // establishes the plane, enabled with a cleared buffer (R4: idle is never
   // a disable, nor alpha 0)
   SubmitFrame(m_testPattern, MonotonicNs());
   m_ready = true;
+  // after the plane is up: the self-test holds G, not its start
+  if (m_raster && m_selfTest)
+  {
+    m_raster->SelfTest();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, WIDTH, HEIGHT);
+  }
 
   while (!m_bStop)
   {
@@ -739,6 +849,7 @@ void CGraphicsPlaneAML::Process()
     {
       if (TakeShown())
       {
+        m_shadowOwed = m_raster && m_selfTest;
         const int64_t start = m_untimed.empty() ? 0 : MonotonicNs();
         UpdateTextures();
         if (start)
@@ -755,6 +866,12 @@ void CGraphicsPlaneAML::Process()
                                    std::exchange(m_untimed, {}));
       if (m_redraw && SubmitFrame(!m_shown.images.empty(), MonotonicNs(), m_shown.pts))
         m_redraw = false;
+      // after route C's own submit, so the test never delays what is shown
+      if (m_shadowOwed && !m_redraw)
+      {
+        m_shadowOwed = false;
+        ShadowDraw();
+      }
       m_wake.Wait(m_redraw ? 16ms : 100ms);
     }
   }

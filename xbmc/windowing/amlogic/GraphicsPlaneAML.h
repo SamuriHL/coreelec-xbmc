@@ -26,6 +26,7 @@
 
 class CAMLDisplay;
 class CDVDOverlayImage;
+class CGraphicsRasterAML;
 class CPresentationCoordinator;
 struct gbm_bo;
 struct gbm_device;
@@ -98,6 +99,10 @@ private:
   bool SubmitGeometry();
   void ReleaseReturned();
   uint32_t FbFromBo(gbm_bo* bo);
+  //! 5.G2 GT-3: builds G's renderer when graphicstick_on or gselftest asks for it (M5)
+  void InitRaster();
+  //! gselftest: m_shown through G's renderer offscreen, timed; every Nth against the reference
+  void ShadowDraw();
 
   static constexpr int WIDTH = 1920;
   static constexpr int HEIGHT = 1080;
@@ -139,4 +144,12 @@ private:
   int m_submits = 0; //!< for hotplugworker_gfxrefuse
   int m_gholdMs = 0; //!< test: displaystate_ghold
   int64_t m_gholdNs = 0;
+
+  // 5.G2 GT-3: G's renderer, inert (nothing it draws is submitted before GT-4)
+  std::unique_ptr<CGraphicsRasterAML> m_raster;
+  bool m_selfTest = false; //!< special://profile/gselftest
+  int m_selfTestEvery = 10; //!< the real-content check's N (the file's content)
+  bool m_shadowOwed = false; //!< a new m_shown not drawn by the renderer yet
+  unsigned int m_shadowComps = 0;
+  bool m_shadowNoRegime = false; //!< logged once
 };
