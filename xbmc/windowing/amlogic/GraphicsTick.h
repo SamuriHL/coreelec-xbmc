@@ -111,9 +111,7 @@ struct SInbox
 //! G: wake is called (from any thread) after every post
 void SetWake(std::function<void()> wake);
 void Take(SInbox& inbox);
-//! the side that renders the timed libass overlays (review rA M1): libass frees a render's
-//! images at the next render on any thread, so main renders them only once G has left the route
-//! (GSide off), and G only once main has stopped (MainSide == G's session)
+//! G's side of a hand-back: main draws the timed overlays again once G has left the route
 struct SSide
 {
   uint64_t session = 0;
@@ -122,10 +120,7 @@ struct SSide
 //! G: the route session it now draws for, or has left
 void NoteGSide(uint64_t session, bool on);
 SSide GSide();
-//! main: from this route session on it renders no timed overlay
-void NoteMainSide(uint64_t session);
-uint64_t MainSide();
-//! wakes G (C: buffers back or picked; main: its side noted)
+//! wakes G (C: buffers back or picked)
 void Kick();
 
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing

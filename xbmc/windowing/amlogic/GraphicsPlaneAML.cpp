@@ -1220,9 +1220,6 @@ bool CGraphicsPlaneAML::RouteStep()
       return true;
     m_routeClearOwed = false;
   }
-  // review rA M1: no libass render before main has stopped its own (main wakes G)
-  if (GRAPHICSTICK::MainSide() != m_routeSession)
-    return false;
   for (SComposition& comp : m_routeDrawn)
   {
     if (!comp.redraw)

@@ -41,7 +41,6 @@ SFloor s_floor;
 std::function<void()> s_wake;
 std::atomic<uint64_t> s_processed{0};
 SSide s_gSide;
-uint64_t s_mainSide = 0;
 
 bool Exists(const char* file)
 {
@@ -266,24 +265,6 @@ SSide GSide()
 {
   std::unique_lock lock(s_mutex);
   return s_gSide;
-}
-
-void NoteMainSide(uint64_t session)
-{
-  bool changed;
-  {
-    std::unique_lock lock(s_mutex);
-    changed = s_mainSide != session;
-    s_mainSide = session;
-  }
-  if (changed)
-    Wake();
-}
-
-uint64_t MainSide()
-{
-  std::unique_lock lock(s_mutex);
-  return s_mainSide;
 }
 
 void Kick()

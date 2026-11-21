@@ -1724,12 +1724,11 @@ void CRenderManager::FrameMove()
     bool on;
     uint64_t session;
     GRAPHICSTICK::RouteState(on, session);
-    // review rA M1: libass frees a render's images at the next render on any thread: main
-    // renders the timed ones again only once G has left the route
+    // a hand-back: main draws the timed overlays again once G has left, so a line is never
+    // on both planes (both copy libass's output under its lock, in either order)
     m_overlays.SetTimedOnPlane(on || GRAPHICSTICK::GSide().on);
     if (on)
     {
-      GRAPHICSTICK::NoteMainSide(session);
       // review rB m-3: the published subtitle position follows C's area, not main's last pass
       CRect src, dst, view;
       unsigned int rgen = 0;
