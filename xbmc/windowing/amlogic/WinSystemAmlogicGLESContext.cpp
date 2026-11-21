@@ -4018,7 +4018,9 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
   // the LUT is rebuilt only when the value actually moves.
   if (m_compositeShader)
   {
-    const float peak(CGuiCompositeShaderGLES::PeakFromPQCode(GetGuiSdrPeakLuminance()));
+    const float peakCode = GetGuiSdrPeakLuminance();
+    DISPLAYSTATE::ShadowMainPeak(peakCode);
+    const float peak(CGuiCompositeShaderGLES::PeakFromPQCode(peakCode));
     if (peak != m_guiCompositePeak)
     {
       m_compositeShader->SetSdrPeak(peak);
