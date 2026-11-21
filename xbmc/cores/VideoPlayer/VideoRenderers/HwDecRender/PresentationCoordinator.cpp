@@ -1530,6 +1530,8 @@ int CPresentationCoordinator::TimedHeld()
 
 void CPresentationCoordinator::SelectTimed(bool ticked)
 {
+  if (!GRAPHICSTICK::Requested())
+    return;
   const bool on = GRAPHICSTICK::RouteOn();
   const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
   bool woke = false;

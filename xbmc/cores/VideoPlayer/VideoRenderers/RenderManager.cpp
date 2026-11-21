@@ -1719,7 +1719,8 @@ void CRenderManager::FrameMove()
   const auto stallStart = std::chrono::steady_clock::now();
 #if defined(HAS_LIBAMCODEC)
   // GT-4: main keeps the untimed graphics; follows a route G or V ended mid-file
-  m_overlays.SetTimedOnPlane(GRAPHICSTICK::RouteOn());
+  if (GRAPHICSTICK::Requested())
+    m_overlays.SetTimedOnPlane(GRAPHICSTICK::RouteOn());
 #endif
   m_overlays.PrepareOverlays(source, segmentGen, framed ? &overlays : nullptr, serial);
   if (stallArmed)
