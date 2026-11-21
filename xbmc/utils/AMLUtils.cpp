@@ -2651,6 +2651,7 @@ void aml_dv_set_geometric_active_area(int codedW, int codedH)
 // overlay is shown (otherwise OSD/subs in the letterbox bar region get masked).
 static std::atomic<bool> s_dvOsdVisible{false};
 static std::atomic<bool> s_dvSubsVisible{false};
+static std::atomic<bool> s_dvPlaneSubsVisible{false};
 
 void aml_dv_set_osd_visible(bool visible)
 {
@@ -2662,9 +2663,14 @@ void aml_dv_set_subtitles_visible(bool visible)
   s_dvSubsVisible.store(visible);
 }
 
+void aml_dv_set_plane_subtitles_visible(bool visible)
+{
+  s_dvPlaneSubsVisible.store(visible);
+}
+
 bool aml_dv_l5_overlay_visible()
 {
-  return s_dvOsdVisible.load() || s_dvSubsVisible.load();
+  return s_dvOsdVisible.load() || s_dvSubsVisible.load() || s_dvPlaneSubsVisible.load();
 }
 
 namespace

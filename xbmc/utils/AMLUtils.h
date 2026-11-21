@@ -351,6 +351,9 @@ bool aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
 // an overlay is on screen (keeps OSD/subs in the letterbox bars visible).
 void aml_dv_set_osd_visible(bool visible);
 void aml_dv_set_subtitles_visible(bool visible);
+//! 5.G2 GT-4: the subtitle half of the graphics G draws, set by C at the commit that puts them
+//! on screen (main's half then carries only what main still draws: the untimed graphics)
+void aml_dv_set_plane_subtitles_visible(bool visible);
 bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
 //! the sink's own TMDS lock (SCDC, hdmitx sink_lock): 1 locked, 0 not, -1 unknown
