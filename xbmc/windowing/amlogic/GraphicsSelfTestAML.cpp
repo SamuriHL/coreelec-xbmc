@@ -459,7 +459,7 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
           if (e.limited)
             c = c * 219.0 / 255.0 + 16.0;
           if (e.scalar)
-            c *= e.peak;
+            c *= static_cast<double>(e.peak);
         }
         for (int j = 0; j < q.h * s; j++)
         {
