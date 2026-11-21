@@ -1353,7 +1353,13 @@ void CGraphicsPlaneAML::Process()
     }
     else if (m_rasterReady && (m_routeOn || GRAPHICSTICK::RouteSession() != m_routeSession))
     {
-      RouteStep();
+      // a redraw's replacement hands C's old buffer back with no event to wake G (review r2 N5)
+      if (RouteStep())
+      {
+        ReleaseReturned();
+        if (m_locked < LOCK_CAP)
+          RouteStep();
+      }
       if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
       // C wakes G for a buffer back, main for its side; only the end clear polls
