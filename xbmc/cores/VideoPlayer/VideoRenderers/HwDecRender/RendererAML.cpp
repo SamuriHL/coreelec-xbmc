@@ -126,6 +126,14 @@ CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(const VideoPicture& p
                                                           unsigned int dvOutputMode,
                                                           bool isHdrDisplay)
 {
+  return ResolveGuiEncoding(picture.hdrType, picture.color_transfer, dvOutputMode, isHdrDisplay);
+}
+
+CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(StreamHdrType hdrType,
+                                                          AVColorTransferCharacteristic transfer,
+                                                          unsigned int dvOutputMode,
+                                                          bool isHdrDisplay)
+{
   const bool core_is_pq(dvOutputMode == DOLBY_VISION_OUTPUT_MODE_IPT ||
                         dvOutputMode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL ||
                         dvOutputMode == DOLBY_VISION_OUTPUT_MODE_HDR10);
@@ -135,7 +143,7 @@ CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(const VideoPicture& p
   // BYPASS = no DV-core forcing: native path, PQ only when the stream itself is
   // HDR PQ/HLG on an HDR display.
   const bool native_is_pq(dvOutputMode == DOLBY_VISION_OUTPUT_MODE_BYPASS &&
-    (picture.hdrType == StreamHdrType::HDR_TYPE_HLG || picture.color_transfer == AVCOL_TRC_SMPTE2084) &&
+    (hdrType == StreamHdrType::HDR_TYPE_HLG || transfer == AVCOL_TRC_SMPTE2084) &&
     isHdrDisplay);
   if (!native_is_pq)
     return GuiEncoding::Srgb;
@@ -143,8 +151,8 @@ CRendererAML::GuiEncoding CRendererAML::ResolveGuiEncoding(const VideoPicture& p
   // Native PQ output composites like the DV core does when the kernel can be
   // told to pass the OSD through (see Configure). HLG output keeps the VPP's
   // own SDR->HLG encode and the scalar trim.
-  const bool native_hlg(picture.hdrType == StreamHdrType::HDR_TYPE_HLG &&
-                        picture.color_transfer != AVCOL_TRC_SMPTE2084);
+  const bool native_hlg(hdrType == StreamHdrType::HDR_TYPE_HLG &&
+                        transfer != AVCOL_TRC_SMPTE2084);
   return !native_hlg && OsdPqPassthroughAvailable() ? GuiEncoding::Composite
                                                     : GuiEncoding::Scalar;
 }

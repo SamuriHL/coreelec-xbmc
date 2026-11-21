@@ -9,6 +9,7 @@ set(SOURCES WinSystemAmlogic.cpp
             SettingsMirror.cpp
             ThreadRole.cpp
             DisplayState.cpp
+            GraphicsRegime.cpp
             GuiSnapshot.cpp)
 
 set(HEADERS WinSystemAmlogic.h
@@ -22,6 +23,7 @@ set(HEADERS WinSystemAmlogic.h
             SettingsMirror.h
             ThreadRole.h
             DisplayState.h
+            GraphicsRegime.h
             GuiSnapshot.h
             Seqlock.h)
 

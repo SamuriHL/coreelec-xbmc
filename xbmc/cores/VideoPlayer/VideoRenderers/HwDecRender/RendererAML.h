@@ -11,6 +11,7 @@
 #include "utils/AMLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 #include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/GuiSnapshot.h"
 #include "rendering/RenderSystemTypes.h"
 
@@ -51,6 +52,11 @@ public:
   void StoreGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
   //! the GUI encoding (main: GL, sysfs) for the inputs StoreGuiEncoding stored
   void ApplyGuiEncoding(const VideoPicture& picture, unsigned int dvOutputMode, bool isHdrDisplay);
+  //! 5.G2 GT-2: the class from the stream's facts alone, for W's published regime
+  static DISPLAYSTATE::GuiEncoding ResolveGuiEncoding(StreamHdrType hdrType,
+                                                      AVColorTransferCharacteristic transfer,
+                                                      unsigned int dvOutputMode,
+                                                      bool isHdrDisplay);
   const char* GuiEncodingName() const;
   virtual CRenderInfo GetRenderInfo() override;
   virtual void UnInit() override {};
@@ -86,13 +92,7 @@ private:
   // resolution, hdrType and color_transfer. VideoPicture::IsSameParams compares
   // only picture properties, so CRenderManager::Configure would otherwise skip
   // the reconfigure and leave the GUI encoded for the previous segment's output.
-  enum class GuiEncoding
-  {
-    Srgb, // plain sRGB: nothing downstream encodes the OSD plane
-    Scalar, // m_sdrPeak trim only; the VPP encodes the OSD plane itself
-    Composite, // Kodi owns the full sRGB->BT.2020 PQ transform (DV core reads the
-               // plane, or the VPP passes it through on native PQ output)
-  };
+  using GuiEncoding = DISPLAYSTATE::GuiEncoding;
   static GuiEncoding ResolveGuiEncoding(const VideoPicture& picture,
                                         unsigned int dvOutputMode,
                                         bool isHdrDisplay);
