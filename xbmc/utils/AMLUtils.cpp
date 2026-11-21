@@ -116,9 +116,18 @@ void aml_knob_force_process_init()
   const bool off = XFILE::CFile::Exists("special://profile/knobforce_off");
   const bool validated = aml_presentation_validated();
   const int want = (!off && validated) ? 1 : 0;
-  // written at every init, so a reboot or a Kodi restart always starts from our value
-  knob.Set(want);
-  const int got = knob.Get<int>().value_or(-1);
+  // written at every init, so a reboot or a Kodi restart always starts from our value. Called
+  // just before W starts: a throw here must not escape (it would leave W unstarted)
+  int got = -1;
+  try
+  {
+    knob.Set(want);
+    got = knob.Get<int>().value_or(-1);
+  }
+  catch (const std::exception& e)
+  {
+    CLog::Log(LOGWARNING, "KNOBFORCE write failed: {}", e.what());
+  }
   s_knobForceProcess = want == 1 && got == 1;
   CLog::Log(got == want ? LOGINFO : LOGWARNING,
             "KNOBFORCE knobForceProcess {} (wrote {}, reads back {}; {})",
