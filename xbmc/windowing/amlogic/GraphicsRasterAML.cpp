@@ -478,15 +478,13 @@ bool CGraphicsRasterAML::SetRegime(const SRegime& regime)
     m_cacheEpoch = regime.epoch;
     cold = true;
   }
-  if (regime.peak != m_lutPeak && !m_compositeFailed)
+  if (regime.peak != m_lutPeak)
   {
-    if (!BuildLUTs(regime.peak))
-    {
-      // CreateLUTs keeps the previous LUTs on a failure; without a peak to trust, Composite
-      // draws no composited item
+    // CreateLUTs keeps the previous LUTs on a failure; without a peak to trust, Composite
+    // draws no composited item until a rebuild succeeds (Draw retries per composition)
+    m_compositeFailed = !BuildLUTs(regime.peak);
+    if (m_compositeFailed)
       CLog::Log(LOGERROR, "GPROG composite luts failed at peak {:.4f}", regime.peak);
-      m_compositeFailed = true;
-    }
     cold = true;
   }
   m_regime = regime;
@@ -919,6 +917,8 @@ void CGraphicsRasterAML::Draw(const std::vector<SImage>& images,
 {
   if (!m_ready || !m_regimeSet)
     return;
+  if (m_compositeFailed)
+    m_compositeFailed = !BuildLUTs(m_regime.peak);
   glDisable(GL_SCISSOR_TEST);
   if (m_regime.encoding == GuiEncoding::Composite)
   {
