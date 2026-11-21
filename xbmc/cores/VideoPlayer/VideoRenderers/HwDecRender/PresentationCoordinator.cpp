@@ -156,6 +156,10 @@ bool CPresentationCoordinator::Start()
   Create();
   s_instance = this;
   CLog::Log(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
+  // the gate tooling (gx2d_summ_soc.py) keys its bound cell on this exact form,
+  // never on a box's name
+  CLog::Log(LOGINFO, "P5 SoC family={} validated={}", aml_get_cpufamily_name(),
+            aml_presentation_validated() ? 1 : 0);
   return true;
 }
 
