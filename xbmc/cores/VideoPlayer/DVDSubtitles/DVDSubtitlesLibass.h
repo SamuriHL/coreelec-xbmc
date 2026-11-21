@@ -50,6 +50,12 @@ public:
                          const std::shared_ptr<struct KODI::SUBTITLES::STYLE::style>& subStyle,
                          int* changes = NULL);
 
+  /*!
+  * \brief The lock RenderImage takes (recursive): held across a RenderImage and the read of
+  * the images it returned, which the next RenderImage on any thread invalidates
+  */
+  CCriticalSection& RenderSection() const { return m_section; }
+
   ASS_Event* GetEvents();
 
   /*!
