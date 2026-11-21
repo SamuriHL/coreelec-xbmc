@@ -503,7 +503,8 @@ bool aml_disc_screen_hold();
 //! is checked per frozen pass)
 bool aml_transaction_inbox();
 //! 5.G-1 (docs/phase5_g0_design.md §4.0): mid-play sets take the transaction's path: the real
-//! loss path and fold, unless special://profile/midplaytx_off; latched once with the inbox
+//! loss path and fold, unless special://profile/midplaytx_off; latched once with the inbox.
+//! 5.G-6: default on wherever the transaction is (no opt-in file); midplaytx_off is the exit
 bool aml_midplaytx_on();
 //! 5.E2's test hooks (plan §9), read with the latch; all off by default and unused in E2-1
 struct STransactionHooks

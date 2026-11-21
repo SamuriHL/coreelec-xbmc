@@ -3209,7 +3209,8 @@ void aml_transaction_latch()
             s_transactionSkip.end();
         s_transactionInbox = s_transactionLossBase.load() && !resumeSkipped && !inboxSkipped &&
                              codecSpeedFix;
-        // the real loss path and fold (the loss base includes the transaction and its shadows)
+        // the real loss path and fold (the loss base includes the transaction and its shadows).
+        // 5.G-6: no opt-in: on with them; midplaytx_off is the exit
         const bool midPlayOff = XFILE::CFile::Exists("special://profile/midplaytx_off");
         const bool foldSkipped = std::find(s_transactionSkip.begin(), s_transactionSkip.end(),
                                            "fold") != s_transactionSkip.end();
