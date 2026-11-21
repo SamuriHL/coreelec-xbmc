@@ -10,11 +10,13 @@
 
 #include "filesystem/File.h"
 #include "utils/StringUtils.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "utils/log.h"
 
 #include <algorithm>
 
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -38,6 +40,8 @@ SReleased s_last;
 SFloor s_floor;
 std::function<void()> s_wake;
 std::atomic<uint64_t> s_processed{0};
+SSide s_gSide;
+uint64_t s_mainSide = 0;
 
 bool Exists(const char* file)
 {
@@ -89,6 +93,14 @@ void SetRoute(bool on, const char* why)
       s_session++;
       if (!on)
         s_queued.clear();
+      else
+      {
+        // B1: RM's overlay serial restarts with each player, so a floor or a processed serial
+        // is its session's only (the gen moves on: G compares it, never the value)
+        s_floor.floor = 0;
+        s_floor.gen++;
+        s_processed.store(0, std::memory_order_relaxed);
+      }
     }
     const std::string state =
         StringUtils::Format("{} ({})", on ? "on" : "off", on ? why : (s_endedWhy ? s_endedWhy : why));
@@ -105,14 +117,29 @@ void SetRoute(bool on, const char* why)
 
 bool RouteOn()
 {
+  if (!Requested())
+    return false;
   std::unique_lock lock(s_mutex);
   return s_on;
 }
 
 uint64_t RouteSession()
 {
+  if (!Requested())
+    return 0;
   std::unique_lock lock(s_mutex);
   return s_session;
+}
+
+void RouteState(bool& on, uint64_t& session)
+{
+  on = false;
+  session = 0;
+  if (!Requested())
+    return;
+  std::unique_lock lock(s_mutex);
+  on = s_on;
+  session = s_session;
 }
 
 void EndRoute(const char* why)
@@ -120,12 +147,14 @@ void EndRoute(const char* why)
   if (!Requested())
     return;
   bool log = false;
+  bool handBack = false;
   {
     std::unique_lock lock(s_mutex);
     if (!s_endedWhy)
       s_endedWhy = why;
     if (s_on)
     {
+      handBack = std::strcmp(why, "stereo") == 0;
       s_on = false;
       s_session++;
       s_queued.clear();
@@ -139,6 +168,9 @@ void EndRoute(const char* why)
   }
   if (log)
     CLog::Log(LOGWARNING, "GTICK off ({})", why);
+  // impl note §6 item 14: the class at the stereo hand-back, whichever thread ends the route
+  if (handBack)
+    DISPLAYSTATE::RequestRegimeRepublish("stereo hand-back");
   Wake();
 }
 
@@ -177,7 +209,8 @@ void PostFloor(uint64_t floor, const char* why)
 {
   {
     std::unique_lock lock(s_mutex);
-    if (!s_on)
+    // M-1: a floor that has not moved (main's late repeat of P's) clears nothing new
+    if (!s_on || floor <= s_floor.floor)
       return;
     s_floor.floor = std::max(s_floor.floor, floor);
     s_floor.gen++;
@@ -219,6 +252,43 @@ void Take(SInbox& inbox)
   inbox.floor = s_floor;
   inbox.session = s_session;
   inbox.on = s_on;
+}
+
+void NoteGSide(uint64_t session, bool on)
+{
+  {
+    std::unique_lock lock(s_mutex);
+    s_gSide = {session, on};
+  }
+}
+
+SSide GSide()
+{
+  std::unique_lock lock(s_mutex);
+  return s_gSide;
+}
+
+void NoteMainSide(uint64_t session)
+{
+  bool changed;
+  {
+    std::unique_lock lock(s_mutex);
+    changed = s_mainSide != session;
+    s_mainSide = session;
+  }
+  if (changed)
+    Wake();
+}
+
+uint64_t MainSide()
+{
+  std::unique_lock lock(s_mutex);
+  return s_mainSide;
+}
+
+void Kick()
+{
+  Wake();
 }
 
 void NoteProcessed(uint64_t serial)

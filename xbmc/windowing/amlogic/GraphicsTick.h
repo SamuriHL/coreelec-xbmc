@@ -80,6 +80,8 @@ struct SFloor
 //! on a change only. A no-op without graphicstick_on
 void SetRoute(bool on, const char* why);
 bool RouteOn();
+//! both under one lock
+void RouteState(bool& on, uint64_t& session);
 //! moves at each on and each off: G starts and ends its route on a change
 uint64_t RouteSession();
 //! G (programs, plane refused) or V (a DVD's SPU): the route cannot go on; RM's next configure
@@ -109,6 +111,23 @@ struct SInbox
 //! G: wake is called (from any thread) after every post
 void SetWake(std::function<void()> wake);
 void Take(SInbox& inbox);
+//! the side that renders the timed libass overlays (review rA M1): libass frees a render's
+//! images at the next render on any thread, so main renders them only once G has left the route
+//! (GSide off), and G only once main has stopped (MainSide == G's session)
+struct SSide
+{
+  uint64_t session = 0;
+  bool on = false;
+};
+//! G: the route session it now draws for, or has left
+void NoteGSide(uint64_t session, bool on);
+SSide GSide();
+//! main: from this route session on it renders no timed overlay
+void NoteMainSide(uint64_t session);
+uint64_t MainSide();
+//! wakes G (C: buffers back or picked; main: its side noted)
+void Kick();
+
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing
 void NoteProcessed(uint64_t serial);
 uint64_t Processed();
