@@ -514,15 +514,31 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   OUTPUT::NoteCoordinatorStarted(m_coordinator != nullptr);
   KeepBootSlot(m_coordinator != nullptr);
 
-  const int graphicsPlane =
+  // 5.G2 GT-1 (D-G2-4, user ruling Q2 2026-11-21): the plane is on by default
+  // where the presentation work is validated, since 5.G2 draws on it; elsewhere
+  // it stays off as before. An explicit advancedsettings.xml value always wins
+  // (graphicsplane 0 is the exit).
+  const int configuredPlane =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoGraphicsPlane;
+  const bool planeFromFile = configuredPlane >= 0;
+  const int graphicsPlane =
+      planeFromFile ? configuredPlane : (aml_presentation_validated() ? 1 : 0);
+  CLog::Log(LOGINFO, "GPLANE graphicsplane={} ({})", graphicsPlane,
+            planeFromFile ? "advancedsettings" : "default");
+  if (graphicsPlane > 0 && !m_coordinator)
+    // G commits through C; without it the HDR graphics stay on main's route B
+    CLog::Log(LOGINFO, "GPLANE off (no coordinator)");
   if (m_coordinator && graphicsPlane > 0)
   {
     m_graphicsPlane = std::make_unique<CGraphicsPlaneAML>(
         GetEGLDisplay(), m_amlGBMUtils->GetDevice(), m_amlDisplay->aml_get_Device_handle(),
         m_amlDisplay.get(), m_coordinator.get(), graphicsPlane == 2);
     if (!m_graphicsPlane->Start())
+    {
+      // Start() refuses only when the GUI's CRTC has no overlay plane
+      CLog::Log(LOGINFO, "GPLANE off (no overlay plane)");
       m_graphicsPlane.reset();
+    }
   }
 
   WIRECLASS::CWireClassProbe::Get().Start();
