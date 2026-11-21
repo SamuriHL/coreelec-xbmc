@@ -134,15 +134,25 @@ public:
   //! 1/4096 plane pixel: well inside a 1080p plane's float precision
   static constexpr float ALIGN_EPS = 1.0f / 4096.0f;
 
-  // gselftest only (GraphicsSelfTestAML.cpp): "GSELFTEST case= regime= maxdiff= alpha= PASS|FAIL"
-  //! the 40-case pass-1 set and the plane set (Srgb/Scalar/Composite x 1:1 and 2x x PGS/menu
-  //! image/ASS glyph); leaves the cache empty and the regime unset
+  // gselftest only (GraphicsSelfTestAML.cpp): "GSELFTEST case= regime= maxdiff= alpha= <verdict>"
+  //! SKIP_ENCODE: the composite's encoded output, which has no exact reference
+  enum class ECheck
+  {
+    PASS,
+    SKIP_ENCODE,
+    SKIP,
+    FAIL,
+  };
+  //! the 40-case pass-1 set and the plane set; leaves the cache empty and the regime unset
   void SelfTest();
-  //! the composition just drawn into the check target by DrawCheck, against the CPU reference
-  bool CheckComposition(const std::string& name,
-                        const std::vector<std::shared_ptr<CDVDOverlay>>& images,
-                        const std::vector<SImage>& placed,
-                        const std::vector<SGlyphs>& glyphs);
+  //! the composition just drawn by DrawCheck against the CPU reference built with the expected
+  //! encodes (one per image, and the glyphs'), never with the renderer's own rule
+  ECheck CheckComposition(const std::string& name,
+                          const std::vector<std::shared_ptr<CDVDOverlay>>& images,
+                          const std::vector<SImage>& placed,
+                          const std::vector<SEncode>& expected,
+                          const std::vector<SGlyphs>& glyphs,
+                          const SEncode& glyphExpected);
   //! Draw into the check target (cleared first); 0 when it cannot be made
   GLuint DrawCheck(const std::vector<SImage>& images, const std::vector<SGlyphs>& glyphs);
 
@@ -171,15 +181,20 @@ private:
   void ClearCache();
 
   // gselftest
-  //! pass 1 against the CPU reference, read back; one GSELFTEST line
-  bool CheckPass1(const CDVDOverlayImage& o, const SEncode& e, const std::string& name);
+  //! pass 1 with EncodeFor's encode against the CPU reference with the expected one
+  ECheck CheckPass1(const CDVDOverlayImage& o, const SEncode& expected, const std::string& name);
   //! a layer of the target (or the pre-encode buffer) against the CPU reference
-  bool CheckLayer(const std::string& name,
-                  const char* layer,
-                  GLuint fbo,
-                  const std::vector<const CDVDOverlayImage*>& images,
-                  const std::vector<SImage>& placed,
-                  const std::vector<SGlyphs>& glyphs);
+  ECheck CheckLayer(const std::string& name,
+                    const char* layer,
+                    GLuint fbo,
+                    const std::vector<const CDVDOverlayImage*>& images,
+                    const std::vector<SImage>& placed,
+                    const std::vector<SEncode>& expected,
+                    const std::vector<SGlyphs>& glyphs,
+                    const SEncode& glyphExpected);
+  //! coarse check of the composite's output: every pixel of rect within 2 codes of code
+  ECheck CheckEncoded(const std::string& name, const CRect& rect, int code);
+  void Count(ECheck verdict);
   void SelfTestPlane(int& total);
   bool EnsureCheckTarget();
 
@@ -226,4 +241,6 @@ private:
   GLuint m_checkFbo = 0;
   GLuint m_checkTexture = 0;
   int m_selfTestFailed = 0;
+  int m_selfTestSkipped = 0; //!< SKIPs other than SKIP_ENCODE: a synthetic one fails the summary
+  int m_selfTestEncodeSkips = 0;
 };

@@ -777,7 +777,17 @@ void CGraphicsPlaneAML::ShadowDraw()
             placed.size(), m_raster->Misses(), m_raster->ExpandedTexels(), cold ? 1 : 0,
             (expanded - start) / 1000, (end - expanded) / 1000, (end - start) / 1000);
   if (target && comp % static_cast<unsigned int>(m_selfTestEvery) == 0)
-    m_raster->CheckComposition("real/" + std::to_string(comp), images, placed, {});
+  {
+    // against route C's own bytes for the same composition (raw, main's limited), not the
+    // renderer's rule: a regime whose class or limited differs from what main applies fails
+    // as why=encode_rule(...)
+    CGraphicsRasterAML::SEncode routeC;
+    routeC.limited = m_shown.limited;
+    routeC.peak = regime.peak;
+    const std::vector<CGraphicsRasterAML::SEncode> expected(images.size(), routeC);
+    m_raster->CheckComposition("real/" + std::to_string(comp), images, placed, expected, {},
+                               CGraphicsRasterAML::SEncode());
+  }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(0, 0, WIDTH, HEIGHT);
 }

@@ -14,7 +14,11 @@
 //   glyph (SRC_ALPHA, ONE_MINUS_SRC_ALPHA; alpha ONE, ONE_MINUS_SRC_ALPHA), k = a * t / 65025:
 //     colour out = round(c * k + d * (1 - k)), alpha out = round(255 * k + d * (1 - k))
 // A placement scaled by a whole factor is sampled bilinearly at the plane pixel centres, which
-// at 2x are the exact weights 1/4 and 3/4. The GPU works in float: the rule allows one code.
+// at 2x are the exact weights 1/4 and 3/4. The reference takes each case's expected encode,
+// written out from the design, never the renderer's rule. Where the GPU's maths is exact
+// (palette, ARGB without the sRGB conversion, 1:1 over a cleared target) the tolerance is 0;
+// the float steps (the conversion's pow, bilinear weights, glyph coverage, a blend over a
+// non-zero destination) get one code.
 
 #include "GraphicsRasterAML.h"
 
@@ -277,6 +281,52 @@ CRect PlaceAt(const CGraphicsRasterAML::STexture& t, const CDVDOverlayImage& o, 
     return CRect(x, y, x + o.width * s, y + o.height * s);
   return CRect(x + t.crop.x1 * s, y + t.crop.y1 * s, x + t.crop.x2 * s, y + t.crop.y2 * s);
 }
+
+//! the fields where the renderer's encode differs from the expected one ("" when equal)
+std::string EncodeDiff(const SEncode& expected, const SEncode& got)
+{
+  std::string fields;
+  const auto add = [&fields](const char* field)
+  { fields += (fields.empty() ? "" : ",") + std::string(field); };
+  if (expected.toSrgb != got.toSrgb)
+    add("toSrgb");
+  if (expected.limited != got.limited)
+    add("limited");
+  if (expected.scalar != got.scalar)
+    add("scalar");
+  if (expected.scalar && got.scalar && expected.peak != got.peak)
+    add("peak");
+  if (expected.composited != got.composited)
+    add("composited");
+  return fields;
+}
+
+const char* VerdictName(CGraphicsRasterAML::ECheck verdict)
+{
+  switch (verdict)
+  {
+    case CGraphicsRasterAML::ECheck::PASS:
+      return "PASS";
+    case CGraphicsRasterAML::ECheck::SKIP_ENCODE:
+    case CGraphicsRasterAML::ECheck::SKIP:
+      return "SKIP";
+    case CGraphicsRasterAML::ECheck::FAIL:
+      return "FAIL";
+  }
+  return "FAIL";
+}
+
+CGraphicsRasterAML::ECheck Worst(CGraphicsRasterAML::ECheck a, CGraphicsRasterAML::ECheck b)
+{
+  return static_cast<int>(a) > static_cast<int>(b) ? a : b;
+}
+
+// the expected encodes, written out from design §10.2 item 6 (toSrgb, limited, scalar, peak,
+// composited), so that a wrong EncodeFor/GlyphEncodeFor fails instead of reaching both sides
+constexpr SEncode Enc(bool toSrgb, bool limited, bool scalar, float peak, bool composited)
+{
+  return SEncode{toSrgb, limited, scalar, peak, composited};
+}
 } // namespace
 
 bool CGraphicsRasterAML::EnsureCheckTarget()
@@ -318,21 +368,34 @@ GLuint CGraphicsRasterAML::DrawCheck(const std::vector<SImage>& images,
   return m_checkFbo;
 }
 
-bool CGraphicsRasterAML::CheckPass1(const CDVDOverlayImage& o,
-                                    const SEncode& e,
-                                    const std::string& name)
+
+void CGraphicsRasterAML::Count(ECheck verdict)
 {
+  if (verdict == ECheck::FAIL)
+    m_selfTestFailed++;
+  else if (verdict == ECheck::SKIP)
+    m_selfTestSkipped++;
+  else if (verdict == ECheck::SKIP_ENCODE)
+    m_selfTestEncodeSkips++;
+}
+
+CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckPass1(const CDVDOverlayImage& o,
+                                                          const SEncode& expected,
+                                                          const std::string& name)
+{
+  const SEncode rule = EncodeFor(o, m_regime);
+  const std::string differs = EncodeDiff(expected, rule);
   int width = 0;
   int height = 0;
   CRect crop;
   std::vector<uint8_t> want;
-  CpuTexels(o, e, width, height, crop, want);
+  CpuTexels(o, expected, width, height, crop, want);
   STexture gpu;
-  if (!Pass1(o, e, gpu))
+  if (!Pass1(o, rule, gpu))
   {
     CLog::Log(LOGINFO, "GSELFTEST case={} regime={} maxdiff=- alpha=- FAIL why=no_pass1", name,
               RegimeName(m_regime));
-    return false;
+    return ECheck::FAIL;
   }
   std::vector<uint8_t> got(static_cast<size_t>(gpu.width) * gpu.height * 4);
   glBindFramebuffer(GL_FRAMEBUFFER, m_convFbo);
@@ -343,7 +406,8 @@ bool CGraphicsRasterAML::CheckPass1(const CDVDOverlayImage& o,
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glDeleteTextures(1, &gpu.texture);
 
-  // a texel's row in the read-back is its row in the image: pass 1 draws row y at GL y
+  // a texel's row in the read-back is its row in the image: pass 1 draws row y at GL y.
+  // Every byte counts, colour where alpha is 0 too: premultiplied, it must be 0 there
   const bool sameBox = gpu.width == width && gpu.height == height && gpu.crop == crop &&
                        got.size() == want.size();
   int maxDelta = 0;
@@ -357,27 +421,37 @@ bool CGraphicsRasterAML::CheckPass1(const CDVDOverlayImage& o,
     diffBytes++;
     if (i % 4 == 3)
       maxAlpha = std::max(maxAlpha, delta);
-    else if (want[i / 4 * 4 + 3] > 0)
+    else
       maxDelta = std::max(maxDelta, delta);
   }
-  const bool pass = sameBox && maxDelta <= 1 && maxAlpha <= 1;
-  CLog::Log(LOGINFO, "GSELFTEST case={} regime={} maxdiff={} alpha={} {} box={} px={} diff_bytes={}",
-            name, RegimeName(m_regime), maxDelta, maxAlpha, pass ? "PASS" : "FAIL",
-            sameBox ? "same" : "DIFFERS", static_cast<int64_t>(width) * height, diffBytes);
-  return pass;
+  // only the shader's ConvertPQPaletteToSRGB differs from the CPU's in float ULPs; every other
+  // step is integer maths in fp32 and a palette image is a lookup: exact
+  const int tol = o.palette.empty() && expected.toSrgb ? 1 : 0;
+  const bool pass = differs.empty() && sameBox && maxDelta <= tol && maxAlpha <= tol;
+  CLog::Log(LOGINFO,
+            "GSELFTEST case={} regime={} maxdiff={} alpha={} {} tol={} why={} box={} px={} "
+            "diff_bytes={}",
+            name, RegimeName(m_regime), maxDelta, maxAlpha, pass ? "PASS" : "FAIL", tol,
+            differs.empty() ? "-" : "encode_rule(" + differs + ")", sameBox ? "same" : "DIFFERS",
+            static_cast<int64_t>(width) * height, diffBytes);
+  return pass ? ECheck::PASS : ECheck::FAIL;
 }
 
-bool CGraphicsRasterAML::CheckLayer(const std::string& name,
-                                    const char* layer,
-                                    GLuint fbo,
-                                    const std::vector<const CDVDOverlayImage*>& images,
-                                    const std::vector<SImage>& placed,
-                                    const std::vector<SGlyphs>& glyphs)
+CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckLayer(
+    const std::string& name,
+    const char* layer,
+    GLuint fbo,
+    const std::vector<const CDVDOverlayImage*>& images,
+    const std::vector<SImage>& placed,
+    const std::vector<SEncode>& expected,
+    const std::vector<SGlyphs>& glyphs,
+    const SEncode& glyphExpected)
 {
   const bool composited = std::strcmp(layer, "fbo") == 0;
-  const bool composite = m_regime.encoding == GuiEncoding::Composite;
   std::vector<uint8_t> ref(static_cast<size_t>(m_width) * m_height * 4, 0);
-  const char* why = nullptr;
+  std::string fail; //!< a defect the bytes cannot show: the encode rule, a different box
+  const char* skip = nullptr; //!< no exact reference
+  int tol = 0;
   std::string placements;
   const auto note = [&placements](int scale)
   {
@@ -385,20 +459,30 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
     if (placements.find(p) == std::string::npos)
       placements += (placements.empty() ? "" : ",") + p;
   };
+  const auto addFail = [&fail](const std::string& why)
+  {
+    if (fail.find(why) == std::string::npos)
+      fail += (fail.empty() ? "" : ",") + why;
+  };
 
-  for (size_t n = 0; n < placed.size() && n < images.size(); n++)
+  for (size_t n = 0; n < placed.size() && n < images.size() && n < expected.size(); n++)
   {
     const STexture* t = placed[n].texture;
-    if (!t || !t->texture || t->encode.composited != composited || placed[n].rect.IsEmpty())
+    if (!t || !t->texture || placed[n].rect.IsEmpty())
+      continue;
+    const std::string differs = EncodeDiff(expected[n], t->encode);
+    if (!differs.empty())
+      addFail("encode_rule(" + differs + ")");
+    if (expected[n].composited != composited)
       continue;
     int width = 0;
     int height = 0;
     CRect crop;
     std::vector<uint8_t> rgba;
-    CpuTexels(*images[n], t->encode, width, height, crop, rgba);
+    CpuTexels(*images[n], expected[n], width, height, crop, rgba);
     if (width != t->width || height != t->height || !(crop == t->crop))
     {
-      why = "box";
+      addFail("box");
       continue;
     }
     int s = 0;
@@ -406,10 +490,13 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
     int y0 = 0;
     if (!WholeScale(placed[n].rect, width, height, s, x0, y0))
     {
-      why = "scaled";
+      skip = "scaled";
       continue;
     }
     note(s);
+    // bilinear weights, and the shader's float conversion, are not exact integer maths
+    if (s > 1 || (images[n]->palette.empty() && expected[n].toSrgb))
+      tol = 1;
     for (int j = 0; j < height * s; j++)
     {
       const int py = y0 + j;
@@ -425,16 +512,23 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
           src[c] = s == 1 ? rgba[(static_cast<size_t>(j) * width + i) * 4 + c]
                           : Sample(rgba.data(), width, height, 4, c, (i + 0.5) / s, (j + 0.5) / s);
         uint8_t* d = &ref[(static_cast<size_t>(py) * m_width + px) * 4];
+        // over a non-zero destination the GPU blends in float: no exact integer form
+        if ((d[0] | d[1] | d[2] | d[3]) && src[3] > 0.0 && src[3] < 255.0)
+          tol = 1;
         for (int c = 0; c < 4; c++)
           d[c] = Round8(src[c] + d[c] * (255.0 - src[3]) / 255.0);
       }
     }
   }
 
-  // glyphs: in the pre-encode buffer in Composite, on the plane otherwise
-  if (composited == composite)
+  if (!glyphs.empty())
   {
-    const SEncode e = GlyphEncodeFor(m_regime);
+    const std::string differs = EncodeDiff(glyphExpected, GlyphEncodeFor(m_regime));
+    if (!differs.empty())
+      addFail("glyph_encode_rule(" + differs + ")");
+  }
+  if (glyphExpected.composited == composited)
+  {
     for (const SGlyphs& item : glyphs)
     {
       const OVERLAY::SQuads* quads = item.quads.get();
@@ -446,20 +540,22 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
       if (!WholeScale(item.view, static_cast<int>(std::lround(item.frameWidth)),
                       static_cast<int>(std::lround(item.frameHeight)), s, ox, oy))
       {
-        why = "glyphs_scaled";
+        skip = "glyphs_scaled";
         continue;
       }
       note(s);
+      // vertex colour x coverage in float: no exact integer form
+      tol = 1;
       for (const OVERLAY::SQuad& q : quads->quad)
       {
         double colour[3] = {static_cast<double>(q.r), static_cast<double>(q.g),
                             static_cast<double>(q.b)};
         for (double& c : colour)
         {
-          if (e.limited)
+          if (glyphExpected.limited)
             c = c * 219.0 / 255.0 + 16.0;
-          if (e.scalar)
-            c *= static_cast<double>(e.peak);
+          if (glyphExpected.scalar)
+            c *= static_cast<double>(glyphExpected.peak);
         }
         for (int j = 0; j < q.h * s; j++)
         {
@@ -500,6 +596,7 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
   int maxDelta = 0;
   int maxAlpha = 0;
   int64_t diffPx = 0;
+  int64_t diffBytes = 0;
   int64_t drawnPx = 0;
   int64_t gotPx = 0;
   std::string first = "-";
@@ -517,6 +614,7 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
         if (!delta)
           continue;
         differs = true;
+        diffBytes++;
         if (c == 3)
           maxAlpha = std::max(maxAlpha, delta);
         else
@@ -528,56 +626,115 @@ bool CGraphicsRasterAML::CheckLayer(const std::string& name,
                                     have[3]);
     }
 
-  const char* verdict = "PASS";
+  ECheck verdict = ECheck::PASS;
+  std::string why = "-";
   if (error != GL_NO_ERROR)
   {
-    verdict = "FAIL";
+    verdict = ECheck::FAIL;
     why = "gl_error";
   }
-  else if (why)
-    verdict = "SKIP";
+  else if (!fail.empty())
+  {
+    verdict = ECheck::FAIL;
+    why = fail;
+  }
+  else if (skip)
+  {
+    verdict = ECheck::SKIP;
+    why = skip;
+  }
   else if (!drawnPx || !gotPx)
   {
-    verdict = "FAIL";
+    verdict = ECheck::FAIL;
     why = "empty";
   }
-  else if (maxDelta > 1 || maxAlpha > 1)
-    verdict = "FAIL";
+  else if (maxDelta > tol || maxAlpha > tol)
+    verdict = ECheck::FAIL;
   CLog::Log(LOGINFO,
-            "GSELFTEST case={} regime={} maxdiff={} alpha={} {} why={} layer={} placement={} "
-            "drawn_px={} got_px={} diff_px={} first={}",
-            name, RegimeName(m_regime), maxDelta, maxAlpha, verdict, why ? why : "-", layer,
-            placements.empty() ? "-" : placements, drawnPx, gotPx, diffPx, first);
-  return std::strcmp(verdict, "FAIL") != 0;
+            "GSELFTEST case={} regime={} maxdiff={} alpha={} {} tol={} why={} layer={} "
+            "placement={} drawn_px={} got_px={} diff_px={} diff_bytes={} first={}",
+            name, RegimeName(m_regime), maxDelta, maxAlpha, VerdictName(verdict), tol, why, layer,
+            placements.empty() ? "-" : placements, drawnPx, gotPx, diffPx, diffBytes, first);
+  return verdict;
 }
 
-bool CGraphicsRasterAML::CheckComposition(const std::string& name,
-                                          const std::vector<std::shared_ptr<CDVDOverlay>>& images,
-                                          const std::vector<SImage>& placed,
-                                          const std::vector<SGlyphs>& glyphs)
+CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckEncoded(const std::string& name,
+                                                            const CRect& rect,
+                                                            int code)
+{
+  const int x0 = static_cast<int>(rect.x1);
+  const int y0 = static_cast<int>(rect.y1);
+  const int w = static_cast<int>(rect.Width());
+  const int h = static_cast<int>(rect.Height());
+  std::vector<uint8_t> got(static_cast<size_t>(w) * h * 4);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_checkFbo);
+  while (glGetError() != GL_NO_ERROR)
+  {
+  }
+  glPixelStorei(GL_PACK_ALIGNMENT, 4);
+  // GL rows run up: plane row y0 is GL row m_height - 1 - y0
+  glReadPixels(x0, m_height - y0 - h, w, h, GL_RGBA, GL_UNSIGNED_BYTE, got.data());
+  const GLenum error = glGetError();
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  int maxDelta = 0;
+  int maxAlpha = 0;
+  for (size_t i = 0; i < got.size(); i += 4)
+  {
+    for (size_t c = 0; c < 3; c++)
+      maxDelta = std::max(maxDelta, std::abs(static_cast<int>(got[i + c]) - code));
+    maxAlpha = std::max(maxAlpha, 255 - static_cast<int>(got[i + 3]));
+  }
+  const bool pass = error == GL_NO_ERROR && !got.empty() && maxDelta <= 2 && maxAlpha == 0;
+  CLog::Log(LOGINFO,
+            "GSELFTEST case={} regime={} maxdiff={} alpha={} {} tol=2 why={} layer=plane "
+            "coarse=1 expect={} first={},{},{},{}",
+            name, RegimeName(m_regime), maxDelta, maxAlpha, pass ? "PASS" : "FAIL",
+            error != GL_NO_ERROR ? "gl_error" : "-", code, got.empty() ? 0 : got[0],
+            got.empty() ? 0 : got[1], got.empty() ? 0 : got[2], got.empty() ? 0 : got[3]);
+  return pass ? ECheck::PASS : ECheck::FAIL;
+}
+
+CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckComposition(
+    const std::string& name,
+    const std::vector<std::shared_ptr<CDVDOverlay>>& images,
+    const std::vector<SImage>& placed,
+    const std::vector<SEncode>& expected,
+    const std::vector<SGlyphs>& glyphs,
+    const SEncode& glyphExpected)
 {
   std::vector<const CDVDOverlayImage*> raw;
   raw.reserve(images.size());
   for (const auto& image : images)
     raw.push_back(static_cast<const CDVDOverlayImage*>(image.get()));
   const bool srgbItems =
-      !glyphs.empty() || std::any_of(placed.begin(), placed.end(), [](const SImage& image)
-                                     { return image.texture && image.texture->encode.composited; });
+      (!glyphs.empty() && glyphExpected.composited) ||
+      std::any_of(expected.begin(), expected.end(), [](const SEncode& e) { return e.composited; });
+  if (srgbItems && m_compositeFailed)
+  {
+    // the pre-encode buffer is not drawn then: it holds an older composition
+    CLog::Log(LOGINFO,
+              "GSELFTEST case={} regime={} maxdiff=- alpha=- FAIL why=composite_unavailable",
+              name, RegimeName(m_regime));
+    return ECheck::FAIL;
+  }
   if (m_regime.encoding == GuiEncoding::Composite && srgbItems)
   {
     // the encoded output has no exact CPU reference: the buffer the composite pass reads is
     // checked, and the PQ images over the output only when there are none
-    bool pass = CheckLayer(name, "fbo", m_preFbo, raw, placed, glyphs);
-    const bool pq = std::any_of(placed.begin(), placed.end(), [](const SImage& image)
-                                { return image.texture && !image.texture->encode.composited; });
+    ECheck verdict = CheckLayer(name, "fbo", m_preFbo, raw, placed, expected, glyphs, glyphExpected);
+    const bool pq = std::any_of(expected.begin(), expected.end(),
+                                [](const SEncode& e) { return !e.composited; });
     if (pq)
+    {
       CLog::Log(LOGINFO,
                 "GSELFTEST case={} regime={} maxdiff=- alpha=- SKIP why=composite_encode "
                 "layer=plane",
                 name, RegimeName(m_regime));
-    return pass;
+      verdict = Worst(verdict, ECheck::SKIP_ENCODE);
+    }
+    return verdict;
   }
-  return CheckLayer(name, "plane", m_checkFbo, raw, placed, glyphs);
+  return CheckLayer(name, "plane", m_checkFbo, raw, placed, expected, glyphs, glyphExpected);
 }
 
 void CGraphicsRasterAML::SelfTestPlane(int& total)
@@ -586,33 +743,72 @@ void CGraphicsRasterAML::SelfTestPlane(int& total)
   pgs->m_isHDROverlay = true;
   auto menu = MakeArgb();
   menu->m_isHDROverlay = true;
+  // an opaque sRGB-authored white box: the composite's encoded output is known for it
+  auto white = std::make_shared<CDVDOverlayImage>();
+  white->width = 64;
+  white->height = 64;
+  white->linesize = 64 * 4;
+  white->pixels.assign(static_cast<size_t>(white->linesize) * white->height, 0xff);
   // a 1080p frame at 1:1, and a 720x480 frame at 2x (an SD video's libass frame)
   const auto glyphs1 = MakeGlyphs(1920, 600, 700);
   const auto glyphs2 = MakeGlyphs(720, 40, 300);
 
-  struct SRegimeCase
+  struct SPlaneRegime
   {
     GuiEncoding encoding;
+    bool limited;
     float peak;
+    SEncode pq; //!< a PQ-authored image's expected encode
+    SEncode srgb; //!< an sRGB-authored image's
+    SEncode glyph;
   };
-  const SRegimeCase regimes[] = {
-      {GuiEncoding::Srgb, 1.0f}, {GuiEncoding::Scalar, 0.58f}, {GuiEncoding::Composite, 0.58f}};
+  const SPlaneRegime regimes[] = {
+      {GuiEncoding::Srgb, false, 1.0f, Enc(true, false, false, 1.0f, false),
+       Enc(false, false, false, 1.0f, false), Enc(false, false, false, 1.0f, false)},
+      {GuiEncoding::Srgb, true, 1.0f, Enc(true, true, false, 1.0f, false),
+       Enc(false, true, false, 1.0f, false), Enc(false, true, false, 1.0f, false)},
+      {GuiEncoding::Scalar, false, 0.58f, Enc(true, false, true, 0.58f, false),
+       Enc(false, false, true, 0.58f, false), Enc(false, false, true, 0.58f, false)},
+      {GuiEncoding::Composite, false, 0.58f, Enc(false, false, false, 0.58f, false),
+       Enc(false, false, false, 0.58f, true), Enc(false, false, false, 0.58f, true)},
+      {GuiEncoding::Composite, true, 0.58f, Enc(false, true, false, 0.58f, false),
+       Enc(false, false, false, 0.58f, true), Enc(false, false, false, 0.58f, true)},
+  };
   uint64_t epoch = SELFTEST_EPOCH + 0x1000;
-  for (const SRegimeCase& rc : regimes)
+  for (const SPlaneRegime& rc : regimes)
   {
     SRegime regime;
     regime.epoch = ++epoch;
     regime.encoding = rc.encoding;
+    regime.limited = rc.limited;
     regime.peak = rc.peak;
     SetRegime(regime);
+    const char* kinds[] = {"pgs", "menu", "ass", "over", "white"};
     for (const int scale : {1, 2})
     {
-      const std::string placement = scale == 1 ? "1to1" : "2x";
-      for (const char* kind : {"pgs", "menu", "ass"})
+      for (const char* kind : kinds)
       {
+        const bool isOver = std::strcmp(kind, "over") == 0;
+        const bool isWhite = std::strcmp(kind, "white") == 0;
+        // blending over a drawn image and the encoded white: 1:1 only; white in Composite only
+        if ((isOver || isWhite) && scale != 1)
+          continue;
+        if (isWhite && rc.encoding != GuiEncoding::Composite)
+          continue;
         std::vector<std::shared_ptr<CDVDOverlay>> images;
         std::vector<SImage> placed;
+        std::vector<SEncode> expected;
         std::vector<SGlyphs> glyphs;
+        const auto add = [&](const std::shared_ptr<CDVDOverlayImage>& o, int x, int y,
+                             const SEncode& e)
+        {
+          const STexture* t = Expand(o);
+          if (!t)
+            return;
+          images.push_back(o);
+          placed.push_back({t, PlaceAt(*t, *o, x, y, scale)});
+          expected.push_back(e);
+        };
         if (std::strcmp(kind, "ass") == 0)
         {
           SGlyphs g;
@@ -623,19 +819,21 @@ void CGraphicsRasterAML::SelfTestPlane(int& total)
           if (g.quads)
             glyphs.push_back(g);
         }
-        else
+        else if (isOver)
         {
-          const auto& o = std::strcmp(kind, "pgs") == 0 ? pgs : menu;
-          const STexture* t = Expand(o);
-          if (t)
-          {
-            images.push_back(o);
-            placed.push_back({t, PlaceAt(*t, *o, scale == 1 ? 801 : 200, scale == 1 ? 403 : 100,
-                                         scale)});
-          }
+          // the PGS lands on the drawn menu image, half of it on its alpha ramps
+          add(menu, 801, 403, rc.pq);
+          add(pgs, 900, 450, rc.pq);
         }
+        else if (isWhite)
+          add(white, 100, 100, rc.srgb);
+        else if (std::strcmp(kind, "pgs") == 0)
+          add(pgs, scale == 1 ? 801 : 200, scale == 1 ? 403 : 100, rc.pq);
+        else
+          add(menu, scale == 1 ? 801 : 200, scale == 1 ? 403 : 100, rc.pq);
         total++;
-        const std::string name = "plane/" + std::string(kind) + "/" + placement;
+        const std::string name =
+            "plane/" + std::string(kind) + "/" + (scale == 1 ? "1to1" : "2x");
         if (images.empty() && glyphs.empty())
         {
           CLog::Log(LOGINFO, "GSELFTEST case={} regime={} maxdiff=- alpha=- FAIL why=no_content",
@@ -643,8 +841,21 @@ void CGraphicsRasterAML::SelfTestPlane(int& total)
           m_selfTestFailed++;
           continue;
         }
-        if (!DrawCheck(placed, glyphs) || !CheckComposition(name, images, placed, glyphs))
+        if (!DrawCheck(placed, glyphs))
+        {
           m_selfTestFailed++;
+          continue;
+        }
+        Count(CheckComposition(name, images, placed, expected, glyphs, rc.glyph));
+        if (isWhite)
+        {
+          // white is linear 1.0, which the PQ LUT maps to the GUI peak's code
+          total++;
+          const double code = rc.limited ? static_cast<double>(rc.peak) * 219.0 + 16.0
+                                         : static_cast<double>(rc.peak) * 255.0;
+          Count(CheckEncoded(name + "/encoded", placed.front().rect,
+                             static_cast<int>(std::lround(code))));
+        }
         Retain({}, {});
       }
     }
@@ -657,6 +868,8 @@ void CGraphicsRasterAML::SelfTest()
     return;
   const auto start = std::chrono::steady_clock::now();
   m_selfTestFailed = 0;
+  m_selfTestSkipped = 0;
+  m_selfTestEncodeSkips = 0;
   int total = 0;
 
   auto argb = MakeArgb();
@@ -665,44 +878,61 @@ void CGraphicsRasterAML::SelfTest()
   {
     GuiEncoding encoding;
     float peak;
+    bool pq;
+    bool limited;
+    SEncode expect;
   };
-  // Composite's peak is the composite pass's, never pass 1's: its two cases show none leaks in
-  const SCase cases[] = {{GuiEncoding::Srgb, 1.0f},
-                         {GuiEncoding::Scalar, 0.58f},
-                         {GuiEncoding::Scalar, 1.0f},
-                         {GuiEncoding::Composite, 1.0f},
-                         {GuiEncoding::Composite, 0.58f}};
+  // Composite's peak is the composite pass's, never pass 1's: its two peaks must give one encode
+  const SCase cases[] = {
+      {GuiEncoding::Srgb, 1.0f, true, false, Enc(true, false, false, 1.0f, false)},
+      {GuiEncoding::Srgb, 1.0f, true, true, Enc(true, true, false, 1.0f, false)},
+      {GuiEncoding::Srgb, 1.0f, false, false, Enc(false, false, false, 1.0f, false)},
+      {GuiEncoding::Srgb, 1.0f, false, true, Enc(false, true, false, 1.0f, false)},
+      {GuiEncoding::Scalar, 0.58f, true, false, Enc(true, false, true, 0.58f, false)},
+      {GuiEncoding::Scalar, 0.58f, true, true, Enc(true, true, true, 0.58f, false)},
+      {GuiEncoding::Scalar, 0.58f, false, false, Enc(false, false, true, 0.58f, false)},
+      {GuiEncoding::Scalar, 0.58f, false, true, Enc(false, true, true, 0.58f, false)},
+      {GuiEncoding::Scalar, 1.0f, true, false, Enc(true, false, true, 1.0f, false)},
+      {GuiEncoding::Scalar, 1.0f, true, true, Enc(true, true, true, 1.0f, false)},
+      {GuiEncoding::Scalar, 1.0f, false, false, Enc(false, false, true, 1.0f, false)},
+      {GuiEncoding::Scalar, 1.0f, false, true, Enc(false, true, true, 1.0f, false)},
+      {GuiEncoding::Composite, 1.0f, true, false, Enc(false, false, false, 1.0f, false)},
+      {GuiEncoding::Composite, 1.0f, true, true, Enc(false, true, false, 1.0f, false)},
+      {GuiEncoding::Composite, 1.0f, false, false, Enc(false, false, false, 1.0f, true)},
+      {GuiEncoding::Composite, 1.0f, false, true, Enc(false, false, false, 1.0f, true)},
+      {GuiEncoding::Composite, 0.58f, true, false, Enc(false, false, false, 0.58f, false)},
+      {GuiEncoding::Composite, 0.58f, true, true, Enc(false, true, false, 0.58f, false)},
+      {GuiEncoding::Composite, 0.58f, false, false, Enc(false, false, false, 0.58f, true)},
+      {GuiEncoding::Composite, 0.58f, false, true, Enc(false, false, false, 0.58f, true)},
+  };
   uint64_t epoch = SELFTEST_EPOCH;
   for (const auto& image : {argb, pgs})
-    for (const bool pq : {true, false})
+    for (const SCase& c : cases)
     {
-      image->m_isHDROverlay = pq;
-      for (const SCase& c : cases)
-        for (const bool limited : {false, true})
-        {
-          SRegime regime;
-          regime.epoch = ++epoch;
-          regime.encoding = c.encoding;
-          regime.limited = limited;
-          regime.peak = c.peak;
-          SetRegime(regime);
-          total++;
-          const std::string name = StringUtils::Format(
-              "p1/{}/{}/{}/peak={:.2f}", image->palette.empty() ? "argb" : "pgs",
-              pq ? "pq" : "srgb", limited ? "limited" : "full", c.peak);
-          if (!CheckPass1(*image, EncodeFor(*image, regime), name))
-            m_selfTestFailed++;
-        }
+      image->m_isHDROverlay = c.pq;
+      SRegime regime;
+      regime.epoch = ++epoch;
+      regime.encoding = c.encoding;
+      regime.limited = c.limited;
+      regime.peak = c.peak;
+      SetRegime(regime);
+      total++;
+      const std::string name = StringUtils::Format(
+          "p1/{}/{}/{}/peak={:.2f}", image->palette.empty() ? "argb" : "pgs",
+          c.pq ? "pq" : "srgb", c.limited ? "limited" : "full", c.peak);
+      Count(CheckPass1(*image, c.expect, name));
     }
 
   SelfTestPlane(total);
 
   ClearCache();
   m_regimeSet = false;
-  CLog::Log(LOGINFO, "GSELFTEST summary cases={} failed={} took_ms={} {}", total,
-            m_selfTestFailed,
+  const bool pass = !m_selfTestFailed && !m_selfTestSkipped;
+  CLog::Log(LOGINFO,
+            "GSELFTEST summary cases={} failed={} skipped={} encode_skips={} took_ms={} {}", total,
+            m_selfTestFailed, m_selfTestSkipped, m_selfTestEncodeSkips,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start)
                 .count(),
-            m_selfTestFailed ? "FAIL" : "PASS");
+            pass ? "PASS" : "FAIL");
 }
