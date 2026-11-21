@@ -387,7 +387,10 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
 #if defined(HAS_LIBAMCODEC)
     // 5.G-5 (docs/phase5_g0_design.md §4.5, S12, S13): on P's mid-play path session the pick is
     // P's sticky target (no GC set, no wait); the keep dialog's revert enters here with the abort
-    // set: a clear, not a pick. Otherwise today's direct set
+    // set: a clear, not a pick. Otherwise today's direct set.
+    // 5.G-6: on the path the direct set is reached only for a row below RES_DESKTOP (RES_WINDOW),
+    // which PostMidPlayPick leaves to it; kept for that, midplaytx_off, off the path and another
+    // file
     if (!DISPLAYSTATE::PostMidPlayPick(newRes, m_resolutionChangeAborted, "screenmode"))
 #endif
     {

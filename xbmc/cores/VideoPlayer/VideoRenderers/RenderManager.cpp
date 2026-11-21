@@ -2361,7 +2361,10 @@ bool CRenderManager::GraphicsWithheld()
   }
 #endif
   // 5.E3: false on a P-decided open: the shut (TxShutMain) keeps the trigger down to START, and
-  // the adopt answer that opens CN sets m_sessionModeDecided. Kept for legacy, exits and 5.G
+  // the adopt answer that opens CN sets m_sessionModeDecided. Kept for legacy, exits and 5.G.
+  // 5.G-6: on P's path session the trigger is a hand-back's only (TxMidHandBack), so the clause
+  // is reached there by a hand-back while m_sessionModeDecided is unset (its start counted
+  // nothing). Kept for it, legacy and midplaytx_off
   if (!m_bTriggerUpdateResolution || m_sessionModeDecided)
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
@@ -3000,7 +3003,9 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
   // the set is pending until its count lands; flag and count are read under the
   // lock that writes both, never in-flight with the new count.
   // 5.E3: not asked on a P-decided open's commit (VP's txSync); kept for legacy opens and
-  // commits after START or an exit
+  // commits after START or an exit.
+  // 5.G-6: not asked on P's path session either (VP's midSync: TxMidHoldPending, which holds for
+  // a hand-back too); kept for legacy, midplaytx_off, a later set and a path-off session
   std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
 #if defined(HAS_LIBAMCODEC)
   if (HeldStartPendingWindow())
@@ -3647,7 +3652,11 @@ void CRenderManager::AbandonRmRetry(const char* why)
 void CRenderManager::UpdateResolution()
 {
   // 5.E3: during a transaction the shut keeps the trigger down (a straddling pass returns at
-  // the shut check below); the start parts are kept for main's decisions, exits and 5.G
+  // the shut check below); the start parts are kept for main's decisions, exits and 5.G.
+  // 5.G-6: on P's mid-play path session the shut outlives START (m_txMidShut): a raise is P's
+  // notice, so the trigger is set only by TxMidHandBack and this consume runs for a hand-back
+  // alone. Kept for it, midplaytx_off, legacy and path-off sessions, and every later set
+  // (TxMidPlayEnd lifts the shut at its arm, B2)
   if (m_bTriggerUpdateResolution)
   {
 #if defined(HAS_LIBAMCODEC)
@@ -3711,7 +3720,8 @@ void CRenderManager::UpdateResolution()
         // 5.B2-5b: W's reply was failed or failed(park)
         bool setFailed = false;
         const char* setFailedReply = "";
-        // 5.G-2: the mid-play shadow's inputs, read before m_statelock
+        // 5.G-2: the mid-play shadow's inputs, read before m_statelock. 5.G-6: with the path on,
+        // only a hand-back's consume gets here (the shut above); kept: P's shadow compares it
         std::optional<SMidShadow> midShadow;
         std::shared_ptr<DISPLAYSTATE::DecideInputs> midLive;
         std::shared_ptr<const DISPLAYSTATE::DecideInputs> midPublished;
@@ -3965,6 +3975,9 @@ void CRenderManager::UpdateResolution()
         }
 #endif
         // after the mode set: a real change has already run OnLostDisplay
+        // 5.G-6: P's path decisions count in VP's m_midTx.counted, never here; on a path session
+        // this count is a hand-back's only. Kept for it and for CheckHeldStart's snapshot
+        // (legacy, midplaytx_off, a later set, a path-off session)
 #if defined(HAS_LIBAMCODEC)
         if (outputDrive)
         {

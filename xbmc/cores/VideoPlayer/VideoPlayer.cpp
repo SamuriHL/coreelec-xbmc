@@ -4728,7 +4728,9 @@ void CVideoPlayer::TxDeferPass()
     }
     if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_RAN)
     {
-      // r2 M-2: the replayed press has written the VS10 mode; the wire is re-decided now
+      // r2 M-2: the replayed press has written the VS10 mode; the wire is re-decided now.
+      // 5.G-6: reached on the path too (a segment gap's press, G-4 r1 B1): there the raise is
+      // P's notice (the shut). Kept
       CLog::Log(LOGINFO, "TXSTART vs10 request {} ran: its trigger raised", e.reqId);
       TriggerVs10Resolution();
       continue;
@@ -9279,7 +9281,9 @@ void CVideoPlayer::HandlePlaySpeed()
       // 5.E3: a P-decided open's sync commit schedules: main is shut out until START
       // (TxShutMain), so RM's decision could only end a hold at the 12 s fallback
       const bool txSync = TxOpen() && m_txJob;
-      // 5.G-3 (§4.3 e): on the path session P decides: its job or a due decision holds
+      // 5.G-3 (§4.3 e): on the path session P decides: its job or a due decision holds.
+      // 5.G-6: so RM's pending test is never asked on the path (main decides only a hand-back,
+      // which TxMidHoldPending holds); kept for legacy, midplaytx_off and path-off sessions
       const bool midSync = !txSync && m_txMidPath;
       const bool holdStart = !txSync && m_heldStartEnabled && m_CurrentVideo.id >= 0 &&
                              videoPictured &&
@@ -14209,6 +14213,10 @@ bool CVideoPlayer::OnAction(const CAction &action)
     // The resolution update then lets the window system re-decide the HDMI wire
     // for the new output through the same display lost/reset protocol a mode
     // change uses, so playback pauses and re-anchors across the re-clock.
+    // 5.G-6: with P's path published on for this file TxMidVs10Press posts the press to P and
+    // returns, so the direct write and its trigger below are never reached on the path. Kept for
+    // midplaytx_off, path-off sessions, another file's press and a press P gives back
+    // (TxMidVs10ToMain re-enters here after the path, S4)
     case ACTION_VS10_ORIGINAL:
       if (TxMidVs10Press(action.GetID(), DOLBY_VISION_OUTPUT_MODE_BYPASS))
         return true;

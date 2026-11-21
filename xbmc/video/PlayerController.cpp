@@ -581,7 +581,9 @@ bool CPlayerController::OnAction(const CAction &action)
             auto res = CDisplaySettings::GetInstance().GetResFromString(indexList[idx].asString());
 #if defined(HAS_LIBAMCODEC)
             // 5.G-5 (docs/phase5_g0_design.md §4.5, S12): on P's mid-play path session the pick
-            // is P's sticky target; otherwise today's direct set
+            // is P's sticky target; otherwise today's direct set. 5.G-6: on the path the set
+            // below is reached only for a row below RES_DESKTOP; kept for it, midplaytx_off,
+            // off the path and another file
             if (DISPLAYSTATE::PostMidPlayPick(res, false, "osd"))
               return true;
             OUTPUT::CRequestOrigin requestOrigin("user-pick");
