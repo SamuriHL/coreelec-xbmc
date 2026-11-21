@@ -1285,6 +1285,7 @@ void CPresentationCoordinator::CommitUi()
         timedTags.timed = true;
         timedTags.serial = ready.serial;
         timedTags.clear = ready.clear;
+        timedTags.bridge = ready.bridge;
         timedTags.visible = ready.visible;
         timedTags.qbuf = ready.qbuf;
         timedTags.target = ready.target;
@@ -1487,13 +1488,15 @@ void CPresentationCoordinator::SubmitTimed(gbm_bo* bo,
                                            double pts,
                                            uint64_t serial,
                                            bool clear,
-                                           bool visible)
+                                           bool visible,
+                                           bool bridge)
 {
   {
     std::unique_lock lock(m_uiMutex);
     // a redraw (regime, geometry, untimed images) of a composition C still holds replaces it
     auto it = std::find_if(m_timed.begin(), m_timed.end(),
-                           [&](const UiBuffer& b) { return b.serial == serial && b.clear == clear; });
+                           [&](const UiBuffer& b)
+                           { return b.serial == serial && b.clear == clear && b.bridge == bridge; });
     if (it != m_timed.end())
     {
       Drop(PLANE_GRAPHICS, *it);
@@ -1511,6 +1514,7 @@ void CPresentationCoordinator::SubmitTimed(gbm_bo* bo,
     buffer.timed = true;
     buffer.serial = serial;
     buffer.clear = clear;
+    buffer.bridge = bridge;
     buffer.visible = visible;
     const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), serial,
                                      [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
@@ -1532,11 +1536,18 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
 {
   if (!GRAPHICSTICK::Requested())
     return;
-  const bool on = GRAPHICSTICK::RouteOn();
+  bool on;
+  uint64_t session;
+  GRAPHICSTICK::RouteState(on, session);
   const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
   bool woke = false;
   {
     std::unique_lock lock(m_uiMutex);
+    if (session != m_gtSession)
+    {
+      m_gtSession = session;
+      m_gtPickedSerial = 0;
+    }
     if (m_timed.empty())
     {
       if (!on && m_planeSubsVisible)
@@ -1546,10 +1557,12 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       }
       return;
     }
-    // M2: nothing at or below a floor is committed after it; a clear is the floor's own
+    // M2: nothing at or below a floor is committed after it; a clear is the floor's own. Never
+    // a composition older than one already picked (a redraw G made before it saw the newer)
     for (auto it = m_timed.begin(); it != m_timed.end();)
     {
-      if (!it->clear && (!on || it->serial <= floor.floor))
+      if (!it->clear && !it->bridge &&
+          (!on || it->serial <= floor.floor || it->serial < m_gtPickedSerial))
       {
         Drop(PLANE_GRAPHICS, *it);
         it = m_timed.erase(it);
@@ -1566,7 +1579,8 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     for (int i = 0; i < static_cast<int>(m_timed.size()); i++)
     {
       const UiBuffer& b = m_timed[i];
-      if (b.clear || (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
+      if (b.clear || (b.bridge && on) ||
+          (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
         pick = i;
     }
     if (pick < 0)
@@ -1586,8 +1600,13 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       m_timed.erase(m_timed.begin(), m_timed.begin() + pick + 1);
       chosen.qbuf = target.qbuf;
       chosen.target = target.tick + 2;
+      if (!chosen.clear && !chosen.bridge)
+        m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
       UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
-      if (ready.req)
+      // review rA m1: route C's frame after a hand-back is newer than the route's end clear
+      if (chosen.clear && ready.req && !ready.timed)
+        Drop(PLANE_GRAPHICS, chosen);
+      else if (ready.req)
       {
         if (ready.timed && !ready.clear)
           m_report.gfxTimedReplaced++;
@@ -1595,12 +1614,15 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
           m_report.gfxReplaced++;
         Drop(PLANE_GRAPHICS, ready);
       }
-      ready = std::move(chosen);
+      if (chosen.req)
+        ready = std::move(chosen);
       woke = true;
     }
   }
   if (woke)
   {
+    // G may wait for one of these buffers
+    GRAPHICSTICK::Kick();
     m_uiCond.notify_all();
     const uint64_t one = 1;
     if (write(m_wakeFd, &one, sizeof(one)) < 0)
@@ -1641,7 +1663,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   const UiBuffer timed = std::exchange(m_inFlightTimed, UiBuffer());
   const int64_t periodNs = m_diagPeriodNs;
   int delta = 0;
-  if (timed.timed && !timed.clear)
+  if (timed.timed && !timed.clear && !timed.bridge)
   {
     delta = static_cast<int32_t>(sequence - static_cast<unsigned int>(timed.target));
     m_report.gfxTimed++;
@@ -1737,6 +1759,11 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
   if (timed.timed && timed.clear)
     CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
+  else if (timed.timed && timed.bridge)
+    CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
+  // the buffer this one replaced is G's again
+  if (timed.timed)
+    GRAPHICSTICK::Kick();
   else if (timed.timed)
     CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb);

@@ -175,7 +175,9 @@ public:
    * \brief 5.G2 GT-4 (G): a drawn timed composition, the overlays of the pictures from serial
    * on. C holds it (a newer one of the same serial replaces it) and commits it at the tick that
    * follows the release of a frame at or past serial (item 3). clear: a cleared buffer after a
-   * flush or at the route's end, shown at C's next slot. Ownership as Submit.
+   * flush or at the route's end, shown at C's next slot. bridge: the untimed images alone
+   * (no picture's overlays), shown at the next slot as a clear is, under no floor. Ownership as
+   * Submit.
    */
   void SubmitTimed(gbm_bo* bo,
                    uint32_t fb,
@@ -184,7 +186,8 @@ public:
                    double pts,
                    uint64_t serial,
                    bool clear,
-                   bool visible);
+                   bool visible,
+                   bool bridge = false);
   //! G: timed buffers C holds and has not committed
   int TimedHeld();
 
@@ -217,6 +220,7 @@ private:
     bool timed = false;
     uint64_t serial = 0;
     bool clear = false;
+    bool bridge = false; //!< the untimed images alone
     bool visible = false;
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
@@ -336,6 +340,9 @@ private:
   SReleasedFrame m_gtReleased[2]; //!< [0] the newest, before this tick's
   SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
   bool m_gtWithheld = false;
+  //! review rB m-1: the newest picture serial picked this route session; nothing older goes up
+  uint64_t m_gtPickedSerial = 0;
+  uint64_t m_gtSession = 0;
   void RunWakeTail(); //!< 5.V3-4
   bool m_geometryOnC = false; //!< 5.V3-4: the last tick's session is on the path (C only)
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
