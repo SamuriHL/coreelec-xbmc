@@ -1845,6 +1845,27 @@ void PublishDecideInputsMidPlay(const char* why, bool deferred)
     s_decideMidWhy = why;
 }
 
+bool PostMidPlayPick(int res, bool clear, const char* site)
+{
+  if (!aml_midplaytx_on() || res < RES_DESKTOP)
+    return false;
+  const MidPlayPathState path = MidPlayPath();
+  if (!path.on ||
+      path.f != OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f)
+    return false;
+  static std::atomic<uint64_t> s_pickId{0};
+  STxInboxEntry e;
+  e.kind = clear ? STxInboxEntry::Kind::MIDPLAY_PICK_CLEAR : STxInboxEntry::Kind::MIDPLAY_PICK;
+  e.reqId = ++s_pickId;
+  e.f = path.f;
+  e.res = CDisplaySettings::GetInstance().GetResolutionInfo(static_cast<RESOLUTION>(res));
+  e.resIndex = res;
+  CLog::Log(LOGINFO, "MIDPLAY pick{} id={} res={} ({}) F={} from {}: to P",
+            clear ? " clear (keep dialog no)" : "", e.reqId, res, e.res.strMode, e.f, site);
+  PostTxInbox(std::move(e));
+  return true;
+}
+
 void PublishDecideInputsGcSet()
 {
   // a start's DECIDE reads its own publishes (OPEN..START), so none is added there

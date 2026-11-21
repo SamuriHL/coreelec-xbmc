@@ -995,8 +995,9 @@ static std::atomic<unsigned int> s_midJobSeq{0};
 class CTxMidSink : public DISPLAYSTATE::IStartJobSink
 {
 public:
-  CTxMidSink(CRenderManager& renderManager, unsigned int seq)
-    : m_renderManager(renderManager), m_seq(seq)
+  //! av false: a pick's job (5.G-5), whose adopt posts no AVCHANGE (today's set posts none)
+  CTxMidSink(CRenderManager& renderManager, unsigned int seq, bool av)
+    : m_renderManager(renderManager), m_seq(seq), m_av(av)
   {
   }
   void OnOutputDone(const DISPLAYSTATE::SOutputDone& reply) override
@@ -1021,7 +1022,8 @@ public:
                        : answer == A::ADOPTED    ? "DONE"
                                                  : "DONE (not adopted)";
     return m_renderManager.TxMidAdoptAnswer(
-        m_seq, answer != A::NO_CHANGE && answer != A::FAILED_SET && answer != A::RECOVERED,
+        m_seq,
+        m_av && answer != A::NO_CHANGE && answer != A::FAILED_SET && answer != A::RECOVERED,
         name);
   }
   void OnTxAdopted(const DISPLAYSTATE::STxAdopted& reply) override
@@ -1044,6 +1046,7 @@ private:
   }
   CRenderManager& m_renderManager;
   const unsigned int m_seq;
+  const bool m_av;
 };
 
 CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
@@ -3514,6 +3517,9 @@ void CVideoPlayer::TxMidPlayStart(const char* off)
   m_midTx.vs10 = -1;
   m_midTx.vs10Fresh = false;
   m_midTx.inputsDue = false;
+  m_midTx.avOwed = m_midTx.retryAv = false;
+  m_midTx.sticky.reset();
+  m_midTx.pickDue = m_midTx.pickFresh = false;
   m_midTx.inputsAtOn = DISPLAYSTATE::DecideInputsSeq();
   m_txMidPath = true;
   m_txMidPathT = T;
@@ -3530,8 +3536,10 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
   // r2 note b: a later set's arm raises what P still owes as the trigger; the stop and the next
   // file drop it
   const bool laterSet = std::string_view(why) == "later set";
+  // 5.G-5: owed = a decision main would make (a pick's alone is none: today's raises nothing)
   const int n = m_renderManager.TxMidPlayEnd(
-      laterSet, m_midTx.owedAtFullscreen || m_midTx.redecide || m_midTx.retryDue);
+      laterSet, (m_midTx.avOwed && (m_midTx.owedAtFullscreen || m_midTx.redecide)) ||
+                    (m_midTx.retryDue && m_midTx.retryAv));
   DISPLAYSTATE::PublishMidPlayPath(0, false);
   m_renderManager.TxMidShadowReset();
   // B1: the record reset; a job in flight runs to its replies (r2 note c), deciding nothing
@@ -3541,6 +3549,22 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
   m_midTx.retried = m_midTx.retryDue = m_midTx.handback = false;
   m_midTx.inputsDue = false;
   m_midTx.chain = 0;
+  m_midTx.avOwed = m_midTx.retryAv = false;
+  // 5.G-5 (§4.5, S4): the sticky target ends with the path session; a pick not yet carried runs
+  // today's way at a later set, and is dropped by the stop and the next file
+  if (std::exchange(m_midTx.pickDue, false))
+  {
+    if (laterSet)
+      TxMidPickToMain(m_midTx.pickIndex, m_midTx.pickId, "after the path");
+    else
+      CLog::Log(LOGINFO, "MIDPLAY pick id={} dropped ({})", m_midTx.pickId, why);
+  }
+  m_midTx.pickFresh = false;
+  if (m_midTx.sticky)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY pick sticky {} ended ({})", m_midTx.sticky->strMode, why);
+    m_midTx.sticky.reset();
+  }
   // S4: a later set lets main in, so the press runs today's way there; the stop and the next
   // file drop it, as they drop the notices
   m_midTx.vs10Fresh = false;
@@ -3583,11 +3607,14 @@ bool CVideoPlayer::TxMidHoldPending()
 
 void CVideoPlayer::TxMidPost(SMidJob& j, const char* reply, bool count)
 {
-  VideoParamsChange();
+  // 5.G-5: a pick's job posts none, as today's direct set
+  if (j.av)
+    VideoParamsChange();
   if (count)
     ++m_midTx.counted;
   j.posted = true;
-  CLog::Log(LOGINFO, "MIDPLAY reply seq={} {} avchange posted (P){}", j.job->seq, reply,
+  CLog::Log(LOGINFO, "MIDPLAY reply seq={} {} {}{}", j.job->seq, reply,
+            j.av ? "avchange posted (P)" : "no avchange (a pick's)",
             count ? "" : ", counted at the retry's reply");
 }
 
@@ -3654,6 +3681,7 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
       if (e.settle == Settle::DROPPED)
       {
         m_midTx.redecide = true;
+        m_midTx.avOwed |= j.av;
         CLog::Log(LOGINFO, "MIDPLAY reply seq={} DROPPED (W): decided again", e.jobSeq);
         break;
       }
@@ -3667,8 +3695,10 @@ void CVideoPlayer::TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e)
       if (!std::exchange(m_midTx.retried, true))
       {
         TxMidPost(j, "FAILED", false);
-        m_renderManager.TxMidRestoreArm();
+        if (j.armTaken)
+          m_renderManager.TxMidRestoreArm();
         m_midTx.retryDue = true;
+        m_midTx.retryAv = j.av;
         CLog::Log(LOGINFO, "MIDPLAY retry seq={}", e.jobSeq);
       }
       else
@@ -3729,14 +3759,23 @@ void CVideoPlayer::TxMidPlayPass()
   const bool busy = TxMidBusy();
   const bool due = std::exchange(m_midTx.redecideDue, false);
   const bool vs10 = std::exchange(m_midTx.vs10Fresh, false);
-  if ((!notices.empty() || vs10) && (busy || m_midTx.handback))
+  const bool pick = std::exchange(m_midTx.pickFresh, false);
+  // 5.G-5 (§4.0 compat): main's decision would post an AVCHANGE for these, never for a pick
+  if (!notices.empty() || vs10)
+    m_midTx.avOwed = true;
+  if ((!notices.empty() || vs10 || pick) && (busy || m_midTx.handback))
     m_midTx.redecide = true;
+  // a pick's own job waits for the start's window to close: OW would defer it and drop it at
+  // StartDone, whose replay raises one decision more than today's replayed pick (E2-12a)
+  const bool pickWaits = m_txDeferF && !m_midTx.avOwed;
   const char* why = nullptr;
   if (m_midTx.retryDue)
     why = "retry";
   else if ((!notices.empty() || vs10) && !busy)
     why = notices.empty() ? "vs10" : "notice";
-  else if (m_midTx.redecide && (!busy || due))
+  else if (m_midTx.pickDue && !busy && !pickWaits)
+    why = "pick";
+  else if (m_midTx.redecide && (!busy || due) && !pickWaits)
     why = "supersede";
   else if (m_midTx.owedAtFullscreen && !busy &&
            DISPLAYSTATE::DecideInputsSeq() > m_midTx.owedSeq)
@@ -3764,31 +3803,46 @@ void CVideoPlayer::TxMidPlayPass()
 // 5.G-3 (§4.3 b, c): one DECIDE, one job (W classifies it)
 void CVideoPlayer::TxMidDecide(const char* why)
 {
-  m_midTx.retryDue = false;
+  const bool retry = std::exchange(m_midTx.retryDue, false);
   m_midTx.redecide = false;
   const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
   // the publish taken at path on is not in yet: decided once it is, never owed on START's
   // pre-fullscreen inputs
   if (latest.seq <= m_midTx.inputsAtOn)
   {
+    if (retry)
+      m_midTx.avOwed |= m_midTx.retryAv;
     if (!std::exchange(m_midTx.inputsDue, true))
       CLog::Log(LOGINFO, "MIDPLAY decide waits for the path-on inputs (inputs={})", latest.seq);
     return;
   }
   if (std::exchange(m_midTx.inputsDue, false))
     CLog::Log(LOGINFO, "MIDPLAY path-on inputs={} in", latest.seq);
+  // 5.G-5 (§4.0 compat): one AVCHANGE when the DECIDE carries a decision main would make (a
+  // notice, a press, or the retry of one); a pick alone posts none, as today's direct set
+  bool av = m_midTx.avOwed || (retry && m_midTx.retryAv);
+  const bool fullScreen = !latest.seq || (latest.fullScreenVideo && latest.fullScreenRoot);
   // RM:3635's test: not fullscreen, owed (nothing posted, no AVCHANGE, as main's kept flag)
-  if (latest.seq && !(latest.fullScreenVideo && latest.fullScreenRoot))
+  if (!fullScreen)
   {
-    if (!m_midTx.owedAtFullscreen || m_midTx.owedSeq != latest.seq)
-      CLog::Log(LOGINFO, "MIDPLAY owed at fullscreen inputs={}", latest.seq);
-    m_midTx.owedAtFullscreen = true;
-    m_midTx.owedSeq = latest.seq;
-    return;
+    if (av || !m_midTx.pickDue)
+    {
+      if (!m_midTx.owedAtFullscreen || m_midTx.owedSeq != latest.seq)
+        CLog::Log(LOGINFO, "MIDPLAY owed at fullscreen inputs={}", latest.seq);
+      m_midTx.owedAtFullscreen = true;
+      m_midTx.owedSeq = latest.seq;
+      m_midTx.avOwed = av;
+    }
+    // 5.G-5: a pick sets at once with the GUI over the video, as today's direct set; the owed
+    // decision follows at fullscreen
+    if (!m_midTx.pickDue)
+      return;
+    av = false;
   }
-  if (std::exchange(m_midTx.owedAtFullscreen, false))
+  else if (std::exchange(m_midTx.owedAtFullscreen, false))
     CLog::Log(LOGINFO, "MIDPLAY owed decided inputs={}", latest.seq);
-  CRenderManager::SStartResolve r = m_renderManager.TxMidResolve(latest);
+  const bool pick = std::exchange(m_midTx.pickDue, false);
+  CRenderManager::SStartResolve r = m_renderManager.TxMidResolve(latest, !fullScreen);
   // a press main decides after: written today's way first (W's own vs10 request), so the
   // hand-back's set follows it on the lane
   const auto vs10Today = [this](const char* why)
@@ -3801,23 +3855,50 @@ void CVideoPlayer::TxMidDecide(const char* why)
   };
   if (r.exclusion)
   {
+    // 5.G-5: the pick goes today's way; main has nothing to decide for a pick alone
+    if (pick)
+      TxMidPickToMain(m_midTx.pickIndex, m_midTx.pickId, r.exclusion);
+    if (!av)
+      return;
     if (m_midTx.vs10 >= 0)
       vs10Today(r.exclusion);
+    m_midTx.avOwed = false;
     m_midTx.handback = true;
     m_renderManager.TxMidHandBack(r.exclusion);
     return;
   }
   // S7: the arm consumed (and recorded for a retry) and the anchor, as main's consume; held, as
-  // ChooseHeldResolution anchors an unanchored session (code review r1 B1)
-  m_renderManager.TxTakeArm(0, r);
-  if (r.anchor)
-    aml_set_disc_mode_anchored(true);
-  else if (r.held && !aml_disc_mode_anchored() && r.width > 0 && r.height > 0)
+  // ChooseHeldResolution anchors an unanchored session (code review r1 B1). 5.G-5: a pick's job
+  // alone takes neither (today's direct set does not)
+  if (av)
   {
-    aml_set_disc_mode_anchored(true);
-    CLog::Log(LOGINFO, "MIDPLAY disc session mode hold: anchoring the session on the "
-                       "segment's own resolution ({}x{})",
-              r.width, r.height);
+    m_renderManager.TxTakeArm(0, r);
+    if (r.anchor)
+      aml_set_disc_mode_anchored(true);
+    else if (r.held && !aml_disc_mode_anchored() && r.width > 0 && r.height > 0)
+    {
+      aml_set_disc_mode_anchored(true);
+      CLog::Log(LOGINFO, "MIDPLAY disc session mode hold: anchoring the session on the "
+                         "segment's own resolution ({}x{})",
+                r.width, r.height);
+    }
+  }
+  else
+    r.frac = false;
+  // 5.G-5 (§4.5, D-G5): the explicit target replaces the decided row
+  const RESOLUTION decided = r.res;
+  const bool sticky = TxMidApplySticky(r, latest);
+  // under the GUI only a target is set, never the film's own mode (main's waits for fullscreen)
+  if (!fullScreen && !sticky)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY pick under the GUI without a target: nothing set");
+    return;
+  }
+  if (sticky && r.res != decided && r.frac)
+  {
+    // the 1000/1001 request was for the row the film chose, not the user's
+    r.frac = false;
+    CLog::Log(LOGINFO, "MIDPLAY sticky target: the frac request dropped");
   }
   auto job = std::make_shared<DISPLAYSTATE::SStartJob>();
   job->midplay = true;
@@ -3839,14 +3920,21 @@ void CVideoPlayer::TxMidDecide(const char* why)
     job->capsEpoch = state->capsEpoch;
     job->sinkSig = state->sinkSig;
   }
-  CLog::Log(LOGINFO, "MIDPLAY decide seq={} T={} res={} ({}) frac={} anchor={} sticky=- why={}",
+  CLog::Log(LOGINFO,
+            "MIDPLAY decide seq={} T={} res={} ({}) frac={} anchor={} sticky={} why={}{}",
             job->seq, job->T, static_cast<int>(r.res), r.info.strMode, r.frac ? 1 : 0,
-            r.anchor ? 1 : 0, why);
+            av && r.anchor ? 1 : 0, sticky ? r.info.strMode : std::string("-"), why,
+            av ? "" : " (a pick's: no avchange)");
+  if (av)
+    m_midTx.avOwed = false;
   SMidJob& j = m_midJobs.emplace_back();
   j.job = job;
+  j.av = av;
+  j.armTaken = av;
   j.f = OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).f;
-  // S11: a BYPASS the disc session suppresses writes nothing: a plain DECIDE, no freeze
-  if (m_midTx.vs10 >= 0)
+  // S11: a BYPASS the disc session suppresses writes nothing: a plain DECIDE, no freeze.
+  // 5.G-5: a press rides a decision's job, never a pick's (it stays owed with its decision)
+  if (m_midTx.vs10 >= 0 && av)
   {
     if (m_midTx.vs10 == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_BYPASS) &&
         aml_dv_disc_engaged())
@@ -3864,7 +3952,7 @@ void CVideoPlayer::TxMidDecide(const char* why)
                 job->seq);
     }
   }
-  j.sink = std::make_unique<CTxMidSink>(m_renderManager, job->seq);
+  j.sink = std::make_unique<CTxMidSink>(m_renderManager, job->seq, av);
   job->SetSink(j.sink.get());
   auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
   if (!DISPLAYSTATE::StartJobQueue(*job) || !winSystem || !winSystem->PostMidPlayJob(job))
@@ -3878,10 +3966,110 @@ void CVideoPlayer::TxMidDecide(const char* why)
     }
     job->ClearSink();
     m_midJobs.pop_back();
+    // 5.G-5: the pick today's way; a hand-back only for a decision main would make
+    if (pick)
+      TxMidPickToMain(m_midTx.pickIndex, m_midTx.pickId, "no worker");
+    if (!av)
+      return;
     m_renderManager.TxMidRestoreArm();
     m_midTx.handback = true;
     m_renderManager.TxMidHandBack("no worker");
   }
+}
+
+bool CVideoPlayer::TxMidApplySticky(CRenderManager::SStartResolve& r,
+                                    const DISPLAYSTATE::DecideInputs& latest)
+{
+  if (!m_midTx.sticky)
+    return false;
+  const RESOLUTION_INFO& t = *m_midTx.sticky;
+  for (const auto& [index, info] : latest.res.infos)
+  {
+    if (index < RES_DESKTOP || info.strId != t.strId || info.dwFlags != t.dwFlags ||
+        std::abs(info.fRefreshRate - t.fRefreshRate) > 0.01f)
+      continue;
+    r.res = static_cast<RESOLUTION>(index);
+    r.info = info;
+    r.change = r.res != latest.res.videoResolution;
+    return true;
+  }
+  CLog::Log(LOGINFO, "MIDPLAY pick sticky {} not in the table: cleared", t.strMode);
+  m_midTx.sticky.reset();
+  return false;
+}
+
+// 5.G-5 (§4.5, S12, S13)
+void CVideoPlayer::TxMidPick(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF)
+{
+  const bool clear = e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY_PICK_CLEAR;
+  if (e.f != wordF)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY pick id={} of F={} ignored (F={} open)", e.reqId, e.f, wordF);
+    return;
+  }
+  // S4: taken after the path ended: today's direct set
+  if (!m_txMidPath)
+  {
+    TxMidPickToMain(e.resIndex, e.reqId, "after the path");
+    return;
+  }
+  if (clear)
+  {
+    // S13: the revert is a clear and a re-decide of the film's own mode, not a pick
+    m_midTx.sticky.reset();
+    CLog::Log(LOGINFO, "MIDPLAY pick cleared (keep dialog no) id={}", e.reqId);
+    // with the GUI over the video (the settings window) the film's mode is decided at the
+    // return to fullscreen, as main's; the revert sets the GUI's mode now, as today. A re-decide
+    // under the settings window would resize it to the film's mode, which re-writes the
+    // screenmode setting (GUIWindowSettingsCategory) and opens a second keep dialog
+    const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+    if (latest.seq && !(latest.fullScreenVideo && latest.fullScreenRoot))
+    {
+      m_midTx.pickDue = false;
+      TxMidPickToMain(e.resIndex, e.reqId, "keep dialog no under the GUI");
+      return;
+    }
+  }
+  // in a segment gap or an owed mark OW holds a pick until the next video open but drops P's
+  // job and re-raises a decision (one AVCHANGE more than today): the pick goes today's way
+  OUTPUT::COutputWorker& ow = OUTPUT::COutputWorker::Get();
+  if (aml_disc_screen_hold() && (ow.GapFor(e.f) || ow.MarkOwedFor(e.f)))
+  {
+    TxMidPickToMain(e.resIndex, e.reqId, "segment gap");
+    return;
+  }
+  if (!clear)
+  {
+    // a row P's table lacks is never lost: today's set
+    const DISPLAYSTATE::DecideInputs latest = DISPLAYSTATE::GetDecideInputs();
+    const auto& infos = latest.res.infos;
+    if (std::none_of(infos.begin(), infos.end(),
+                     [&e](const auto& row)
+                     {
+                       return row.first >= RES_DESKTOP && row.second.strId == e.res.strId &&
+                              row.second.dwFlags == e.res.dwFlags &&
+                              std::abs(row.second.fRefreshRate - e.res.fRefreshRate) <= 0.01f;
+                     }))
+    {
+      TxMidPickToMain(e.resIndex, e.reqId, "not in P's table");
+      return;
+    }
+    m_midTx.sticky = e.res;
+    CLog::Log(LOGINFO, "MIDPLAY pick id={} res={} ({}) sticky", e.reqId, e.resIndex,
+              e.res.strMode);
+  }
+  m_midTx.pickDue = m_midTx.pickFresh = true;
+  m_midTx.pickIndex = e.resIndex;
+  m_midTx.pickId = e.reqId;
+}
+
+void CVideoPlayer::TxMidPickToMain(int res, uint64_t id, const char* why)
+{
+  CLog::Log(LOGINFO, "MIDPLAY pick id={} res={} {}: to main", id, res, why);
+  if (res < RES_DESKTOP)
+    return;
+  if (const auto messenger = CServiceBroker::GetAppMessenger())
+    messenger->PostMsg(TMSG_SETVIDEORESOLUTION, res, 0, nullptr, "user-pick");
 }
 
 bool CVideoPlayer::TxMidVs10Press(int action, unsigned int mode)
@@ -4384,6 +4572,12 @@ void CVideoPlayer::TxDeferPass()
     if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::VS10_REQUEST)
     {
       TxMidVs10Request(e, wordF);
+      continue;
+    }
+    if (e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY_PICK ||
+        e.kind == DISPLAYSTATE::STxInboxEntry::Kind::MIDPLAY_PICK_CLEAR)
+    {
+      TxMidPick(e, wordF);
       continue;
     }
     // code review r2 addendum: another file's entry (a stale one after a Next) is never this

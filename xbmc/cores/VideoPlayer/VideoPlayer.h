@@ -1244,6 +1244,9 @@ protected:
     int vs10Action = 0;
     uint64_t vs10Id = 0;
     uint32_t f = 0;
+    //! 5.G-5 (§4.0 compat): it posts an AVCHANGE (a pick's alone does not: today's set posts none)
+    bool av = true;
+    bool armTaken = false; //!< its DECIDE took the frac arm (a retry restores it)
   };
   std::vector<SMidJob> m_midJobs;
   struct
@@ -1267,6 +1270,16 @@ protected:
     int vs10Action = 0;
     uint64_t vs10Id = 0;
     bool vs10Fresh = false; //!< taken this pass: decides as a notice does
+    //! 5.G-5 (§4.0 compat): a decision main would make (a notice, a press) is due: its job posts
+    //! the AVCHANGE; retryAv: the failed job's
+    bool avOwed = false;
+    bool retryAv = false;
+    //! 5.G-5 (§4.5, D-G5): the explicit target, sticky for the path session
+    std::optional<RESOLUTION_INFO> sticky;
+    bool pickDue = false; //!< a pick or its clear not yet carried by a job
+    bool pickFresh = false; //!< taken this pass
+    int pickIndex = -1; //!< the last pick's (or revert's) main index, for today's route
+    uint64_t pickId = 0;
   } m_midTx;
   void TxMidPlayPass();
   //! 5.G-4 (§4.4): main, a VS10 press on the path session goes to P (false: today's call)
@@ -1277,6 +1290,13 @@ protected:
   //! a job that did not write its press hands it back
   void TxMidVs10GiveBack(const SMidJob& j);
   void TxMidDecide(const char* why);
+  //! 5.G-5 (§4.5): a pick or the keep dialog's revert, taken from the inbox
+  void TxMidPick(const DISPLAYSTATE::STxInboxEntry& e, uint32_t wordF);
+  //! S4: a pick the path does not take runs today's way, on main
+  void TxMidPickToMain(int res, uint64_t id, const char* why);
+  //! the sticky target onto the DECIDE's table (false: none, or not in the table: cleared)
+  bool TxMidApplySticky(CRenderManager::SStartResolve& r,
+                        const DISPLAYSTATE::DecideInputs& latest);
   void TxMidInbox(const DISPLAYSTATE::STxInboxEntry& e);
   //! count false: the AVCHANGE only (a failed set's retry counts at its own reply)
   void TxMidPost(SMidJob& j, const char* reply, bool count = true);

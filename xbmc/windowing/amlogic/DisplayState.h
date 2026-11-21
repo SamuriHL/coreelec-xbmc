@@ -322,6 +322,10 @@ void PublishDecideInputsMidPlay(const char* why, bool deferred = false);
 //! 5.G-2 (§4.2, r2 N1): main, the end of GC's set: forced with midplaytx on, a player word open
 //! and no start open
 void PublishDecideInputsGcSet();
+//! 5.G-5 (docs/phase5_g0_design.md §4.5, S12, S13): main or the JSON thread, a pick (clear: the
+//! keep dialog's revert) while P's path session plays the open file: posted to P's inbox
+//! (true), else false: today's direct set
+bool PostMidPlayPick(int res, bool clear, const char* site);
 
 //! 5.V2-6: GC's m_bFullScreenRoot, published at its writes (any thread), for the player's open
 void PublishFullScreenRoot(bool root);
@@ -498,10 +502,13 @@ struct STxInboxEntry
     VS10_RAN, //!< a replayed or re-queued VS10 press has run: raise its trigger
     MIDPLAY, //!< 5.G-3: OW's verdict on, or a reply of, P's mid-play job jobSeq (f 0)
     VS10_REQUEST, //!< 5.G-4: main's VS10 press on the path session (vs10Mode, action; f)
+    MIDPLAY_PICK, //!< 5.G-5: a pick on the path session: P's sticky target (res, resIndex; f)
+    MIDPLAY_PICK_CLEAR, //!< 5.G-5 (S13): the keep dialog's revert (its res, for today's route)
   } kind = Kind::PICK_DEFERRED;
   uint64_t reqId = 0;
   uint32_t f = 0;
   RESOLUTION_INFO res;
+  int resIndex = -1; //!< 5.G-5: main's index of res (a pick re-sent to main)
   enum class Mid
   {
     DEFERRED,

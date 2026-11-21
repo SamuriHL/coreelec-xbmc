@@ -471,8 +471,10 @@ public:
   //! was not shut out for a path session, else the notices' count
   int TxMidPlayEnd(bool raise, bool owed);
   //! 5.G-3 (§4.3 b): P's DECIDE: ResolveStart on RM's facts and latest, W's last committed mode
-  //! as the incumbent
-  SStartResolve TxMidResolve(const DISPLAYSTATE::DecideInputs& latest);
+  //! as the incumbent. 5.G-5: forceFullScreen, a pick's DECIDE with the GUI over the video (a
+  //! pick sets at once, as today's direct set)
+  SStartResolve TxMidResolve(const DISPLAYSTATE::DecideInputs& latest,
+                             bool forceFullScreen = false);
   //! 5.G-3: P, a notice is queued (no lock: P's every-pass test)
   bool TxMidNoticesPending() const { return m_txNoticed.load(); }
   //! 5.G-3 (§4.3 b): P hands one decision back to main (3D start, no inputs): one consume with

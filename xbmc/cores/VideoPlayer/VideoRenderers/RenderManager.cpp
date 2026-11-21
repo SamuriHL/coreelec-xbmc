@@ -4394,12 +4394,13 @@ int CRenderManager::TxMidPlayEnd(bool raise, bool owed)
 }
 
 CRenderManager::SStartResolve CRenderManager::TxMidResolve(
-    const DISPLAYSTATE::DecideInputs& latest)
+    const DISPLAYSTATE::DecideInputs& latest, bool forceFullScreen)
 {
   // r2 N1: W's last committed mode, not GC's (main's publish lags W's commit)
   DISPLAYSTATE::DecideInputs in = latest;
   in.res.videoResolution = MidIncumbent(in.res, DISPLAYSTATE::Get());
-  return ResolveStart(0, in, in.fullScreenRoot, in.fullScreenVideo && in.fullScreenRoot);
+  return ResolveStart(0, in, in.fullScreenRoot || forceFullScreen,
+                      (in.fullScreenVideo && in.fullScreenRoot) || forceFullScreen);
 }
 
 void CRenderManager::TxMidHandBack(const char* why)
