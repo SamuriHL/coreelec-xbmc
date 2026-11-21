@@ -15,7 +15,10 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/log.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
+
+#include <optional>
 
 namespace OUTPUT
 {
@@ -110,6 +113,13 @@ SettingsContainer CSettingsMirror::Load()
     m_values[id] = ValueOf(*setting);
     ids.insert(id);
   }
+  const auto peak = m_values.find(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
+  const std::optional<int> peakValue =
+      peak != m_values.end() ? std::optional<int>(peak->second) : std::nullopt;
+  lock.unlock();
+  // 5.G2 GT-2 (M6): a profile load's peak is a GUI-only regime epoch
+  if (peakValue)
+    DISPLAYSTATE::PublishRegimePeak(*peakValue);
   return ids;
 }
 
@@ -171,8 +181,13 @@ bool CSettingsMirror::OnSettingChanging(const std::shared_ptr<const CSetting>& s
 void CSettingsMirror::Store(const std::shared_ptr<const CSetting>& setting)
 {
   const int value = ValueOf(*setting);
-  std::unique_lock lock(m_mutex);
-  m_values[setting->GetId()] = value;
+  {
+    std::unique_lock lock(m_mutex);
+    m_values[setting->GetId()] = value;
+  }
+  // 5.G2 GT-2 (M6): main's peak read takes this value, so the published peak changes with it
+  if (setting->GetId() == CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE)
+    DISPLAYSTATE::PublishRegimePeak(value);
 }
 
 CSettingsMirror::CScopedValue::CScopedValue(const std::string& id, int value)

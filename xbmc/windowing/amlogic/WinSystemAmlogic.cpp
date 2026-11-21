@@ -49,6 +49,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -2918,7 +2919,7 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 {
   const int guiSdrPeak = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
 
-  return ((0.7f * guiSdrPeak + 30.0f) / 100.0f);
+  return DISPLAYSTATE::GuiPeakCode(guiSdrPeak);
 }
 
 HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()

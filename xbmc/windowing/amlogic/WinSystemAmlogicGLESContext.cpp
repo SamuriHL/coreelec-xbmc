@@ -37,6 +37,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/WireClassProbe.h"
 
@@ -844,6 +845,8 @@ bool CWinSystemAmlogicGLESContext::InitRenderSystem()
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - start)
                   .count());
+    // 5.G2 GT-2: compositeAvailable is main's to publish, once after this build
+    DISPLAYSTATE::RegimeInit(built, UseLimitedColor(), GetGuiSdrPeakLuminance());
   }
   return true;
 }
@@ -3875,6 +3878,7 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
     if (!BuildCompositeShader())
     {
       m_guiCompositing = false;
+      DISPLAYSTATE::PublishRegimeComposite(false, "composite build");
       return false;
     }
 
@@ -3892,10 +3896,13 @@ bool CWinSystemAmlogicGLESContext::SetGuiCompositing(int colorTransfer)
       CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create LUTs");
       m_compositeShader.reset();
       m_guiCompositing = false;
+      DISPLAYSTATE::PublishRegimeComposite(false, "composite luts");
       return false;
     }
     m_guiCompositeTransfer = colorTransfer;
     m_guiCompositePeak = peak;
+    // a composite rebuilt after a failure is available again (no epoch when it already was)
+    DISPLAYSTATE::PublishRegimeComposite(true, "composite built");
   }
   else
   {
