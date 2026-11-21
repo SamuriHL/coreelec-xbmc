@@ -243,7 +243,10 @@ void CAdvancedSettings::Initialize()
 
   m_videoDecoderTimeout = 5;
   m_videoPresentationCoordinator = true;
-  m_videoGraphicsPlane = 0;
+  // 5.G2 GT-1 (D-G2-4): -1 = not set in advancedsettings.xml. The window system
+  // resolves it per SoC (on where the presentation work is validated, else off);
+  // an explicit 0-2 from the file always wins.
+  m_videoGraphicsPlane = -1;
 
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
