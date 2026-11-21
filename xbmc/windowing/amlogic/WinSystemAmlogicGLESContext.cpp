@@ -3816,6 +3816,13 @@ bool CWinSystemAmlogicGLESContext::HdrGraphicsOnPlane() const
   return m_guiCompositing && m_graphicsPlane && m_graphicsPlane->CanShow();
 }
 
+const char* CWinSystemAmlogicGLESContext::GraphicsTickRefusal() const
+{
+  if (!m_graphicsPlane)
+    return "graphicsplane";
+  return m_graphicsPlane->TickRefusal();
+}
+
 void CWinSystemAmlogicGLESContext::PresentHdrGraphics(const SHdrGraphics& graphics)
 {
   if (!m_graphicsPlane)

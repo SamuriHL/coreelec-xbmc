@@ -91,6 +91,7 @@ public:
   }
   bool IsHdrComposite() const override { return m_guiCompositing; }
   bool HdrGraphicsOnPlane() const override;
+  const char* GraphicsTickRefusal() const override;
   void PresentHdrGraphics(const SHdrGraphics& graphics) override;
   void ClearOverlayPlane() override;
 

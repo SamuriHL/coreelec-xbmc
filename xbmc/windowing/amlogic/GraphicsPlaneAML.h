@@ -10,12 +10,15 @@
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
+#include "windowing/amlogic/GraphicsRasterAML.h"
+#include "windowing/amlogic/GraphicsTick.h"
 #include "threads/CriticalSection.h"
 #include "threads/Event.h"
 #include "threads/Thread.h"
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <vector>
@@ -26,11 +29,12 @@
 
 class CAMLDisplay;
 class CDVDOverlayImage;
-class CGraphicsRasterAML;
+class CDVDSubtitlesLibass;
 class CPresentationCoordinator;
 struct gbm_bo;
 struct gbm_device;
 struct gbm_surface;
+typedef struct _drmModeAtomicReq* drmModeAtomicReqPtr;
 
 namespace KODI::UTILS::EGL
 {
@@ -67,8 +71,11 @@ public:
   void SwitchOff(const char* who);
   //! true once it can take graphics over from the GUI plane
   bool CanShow() const;
-  //! shows these graphics from the next frame on (an empty set hides the plane)
+  //! shows these graphics from the next frame on (an empty set hides the plane). On the GT-4
+  //! route: the untimed images, drawn over each timed composition
   void Show(SHdrGraphics graphics);
+  //! 5.G2 GT-4 (any thread): why it cannot draw the timed graphics; nullptr: it can
+  const char* TickRefusal() const;
 
 protected:
   void Process() override;
@@ -90,11 +97,13 @@ private:
   bool TakeShown();
   void UpdateTextures();
   void DrawGraphics();
-  //! where the image goes on the plane, in plane pixels
-  CRect Place(const CDVDOverlayImage& image, const STexture& texture) const;
+  //! where the image goes on the plane, in plane pixels, over the video rects of g
+  CRect Place(const CDVDOverlayImage& image, const STexture& texture, const SHdrGraphics& g) const;
   //! draws and submits a frame; false when it could not be handed over. pts:
   //! the video frame a new composition goes with (placement count only)
   bool SubmitFrame(bool visible, int64_t nowNs, double pts = DVD_NOPTS_VALUE);
+  //! after a draw: the swap, the buffer and its flip request; false leaves nothing locked
+  bool TakeFrame(gbm_bo*& bo, uint32_t& fb, drmModeAtomicReqPtr& req, int& fence);
   //! re-commits what is on screen with the current geometry (R6)
   bool SubmitGeometry();
   void ReleaseReturned();
@@ -103,6 +112,56 @@ private:
   void InitRaster();
   //! gselftest: m_shown through G's renderer offscreen, timed; every Nth against the reference
   void ShadowDraw();
+
+  // 5.G2 GT-4: the timed graphics, drawn ahead and picked by C per tick
+  //! one picture's overlays as drawn: what a later picture is compared with
+  struct SComposition
+  {
+    uint64_t serial = 0;
+    double pts = 0.0;
+    OVERLAY::FrameOverlays overlays;
+    GRAPHICSTICK::SRects rects; //!< the ones it was (or is to be) drawn with
+    std::vector<const CDVDOverlay*> images; //!< identity: the images ...
+    std::vector<std::shared_ptr<const OVERLAY::SQuads>> glyphs; //!< ... and libass's output
+    bool hidden = false; //!< no video window: drawn cleared (D-G2-1)
+    bool redraw = false; //!< submitted, but an input of its draw changed since
+  };
+  //! one route step; true when work is left that waits for a buffer
+  bool RouteStep();
+  void RouteStart();
+  void RouteEnd();
+  //! the libass output of comp's overlays at its pts over its rects
+  void RenderLibass(SComposition& comp);
+  bool Same(const SComposition& a, const SComposition& b) const;
+  //! false: no buffer free now
+  bool CanDraw() const;
+  bool DrawTimed(SComposition& comp);
+  bool SubmitClear(uint64_t serial);
+  CGraphicsRasterAML::SRegime RouteRegime();
+  GRAPHICSTICK::SRects RouteRects(const SComposition& comp) const;
+
+  bool m_routeOn = false;
+  bool m_routeClearOwed = false; //!< at the start and at a floor: what the plane shows goes
+  uint64_t m_routeClearSerial = 0;
+  bool m_routeEndClearOwed = false; //!< the route's end (item 11), retried until submitted
+  //! each libass handler's output at its last render: a render reporting no change shows it
+  std::map<const CDVDSubtitlesLibass*, std::shared_ptr<const OVERLAY::SQuads>> m_assLast;
+  uint64_t m_routeSession = 0;
+  std::deque<GRAPHICSTICK::SQueued> m_routeQueue;
+  bool m_routeHasPending = false;
+  SComposition m_routePending; //!< built from the queue's front, waiting for a buffer
+  SComposition m_routeLast; //!< the newest composition taken (drawn or not)
+  std::vector<SComposition> m_routeDrawn; //!< submitted from the one of the frame on screen on
+  bool m_routeLastVisible = false;
+  bool m_routeHaveReleased = false;
+  GRAPHICSTICK::SReleased m_routeReleased;
+  uint64_t m_routeFloorGen = 0;
+  uint64_t m_routeLayoutGen = 0;
+  uint64_t m_routeAppliedEpoch = 0;
+  float m_routePeak = -1.0f;
+  uint64_t m_routeRegimeEpoch = 0; //!< the raster's cache key, one per (applied epoch, peak)
+  bool m_routeHidden = false;
+  std::atomic<bool> m_rasterReady{false};
 
   static constexpr int WIDTH = 1920;
   static constexpr int HEIGHT = 1080;

@@ -9,6 +9,8 @@
 #include "GraphicsPlaneAML.h"
 
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
+#include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibass.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h"
 #include "filesystem/File.h"
@@ -17,7 +19,11 @@
 #include "utils/EGLUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/GraphicsRasterAML.h"
+#include "settings/Settings.h"
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/GraphicsRegime.h"
+#include "windowing/amlogic/GuiSnapshot.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -139,6 +145,7 @@ bool CGraphicsPlaneAML::Start()
     return false;
   }
   m_gholdMs = TestHoldMs();
+  GRAPHICSTICK::SetWake([this] { m_wake.Set(); });
   Create();
   return true;
 }
@@ -169,6 +176,7 @@ void CGraphicsPlaneAML::Stop()
   m_bStop = true;
   m_wake.Set();
   StopThread(true);
+  GRAPHICSTICK::SetWake(nullptr);
 }
 
 bool CGraphicsPlaneAML::InitGL()
@@ -395,7 +403,26 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
     glDisable(GL_SCISSOR_TEST);
   }
 
+  gbm_bo* bo = nullptr;
+  uint32_t fb = 0;
+  drmModeAtomicReqPtr req = nullptr;
   int fence = -1;
+  if (!TakeFrame(bo, fb, req, fence))
+    return false;
+  const uint64_t seq =
+      m_coordinator->Submit(CPresentationCoordinator::PLANE_GRAPHICS, bo, fb, req, fence, pts);
+  m_lastFb = fb;
+  m_lastVisible = visible;
+  m_coordinator->WaitTaken(seq, 50ms);
+  return true;
+}
+
+bool CGraphicsPlaneAML::TakeFrame(gbm_bo*& bo,
+                                  uint32_t& fb,
+                                  drmModeAtomicReqPtr& req,
+                                  int& fence)
+{
+  fence = -1;
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
   if (m_fence)
     m_fence->CreateGPUFence();
@@ -407,27 +434,22 @@ bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
     fence = m_fence->FlushFence();
 #endif
 
-  gbm_bo* bo = gbm_surface_lock_front_buffer(m_gbmSurface);
-  const uint32_t fb = bo ? FbFromBo(bo) : 0;
+  bo = gbm_surface_lock_front_buffer(m_gbmSurface);
+  fb = bo ? FbFromBo(bo) : 0;
   const int refuseAt = OUTPUT::TestGraphicsRefuseAt();
   const bool refused = refuseAt > 0 && fb && (m_submits >= refuseAt || ++m_submits >= refuseAt);
-  drmModeAtomicReqPtr req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT, refused)
-                               : nullptr;
+  req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT, refused) : nullptr;
   if (!req)
   {
     if (bo)
       gbm_surface_release_buffer(m_gbmSurface, bo);
     if (fence >= 0)
       close(fence);
+    bo = nullptr;
+    fence = -1;
     return false;
   }
-
   m_locked++;
-  const uint64_t seq =
-      m_coordinator->Submit(CPresentationCoordinator::PLANE_GRAPHICS, bo, fb, req, fence, pts);
-  m_lastFb = fb;
-  m_lastVisible = visible;
-  m_coordinator->WaitTaken(seq, 50ms);
   return true;
 }
 
@@ -573,12 +595,14 @@ void CGraphicsPlaneAML::UpdateTextures()
 
 // COverlayTextureGLES's placement followed by COverlay::CRenderer::Render's,
 // then scaled from the GUI's space to the plane
-CRect CGraphicsPlaneAML::Place(const CDVDOverlayImage& o, const STexture& texture) const
+CRect CGraphicsPlaneAML::Place(const CDVDOverlayImage& o,
+                               const STexture& texture,
+                               const SHdrGraphics& g) const
 {
-  const CRect& rs = m_shown.source;
-  const CRect& rd = m_shown.dest;
-  const CRect& rv = m_shown.view;
-  if (m_shown.width <= 0 || m_shown.height <= 0 || rs.IsEmpty())
+  const CRect& rs = g.source;
+  const CRect& rd = g.dest;
+  const CRect& rv = g.view;
+  if (g.width <= 0 || g.height <= 0 || rs.IsEmpty())
     return CRect();
 
   bool relative = false;
@@ -640,8 +664,8 @@ CRect CGraphicsPlaneAML::Place(const CDVDOverlayImage& o, const STexture& textur
               r.x1 + texture.crop.x2 * bx, r.y1 + texture.crop.y2 * by);
   }
 
-  const float toPlaneX = WIDTH / m_shown.width;
-  const float toPlaneY = HEIGHT / m_shown.height;
+  const float toPlaneX = WIDTH / g.width;
+  const float toPlaneY = HEIGHT / g.height;
   return CRect(r.x1 * toPlaneX, r.y1 * toPlaneY, r.x2 * toPlaneX, r.y2 * toPlaneY);
 }
 
@@ -662,7 +686,7 @@ void CGraphicsPlaneAML::DrawGraphics()
     const auto it = m_textures.find(image.get());
     if (it == m_textures.end() || !it->second.texture)
       continue;
-    const CRect r = Place(static_cast<const CDVDOverlayImage&>(*image), it->second);
+    const CRect r = Place(static_cast<const CDVDOverlayImage&>(*image), it->second, m_shown);
     if (r.IsEmpty())
       continue;
 
@@ -717,6 +741,7 @@ void CGraphicsPlaneAML::InitRaster()
     m_raster.reset();
     CLog::Log(LOGWARNING, "GTICK off (programs)");
   }
+  m_rasterReady = m_raster != nullptr;
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(0, 0, WIDTH, HEIGHT);
 }
@@ -757,7 +782,7 @@ void CGraphicsPlaneAML::ShadowDraw()
     box.width = texture->width;
     box.height = texture->height;
     box.crop = texture->crop;
-    const CRect rect = Place(static_cast<const CDVDOverlayImage&>(*image), box);
+    const CRect rect = Place(static_cast<const CDVDOverlayImage&>(*image), box, m_shown);
     if (rect.IsEmpty())
       continue;
     images.push_back(image);
@@ -792,6 +817,438 @@ void CGraphicsPlaneAML::ShadowDraw()
   glViewport(0, 0, WIDTH, HEIGHT);
 }
 
+const char* CGraphicsPlaneAML::TickRefusal() const
+{
+  if (m_testPattern)
+    return "graphicsplane test pattern";
+  if (!m_ready)
+    return "plane not ready";
+  if (m_coordinator->GraphicsRefused())
+    return "plane refused";
+  if (!m_rasterReady)
+    return "programs";
+  return nullptr;
+}
+
+namespace
+{
+// the GUI's space the video rects are in: W's committed GUI row, else the one main drew in
+void GuiSize(float& width, float& height)
+{
+  width = 0.0f;
+  height = 0.0f;
+  if (const auto state = DISPLAYSTATE::Get())
+  {
+    width = static_cast<float>(state->wRow.width);
+    height = static_cast<float>(state->wRow.height);
+  }
+  GUISNAPSHOT::SSnapshot snapshot;
+  if ((width <= 0.0f || height <= 0.0f) && GUISNAPSHOT::Read(snapshot) && snapshot.valid)
+  {
+    width = static_cast<float>(snapshot.row.width);
+    height = static_cast<float>(snapshot.row.height);
+  }
+}
+
+bool IsLibass(const CDVDOverlay& o)
+{
+  return o.IsOverlayType(DVDOVERLAY_TYPE_TEXT) || o.IsOverlayType(DVDOVERLAY_TYPE_SSA);
+}
+} // namespace
+
+CGraphicsRasterAML::SRegime CGraphicsPlaneAML::RouteRegime()
+{
+  const DISPLAYSTATE::MainApplied applied = DISPLAYSTATE::GetMainApplied();
+  // main's GUI reads the peak live from the mirror (GetGuiSdrPeakLuminance's rule)
+  const float peak = DISPLAYSTATE::GuiPeakCode(OUTPUT::CSettingsMirror::Get().GetInt(
+      CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE));
+  if (applied.epoch != m_routeAppliedEpoch || peak != m_routePeak)
+  {
+    m_routeAppliedEpoch = applied.epoch;
+    m_routePeak = peak;
+    m_routeRegimeEpoch++;
+    for (SComposition& comp : m_routeDrawn)
+      comp.redraw = true;
+    CLog::Log(LOGINFO, "GREGIME G draws in main's applied epoch={} class={} limited={} peak={:.4f}",
+              applied.epoch, DISPLAYSTATE::GuiEncodingName(applied.encoding),
+              applied.limited ? 1 : 0, peak);
+  }
+  CGraphicsRasterAML::SRegime regime;
+  regime.epoch = m_routeRegimeEpoch;
+  regime.encoding = applied.encoding;
+  regime.limited = applied.limited;
+  regime.peak = peak;
+  return regime;
+}
+
+GRAPHICSTICK::SRects CGraphicsPlaneAML::RouteRects(const SComposition& comp) const
+{
+  // the area is the display's, not the picture's: C's newest
+  if (m_routeHaveReleased && m_routeReleased.rects.valid)
+    return m_routeReleased.rects;
+  return comp.rects;
+}
+
+void CGraphicsPlaneAML::RenderLibass(SComposition& comp)
+{
+  comp.glyphs.clear();
+  const OVERLAY::SSubtitleLayout layout = OVERLAY::PublishedSubtitleLayout();
+  const GRAPHICSTICK::SRects rects = RouteRects(comp);
+  for (const OVERLAY::SFrameOverlay& o : comp.overlays)
+  {
+    if (!o.overlay || !IsLibass(*o.overlay))
+      continue;
+    auto& ass = static_cast<CDVDOverlayLibass&>(*o.overlay);
+    const std::shared_ptr<CDVDSubtitlesLibass> handler = ass.GetLibassHandler();
+    if (!handler || !layout.style || !rects.valid || rects.view.IsEmpty())
+    {
+      comp.glyphs.emplace_back();
+      continue;
+    }
+    const KODI::SUBTITLES::STYLE::renderOpts opts =
+        OVERLAY::LibassRenderOpts(layout, ass, rects.source, rects.dest, rects.view);
+    // the images are libass's until its next render, on any thread
+    std::unique_lock lock(handler->RenderSection());
+    int changes = 0;
+    ASS_Image* images = handler->RenderImage(o.pts, opts, layout.style, &changes);
+    std::shared_ptr<const OVERLAY::SQuads>& last = m_assLast[handler.get()];
+    if (!images)
+      last.reset();
+    else if (changes > 0 || !last)
+    {
+      auto quads = std::make_shared<OVERLAY::SQuads>();
+      if (OVERLAY::convert_quad(images, *quads, static_cast<int>(opts.frameWidth)))
+        last = std::move(quads);
+      else
+        last.reset();
+    }
+    comp.glyphs.push_back(last);
+  }
+}
+
+bool CGraphicsPlaneAML::Same(const SComposition& a, const SComposition& b) const
+{
+  return a.images == b.images && a.glyphs == b.glyphs && a.hidden == b.hidden;
+}
+
+bool CGraphicsPlaneAML::CanDraw() const
+{
+  // depth LOCK_CAP - 2 ahead: the buffer on screen and the one in flight are C's too
+  return m_locked < LOCK_CAP && m_coordinator->TimedHeld() < LOCK_CAP - 2;
+}
+
+bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
+{
+  if (!CanDraw())
+    return false;
+  const CGraphicsRasterAML::SRegime regime = RouteRegime();
+  m_raster->SetRegime(regime);
+  const GRAPHICSTICK::SRects rects = RouteRects(comp);
+  comp.rects = rects;
+  SHdrGraphics area;
+  area.source = rects.source;
+  area.dest = rects.dest;
+  area.view = rects.view;
+  GuiSize(area.width, area.height);
+
+  std::vector<std::shared_ptr<CDVDOverlay>> kept;
+  std::vector<CGraphicsRasterAML::SImage> placed;
+  std::vector<CGraphicsRasterAML::SGlyphs> glyphs;
+  bool visible = false;
+  const auto place = [&](const std::shared_ptr<CDVDOverlay>& image, const SHdrGraphics& g)
+  {
+    const CGraphicsRasterAML::STexture* texture = m_raster->Expand(image);
+    if (!texture)
+      return false;
+    STexture box;
+    box.width = texture->width;
+    box.height = texture->height;
+    box.crop = texture->crop;
+    const CRect rect = Place(static_cast<const CDVDOverlayImage&>(*image), box, g);
+    if (rect.IsEmpty())
+      return false;
+    kept.push_back(image);
+    placed.push_back({texture, rect});
+    return true;
+  };
+  if (!comp.hidden && rects.valid && area.width > 0 && area.height > 0)
+  {
+    for (const OVERLAY::SFrameOverlay& o : comp.overlays)
+      if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+        visible |= place(o.overlay, area);
+    // the untimed bridge: main's present-latest images, over the frame's, in Composite only
+    // (in Srgb and Scalar main draws them on the GUI plane)
+    if (regime.encoding == DISPLAYSTATE::GuiEncoding::Composite)
+      for (const std::shared_ptr<CDVDOverlay>& image : m_shown.images)
+        place(image, m_shown);
+    const float toPlaneX = WIDTH / area.width;
+    const float toPlaneY = HEIGHT / area.height;
+    for (const std::shared_ptr<const OVERLAY::SQuads>& quads : comp.glyphs)
+    {
+      if (!quads)
+        continue;
+      CGraphicsRasterAML::SGlyphs item;
+      item.quads = quads;
+      item.frameWidth = rects.view.Width();
+      item.frameHeight = rects.view.Height();
+      item.view = CRect(rects.view.x1 * toPlaneX, rects.view.y1 * toPlaneY,
+                        rects.view.x2 * toPlaneX, rects.view.y2 * toPlaneY);
+      glyphs.push_back(std::move(item));
+      visible = true;
+    }
+  }
+  m_raster->Retain(kept, glyphs);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, WIDTH, HEIGHT);
+  glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  m_raster->Draw(placed, glyphs, 0);
+
+  gbm_bo* bo = nullptr;
+  uint32_t fb = 0;
+  drmModeAtomicReqPtr req = nullptr;
+  int fence = -1;
+  if (!TakeFrame(bo, fb, req, fence))
+    return false;
+  m_coordinator->SubmitTimed(bo, fb, req, fence, comp.pts, comp.serial, false, visible);
+  m_lastFb = fb;
+  m_lastVisible = !placed.empty() || !glyphs.empty();
+  m_routeLastVisible = m_lastVisible;
+  comp.redraw = false;
+  return true;
+}
+
+bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
+{
+  if (m_locked >= LOCK_CAP)
+    return false;
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, WIDTH, HEIGHT);
+  glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  gbm_bo* bo = nullptr;
+  uint32_t fb = 0;
+  drmModeAtomicReqPtr req = nullptr;
+  int fence = -1;
+  if (!TakeFrame(bo, fb, req, fence))
+    return false;
+  m_coordinator->SubmitTimed(bo, fb, req, fence, DVD_NOPTS_VALUE, serial, true, false);
+  m_lastFb = fb;
+  m_lastVisible = false;
+  m_routeLastVisible = false;
+  return true;
+}
+
+void CGraphicsPlaneAML::RouteStart()
+{
+  m_routeOn = true;
+  m_routeQueue.clear();
+  m_routeHasPending = false;
+  m_routePending = SComposition();
+  m_routeLast = SComposition();
+  m_routeDrawn.clear();
+  m_routeHaveReleased = false;
+  m_routeFloorGen = GRAPHICSTICK::Floor().gen;
+  m_routeLayoutGen = 0;
+  m_assLast.clear();
+  // route C's images (main's whole set until now) leave the plane
+  m_shown = SHdrGraphics();
+  m_untimed.clear();
+  m_redraw = false;
+  m_routeEndClearOwed = false;
+  m_routeClearOwed = true;
+  m_routeClearSerial = 0;
+  CLog::Log(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
+}
+
+void CGraphicsPlaneAML::RouteEnd()
+{
+  m_routeOn = false;
+  m_routeQueue.clear();
+  m_routeHasPending = false;
+  m_routePending = SComposition();
+  m_routeLast = SComposition();
+  m_routeDrawn.clear();
+  m_assLast.clear();
+  m_raster->Retain({}, {});
+  m_shown = SHdrGraphics();
+  m_untimed.clear();
+  m_routeClearOwed = false;
+  // item 11: the stop's clear is G's (VP's HasVisibleOverlay-gated clear reads empty here)
+  m_routeEndClearOwed = true;
+  CLog::Log(LOGINFO, "GTICK G off: the timed graphics are main's again");
+}
+
+bool CGraphicsPlaneAML::RouteStep()
+{
+  GRAPHICSTICK::SInbox in;
+  GRAPHICSTICK::Take(in);
+  if (in.session != m_routeSession)
+  {
+    m_routeSession = in.session;
+    if (m_routeOn)
+      RouteEnd();
+    if (in.on)
+      RouteStart();
+  }
+  if (!m_routeOn)
+    return false;
+
+  if (m_coordinator->GraphicsRefused())
+  {
+    GRAPHICSTICK::EndRoute("plane refused");
+    RouteEnd();
+    return false;
+  }
+  GUISNAPSHOT::SSnapshot snapshot;
+  if (GUISNAPSHOT::Read(snapshot) && snapshot.valid)
+  {
+    // D-G2-2: a stereo output mode hands the graphics back to main
+    if (snapshot.stereoMode != static_cast<int>(RenderStereoMode::OFF))
+    {
+      GRAPHICSTICK::EndRoute("stereo");
+      RouteEnd();
+      return false;
+    }
+    // D-G2-1: no video window shown, no graphics
+    const bool hidden = !snapshot.fullScreenVideo && snapshot.videoRect.IsEmpty();
+    if (hidden != m_routeHidden)
+    {
+      m_routeHidden = hidden;
+      for (SComposition& comp : m_routeDrawn)
+      {
+        comp.hidden = hidden;
+        comp.redraw = true;
+      }
+      m_routeLast.hidden = hidden;
+    }
+  }
+
+  for (GRAPHICSTICK::SQueued& queued : in.queued)
+    m_routeQueue.push_back(std::move(queued));
+
+  // M2: a flush's floor; the plane shows nothing at or below it from C's next slot
+  if (in.floor.gen != m_routeFloorGen)
+  {
+    m_routeFloorGen = in.floor.gen;
+    const uint64_t floor = in.floor.floor;
+    while (!m_routeQueue.empty() && m_routeQueue.front().serial <= floor)
+      m_routeQueue.pop_front();
+    if (m_routeHasPending && m_routePending.serial <= floor)
+      m_routeHasPending = false;
+    m_routeDrawn.erase(std::remove_if(m_routeDrawn.begin(), m_routeDrawn.end(),
+                                      [floor](const SComposition& c) { return c.serial <= floor; }),
+                       m_routeDrawn.end());
+    if (m_routeLast.serial <= floor)
+    {
+      const bool hidden = m_routeLast.hidden;
+      m_routeLast = SComposition();
+      m_routeLast.hidden = hidden;
+    }
+    m_routeClearOwed = true;
+    m_routeClearSerial = floor;
+  }
+
+  if (in.released)
+  {
+    const GRAPHICSTICK::SRects& was = m_routeReleased.rects;
+    const GRAPHICSTICK::SRects& now = in.last.rects;
+    const bool moved = !m_routeHaveReleased || was.valid != now.valid || was.rgen != now.rgen ||
+                       was.source != now.source || was.dest != now.dest || was.view != now.view;
+    m_routeReleased = in.last;
+    m_routeHaveReleased = true;
+    // compositions before the frame on screen are no longer anyone's
+    size_t current = 0;
+    for (size_t i = 0; i < m_routeDrawn.size(); i++)
+      if (m_routeDrawn[i].serial <= in.last.serial)
+        current = i;
+    m_routeDrawn.erase(m_routeDrawn.begin(), m_routeDrawn.begin() + current);
+    if (moved)
+      for (SComposition& comp : m_routeDrawn)
+        comp.redraw = true;
+  }
+  if (m_routeDrawn.size() > 8)
+    m_routeDrawn.erase(m_routeDrawn.begin(), m_routeDrawn.end() - 8);
+
+  const uint64_t layoutGen = OVERLAY::PublishedSubtitleLayout().gen;
+  if (layoutGen != m_routeLayoutGen)
+  {
+    m_routeLayoutGen = layoutGen;
+    for (SComposition& comp : m_routeDrawn)
+      if (!comp.glyphs.empty())
+        comp.redraw = true;
+  }
+  RouteRegime();
+  // the untimed bridge: main's composition changed
+  if (TakeShown())
+  {
+    m_redraw = false;
+    m_untimed.clear();
+    for (SComposition& comp : m_routeDrawn)
+      comp.redraw = true;
+    if (m_routeDrawn.empty() && !m_routeHasPending && m_routeQueue.empty())
+    {
+      // nothing timed yet: a composition of no picture carries them
+      SComposition comp = m_routeLast;
+      comp.redraw = true;
+      m_routeDrawn.push_back(std::move(comp));
+    }
+  }
+
+  if (m_routeClearOwed)
+  {
+    if (!SubmitClear(m_routeClearSerial))
+      return true;
+    m_routeClearOwed = false;
+  }
+  for (SComposition& comp : m_routeDrawn)
+  {
+    if (!comp.redraw)
+      continue;
+    if (!comp.glyphs.empty())
+      RenderLibass(comp);
+    if (!DrawTimed(comp))
+      return true;
+  }
+  // timed first: in serial order, a draw only where the composition changed
+  while (m_routeHasPending || !m_routeQueue.empty())
+  {
+    if (!m_routeHasPending)
+    {
+      GRAPHICSTICK::SQueued queued = std::move(m_routeQueue.front());
+      m_routeQueue.pop_front();
+      SComposition comp;
+      comp.serial = queued.serial;
+      comp.pts = queued.pts;
+      comp.overlays = std::move(queued.overlays);
+      comp.rects = queued.rects;
+      comp.hidden = m_routeHidden;
+      for (const OVERLAY::SFrameOverlay& o : comp.overlays)
+        if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+          comp.images.push_back(o.overlay.get());
+      RenderLibass(comp);
+      if (Same(comp, m_routeLast))
+      {
+        GRAPHICSTICK::NoteProcessed(comp.serial);
+        continue;
+      }
+      m_routePending = std::move(comp);
+      m_routeHasPending = true;
+    }
+    if (!DrawTimed(m_routePending))
+      return true;
+    GRAPHICSTICK::NoteProcessed(m_routePending.serial);
+    m_routeLast = m_routePending;
+    m_routeDrawn.push_back(std::move(m_routePending));
+    m_routePending = SComposition();
+    m_routeHasPending = false;
+  }
+  return false;
+}
+
 void CGraphicsPlaneAML::Process()
 {
   OUTPUT::SetThreadRole("G");
@@ -824,6 +1281,12 @@ void CGraphicsPlaneAML::Process()
     // its submits are dropped from now on, so what it last showed would stay
     if (m_coordinator->GraphicsRefused())
     {
+      if (m_routeOn)
+      {
+        GRAPHICSTICK::EndRoute("plane refused");
+        RouteEnd();
+        m_routeEndClearOwed = false;
+      }
       if (!m_refusedOff)
       {
         SwitchOff("refused");
@@ -843,20 +1306,41 @@ void CGraphicsPlaneAML::Process()
     }
     // a display transaction moved or rescaled the CRTC: the plane still has
     // the old rect until committed again (R6)
+    // GT-4 on the route: a fresh timed buffer of what is shown
+    const auto resubmitShown = [this]
+    {
+      if (!m_routeOn)
+        return SubmitGeometry();
+      for (SComposition& comp : m_routeDrawn)
+        comp.redraw = true;
+      if (m_routeDrawn.empty())
+        m_routeClearOwed = true;
+      return true;
+    };
     const unsigned int epoch = aml_presenter_epoch();
-    if (epoch != m_epoch && (m_testPattern || SubmitGeometry()))
+    if (epoch != m_epoch && (m_testPattern || resubmitShown()))
       m_epoch = epoch;
     // 5.B3-10a: C retries a suspect graphics plane with a fresh frame (a static one sends none)
     const uint64_t resubmit = m_coordinator->GraphicsResubmit();
-    if (resubmit != m_resubmit && (m_testPattern || SubmitGeometry()))
+    if (resubmit != m_resubmit && (m_testPattern || resubmitShown()))
       m_resubmit = resubmit;
     if (m_testPattern)
     {
       if (!SubmitFrame(true, MonotonicNs()))
         m_wake.Wait(16ms);
     }
+    else if (m_rasterReady && (m_routeOn || GRAPHICSTICK::RouteSession() != m_routeSession))
+    {
+      const bool blocked = RouteStep();
+      if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
+        m_routeEndClearOwed = false;
+      m_wake.Wait(blocked || m_routeEndClearOwed ? 4ms : 100ms);
+    }
     else
     {
+      // GT-4: the route's end clear goes before route C's next frame
+      if (m_routeEndClearOwed && SubmitClear(0))
+        m_routeEndClearOwed = false;
       if (TakeShown())
       {
         m_shadowOwed = m_raster && m_selfTest;
