@@ -397,8 +397,8 @@ constexpr float ST2084_m2 = (2523.0f / 4096.0f) * 128.0f;
 constexpr float ST2084_c1 = 3424.0f / 4096.0f;
 constexpr float ST2084_c2 = (2413.0f / 4096.0f) * 32.0f;
 constexpr float ST2084_c3 = (2392.0f / 4096.0f) * 32.0f;
+} // namespace
 
-// PQ code value (0-1) -> linear (1.0 == 10000 nits).
 float DecodePQ(float x)
 {
   x = std::clamp(x, 0.0f, 1.0f);
@@ -408,6 +408,8 @@ float DecodePQ(float x)
   return std::pow(num / den, 1.0f / ST2084_m1);
 }
 
+namespace
+{
 float LinearToSrgbComponent(float c)
 {
   c = std::clamp(c, 0.0f, 1.0f);

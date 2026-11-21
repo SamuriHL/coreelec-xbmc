@@ -47,6 +47,12 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay);
 //! untouched.
 void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette);
 
+//! PQ code value (0-1) to linear light (1.0 == 10000 nits): the decode
+//! ConvertPQPaletteToSRGB runs per channel. Exported so that a GPU version of
+//! that conversion (the Amlogic graphics plane's pass 1) builds its table from
+//! these very float steps rather than a copy of them.
+float DecodePQ(float x);
+
 //! paletteOverride, when non-null, is used in place of o.palette - e.g.
 //! a palette already converted by ConvertPQPaletteToSRGB() above. o.pixels
 //! (the per-pixel palette indices) is always taken from o itself either way.
