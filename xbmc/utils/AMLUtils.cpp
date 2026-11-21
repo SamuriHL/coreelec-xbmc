@@ -17,6 +17,7 @@
 #include "AMLUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "utils/PresentationTimeline.h"
 #include "windowing/amlogic/SettingsMirror.h"
@@ -621,6 +622,8 @@ static std::atomic<unsigned int> s_dv_output_mode{DOLBY_VISION_OUTPUT_MODE_BYPAS
 void aml_dv_set_output_mode(unsigned int mode, DISPLAYSTATE::DvWriter writer)
 {
   const unsigned int old = s_dv_output_mode.exchange(mode);
+  // 5.G2 GT-2: before the OutputChanged post, so main's re-encode finds it published
+  DISPLAYSTATE::PublishRegimeDvMode(mode, writer);
   DISPLAYSTATE::PublishDvMode(old, mode, writer);
 }
 unsigned int aml_dv_get_output_mode() { return s_dv_output_mode; }

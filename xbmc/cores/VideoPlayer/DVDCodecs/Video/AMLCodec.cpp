@@ -28,6 +28,7 @@
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "utils/StreamDetails.h"
@@ -2636,6 +2637,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
         else if (!aml_dv_disc_engaged())
           AmlDisplay->aml_set_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC, 0);
 
+        // 5.G2 GT-2: the facts W resolves the published class from (the stream's pictures
+        // carry these hints)
+        DISPLAYSTATE::NoteRegimeStream(hints.hdrType, hints.colorTransferCharacteristic);
         // Publish the resolved output mode so CRendererAML::Configure encodes the
         // GUI/OSD to match the actual signal the sink receives this stream.
         aml_dv_set_output_mode(dv_output_mode, DISPLAYSTATE::DV_WRITER_DV_APPLY);
