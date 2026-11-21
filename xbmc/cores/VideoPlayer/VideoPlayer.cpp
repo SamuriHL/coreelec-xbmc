@@ -3387,6 +3387,10 @@ void CVideoPlayer::LogTransactionShadow(bool arm,
 // term (aml_transaction_loss_base) is tested by the caller first: the word exists only with it
 const char* CVideoPlayer::TxEngageRefusal(const char* where)
 {
+  // ruling D6 (P5-24): a DVD keeps today's start, a logged legacy open, until one is gated;
+  // also refuses its reopens (TxReopenAllowed), so no START and no mid-play path session
+  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+    return "dvd (D6)";
   if (!m_scheduledStart)
     return "scheduled start off";
   if (aml_transaction_skip("start"))
