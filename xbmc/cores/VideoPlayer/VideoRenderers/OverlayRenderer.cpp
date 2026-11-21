@@ -754,10 +754,12 @@ void CRenderer::SetTimedOnPlane(bool onPlane)
   if (onPlane == m_timedOnPlane)
     return;
   m_timedOnPlane = onPlane;
-  // whichever side draws next starts from the frame's own list
+  // whichever side draws next starts from the frame's own list; libass reports its changes
+  // against the last render, which G may have made
   Release(m_frameList);
   m_frameSerial = 0;
   m_prevImageSpuCount = 0;
+  ReleaseCache();
 }
 
 void CRenderer::PrepareOverlays(int idx,
