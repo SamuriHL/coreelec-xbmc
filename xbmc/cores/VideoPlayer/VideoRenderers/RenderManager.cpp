@@ -794,6 +794,9 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // short-circuit
   const char* changeReason = nullptr;
   uint64_t p533Skipped = 0;
+#if defined(HAS_LIBAMCODEC)
+  bool regimeRepublish = false;
+#endif
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
@@ -819,7 +822,13 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 #else
     else if (m_pRenderer->ConfigChanged(picture))
 #endif
+    {
       changeReason = "ConfigChanged";
+#if defined(HAS_LIBAMCODEC)
+      // 5.G2 GT-2 (M7): only the Amlogic renderer's class (a software-decode renderer applies none)
+      regimeRepublish = dynamic_cast<CRendererAML*>(m_pRenderer.get()) != nullptr;
+#endif
+    }
     else if (TestForceSwap() && m_testForceSwap.exchange(false))
       changeReason = "forceswap";
     if (!changeReason)
@@ -876,10 +885,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // 5.E2-7 (L-9): the gates count reconfigures without debug logging (shadow sessions only)
   if (aml_transaction_shadow_on())
     CLog::Log(LOGINFO, "RM configure change {} ({})", ++m_configureChanges, changeReason);
-  // 5.G2 GT-2 (M7): a class change W did not publish (a DV write off W, a picture whose facts
-  // differ from its decoder's open) reaches the published regime through W
-  if (std::strcmp(changeReason, "ConfigChanged") == 0)
-    DISPLAYSTATE::RequestRegimeRepublish(picture.hdrType, picture.color_transfer, "configchanged");
+  // 5.G2 GT-2 (M7): a class change W did not publish (a DV write off W) reaches the published
+  // regime through W
+  if (regimeRepublish)
+    DISPLAYSTATE::RequestRegimeRepublish("configchanged");
 #endif
 
   // make sure any queued frame was fully presented
@@ -6171,7 +6180,7 @@ void CRenderManager::ReencodeOnOutputChange()
     if (reencoded)
     {
       // 5.G2 GT-2 (M7): before the apply, which the shadow then compares with W's publish
-      DISPLAYSTATE::RequestRegimeRepublish(picture.hdrType, picture.color_transfer, "reencode");
+      DISPLAYSTATE::RequestRegimeRepublish("reencode");
       aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay, "reencode");
       encoding = aml->GuiEncodingName();
     }
@@ -6195,8 +6204,7 @@ void CRenderManager::ReencodeOnOutputChange()
       const CVideoSettings settings = m_pRenderer->GetVideoSettings();
       RecordViewMode(settings.m_ViewMode, settings, "B2-8");
       // 5.G2 GT-2 (M7): before Configure's apply (a post: W's queue lock only)
-      DISPLAYSTATE::RequestRegimeRepublish(m_picture.hdrType, m_picture.color_transfer,
-                                           "reencode");
+      DISPLAYSTATE::RequestRegimeRepublish("reencode");
       reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation);
       outcome = reencoded ? "CRendererAML::Configure, no new picture"
                           : "CRendererAML::Configure failed";

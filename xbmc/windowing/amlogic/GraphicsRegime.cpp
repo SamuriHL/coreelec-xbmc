@@ -142,19 +142,17 @@ void Log(const std::string& line)
     CLog::Log(LOGINFO, "{}", line);
 }
 
-void RepublishOnW(uint64_t n, SStream stream, const char* why)
+void RepublishOnW(uint64_t n, const char* why)
 {
   const unsigned int mode = aml_dv_get_output_mode();
   const bool isHdrDisplay = PublishedHdrDisplay();
-  const GuiEncoding encoding =
-      CRendererAML::ResolveGuiEncoding(stream.hdrType, stream.transfer, mode, isHdrDisplay);
   std::string publish;
   std::string shadow;
   {
     std::unique_lock lock(s_mutex);
-    s_stream = stream;
     GraphicsRegime next = s_pub;
-    next.encoding = encoding;
+    next.encoding = CRendererAML::ResolveGuiEncoding(s_stream.hdrType, s_stream.transfer, mode,
+                                                     isHdrDisplay);
     next.dvOutputMode = mode;
     next.isHdrDisplay = isHdrDisplay;
     PublishLocked(next, why, publish);
@@ -312,9 +310,7 @@ void PublishRegimeDvMode(unsigned int mode, DvWriter writer)
   Log(line);
 }
 
-void RequestRegimeRepublish(StreamHdrType hdrType,
-                            AVColorTransferCharacteristic transfer,
-                            const char* why)
+void RequestRegimeRepublish(const char* why)
 {
   if (!RegimeOn())
     return;
@@ -323,9 +319,7 @@ void RequestRegimeRepublish(StreamHdrType hdrType,
     std::unique_lock lock(s_mutex);
     n = ++s_requested;
   }
-  const SStream stream{hdrType, transfer};
-  PostRequest(n, "gregime republish",
-              [stream, why](uint64_t request) { RepublishOnW(request, stream, why); });
+  PostRequest(n, "gregime republish", [why](uint64_t request) { RepublishOnW(request, why); });
 }
 
 void RegimeStop()

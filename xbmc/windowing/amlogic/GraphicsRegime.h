@@ -89,10 +89,9 @@ void PublishRegimeDvMode(unsigned int mode, DvWriter writer);
 
 // main's requests to W
 //! M7: a class change from main's per-picture ConfigChanged (V's Configure, B2-8): posted to W,
-//! which re-resolves from these facts with its own DV mode and caps
-void RequestRegimeRepublish(StreamHdrType hdrType,
-                            AVColorTransferCharacteristic transfer,
-                            const char* why);
+//! which re-resolves from its own stream facts (DvApply's alone: a posted picture may be an old
+//! decoder's), the current DV mode and caps
+void RequestRegimeRepublish(const char* why);
 //! EndRenderSession: main's stop regime (Srgb), compared with W's publish of it
 void RegimeStop();
 
