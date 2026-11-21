@@ -104,8 +104,11 @@ bool aml_presentation_validated()
 
 bool aml_geometrytick_validated()
 {
-  // 5.V3 (Q5 (b)): G12B joins after its look through VRROOM input 0
-  return aml_get_cpufamily_id() == AML_S6;
+  // 5.V3 (Q5 (b)): G12B joins after its look through VRROOM input 0.
+  // 5.G-6: G12B listed, so the transaction needs no geometrytick_on there; geometrytick_off is
+  // the exit on both
+  const int id = aml_get_cpufamily_id();
+  return id == AML_S6 || id == AML_G12B;
 }
 
 bool aml_codec_speed_fix()

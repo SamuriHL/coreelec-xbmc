@@ -70,7 +70,7 @@ int  aml_get_cpufamily_id();
 // the SoCs the presentation timeline work is validated on (S6, G12B): elsewhere
 // the player keeps today's behaviour
 bool aml_presentation_validated();
-//! 5.V3's list (Q5): the SoCs its switch is on by default on (S6)
+//! 5.V3's list (Q5): the SoCs its switch is on by default on (S6; G12B from 5.G-6)
 bool aml_geometrytick_validated();
 //! 5.C: the decoder keeps the stream's speed across its open and a display
 //! hold pauses it; the DV wait is re-armed per file (validated, A/B switch)
