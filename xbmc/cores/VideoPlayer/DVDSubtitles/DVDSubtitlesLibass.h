@@ -13,6 +13,7 @@
 #include "utils/ColorUtils.h"
 
 #include <memory>
+#include <thread>
 
 #include <ass/ass.h>
 #include <ass/ass_types.h>
@@ -172,6 +173,7 @@ private:
   ASSSubType m_subtitleType{NATIVE};
 
   std::shared_ptr<const struct KODI::SUBTITLES::STYLE::style> m_appliedStyle;
+  std::thread::id m_lastRenderThread; //!< under m_section
 
   // current default style ID of the ASS track
   int m_currentDefaultStyleId{ASS_NO_ID};

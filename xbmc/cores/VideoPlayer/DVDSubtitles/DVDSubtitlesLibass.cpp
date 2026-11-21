@@ -404,7 +404,14 @@ ASS_Image* CDVDSubtitlesLibass::RenderImage(double pts,
   // if the playback occurs in sequence (without seeks) the overlapped subtitles lines will be rendered in right order
   // if you seek forward/backward the video, the overlapped subtitles lines could be rendered in the wrong order
   // this is a known side effect from libass devs and not a bug from our part
-  return ass_render_frame(m_renderer, m_track, DVD_TIME_TO_MSEC(pts), changes);
+  ASS_Image* images = ass_render_frame(m_renderer, m_track, DVD_TIME_TO_MSEC(pts), changes);
+  // libass reports changes against the last render, whichever thread made it; a caller caching
+  // the output of its own renders must see a change when another thread rendered in between
+  const std::thread::id thread = std::this_thread::get_id();
+  if (thread != m_lastRenderThread && changes && images)
+    *changes = 2;
+  m_lastRenderThread = thread;
+  return images;
 }
 
 void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<struct style>& subStyle,
