@@ -125,16 +125,17 @@ private:
     std::vector<std::shared_ptr<const OVERLAY::SQuads>> glyphs; //!< ... and libass's output
     bool hidden = false; //!< no video window: drawn cleared (D-G2-1)
     bool redraw = false; //!< submitted, but an input of its draw changed since
+    bool bridge = false; //!< the untimed images alone (no picture's overlays shown)
   };
   //! one route step; true when work is left that waits for a buffer
   bool RouteStep();
-  void RouteStart();
+  void RouteStart(uint64_t floorGen);
   void RouteEnd();
   //! the libass output of comp's overlays at its pts over its rects
   void RenderLibass(SComposition& comp);
   bool Same(const SComposition& a, const SComposition& b) const;
   //! false: no buffer free now
-  bool CanDraw() const;
+  bool CanDraw(bool redraw) const;
   bool DrawTimed(SComposition& comp);
   bool SubmitClear(uint64_t serial);
   CGraphicsRasterAML::SRegime RouteRegime();

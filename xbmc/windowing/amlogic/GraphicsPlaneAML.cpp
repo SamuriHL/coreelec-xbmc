@@ -10,6 +10,7 @@
 
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayStereoUtils.h"
 #include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibass.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h"
@@ -900,7 +901,10 @@ void CGraphicsPlaneAML::RenderLibass(SComposition& comp)
       continue;
     auto& ass = static_cast<CDVDOverlayLibass&>(*o.overlay);
     const std::shared_ptr<CDVDSubtitlesLibass> handler = ass.GetLibassHandler();
-    if (!handler || !layout.style || !rects.valid || rects.view.IsEmpty())
+    if (!handler || !layout.style || !rects.valid || rects.view.IsEmpty() ||
+        !KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(o.overlay->m_stereoView,
+                                                           RenderStereoView::OFF,
+                                                           layout.stereomode))
     {
       comp.glyphs.emplace_back();
       continue;
@@ -931,15 +935,17 @@ bool CGraphicsPlaneAML::Same(const SComposition& a, const SComposition& b) const
   return a.images == b.images && a.glyphs == b.glyphs && a.hidden == b.hidden;
 }
 
-bool CGraphicsPlaneAML::CanDraw() const
+bool CGraphicsPlaneAML::CanDraw(bool redraw) const
 {
-  // depth LOCK_CAP - 2 ahead: the buffer on screen and the one in flight are C's too
-  return m_locked < LOCK_CAP && m_coordinator->TimedHeld() < LOCK_CAP - 2;
+  // depth LOCK_CAP - 2 ahead: the buffer on screen and the one in flight are C's too. A redraw
+  // replaces C's buffer of its serial, or the one on screen (review rB M-2: paused with two drawn
+  // ahead, a setting change still shows)
+  return m_locked < LOCK_CAP && (redraw || m_coordinator->TimedHeld() < LOCK_CAP - 2);
 }
 
 bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
 {
-  if (!CanDraw())
+  if (!CanDraw(comp.redraw))
     return false;
   const CGraphicsRasterAML::SRegime regime = RouteRegime();
   m_raster->SetRegime(regime);
@@ -955,8 +961,14 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
   std::vector<CGraphicsRasterAML::SImage> placed;
   std::vector<CGraphicsRasterAML::SGlyphs> glyphs;
   bool visible = false;
+  const std::string stereomode = OVERLAY::PublishedSubtitleLayout().stereomode;
   const auto place = [&](const std::shared_ptr<CDVDOverlay>& image, const SHdrGraphics& g)
   {
+    // review rB m-4: a 3D source's eye halves, as main's Render picks them (mono output: the
+    // route is off in a stereo output mode)
+    if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(image->m_stereoView,
+                                                           RenderStereoView::OFF, stereomode))
+      return false;
     const CGraphicsRasterAML::STexture* texture = m_raster->Expand(image);
     if (!texture)
       return false;
@@ -1012,7 +1024,8 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
   int fence = -1;
   if (!TakeFrame(bo, fb, req, fence))
     return false;
-  m_coordinator->SubmitTimed(bo, fb, req, fence, comp.pts, comp.serial, false, visible);
+  m_coordinator->SubmitTimed(bo, fb, req, fence, comp.pts, comp.serial, false, visible,
+                             comp.bridge);
   m_lastFb = fb;
   m_lastVisible = !placed.empty() || !glyphs.empty();
   m_routeLastVisible = m_lastVisible;
@@ -1042,7 +1055,7 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
   return true;
 }
 
-void CGraphicsPlaneAML::RouteStart()
+void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
 {
   m_routeOn = true;
   m_routeQueue.clear();
@@ -1051,7 +1064,7 @@ void CGraphicsPlaneAML::RouteStart()
   m_routeLast = SComposition();
   m_routeDrawn.clear();
   m_routeHaveReleased = false;
-  m_routeFloorGen = GRAPHICSTICK::Floor().gen;
+  m_routeFloorGen = floorGen;
   m_routeLayoutGen = 0;
   m_assLast.clear();
   // route C's images (main's whole set until now) leave the plane
@@ -1061,6 +1074,7 @@ void CGraphicsPlaneAML::RouteStart()
   m_routeEndClearOwed = false;
   m_routeClearOwed = true;
   m_routeClearSerial = 0;
+  GRAPHICSTICK::NoteGSide(m_routeSession, true);
   CLog::Log(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
 }
 
@@ -1079,6 +1093,8 @@ void CGraphicsPlaneAML::RouteEnd()
   m_routeClearOwed = false;
   // item 11: the stop's clear is G's (VP's HasVisibleOverlay-gated clear reads empty here)
   m_routeEndClearOwed = true;
+  // main renders the timed libass overlays again from here (review rA M1)
+  GRAPHICSTICK::NoteGSide(m_routeSession, false);
   CLog::Log(LOGINFO, "GTICK G off: the timed graphics are main's again");
 }
 
@@ -1092,7 +1108,7 @@ bool CGraphicsPlaneAML::RouteStep()
     if (m_routeOn)
       RouteEnd();
     if (in.on)
-      RouteStart();
+      RouteStart(in.floor.gen);
   }
   if (!m_routeOn)
     return false;
@@ -1110,8 +1126,6 @@ bool CGraphicsPlaneAML::RouteStep()
     if (snapshot.stereoMode != static_cast<int>(RenderStereoMode::OFF))
     {
       GRAPHICSTICK::EndRoute("stereo");
-      // impl note §6 item 14: the regime's class at the hand-back, from W's own facts
-      DISPLAYSTATE::RequestRegimeRepublish("stereo hand-back");
       RouteEnd();
       return false;
     }
@@ -1144,12 +1158,10 @@ bool CGraphicsPlaneAML::RouteStep()
     m_routeDrawn.erase(std::remove_if(m_routeDrawn.begin(), m_routeDrawn.end(),
                                       [floor](const SComposition& c) { return c.serial <= floor; }),
                        m_routeDrawn.end());
-    if (m_routeLast.serial <= floor)
-    {
-      const bool hidden = m_routeLast.hidden;
-      m_routeLast = SComposition();
-      m_routeLast.hidden = hidden;
-    }
+    // the plane is cleared: the next picture is drawn whatever it shows (review rB M-1)
+    const bool hidden = m_routeLast.hidden;
+    m_routeLast = SComposition();
+    m_routeLast.hidden = hidden;
     m_routeClearOwed = true;
     m_routeClearSerial = floor;
   }
@@ -1193,8 +1205,10 @@ bool CGraphicsPlaneAML::RouteStep()
       comp.redraw = true;
     if (m_routeDrawn.empty() && !m_routeHasPending && m_routeQueue.empty())
     {
-      // nothing timed yet: a composition of no picture carries them
+      // nothing timed drawn since the start or a floor: the untimed images alone, at C's next
+      // slot and under no floor (review rA M2)
       SComposition comp = m_routeLast;
+      comp.bridge = true;
       comp.redraw = true;
       m_routeDrawn.push_back(std::move(comp));
     }
@@ -1206,6 +1220,9 @@ bool CGraphicsPlaneAML::RouteStep()
       return true;
     m_routeClearOwed = false;
   }
+  // review rA M1: no libass render before main has stopped its own (main wakes G)
+  if (GRAPHICSTICK::MainSide() != m_routeSession)
+    return false;
   for (SComposition& comp : m_routeDrawn)
   {
     if (!comp.redraw)
@@ -1234,6 +1251,8 @@ bool CGraphicsPlaneAML::RouteStep()
       RenderLibass(comp);
       if (Same(comp, m_routeLast))
       {
+        // the bridge's serial: the newest picture, never one under a later floor
+        m_routeLast.serial = comp.serial;
         GRAPHICSTICK::NoteProcessed(comp.serial);
         continue;
       }
@@ -1243,6 +1262,10 @@ bool CGraphicsPlaneAML::RouteStep()
     if (!DrawTimed(m_routePending))
       return true;
     GRAPHICSTICK::NoteProcessed(m_routePending.serial);
+    // a bridge is only for while nothing timed is drawn
+    m_routeDrawn.erase(std::remove_if(m_routeDrawn.begin(), m_routeDrawn.end(),
+                                      [](const SComposition& c) { return c.bridge; }),
+                       m_routeDrawn.end());
     m_routeLast = m_routePending;
     m_routeDrawn.push_back(std::move(m_routePending));
     m_routePending = SComposition();
@@ -1333,10 +1356,11 @@ void CGraphicsPlaneAML::Process()
     }
     else if (m_rasterReady && (m_routeOn || GRAPHICSTICK::RouteSession() != m_routeSession))
     {
-      const bool blocked = RouteStep();
+      RouteStep();
       if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
-      m_wake.Wait(blocked || m_routeEndClearOwed ? 4ms : 100ms);
+      // C wakes G for a buffer back, main for its side; only the end clear polls
+      m_wake.Wait(m_routeEndClearOwed ? 4ms : 100ms);
     }
     else
     {
@@ -1373,6 +1397,8 @@ void CGraphicsPlaneAML::Process()
   }
 
   m_ready = false;
+  if (m_routeOn)
+    GRAPHICSTICK::NoteGSide(m_routeSession, false);
   SwitchOff("stop");
   ReleaseReturned();
   DeinitGL();
