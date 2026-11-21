@@ -598,6 +598,9 @@ protected:
   void RenderWithoutPicture(bool gui, bool configured);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
   bool GraphicsWithheld();
+  //! GraphicsWithheld past its fullscreen check; stateLocked: the caller holds m_statelock
+  //! (5.G2 GT-4: C's tick, with main's fullscreen from GuiSnapshot)
+  bool GraphicsWithheldFullScreen(bool stateLocked);
 #if defined(HAS_LIBAMCODEC)
   //! GUNTIMED (guntimed_log, main): a change of the untimed HDR images, or their going
   //! away, is a post. toPlane: route C's posts, sent with the images; null: route B's,

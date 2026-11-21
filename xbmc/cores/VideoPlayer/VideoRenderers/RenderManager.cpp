@@ -1720,7 +1720,24 @@ void CRenderManager::FrameMove()
 #if defined(HAS_LIBAMCODEC)
   // GT-4: main keeps the untimed graphics; follows a route G or V ended mid-file
   if (GRAPHICSTICK::Requested())
-    m_overlays.SetTimedOnPlane(GRAPHICSTICK::RouteOn());
+  {
+    bool on;
+    uint64_t session;
+    GRAPHICSTICK::RouteState(on, session);
+    // review rA M1: libass frees a render's images at the next render on any thread: main
+    // renders the timed ones again only once G has left the route
+    m_overlays.SetTimedOnPlane(on || GRAPHICSTICK::GSide().on);
+    if (on)
+    {
+      GRAPHICSTICK::NoteMainSide(session);
+      // review rB m-3: the published subtitle position follows C's area, not main's last pass
+      CRect src, dst, view;
+      unsigned int rgen = 0;
+      if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get());
+          aml && aml->VideoGeometryFromC(src, dst, view, rgen))
+        m_overlays.SetVideoRect(src, dst, view);
+    }
+  }
 #endif
   m_overlays.PrepareOverlays(source, segmentGen, framed ? &overlays : nullptr, serial);
   if (stallArmed)
@@ -1751,6 +1768,8 @@ void CRenderManager::BeginFile()
   m_filePicturesFrom = m_picturesAdded.load();
 #if defined(HAS_LIBAMCODEC)
   GRAPHICSTICK::NewFile();
+  if (GRAPHICSTICK::Requested())
+    OVERLAY::ResetPublishedSubtitleLayout();
 #endif
   // a new file: any phase still pending belongs to the last one, and so does
   // its output mode decision (a running player opening the next file skips
@@ -2432,6 +2451,11 @@ bool CRenderManager::GraphicsWithheld()
 {
   if (!CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())
     return false;
+  return GraphicsWithheldFullScreen(false);
+}
+
+bool CRenderManager::GraphicsWithheldFullScreen(bool stateLocked)
+{
 #if defined(HAS_LIBAMCODEC)
   // 5.E2-8a (D3): an engaged start's graphics, from OPEN
   if (aml_transaction_on() && m_txStartHeld)
@@ -2473,6 +2497,9 @@ bool CRenderManager::GraphicsWithheld()
     return false;
   // only a configured video start: a BD-J screen with no playlist behind it
   // has no mode to wait for (a fullscreen toggle also raises the trigger)
+  if (stateLocked)
+    return m_renderState == STATE_CONFIGURED &&
+           std::chrono::steady_clock::now() - m_videostarted < std::chrono::seconds(12);
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   return m_renderState == STATE_CONFIGURED &&
@@ -6451,6 +6478,17 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   if (m_renderState != STATE_CONFIGURED || m_vConfiguring || !m_presenterMode || !m_pRenderer)
     return;
   result.configured = true;
+#if defined(HAS_LIBAMCODEC)
+  // GT-4 (review rA m3, rB m-2): main's GraphicsWithheld, its fullscreen read from main's
+  // published snapshot, the last clause under the m_statelock held here
+  if (GRAPHICSTICK::RouteOn())
+  {
+    GUISNAPSHOT::SSnapshot snapshot;
+    const bool fullScreen = !GUISNAPSHOT::Read(snapshot) || !snapshot.valid ||
+                            snapshot.fullScreenVideo;
+    result.graphicsWithheld = fullScreen && GraphicsWithheldFullScreen(true);
+  }
+#endif
   if (GeometryTickSession())
     FillGeometryIn(result.geom);
   result.displayLost = m_displayLost;
@@ -6666,16 +6704,6 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     result.segmentGen = m_Queue[m_presentsource].segmentGen;
   }
 #if defined(HAS_LIBAMCODEC)
-  // GT-4: GraphicsWithheld's holds a tick can read (no GUI state, no m_statelock)
-  if (GRAPHICSTICK::RouteOn())
-  {
-    const int64_t fromNs = m_txGraphicsFromNs.load(std::memory_order_acquire);
-    result.graphicsWithheld =
-        m_startHeld || (aml_transaction_on() && m_txStartHeld && !m_txStartHeldBoundLogged) ||
-        (fromNs != 0 && std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch())
-                                .count() < fromNs);
-  }
 #endif
 
   // a worker's start picture: released where a waiting AddVideoPicture would be
