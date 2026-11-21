@@ -1110,6 +1110,8 @@ bool CGraphicsPlaneAML::RouteStep()
     if (snapshot.stereoMode != static_cast<int>(RenderStereoMode::OFF))
     {
       GRAPHICSTICK::EndRoute("stereo");
+      // impl note §6 item 14: the regime's class at the hand-back, from W's own facts
+      DISPLAYSTATE::RequestRegimeRepublish("stereo hand-back");
       RouteEnd();
       return false;
     }
