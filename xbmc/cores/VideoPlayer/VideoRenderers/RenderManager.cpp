@@ -39,6 +39,8 @@
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/GraphicsRegime.h"
+#include "windowing/amlogic/GraphicsTick.h"
+#include "windowing/amlogic/GuiSnapshot.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -769,6 +771,64 @@ bool CRenderManager::GeometryTickRenderer() const
 {
   return m_presenterMode && V34On();
 }
+
+void CRenderManager::SetDecoderSideOnV(bool on)
+{
+  m_decoderSideOnV = on;
+#if defined(HAS_LIBAMCODEC)
+  UpdateGraphicsRoute();
+#endif
+}
+
+#if defined(HAS_LIBAMCODEC)
+const char* CRenderManager::GraphicsTickRefusal()
+{
+  if (!aml_transaction_on())
+    return "transaction_off";
+  if (!aml_vconfigure_on())
+    return "vconfigure_off";
+  // M1: the route draws the overlays that travel with the frame
+  if (!V27On())
+    return "V2-7";
+  // G and C place them with C's rects
+  if (!V34On())
+    return "geometrytick_off";
+  if (!GeometryTickSession() || !OverlaysTravel())
+    return "not on the presenter path";
+  if (!aml_presentation_validated())
+    return "unvalidated SoC";
+  {
+    std::unique_lock lock(m_statelock);
+    if (!dynamic_cast<CRendererAML*>(m_pRenderer.get()))
+      return "not the AML renderer";
+  }
+  // D-G2-2: stereo output keeps main's route
+  GUISNAPSHOT::SSnapshot snapshot;
+  if (GUISNAPSHOT::Read(snapshot) && snapshot.stereoMode != static_cast<int>(RenderStereoMode::OFF))
+    return "stereo";
+  if (const char* why = CServiceBroker::GetWinSystem()->GraphicsTickRefusal())
+    return why;
+  return GRAPHICSTICK::EndedWhy();
+}
+
+void CRenderManager::UpdateGraphicsRoute()
+{
+  if (!GRAPHICSTICK::Requested())
+    return;
+  const char* why = GraphicsTickRefusal();
+  const unsigned int file = m_fileGen;
+  if (!why)
+  {
+    m_gtickOnFile = file;
+    GRAPHICSTICK::SetRoute(true, "configure");
+  }
+  // a route that ends mid-file stays ended for the file, today's routes take over
+  else if (m_gtickOnFile == file && GRAPHICSTICK::RouteOn())
+    GRAPHICSTICK::EndRoute(why);
+  else
+    GRAPHICSTICK::SetRoute(false, why);
+}
+#endif
 
 // under m_statelock: V applies the decoder side (L6)
 void CRenderManager::DecoderSettingsChanged()
@@ -1657,6 +1717,10 @@ void CRenderManager::FrameMove()
   const bool stallArmed = m_overlays.TestStallArmed();
   const unsigned int added = m_picturesAdded;
   const auto stallStart = std::chrono::steady_clock::now();
+#if defined(HAS_LIBAMCODEC)
+  // GT-4: main keeps the untimed graphics; follows a route G or V ended mid-file
+  m_overlays.SetTimedOnPlane(GRAPHICSTICK::RouteOn());
+#endif
   m_overlays.PrepareOverlays(source, segmentGen, framed ? &overlays : nullptr, serial);
   if (stallArmed)
     CLog::Log(LOGWARNING,
@@ -1684,6 +1748,9 @@ void CRenderManager::BeginFile()
   }
 #endif
   m_filePicturesFrom = m_picturesAdded.load();
+#if defined(HAS_LIBAMCODEC)
+  GRAPHICSTICK::NewFile();
+#endif
   // a new file: any phase still pending belongs to the last one, and so does
   // its output mode decision (a running player opening the next file skips
   // PreInit; left set, a start from the GUI skipped its hold for the mode)
@@ -1866,6 +1933,10 @@ void CRenderManager::UnInit()
 
   // no renderer, no phase: audio must not wait for one
   m_dvdClock.ClearVsyncAdjust(true);
+#if defined(HAS_LIBAMCODEC)
+  // GT-4: G clears what it shows (item 11), with C still running
+  GRAPHICSTICK::SetRoute(false, "stop");
+#endif
   if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
   {
     m_initEvent.Reset();
@@ -2039,6 +2110,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
         std::unique_lock lock(m_presentlock);
         m_overlayFloor = std::max(m_overlayFloor, m_flushFloor);
       }
+#if defined(HAS_LIBAMCODEC)
+      GRAPHICSTICK::PostFloor(m_flushFloor, "main overlays-only flush");
+#endif
       flushOverlays();
       m_flushEvent.Set();
       return true;
@@ -2065,6 +2139,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
         std::unique_lock lock(m_presentlock);
         m_overlayFloor = m_overlaySerial;
       }
+#if defined(HAS_LIBAMCODEC)
+      GRAPHICSTICK::PostFloor(m_overlayFloor, "main flush");
+#endif
       flushOverlays();
       // 5.V2-4 (P5-88): one that drops its buffers would race V's AddVideoPicture: locked
       if (saveBuffers || !v24)
@@ -2080,6 +2157,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
     // 5.V2-7: the flushed overlays stay gone from the pictures already queued, as from the buffers
     // (again here: a picture V queued during the overlay flush is as stale)
     m_overlayFloor = m_overlaySerial;
+#if defined(HAS_LIBAMCODEC)
+    GRAPHICSTICK::PostFloor(m_overlayFloor, "flush");
+#endif
 
     if (m_pRenderer)
     {
@@ -2137,6 +2217,10 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
         std::unique_lock lock(m_presentlock);
         m_flushFloor = m_overlaySerial;
       }
+#if defined(HAS_LIBAMCODEC)
+      // M2: G and C drop at P's post, not when main gets to the flush
+      GRAPHICSTICK::PostFloor(m_flushFloor, "P's overlays-only post");
+#endif
       CLog::Log(LOGINFO, "VCONFIGURE flush: overlays only, the start picture kept");
       CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH, 1);
     }
@@ -2335,6 +2419,7 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
   if (GraphicsWithheld())
     return;
   m_overlays.SetVideoRect(view, view, view);
+  // no picture: the untimed composition only, which main keeps on the GT-4 route too
   m_overlays.Render(-1);
 }
 
@@ -2697,7 +2782,8 @@ bool CRenderManager::IsGuiLayer()
       if (m_renderDebug && m_debugTimer.IsTimePast())
         return true;
     }
-    return m_overlays.HasVisibleOverlay(index);
+    // GT-4: the timed overlays are G's; the read would only take the overlay lock (m1)
+    return !GRAPHICSTICK::RouteOn() && m_overlays.HasVisibleOverlay(index);
   }
 #endif
   {
@@ -5044,6 +5130,29 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
   dropped.swap(m.overlays);
   if (overlays)
     m.overlays = std::move(*overlays);
+#if defined(HAS_LIBAMCODEC)
+  // GT-4: G draws them ahead (item 2); a DVD's SPU stays on main's route (Q5, D6)
+  if (overlays && GRAPHICSTICK::RouteOn())
+  {
+    const bool spu = std::any_of(m.overlays.begin(), m.overlays.end(),
+                                 [](const OVERLAY::SFrameOverlay& o)
+                                 { return o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_SPU); });
+    if (spu)
+      GRAPHICSTICK::EndRoute("DVD (D6)");
+    else
+    {
+      GRAPHICSTICK::SQueued queued;
+      queued.serial = m.overlaySerial;
+      queued.pts = m.pts;
+      queued.segmentGen = m.segmentGen;
+      queued.overlays = m.overlays;
+      if (auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer.get()))
+        queued.rects.valid = aml->VideoGeometryFromC(queued.rects.source, queued.rects.dest,
+                                                     queued.rects.view, queued.rects.rgen);
+      GRAPHICSTICK::PostQueued(std::move(queued));
+    }
+  }
+#endif
   m_queued.push_back(m_free.front());
   m_free.pop_front();
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
@@ -6222,7 +6331,8 @@ void CRenderManager::ReencodeOnOutputChange()
     LogGuiEncoding("OutputChanged", epoch, encoding, m_playerGen, m_fileGen.load(), startNs,
                    locks);
   // a static GUI is not redrawn on its own, so the plane would keep pixels encoded for the old
-  // declaration; the overlay cache rebuilds for the new regime at that render
+  // declaration; the overlay cache rebuilds for the new regime at that render. On the GT-4 route
+  // still main's: its untimed graphics and the GUI (G redraws at the applied regime's change)
   OVERLAY::MarkDirty();
   CLog::Log(LOGINFO, "OUTPUTDRIVE B2-8 re-encode epoch={}: GUI marked dirty", epoch);
 }
@@ -6550,7 +6660,22 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     m_presentstep = PRESENT_FRAME;
     result.newFrame = true;
     result.pts = m_Queue[m_presentsource].pts;
+    result.overlaySerial =
+        m_Queue[m_presentsource].framedOverlays ? m_Queue[m_presentsource].overlaySerial : 0;
+    result.segmentGen = m_Queue[m_presentsource].segmentGen;
   }
+#if defined(HAS_LIBAMCODEC)
+  // GT-4: GraphicsWithheld's holds a tick can read (no GUI state, no m_statelock)
+  if (GRAPHICSTICK::RouteOn())
+  {
+    const int64_t fromNs = m_txGraphicsFromNs.load(std::memory_order_acquire);
+    result.graphicsWithheld =
+        m_startHeld || (aml_transaction_on() && m_txStartHeld && !m_txStartHeldBoundLogged) ||
+        (fromNs != 0 && std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                                .count() < fromNs);
+  }
+#endif
 
   // a worker's start picture: released where a waiting AddVideoPicture would be
   if (forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
@@ -6600,7 +6725,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       // 5.E2-6 (D8): the engaged open's first release is not the after-Reset drop
       const bool startPicture = std::exchange(m_txFirstRelease, false);
       static_cast<CRendererAML*>(m_pRenderer.get())
-          ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown, startPicture);
+          ->PresentFrameOnC(m_presentsource, result.qbufCodec, result.qbufShown, startPicture,
+                            &result.qbufIndex);
       if (m_txPrerollThisTick)
         txLog.lines.push_back(StringUtils::Format(
             "TXGATE pre-roll shown set={} epoch {} pts {:.3f} vblank {} shown {}",

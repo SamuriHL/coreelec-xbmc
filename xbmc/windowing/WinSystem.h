@@ -318,6 +318,8 @@ public:
   // them. A GUI frame that hands nothing over clears the plane.
   virtual bool HdrGraphicsOnPlane() const { return false; }
   virtual void PresentHdrGraphics(const SHdrGraphics& graphics) {}
+  //! 5.G2 GT-4: why the graphics plane cannot draw the timed graphics; nullptr: it can
+  virtual const char* GraphicsTickRefusal() const { return "no graphics plane"; }
 
   // Force the OSD/overlay plane to a cleared (opaque black) state right now by
   // presenting cleared buffers through the platform present path. Used at

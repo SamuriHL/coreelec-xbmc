@@ -145,6 +145,11 @@ struct SPresentResult
   std::shared_ptr<CAMLCodec> qbufCodec; //!< 5.V3-4: the QBUFed frame's decoder (the path)
   bool qbufShown = false; //!< queued to be shown
   bool wakeWorker = false; //!< 5.V3-4f: buffers freed on the path, the worker woken after the tick
+  // 5.G2 GT-4, the released frame (newFrame)
+  uint64_t overlaySerial = 0; //!< 0: its overlays do not travel with it
+  unsigned int segmentGen = 0;
+  int64_t qbufIndex = -1; //!< amlvideo's running v4l2 index; -1: not queued on the path
+  bool graphicsWithheld = false; //!< START to T0 or a held start: C commits no timed graphics
 };
 
 class CRenderManager
@@ -529,7 +534,8 @@ public:
   //! 5.V3-4: this renderer is on the path (the presenter, the latch); V adds its worker
   bool GeometryTickRenderer() const;
   //! 5.V3-4: V applies the decoder side; a settings or view mode change then wakes V
-  void SetDecoderSideOnV(bool on) { m_decoderSideOnV = on; }
+  //! 5.G2 GT-4: and the timed-graphics route is decided for the configure it follows
+  void SetDecoderSideOnV(bool on);
   unsigned int DecoderSettingsGen() const
   {
     return m_decoderSettingsGen.load(std::memory_order_relaxed);
@@ -1140,6 +1146,11 @@ protected:
   std::atomic<unsigned int> m_decoderSettingsGen{0};
   void DecoderSettingsChanged(); // under m_statelock
   bool GeometryTickSession() const { return m_decoderSideOnV && m_presenterMode; }
+  //! 5.G2 GT-4 (on V, after a configure): the route decision; nullptr: on
+  const char* GraphicsTickRefusal();
+  void UpdateGraphicsRoute();
+  //! the file the route was last on in
+  unsigned int m_gtickOnFile = 0;
   //! 5.V3-4: the view mode request C computes from (m_statelock)
   SViewModeRequest m_viewModeRequest;
   void RecordViewMode(int viewMode, const CVideoSettings& settings,
