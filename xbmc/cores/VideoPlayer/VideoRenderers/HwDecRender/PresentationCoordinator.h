@@ -171,6 +171,23 @@ public:
   //! GUNTIMED: the plane's next submit carries these posts to the flip that shows them
   void NoteUntimed(int plane, std::vector<SUntimedPost> posts);
 
+  /*!
+   * \brief 5.G2 GT-4 (G): a drawn timed composition, the overlays of the pictures from serial
+   * on. C holds it (a newer one of the same serial replaces it) and commits it at the tick that
+   * follows the release of a frame at or past serial (item 3). clear: a cleared buffer after a
+   * flush or at the route's end, shown at C's next slot. Ownership as Submit.
+   */
+  void SubmitTimed(gbm_bo* bo,
+                   uint32_t fb,
+                   drmModeAtomicReqPtr req,
+                   int fence,
+                   double pts,
+                   uint64_t serial,
+                   bool clear,
+                   bool visible);
+  //! G: timed buffers C holds and has not committed
+  int TimedHeld();
+
 protected:
   void Process() override;
 
@@ -196,6 +213,13 @@ private:
     bool cOwned = false; //!< C's cleared buffer (no bo, never returned)
     int64_t readyNs = 0; //!< 5.V3-1: committable from (its GPU fence signalled), monotonic
     std::vector<SUntimedPost> untimed; //!< GUNTIMED, incl. those of buffers it replaced
+    // GT-4
+    bool timed = false;
+    uint64_t serial = 0;
+    bool clear = false;
+    bool visible = false;
+    int64_t qbuf = -1; //!< of the frame it was picked for
+    uint64_t target = 0; //!< that frame's first vblank on VD1
   };
 
   struct Returned
@@ -298,6 +322,20 @@ private:
   void RunPlaneOffs(bool held);
   //! true: a hold landed first, nothing was released
   bool RunVideoTick(SPresentTick& tick);
+  //! GT-4 (C's thread): drops what a floor or a later pick made stale, and moves the buffer of
+  //! the frame on screen next into the graphics plane's queue. ticked: after a video tick
+  void SelectTimed(bool ticked);
+  //! GT-4: a released frame, for the pick at the next tick
+  struct SReleasedFrame
+  {
+    uint64_t serial = 0;
+    int64_t qbuf = -1;
+    uint64_t tick = 0;
+    bool valid = false;
+  };
+  SReleasedFrame m_gtReleased[2]; //!< [0] the newest, before this tick's
+  SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
+  bool m_gtWithheld = false;
   void RunWakeTail(); //!< 5.V3-4
   bool m_geometryOnC = false; //!< 5.V3-4: the last tick's session is on the path (C only)
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
@@ -368,6 +406,10 @@ private:
   int64_t m_tickPeriodNs = 0;
   int64_t m_commitNs = 0;
   double m_inFlightGfxPts = DVD_NOPTS_VALUE; //!< the graphics pts of the commit in flight
+  // GT-4, under m_uiMutex: the timed buffers by serial, and the one in the commit in flight
+  std::vector<UiBuffer> m_timed;
+  UiBuffer m_inFlightTimed; //!< its tags only (bo, req and fence are the commit's)
+  bool m_planeSubsVisible = false;
   std::vector<OnScreen> m_onScreen; //!< coordinator thread only
   double m_frameUs = 0.0;
   bool m_graphicsOn = false; //!< the graphics plane is enabled on screen
@@ -425,6 +467,9 @@ private:
     int gfxSuspect = 0; //!< 5.B3-10a: refusals held as suspect
     //! graphics flips by frames from their video frame: <-1, -1, 0, +1, >+1
     int gfxPlacement[5] = {};
+    //! GT-4: timed buffers placed after their frame's first vblank; ticks whose frame G had not
+    //! reached; timed buffers dropped unshown (replaced, passed, or under a floor)
+    int gfxLate = 0, gfxMissing = 0, gfxTimedReplaced = 0, gfxTimed = 0;
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart

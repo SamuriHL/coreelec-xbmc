@@ -9,12 +9,14 @@
 #include "PresentationCoordinator.h"
 
 #include "ServiceBroker.h"
+#include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "filesystem/File.h"
 #include "platform/linux/SysfsPath.h"
 #include "utils/AMLUtils.h"
 #include "utils/PresentationTimeline.h"
 #include "utils/log.h"
+#include "windowing/amlogic/GraphicsTick.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -194,6 +196,9 @@ void CPresentationCoordinator::Stop()
     std::unique_lock lock(m_uiMutex);
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       Drop(plane, m_planes[plane].ready);
+    for (UiBuffer& buffer : m_timed)
+      Drop(PLANE_GRAPHICS, buffer);
+    m_timed.clear();
     if (m_cbufReq)
       drmModeAtomicFree(m_cbufReq);
     m_cbufReq = nullptr;
@@ -895,6 +900,12 @@ void CPresentationCoordinator::ReclaimPlane(int plane)
   // buffer and its flip are dropped, never handed to the next surface.
   state.generation++;
   Drop(plane, state.ready);
+  if (plane == PLANE_GRAPHICS)
+  {
+    for (UiBuffer& buffer : m_timed)
+      Drop(plane, buffer);
+    m_timed.clear();
+  }
   if (state.committedBo)
     state.returned.push_back({state.committedBo, state.committedFb, state.committedEpoch});
   if (state.onScreen)
@@ -1054,6 +1065,8 @@ void CPresentationCoordinator::Process()
         SetState(State::IDLE, epoch);
         if (planeOffOnC)
           RunPlaneOffs(false);
+        // GT-4: the route's end clear, with no ticks to pick it
+        SelectTimed(false);
       }
       int flips;
       {
@@ -1084,6 +1097,8 @@ void CPresentationCoordinator::Process()
       m_report.synthetic++;
     }
     const bool tickHeld = RunVideoTick(tick);
+    if (!tickHeld)
+      SelectTimed(true);
     // the tick first (plan §3 V3-4)
     if (wakePending)
       RunWakeTail();
@@ -1223,6 +1238,7 @@ void CPresentationCoordinator::CommitUi()
     // a plane left out keeps what it shows (R3)
     Committing commit;
     std::vector<SUntimedPost> untimed;
+    UiBuffer timedTags;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
     {
       UiBuffer& ready = m_planes[plane].ready;
@@ -1264,6 +1280,16 @@ void CPresentationCoordinator::CommitUi()
       commit.cOwned |= ready.cOwned;
       if (s_untimedLog)
         untimed.insert(untimed.end(), ready.untimed.begin(), ready.untimed.end());
+      if (plane == PLANE_GRAPHICS && ready.timed)
+      {
+        timedTags.timed = true;
+        timedTags.serial = ready.serial;
+        timedTags.clear = ready.clear;
+        timedTags.visible = ready.visible;
+        timedTags.qbuf = ready.qbuf;
+        timedTags.target = ready.target;
+        timedTags.fb = ready.fb;
+      }
       ready = UiBuffer();
     }
     if (!commit.req)
@@ -1278,6 +1304,13 @@ void CPresentationCoordinator::CommitUi()
     if (s_untimedLog)
       m_untimedInFlight = std::move(untimed);
     m_inFlightGfxPts = commit.has[PLANE_GRAPHICS] ? commit.pts[PLANE_GRAPHICS] : DVD_NOPTS_VALUE;
+    m_inFlightTimed = timedTags;
+    // item 8: the L5 subtitle half of what G draws, with the commit that shows it
+    if (timedTags.timed && timedTags.visible != m_planeSubsVisible)
+    {
+      m_planeSubsVisible = timedTags.visible;
+      aml_dv_set_plane_subtitles_visible(m_planeSubsVisible);
+    }
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
   }
@@ -1447,6 +1480,132 @@ void CPresentationCoordinator::CommitWorker()
   }
 }
 
+void CPresentationCoordinator::SubmitTimed(gbm_bo* bo,
+                                           uint32_t fb,
+                                           drmModeAtomicReqPtr req,
+                                           int fence,
+                                           double pts,
+                                           uint64_t serial,
+                                           bool clear,
+                                           bool visible)
+{
+  {
+    std::unique_lock lock(m_uiMutex);
+    // a redraw (regime, geometry, untimed images) of a composition C still holds replaces it
+    auto it = std::find_if(m_timed.begin(), m_timed.end(),
+                           [&](const UiBuffer& b) { return b.serial == serial && b.clear == clear; });
+    if (it != m_timed.end())
+    {
+      Drop(PLANE_GRAPHICS, *it);
+      m_timed.erase(it);
+      m_report.gfxTimedReplaced++;
+    }
+    UiBuffer buffer;
+    buffer.bo = bo;
+    buffer.fb = fb;
+    buffer.req = req;
+    buffer.fence = fence;
+    buffer.pts = pts;
+    buffer.readyNs = fence < 0 ? MonotonicNs() : 0;
+    buffer.seq = ++m_submitSeq;
+    buffer.timed = true;
+    buffer.serial = serial;
+    buffer.clear = clear;
+    buffer.visible = visible;
+    const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), serial,
+                                     [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
+    m_timed.insert(at, std::move(buffer));
+    m_report.gfxSubmits++;
+  }
+  const uint64_t one = 1;
+  if (write(m_wakeFd, &one, sizeof(one)) < 0)
+    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+}
+
+int CPresentationCoordinator::TimedHeld()
+{
+  std::unique_lock lock(m_uiMutex);
+  return static_cast<int>(m_timed.size()) + (m_planes[PLANE_GRAPHICS].ready.timed ? 1 : 0);
+}
+
+void CPresentationCoordinator::SelectTimed(bool ticked)
+{
+  const bool on = GRAPHICSTICK::RouteOn();
+  const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
+  bool woke = false;
+  {
+    std::unique_lock lock(m_uiMutex);
+    if (m_timed.empty())
+    {
+      if (!on && m_planeSubsVisible)
+      {
+        m_planeSubsVisible = false;
+        aml_dv_set_plane_subtitles_visible(false);
+      }
+      return;
+    }
+    // M2: nothing at or below a floor is committed after it; a clear is the floor's own
+    for (auto it = m_timed.begin(); it != m_timed.end();)
+    {
+      if (!it->clear && (!on || it->serial <= floor.floor))
+      {
+        Drop(PLANE_GRAPHICS, *it);
+        it = m_timed.erase(it);
+        m_report.gfxTimedReplaced++;
+        woke = true;
+      }
+      else
+        ++it;
+    }
+    // the newest buffer of a picture at or before the frame on screen next; a clear goes at
+    // the first slot, before the start's T0 too (it only takes graphics away)
+    const SReleasedFrame& target = m_gtTarget;
+    int pick = -1;
+    for (int i = 0; i < static_cast<int>(m_timed.size()); i++)
+    {
+      const UiBuffer& b = m_timed[i];
+      if (b.clear || (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
+        pick = i;
+    }
+    if (pick < 0)
+    {
+      if (ticked && on && !m_gtWithheld && target.valid && target.serial > GRAPHICSTICK::Processed())
+        m_report.gfxMissing++;
+    }
+    else
+    {
+      for (int i = 0; i < pick; i++)
+      {
+        Drop(PLANE_GRAPHICS, m_timed[i]);
+        if (!m_timed[i].clear)
+          m_report.gfxTimedReplaced++;
+      }
+      UiBuffer chosen = std::move(m_timed[pick]);
+      m_timed.erase(m_timed.begin(), m_timed.begin() + pick + 1);
+      chosen.qbuf = target.qbuf;
+      chosen.target = target.tick + 2;
+      UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
+      if (ready.req)
+      {
+        if (ready.timed && !ready.clear)
+          m_report.gfxTimedReplaced++;
+        else
+          m_report.gfxReplaced++;
+        Drop(PLANE_GRAPHICS, ready);
+      }
+      ready = std::move(chosen);
+      woke = true;
+    }
+  }
+  if (woke)
+  {
+    m_uiCond.notify_all();
+    const uint64_t one = 1;
+    if (write(m_wakeFd, &one, sizeof(one)) < 0)
+      CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+  }
+}
+
 bool CPresentationCoordinator::UntimedLog()
 {
   return s_untimedLog;
@@ -1477,6 +1636,16 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     m_untimedInFlight.clear();
   }
   const int64_t untimedPeriodNs = m_untimedPeriodNs;
+  const UiBuffer timed = std::exchange(m_inFlightTimed, UiBuffer());
+  const int64_t periodNs = m_diagPeriodNs;
+  int delta = 0;
+  if (timed.timed && !timed.clear)
+  {
+    delta = static_cast<int32_t>(sequence - static_cast<unsigned int>(timed.target));
+    m_report.gfxTimed++;
+    if (delta > 0)
+      m_report.gfxLate++;
+  }
   if (m_inFlightGfxPts != DVD_NOPTS_VALUE)
     CountPlacement(m_inFlightGfxPts, sequence);
   bool cbufUp = false;
@@ -1563,6 +1732,12 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
               replaced ? std::to_string(shown.u) : std::string("self"),
               replaced ? "replaced" : post.cleared ? "cleared" : "shown");
   }
+  // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
+  if (timed.timed && timed.clear)
+    CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
+  else if (timed.timed)
+    CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={}",
+              timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb);
   if (cbufUp)
     CLog::Log(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
   if (replacedMs >= 0)
@@ -1622,6 +1797,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   m_lastTickNs = tick.wokeNs;
   // 5.V3-4: C's geometry tail, the RM locks released (outside work: the release is the QBUF's)
   m_geometryOnC = result.geom.renderer != nullptr;
+  const std::shared_ptr<CBaseRenderer> renderer = result.geom.renderer;
   if (m_geometryOnC)
   {
     const int64_t tailStart = MonotonicNs();
@@ -1636,6 +1812,37 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   // 5.V3-4f: the worker's wake for the buffers PresentTick freed, after the release
   if (result.wakeWorker)
     m_video->WakeWorkerOnC();
+
+  // GT-4: this tick picks for the frame released at an earlier one (G-X1, offset 1); the frame
+  // released now is G's next Released
+  if (GRAPHICSTICK::RouteOn() && result.configured)
+  {
+    m_gtTarget = GRAPHICSTICK::TestDelay1() ? m_gtReleased[1] : m_gtReleased[0];
+    m_gtWithheld = result.graphicsWithheld;
+    if (result.newFrame && tick.vblankNs && result.qbufShown && result.qbufIndex >= 0)
+    {
+      m_gtReleased[1] = m_gtReleased[0];
+      m_gtReleased[0] = {result.overlaySerial, result.qbufIndex, tick.seq, true};
+      GRAPHICSTICK::SReleased released;
+      released.serial = result.overlaySerial;
+      released.segmentGen = result.segmentGen;
+      released.qbuf = result.qbufIndex;
+      released.tick = tick.seq;
+      if (auto* aml = dynamic_cast<CRendererAML*>(renderer.get()))
+        released.rects.valid =
+            aml->VideoGeometryFromC(released.rects.source, released.rects.dest,
+                                    released.rects.view, released.rects.rgen);
+      GRAPHICSTICK::PostReleased(released);
+      if (GRAPHICSTICK::ReleasedLog())
+        CLog::Log(LOGINFO, "GRELEASED serial={} gen={} qbuf={} tick={}", released.serial,
+                  released.segmentGen, released.qbuf, released.tick);
+    }
+  }
+  else
+  {
+    m_gtReleased[0] = m_gtReleased[1] = m_gtTarget = SReleasedFrame();
+    m_gtWithheld = false;
+  }
 
   if (tick.vblankNs && OUTPUT::PlaneOffOnC())
   {
@@ -1865,6 +2072,9 @@ void CPresentationCoordinator::LogReport()
             r.gfxPlacement[3], r.gfxPlacement[4]);
   if (r.gfxSuspect)
     CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
+  if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
+    CLog::Log(LOGINFO, "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={}",
+              r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced);
   if (r.uiTimed)
     CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
