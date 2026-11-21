@@ -424,9 +424,10 @@ CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckPass1(const CDVDOverlayImage
     else
       maxDelta = std::max(maxDelta, delta);
   }
-  // only the shader's ConvertPQPaletteToSRGB differs from the CPU's in float ULPs; every other
-  // step is integer maths in fp32 and a palette image is a lookup: exact
-  const int tol = o.palette.empty() && expected.toSrgb ? 1 : 0;
+  // only the shader's ConvertPQPaletteToSRGB and the Scalar trim (a non-integer multiply) differ
+  // from the CPU's in float ULPs; every other step is integer maths in fp32 and a palette image is
+  // a lookup: exact. Measured on the S6 2026-11-21: the trim alone gives 1 code (maxdiff=1)
+  const int tol = o.palette.empty() && (expected.toSrgb || expected.scalar) ? 1 : 0;
   const bool pass = differs.empty() && sameBox && maxDelta <= tol && maxAlpha <= tol;
   CLog::Log(LOGINFO,
             "GSELFTEST case={} regime={} maxdiff={} alpha={} {} tol={} why={} box={} px={} "
@@ -494,8 +495,13 @@ CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckLayer(
       continue;
     }
     note(s);
-    // bilinear weights, and the shader's float conversion, are not exact integer maths
-    if (s > 1 || (images[n]->palette.empty() && expected[n].toSrgb))
+    // bilinear weights, and the shader's float conversion, are not exact integer maths. The
+    // G12B's Mali truncates its bilinear result (measured 2026-11-21: 2x cases 1-2 codes under
+    // the rounded reference, alpha too; the S6 within 1), the same filtering today's GL_LINEAR
+    // draw of scaled images uses: 2 codes when scaled
+    if (s > 1)
+      tol = 2;
+    else if (images[n]->palette.empty() && (expected[n].toSrgb || expected[n].scalar))
       tol = 1;
     for (int j = 0; j < height * s; j++)
     {
@@ -514,7 +520,7 @@ CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckLayer(
         uint8_t* d = &ref[(static_cast<size_t>(py) * m_width + px) * 4];
         // over a non-zero destination the GPU blends in float: no exact integer form
         if ((d[0] | d[1] | d[2] | d[3]) && src[3] > 0.0 && src[3] < 255.0)
-          tol = 1;
+          tol = std::max(tol, 1);
         for (int c = 0; c < 4; c++)
           d[c] = Round8(src[c] + d[c] * (255.0 - src[3]) / 255.0);
       }
@@ -544,8 +550,9 @@ CGraphicsRasterAML::ECheck CGraphicsRasterAML::CheckLayer(
         continue;
       }
       note(s);
-      // vertex colour x coverage in float: no exact integer form
-      tol = 1;
+      // vertex colour x coverage in float: no exact integer form; scaled, the G12B's truncating
+      // bilinear adds a code (measured 2026-11-21, plane/ass/2x)
+      tol = std::max(tol, s > 1 ? 2 : 1);
       for (const OVERLAY::SQuad& q : quads->quad)
       {
         double colour[3] = {static_cast<double>(q.r), static_cast<double>(q.g),
