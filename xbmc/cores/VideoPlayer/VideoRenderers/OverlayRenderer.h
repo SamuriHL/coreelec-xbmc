@@ -32,6 +32,7 @@ class CDVDOverlayImage;
 class CDVDOverlaySpu;
 class CDVDOverlaySSA;
 class CDVDOverlayText;
+class CDVDSubtitlesLibass;
 
 namespace OVERLAY {
 
@@ -217,10 +218,10 @@ namespace OVERLAY {
      *  libass (TEXT/SSA): the container is added once with no stop PTS and
      *  stays in m_buffers for the whole video. Visibility means
      *  ass_render_frame returned images for the current PTS, cached on
-     *  e.renderedImages by PrepareOverlays.
+     *  e.renderedQuads by PrepareOverlays.
      *
      *  Must be called after PrepareOverlays has run this frame; before that
-     *  e.renderedImages reflects the previous frame's state.
+     *  e.renderedQuads reflects the previous frame's state.
      */
     bool HasVisibleOverlay(int idx) const;
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);
@@ -260,10 +261,9 @@ namespace OVERLAY {
       SElement() : overlay_dvd(NULL) { pts = 0.0; }
       double pts;
       std::shared_ptr<CDVDOverlay> overlay_dvd;
-      // libass output cached by PrepareOverlays; read by ConvertLibass during
-      // render. libass owns the pointer; valid only until the next
-      // ass_render_frame call.
-      ASS_Image* renderedImages{nullptr};
+      // libass output cached by PrepareOverlays, converted under the handler's lock; read by
+      // ConvertLibass during render. Null: nothing on screen
+      std::shared_ptr<const SQuads> renderedQuads;
       float renderedFrameWidth{0.0f};
       float renderedFrameHeight{0.0f};
     };
@@ -319,7 +319,8 @@ namespace OVERLAY {
     uint64_t m_frameSerial{0};
     bool m_framed{false};
     bool m_timedOnPlane{false};
-    bool m_forceLibassChange{false};
+    //! each libass handler's output at main's last render: a render reporting no change shows it
+    std::map<const CDVDSubtitlesLibass*, std::shared_ptr<const SQuads>> m_assLast;
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     // PQ destination (HDR composite / PQ GUI) the cached textures were

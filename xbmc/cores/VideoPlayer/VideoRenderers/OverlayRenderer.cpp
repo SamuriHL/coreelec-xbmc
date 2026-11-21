@@ -18,6 +18,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayStereoUtils.h"
+#include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibass.h"
 #include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
@@ -149,6 +150,7 @@ void CRenderer::Release(int idx)
 void CRenderer::ReleaseCache()
 {
   m_textureCache.clear();
+  m_assLast.clear();
   m_textureid++;
 }
 
@@ -475,10 +477,10 @@ bool CRenderer::HasVisibleOverlay(int idx) const
     // libass (TEXT/SSA): the container stays in m_buffers for the whole
     // video (iPTSStopTime=DVD_NOPTS_VALUE). Visibility means
     // ass_render_frame returned images for the current PTS, cached by
-    // PrepareOverlays in e.renderedImages.
+    // PrepareOverlays in e.renderedQuads.
     if (o.IsOverlayType(DVDOVERLAY_TYPE_TEXT) || o.IsOverlayType(DVDOVERLAY_TYPE_SSA))
     {
-      if (e.renderedImages != nullptr)
+      if (e.renderedQuads != nullptr)
         return true;
     }
   }
@@ -768,9 +770,7 @@ void CRenderer::SetTimedOnPlane(bool onPlane)
   m_frameSerial = 0;
   m_prevImageSpuCount = 0;
   ReleaseCache();
-  // review rA M3: a subtitle main drew leaves the GUI plane, or one main takes back is drawn;
-  // after a hand-back libass's first render reports its changes against G's last one
-  m_forceLibassChange = !onPlane;
+  // review rA M3: a subtitle main drew leaves the GUI plane, or one main takes back is drawn
   MarkDirty();
 }
 
@@ -907,7 +907,7 @@ void CRenderer::PrepareOverlays(int idx,
     // Clear last frame's cached output; libass may have invalidated the
     // pointer on its next ass_render_frame call.
     // (assDetectChange is consumed by ConvertLibass, not here.)
-    e.renderedImages = nullptr;
+    e.renderedQuads.reset();
 
     if (!e.overlay_dvd)
       continue;
@@ -940,12 +940,21 @@ void CRenderer::PrepareOverlays(int idx,
     e.renderedFrameHeight = rOpts.frameHeight;
 
     // Pull the libass output for this PTS. Cached on the SElement until
-    // ConvertLibass consumes it later in this frame's GUI walk.
+    // ConvertLibass consumes it later in this frame's GUI walk. libass frees the images at its
+    // next render on any thread (5.G2 GT-4: the graphics plane's too), so they are copied under
+    // its lock, here and never across the GUI walk; converted again only on a change
     int currentChange = 0;
-    e.renderedImages =
-        ovAss.GetLibassHandler()->RenderImage(e.pts, rOpts, m_overlayStyle, &currentChange);
-    if (m_forceLibassChange && e.renderedImages)
-      currentChange = std::max(currentChange, 2);
+    {
+      const std::shared_ptr<CDVDSubtitlesLibass> handler = ovAss.GetLibassHandler();
+      std::unique_lock assLock(handler->RenderSection());
+      ASS_Image* images = handler->RenderImage(e.pts, rOpts, m_overlayStyle, &currentChange);
+      std::shared_ptr<const SQuads>& last = m_assLast[handler.get()];
+      if (!images)
+        last.reset();
+      else if (currentChange > 0 || !last)
+        last = std::make_shared<const SQuads>(QuadsOf(images, static_cast<int>(rOpts.frameWidth)));
+      e.renderedQuads = last;
+    }
     if (currentChange > 0)
     {
       // Persist on the overlay so a skipped GUI render does not drop the change.
@@ -962,7 +971,6 @@ void CRenderer::PrepareOverlays(int idx,
   // plane until the next subtitle arrived ("stuck until the next caption"). Any
   // change in the count means an overlay came or went, so repaint - a subtitle
   // leaving is caught even while the menu overlay stays up.
-  m_forceLibassChange = false;
   if (nImageSpu != m_prevImageSpuCount)
     doMarkDirty = true;
   m_prevImageSpuCount = nImageSpu;
@@ -974,7 +982,7 @@ void CRenderer::PrepareOverlays(int idx,
 std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
 {
   // If no images not execute the renderer
-  if (!e.renderedImages)
+  if (!e.renderedQuads)
     return nullptr;
 
   CDVDOverlayLibass& o = static_cast<CDVDOverlayLibass&>(*e.overlay_dvd);
@@ -991,7 +999,7 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
   }
 
   std::shared_ptr<COverlay> overlay =
-      COverlay::Create(e.renderedImages, e.renderedFrameWidth, e.renderedFrameHeight);
+      COverlay::Create(*e.renderedQuads, e.renderedFrameWidth, e.renderedFrameHeight);
 
   m_textureCache[m_textureid] = overlay;
   o.m_textureid = m_textureid;
