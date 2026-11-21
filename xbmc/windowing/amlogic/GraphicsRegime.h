@@ -95,6 +95,22 @@ void RequestRegimeRepublish(const char* why);
 //! EndRenderSession: main's stop regime (Srgb), compared with W's publish of it
 void RegimeStop();
 
+//! 5.G2 GT-4 (plan M3): the encoding main applied last, as it wrote the knobs for it. Until GT-6
+//! moves the knobs to C, G draws in this one (not in W's published class), so the graphics change
+//! encoding when main writes the knobs, as main's own image cache does today. The peak is not
+//! here: main's GUI reads it live from the settings mirror, and G reads it from there too.
+//! Published whether or not the regime above is on (gregime_off); nothing is logged.
+struct MainApplied
+{
+  uint64_t epoch = 0; //!< 0: main has applied nothing yet
+  GuiEncoding encoding = GuiEncoding::Srgb; //!< in effect: Scalar when the composite failed
+  bool limited = false;
+};
+//! main, at the end of each ApplyGuiEncoding and at EndRenderSession's stop knobs
+void PublishMainApplied(GuiEncoding encoding, bool limited);
+//! any thread
+MainApplied GetMainApplied();
+
 // the shadows (log only)
 //! main, at the end of each ApplyGuiEncoding: what it applied. composite: the composite is
 //! active (read only when encoding is Composite)

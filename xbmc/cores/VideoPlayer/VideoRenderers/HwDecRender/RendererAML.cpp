@@ -91,6 +91,8 @@ void CRendererAML::EndRenderSession()
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
   CSysfsPath(OSD_PQ_PASSTHROUGH, 0);
+  DISPLAYSTATE::PublishMainApplied(GuiEncoding::Srgb,
+                                   CServiceBroker::GetWinSystem()->UseLimitedColor());
   DISPLAYSTATE::RegimeStop();
 }
 
@@ -371,6 +373,11 @@ void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
   CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
              gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
 
+  // GT-4 (M3): what G draws in, the encoding these knobs were just written for
+  DISPLAYSTATE::PublishMainApplied(composite      ? GuiEncoding::Composite
+                                   : gui_is_pq    ? GuiEncoding::Scalar
+                                                  : GuiEncoding::Srgb,
+                                   winSystem->UseLimitedColor());
   DISPLAYSTATE::ShadowMainRegime(site, encoding, composite, winSystem->UseLimitedColor(),
                                  dv_output_mode, isHdrDisplay);
 }

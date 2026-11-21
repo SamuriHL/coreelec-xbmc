@@ -357,6 +357,28 @@ void RegimeStop()
               });
 }
 
+namespace
+{
+std::mutex s_appliedMutex;
+MainApplied s_applied;
+} // namespace
+
+void PublishMainApplied(GuiEncoding encoding, bool limited)
+{
+  std::unique_lock lock(s_appliedMutex);
+  if (s_applied.epoch != 0 && s_applied.encoding == encoding && s_applied.limited == limited)
+    return;
+  s_applied.epoch++;
+  s_applied.encoding = encoding;
+  s_applied.limited = limited;
+}
+
+MainApplied GetMainApplied()
+{
+  std::unique_lock lock(s_appliedMutex);
+  return s_applied;
+}
+
 void ShadowMainRegime(const char* site,
                       GuiEncoding encoding,
                       bool composite,
