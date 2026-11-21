@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
@@ -149,6 +150,10 @@ void CGraphicsPlaneAML::Show(SHdrGraphics graphics)
 {
   {
     std::unique_lock lock(m_showSection);
+    // GUNTIMED: posts of a set this thread never took go with the one replacing it
+    if (m_hasNext && !m_next.untimed.empty())
+      graphics.untimed.insert(graphics.untimed.begin(), m_next.untimed.begin(),
+                              m_next.untimed.end());
     m_next = std::move(graphics);
     m_hasNext = true;
   }
@@ -449,6 +454,8 @@ bool CGraphicsPlaneAML::TakeShown()
   if (SameGraphics(next, m_shown))
     return false;
   m_shown = std::move(next);
+  m_untimed.insert(m_untimed.end(), m_shown.untimed.begin(), m_shown.untimed.end());
+  m_shown.untimed.clear();
   m_redraw = true;
   CLog::Log(LOGDEBUG, "CGraphicsPlaneAML - showing {} images, video pts {:.3f}",
             m_shown.images.size(), m_shown.pts / 1000000.0);
@@ -731,7 +738,21 @@ void CGraphicsPlaneAML::Process()
     else
     {
       if (TakeShown())
+      {
+        const int64_t start = m_untimed.empty() ? 0 : MonotonicNs();
         UpdateTextures();
+        if (start)
+        {
+          const int64_t updUs = (MonotonicNs() - start) / 1000;
+          for (SUntimedPost& post : m_untimed)
+            if (post.updUs < 0)
+              post.updUs = updUs;
+        }
+      }
+      // GUNTIMED: C hands them to this frame's submit
+      if (m_redraw && !m_untimed.empty())
+        m_coordinator->NoteUntimed(CPresentationCoordinator::PLANE_GRAPHICS,
+                                   std::exchange(m_untimed, {}));
       if (m_redraw && SubmitFrame(!m_shown.images.empty(), MonotonicNs(), m_shown.pts))
         m_redraw = false;
       m_wake.Wait(m_redraw ? 16ms : 100ms);

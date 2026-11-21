@@ -122,6 +122,7 @@ private:
   bool m_hasNext = false; //!< under m_showSection
   SHdrGraphics m_shown; //!< what the plane shows, this thread only
   bool m_redraw = false; //!< m_shown not on the plane yet
+  std::vector<SUntimedPost> m_untimed; //!< GUNTIMED: posts taken, not yet submitted
   std::map<const CDVDOverlay*, STexture> m_textures;
   bool m_texturesLimited = false;
   GLuint m_program = 0;

@@ -10,10 +10,22 @@
 
 #include "utils/Geometry.h"
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 class CDVDOverlay;
+
+//! GUNTIMED (special://profile/guntimed_log): one untimed composition, from main's
+//! post to the flip that shows it
+struct SUntimedPost
+{
+  uint64_t u = 0;
+  int64_t postNs = 0; //!< CLOCK_MONOTONIC, at main's selection
+  char route = 'B'; //!< 'C': on the graphics plane by G; 'B': in main's GUI buffer
+  bool cleared = false; //!< the untimed images went away
+  int64_t updUs = -1; //!< route C: G's UpdateTextures for the draw that carried it
+};
 
 //! The HDR disc graphics of one GUI frame, for a platform plane that shows
 //! them apart from the GUI plane.
@@ -28,4 +40,6 @@ struct SHdrGraphics
   //! image is shown at once (a disc menu) rather than with the frame
   double pts = 0;
   bool limited = false; //!< limited-range output, as the GUI plane's
+  //! posted with these images; not part of their identity
+  std::vector<SUntimedPost> untimed;
 };

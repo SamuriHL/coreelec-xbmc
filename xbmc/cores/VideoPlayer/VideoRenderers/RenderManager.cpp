@@ -2291,6 +2291,10 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
 
   if (!gui)
   {
+#if defined(HAS_LIBAMCODEC)
+    if (configured && CPresentationCoordinator::UntimedLog() && !winSystem->HdrGraphicsOnPlane())
+      NoteUntimedOnGui(-1);
+#endif
     if (configured && winSystem->HdrGraphicsOnPlane())
     {
       PresentHdrGraphics(-1, view, view, view);
@@ -2389,8 +2393,54 @@ void CRenderManager::PresentHdrGraphics(int idx,
   graphics.width = static_cast<float>(winSystem->GetGfxContext().GetWidth());
   graphics.height = static_cast<float>(winSystem->GetGfxContext().GetHeight());
   graphics.pts = idx >= 0 && timed ? (m_pin.onPath ? m_pin.pts : m_Queue[idx].pts) : DVD_NOPTS_VALUE;
+#if defined(HAS_LIBAMCODEC)
+  if (CPresentationCoordinator::UntimedLog())
+    NoteUntimedPost(graphics.images, !graphics.images.empty() && !timed, &graphics.untimed);
+#endif
   winSystem->PresentHdrGraphics(graphics);
 }
+
+#if defined(HAS_LIBAMCODEC)
+void CRenderManager::NoteUntimedPost(const std::vector<std::shared_ptr<CDVDOverlay>>& images,
+                                     bool untimed,
+                                     std::vector<SUntimedPost>* toPlane)
+{
+  std::vector<const CDVDOverlay*> ids;
+  for (const auto& image : images)
+    ids.push_back(image.get());
+  if (ids == m_untimedLast)
+    return;
+  const bool wasUntimed = m_untimedLastUntimed;
+  m_untimedLast = std::move(ids);
+  m_untimedLastUntimed = untimed;
+  // a change of timed content alone is not this metric's
+  if (!untimed && !wasUntimed)
+    return;
+  SUntimedPost post;
+  post.u = ++m_untimedU;
+  post.postNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+  post.route = toPlane ? 'C' : 'B';
+  post.cleared = !untimed;
+  if (toPlane)
+    toPlane->push_back(post);
+  else if (CPresentationCoordinator* coordinator = CPresentationCoordinator::Get())
+    coordinator->NoteUntimed(CPresentationCoordinator::PLANE_UI, {post});
+}
+
+void CRenderManager::NoteUntimedOnGui(int idx)
+{
+  // route B only exists under the HDR composite
+  if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
+    return;
+  std::vector<std::shared_ptr<CDVDOverlay>> images;
+  bool untimed = false;
+  if (!GraphicsWithheld())
+    untimed = !m_overlays.CollectHDROverlays(idx, images);
+  NoteUntimedPost(images, untimed, nullptr);
+}
+#endif
 
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
@@ -2488,6 +2538,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // Off-screen when the platform composites them (see BeginHdrOverlayRender),
     // straight onto the back buffer otherwise.
     CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+#if defined(HAS_LIBAMCODEC)
+    if (CPresentationCoordinator::UntimedLog() && !winSystem->HdrGraphicsOnPlane())
+      NoteUntimedOnGui(source);
+#endif
     if (winSystem->HdrGraphicsOnPlane())
     {
       PresentHdrGraphics(source, src, dst, view);

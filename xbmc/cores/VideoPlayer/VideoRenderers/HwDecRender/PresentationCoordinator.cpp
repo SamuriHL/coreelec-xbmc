@@ -10,6 +10,7 @@
 
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+#include "filesystem/File.h"
 #include "platform/linux/SysfsPath.h"
 #include "utils/AMLUtils.h"
 #include "utils/PresentationTimeline.h"
@@ -48,6 +49,7 @@ constexpr int64_t FLIP_LOST_NS = 500000000;
 constexpr auto PLANE_OFF_BOUND = std::chrono::seconds(2);
 
 std::atomic<CPresentationCoordinator*> s_instance{nullptr};
+std::atomic<bool> s_untimedLog{false};
 
 int64_t MonotonicNs()
 {
@@ -67,6 +69,7 @@ thread_local SequenceEvent t_event;
 thread_local bool t_flipped = false;
 thread_local uint64_t t_flipTag = 0;
 thread_local unsigned int t_flipSequence = 0;
+thread_local int64_t t_flipNs = 0;
 
 void OnSequence(int fd, uint64_t sequence, uint64_t ns, uint64_t userData)
 {
@@ -86,6 +89,7 @@ void OnPageFlip(int fd,
   t_flipped = true;
   t_flipTag = reinterpret_cast<uintptr_t>(userData);
   t_flipSequence = sequence;
+  t_flipNs = static_cast<int64_t>(sec) * 1000000000 + static_cast<int64_t>(usec) * 1000;
 }
 
 int ReadKernelDrops()
@@ -150,6 +154,9 @@ bool CPresentationCoordinator::Start()
 
   m_report = Report();
   m_kernelDrops = ReadKernelDrops();
+  s_untimedLog = XFILE::CFile::Exists("special://profile/guntimed_log");
+  if (s_untimedLog)
+    CLog::Log(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
   aml_presenter_set_wake_fd(m_wakeFd);
   m_commitStop = false;
   m_commitThread = std::thread(&CPresentationCoordinator::CommitWorker, this);
@@ -284,6 +291,14 @@ uint64_t CPresentationCoordinator::Submit(int plane,
       return 0;
     }
     UiBuffer& ready = m_planes[plane].ready;
+    // a replaced buffer's posts are shown by this one
+    std::vector<SUntimedPost> untimed;
+    if (s_untimedLog)
+    {
+      untimed = std::move(ready.untimed);
+      untimed.insert(untimed.end(), m_untimedNext[plane].begin(), m_untimedNext[plane].end());
+      m_untimedNext[plane].clear();
+    }
     if (ready.req)
     {
       replacedCbuf = ready.cOwned;
@@ -302,6 +317,8 @@ uint64_t CPresentationCoordinator::Submit(int plane,
     ready.cOwned = false;
     ready.readyNs = fence < 0 ? MonotonicNs() : 0;
     ready.seq = seq = ++m_submitSeq;
+    if (s_untimedLog)
+      ready.untimed = std::move(untimed);
     if (plane == PLANE_UI)
       m_report.uiSubmits++;
     else
@@ -1118,7 +1135,7 @@ void CPresentationCoordinator::HandleEvents(int fd,
   drmHandleEvent(fd, &context);
 
   if (t_flipped)
-    OnFlip(t_flipTag, t_flipSequence);
+    OnFlip(t_flipTag, t_flipSequence, t_flipNs);
 
   if (!t_event.got)
     return;
@@ -1205,6 +1222,7 @@ void CPresentationCoordinator::CommitUi()
     // every plane with a submit whose GPU work is done goes in the one commit;
     // a plane left out keeps what it shows (R3)
     Committing commit;
+    std::vector<SUntimedPost> untimed;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
     {
       UiBuffer& ready = m_planes[plane].ready;
@@ -1244,6 +1262,8 @@ void CPresentationCoordinator::CommitUi()
       m_planes[plane].committedEpoch = ready.epoch;
       m_planes[plane].committedCOwned = ready.cOwned;
       commit.cOwned |= ready.cOwned;
+      if (s_untimedLog)
+        untimed.insert(untimed.end(), ready.untimed.begin(), ready.untimed.end());
       ready = UiBuffer();
     }
     if (!commit.req)
@@ -1255,6 +1275,8 @@ void CPresentationCoordinator::CommitUi()
     m_committing = commit;
     m_inFlight = true;
     m_inCommitTag = ++m_commitTagSeq;
+    if (s_untimedLog)
+      m_untimedInFlight = std::move(untimed);
     m_inFlightGfxPts = commit.has[PLANE_GRAPHICS] ? commit.pts[PLANE_GRAPHICS] : DVD_NOPTS_VALUE;
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
@@ -1425,11 +1447,36 @@ void CPresentationCoordinator::CommitWorker()
   }
 }
 
-void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
+bool CPresentationCoordinator::UntimedLog()
+{
+  return s_untimedLog;
+}
+
+void CPresentationCoordinator::NoteUntimed(int plane, std::vector<SUntimedPost> posts)
+{
+  std::unique_lock lock(m_uiMutex);
+  m_untimedNext[plane].insert(m_untimedNext[plane].end(), posts.begin(), posts.end());
+}
+
+void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64_t flipNs)
 {
   std::unique_lock lock(m_uiMutex);
   if (!m_inFlight || tag != m_inCommitTag)
     return;
+  std::vector<SUntimedPost> untimed;
+  if (s_untimedLog && flipNs > 0)
+  {
+    // the period from the flips' own vblank stamps, so menu-only screens have one too;
+    // only over a short span (a mode change between two flips would skew it)
+    const unsigned int vblanks = sequence - m_untimedFlipSeq;
+    if (m_untimedFlipNs && vblanks > 0 && vblanks <= 120 && flipNs > m_untimedFlipNs)
+      m_untimedPeriodNs = (flipNs - m_untimedFlipNs) / vblanks;
+    m_untimedFlipSeq = sequence;
+    m_untimedFlipNs = flipNs;
+    untimed = std::move(m_untimedInFlight);
+    m_untimedInFlight.clear();
+  }
+  const int64_t untimedPeriodNs = m_untimedPeriodNs;
   if (m_inFlightGfxPts != DVD_NOPTS_VALUE)
     CountPlacement(m_inFlightGfxPts, sequence);
   bool cbufUp = false;
@@ -1495,6 +1542,27 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence)
   }
   const uint64_t epoch = m_cbufEpoch;
   lock.unlock();
+  // post_seq: the vblank interval the post fell in, counted back from this flip's vblank;
+  // a post replaced before its commit is judged on this flip and names what showed (by=)
+  for (const SUntimedPost& post : untimed)
+  {
+    const SUntimedPost& shown = untimed.back();
+    const bool replaced = &post != &shown;
+    int64_t vbl = -1;
+    int64_t postSeq = -1;
+    if (untimedPeriodNs > 0)
+    {
+      vbl = (std::max<int64_t>(0, flipNs - post.postNs) + untimedPeriodNs - 1) / untimedPeriodNs;
+      postSeq = static_cast<int64_t>(sequence) - vbl;
+    }
+    CLog::Log(LOGINFO,
+              "GUNTIMED u={} route={} post_seq={} post_ns={} flip={} flip_ns={} period_us={} "
+              "vbl={} upd_us={} by={} what={}",
+              post.u, post.route, postSeq, post.postNs, sequence, flipNs,
+              untimedPeriodNs > 0 ? untimedPeriodNs / 1000 : -1, vbl, post.updUs,
+              replaced ? std::to_string(shown.u) : std::string("self"),
+              replaced ? "replaced" : post.cleared ? "cleared" : "shown");
+  }
   if (cbufUp)
     CLog::Log(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
   if (replacedMs >= 0)

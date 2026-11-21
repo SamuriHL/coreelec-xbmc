@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
 #include "threads/Thread.h"
 
 #include <atomic>
@@ -165,6 +166,10 @@ public:
   bool GraphicsRefused() const { return m_graphicsRejected; }
   //! 5.B3-10a: moves when C wants a fresh graphics frame for a suspect plane's retry
   uint64_t GraphicsResubmit() const { return m_gfxResubmit.load(); }
+  //! GUNTIMED: special://profile/guntimed_log, read once at Start
+  static bool UntimedLog();
+  //! GUNTIMED: the plane's next submit carries these posts to the flip that shows them
+  void NoteUntimed(int plane, std::vector<SUntimedPost> posts);
 
 protected:
   void Process() override;
@@ -190,6 +195,7 @@ private:
     uint64_t epoch = 0;
     bool cOwned = false; //!< C's cleared buffer (no bo, never returned)
     int64_t readyNs = 0; //!< 5.V3-1: committable from (its GPU fence signalled), monotonic
+    std::vector<SUntimedPost> untimed; //!< GUNTIMED, incl. those of buffers it replaced
   };
 
   struct Returned
@@ -268,7 +274,8 @@ private:
   //! 5.V3-1 (log only, under m_uiMutex on C's thread): a GUI plane commit against its vblank
   void TimeUiCommit(int64_t readyNs);
   void CommitWorker();
-  void OnFlip(uint64_t tag, unsigned int sequence);
+  //! flipNs: the flip's vblank time from the event (CLOCK_MONOTONIC)
+  void OnFlip(uint64_t tag, unsigned int sequence, int64_t flipNs);
   //! graphics flipped at sequence: count its frame against the video frame shown
   void CountPlacement(double pts, unsigned int sequence);
   void Drop(int plane, UiBuffer& buffer); // under m_uiMutex
@@ -339,6 +346,13 @@ private:
   bool m_inFlight = false; //!< one commit in flight across both planes (R1)
   uint64_t m_inCommitTag = 0;
   Committing m_committing; //!< handed to the commit worker, ioctl not yet returned
+  // GUNTIMED, under m_uiMutex: posts for each plane's next submit; those of the commit in
+  // flight; the last flip event and the vblank period derived from flip events
+  std::vector<SUntimedPost> m_untimedNext[PLANE_COUNT];
+  std::vector<SUntimedPost> m_untimedInFlight;
+  unsigned int m_untimedFlipSeq = 0;
+  int64_t m_untimedFlipNs = 0;
+  int64_t m_untimedPeriodNs = 0;
   bool m_commitStop = false;
   std::thread m_commitThread;
   bool m_flipLostLogged = false;

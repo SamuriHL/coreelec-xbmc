@@ -46,6 +46,7 @@ class CCaptureBlit;
 
 class CDVDOverlayContainer;
 class CPresentationCoordinator;
+struct SUntimedPost;
 struct VideoPicture;
 
 class CWinRenderer;
@@ -591,6 +592,18 @@ protected:
   void RenderWithoutPicture(bool gui, bool configured);
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
   bool GraphicsWithheld();
+#if defined(HAS_LIBAMCODEC)
+  //! GUNTIMED (guntimed_log, main): a change of the untimed HDR images, or their going
+  //! away, is a post. toPlane: route C's posts, sent with the images; null: route B's,
+  //! carried by main's next GUI buffer
+  void NoteUntimedPost(const std::vector<std::shared_ptr<CDVDOverlay>>& images,
+                       bool untimed,
+                       std::vector<SUntimedPost>* toPlane);
+  void NoteUntimedOnGui(int idx);
+  std::vector<const CDVDOverlay*> m_untimedLast;
+  bool m_untimedLastUntimed = false;
+  uint64_t m_untimedU = 0;
+#endif
 
   void PresentSingle(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);
   void PresentFields(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);
