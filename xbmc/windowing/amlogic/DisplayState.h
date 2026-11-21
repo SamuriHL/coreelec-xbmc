@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <mutex>
@@ -436,6 +437,10 @@ struct SStartJob
   //! (-1: none)
   int vs10 = -1;
   std::atomic_bool vs10Written{false};
+  //! 5.G-5 (§4.5, T10): a setting's body (the VSVDB re-inject and EDID re-parse), run by W inside
+  //! the freeze before a forced commit at the incumbent mode; settingName for the log
+  std::function<void()> setting;
+  const char* settingName = nullptr;
   //! W: the job's mode set ran (false: dropped, or discarded unrun at W's stop: answer failed)
   std::atomic_bool ran{false};
   //! W sets it when the job runs; main's answer (any form) clears it

@@ -1335,6 +1335,9 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   // 5.G-4 (docs/phase5_g0_design.md §4.4, G-D8): a VS10 press is written inside the freeze and
   // always committed, so the wire's colour attributes follow the core
   const int vs10 = job.start ? job.start->vs10 : -1;
+  // 5.G-5 (§4.5): a setting job takes the same freeze-first branch, its body before the commit
+  const bool setting = job.start && job.start->setting;
+  const bool bodyFirst = vs10 >= 0 || setting;
 
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
@@ -1384,7 +1387,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
       job.backups.windowCreated && job.nativeGUI == job.backups.nativeGUI &&
       !force_mode_switch_by_hdr && !force_mode_switch_by_hotplug &&
       (!force_mode_switch_by_fractional_rate || heldFrac) && !force_mode_switch_by_stereo_mode &&
-      !force_mode_switch_by_wire && vs10 < 0)
+      !force_mode_switch_by_wire && !bodyFirst)
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window{}",
               __FUNCTION__, heldFrac ? " (held 1000/1001 clock)" : "");
@@ -1522,7 +1525,7 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
   {
     // same resolution, check frac rate and other parameter
     if (force_mode_switch_by_fractional_rate || force_mode_switch_by_hdr ||
-        force_mode_switch_by_wire || vs10 >= 0)
+        force_mode_switch_by_wire || bodyFirst)
       force_mode_switch = true;
   }
 
@@ -1546,6 +1549,12 @@ void CWinSystemAmlogicGLESContext::RunModeSetJob(SDriveJob& job)
     job.start->vs10Written = true;
     CLog::Log(LOGINFO, "OUTPUTDRIVE request {} vs10 written inside the freeze (commit forced)",
               job.id);
+  }
+  if (setting)
+  {
+    CLog::Log(LOGINFO, "MIDPLAY setting {} inside the freeze (request {}, commit forced)",
+              job.start->settingName ? job.start->settingName : "?", job.id);
+    job.start->setting();
   }
   // 5.E2-9a (transaction_commitstall, D7): W hangs inside the Start job's commit, after its walk
   const bool startHooks = job.start && !job.start->midplay;

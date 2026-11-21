@@ -101,6 +101,12 @@ public:
   // ISettingCallback: live-apply the Dolby Vision VSVDB max-luminance override
   // when the display-peak/override settings change during DV playback.
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
+  //! 5.G-5 (docs/phase5_g0_design.md §4.5, T10): the VSVDB setting's body (target overrides and
+  //! the EDID re-parse; nothing unless a DV stream decodes), on W: today's SETTINGS-lane job's,
+  //! or a mid-play job's inside its freeze
+  static void ApplyVsvdbSetting();
+  //! 5.G-5 (S11): dolby_vision_enable reads Y (a DV stream decodes)
+  static bool DvDecoding();
 
   bool CreateNewWindow(const std::string& name,
                        bool fullScreen,

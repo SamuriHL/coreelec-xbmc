@@ -2215,17 +2215,26 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // Only re-apply live while a DV stream is decoding (dolby_vision_enable == Y);
   // otherwise the new value is picked up at the next decoder open. aml_dv_apply_vsvdb
   // re-injects the updated block and re-latches it via an EDID re-parse.
-  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting", [] {
-    CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
-    if (dv_enable.Exists() &&
-        StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y"))
-    {
-      // Keyed on the mode the sink receives: the pending VS10 mode stays BYPASS on
-      // the converted-to-DV paths and is not updated by a live VS10 switch.
-      aml_dv_apply_target_overrides(aml_dv_get_output_mode());
-      aml_dv_apply_vsvdb();
-    }
-  });
+  OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting",
+                                    [] { ApplyVsvdbSetting(); });
+}
+
+bool CWinSystemAmlogic::DvDecoding()
+{
+  CSysfsPath dv_enable{"/sys/module/aml_media/parameters/dolby_vision_enable"};
+  return dv_enable.Exists() &&
+         StringUtils::EqualsNoCase(dv_enable.Get<std::string>().value_or("N"), "Y");
+}
+
+void CWinSystemAmlogic::ApplyVsvdbSetting()
+{
+  if (DvDecoding())
+  {
+    // Keyed on the mode the sink receives: the pending VS10 mode stays BYPASS on
+    // the converted-to-DV paths and is not updated by a live VS10 switch.
+    aml_dv_apply_target_overrides(aml_dv_get_output_mode());
+    aml_dv_apply_vsvdb();
+  }
 }
 
 bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
