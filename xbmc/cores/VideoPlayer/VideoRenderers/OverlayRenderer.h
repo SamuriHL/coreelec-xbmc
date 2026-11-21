@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 typedef struct ass_image ASS_Image;
@@ -58,6 +59,29 @@ namespace OVERLAY {
     double pts;
   };
   using FrameOverlays = std::vector<SFrameOverlay>;
+
+  //! 5.G2 GT-4: what places libass output, as main last established it (UpdateSubtitleStyle-
+  //! AndPosition); G renders the timed libass overlays with it
+  struct SSubtitleLayout
+  {
+    std::shared_ptr<KODI::SUBTITLES::STYLE::style> style;
+    KODI::SUBTITLES::Align align{KODI::SUBTITLES::Align::BOTTOM_OUTSIDE};
+    KODI::SUBTITLES::HorizontalAlign horizontalAlign{KODI::SUBTITLES::HorizontalAlign::CENTER};
+    int position{0};
+    int verticalMargin{0};
+    float pixelRatio{1.0f};
+    int overscanTop{0};
+    std::string stereomode;
+    uint64_t gen{0}; //!< moves with every change; 0: never published
+  };
+  //! any thread
+  SSubtitleLayout PublishedSubtitleLayout();
+  //! the options libass renders an overlay with in this layout, over these video rects
+  KODI::SUBTITLES::STYLE::renderOpts LibassRenderOpts(const SSubtitleLayout& layout,
+                                                      CDVDOverlayLibass& overlay,
+                                                      const CRect& source,
+                                                      const CRect& dest,
+                                                      const CRect& view);
 
   class COverlay
   {
@@ -156,6 +180,10 @@ namespace OVERLAY {
                          unsigned int segmentGen = 0,
                          const FrameOverlays* frame = nullptr,
                          uint64_t serial = 0);
+    //! 5.G2 GT-4 (main): the timed overlays are drawn by the graphics plane's thread. Every
+    //! reader skips the buffers' and the frame's lists, and PrepareOverlays keeps only the
+    //! untimed composition and the subtitle layout G reads
+    void SetTimedOnPlane(bool onPlane);
     //! test (vconfigure_mainstall overlay): the next PrepareOverlays sleeps ms inside m_section
     void ArmTestStall(int ms) { m_testStallMs = ms; }
     bool TestStallArmed() const { return m_testStallMs.load(std::memory_order_relaxed) > 0; }
@@ -267,6 +295,9 @@ namespace OVERLAY {
      * \param[out] resolution the display values read while doing so
      */
     void UpdateSubtitleStyleAndPosition(SubtitleResolution& resolution);
+    SSubtitleLayout Layout(const SubtitleResolution& resolution) const;
+    //! GT-4: for G, when it changed
+    void PublishLayout(const SubtitleResolution& resolution);
 
     enum PositonResInfoState
     {
@@ -281,6 +312,7 @@ namespace OVERLAY {
     std::vector<SElement> m_frameList;
     uint64_t m_frameSerial{0};
     bool m_framed{false};
+    bool m_timedOnPlane{false};
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     // PQ destination (HDR composite / PQ GUI) the cached textures were
