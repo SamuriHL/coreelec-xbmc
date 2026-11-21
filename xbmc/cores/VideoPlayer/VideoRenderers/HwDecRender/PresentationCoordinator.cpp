@@ -1561,8 +1561,11 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     // a composition older than one already picked (a redraw G made before it saw the newer)
     for (auto it = m_timed.begin(); it != m_timed.end();)
     {
-      if (!it->clear && !it->bridge &&
-          (!on || it->serial <= floor.floor || it->serial < m_gtPickedSerial))
+      // a bridge is under no floor, but goes with its route (review r2 N4)
+      const bool stale = it->bridge ? !on
+                                    : (!on || it->serial <= floor.floor ||
+                                       it->serial < m_gtPickedSerial);
+      if (!it->clear && stale)
       {
         Drop(PLANE_GRAPHICS, *it);
         it = m_timed.erase(it);
@@ -1603,8 +1606,9 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       if (!chosen.clear && !chosen.bridge)
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
       UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
-      // review rA m1: route C's frame after a hand-back is newer than the route's end clear
-      if (chosen.clear && ready.req && !ready.timed)
+      // review rA m1: route C's frame after a hand-back is newer than the route's end clear; the
+      // start clear must still replace route C's last frame (review r2 N6)
+      if (chosen.clear && !on && ready.req && !ready.timed)
         Drop(PLANE_GRAPHICS, chosen);
       else if (ready.req)
       {
@@ -1761,12 +1765,12 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
   else if (timed.timed && timed.bridge)
     CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
-  // the buffer this one replaced is G's again
-  if (timed.timed)
-    GRAPHICSTICK::Kick();
   else if (timed.timed)
     CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb);
+  // the buffer this one replaced is G's again
+  if (timed.timed)
+    GRAPHICSTICK::Kick();
   if (cbufUp)
     CLog::Log(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
   if (replacedMs >= 0)
