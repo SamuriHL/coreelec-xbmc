@@ -30,7 +30,8 @@ set(HEADERS WinSystemAmlogic.h
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp
                       GraphicsPlaneAML.cpp
-                      GraphicsRasterAML.cpp)
+                      GraphicsRasterAML.cpp
+                      GraphicsSelfTestAML.cpp)
   list(APPEND HEADERS WinSystemAmlogicGLESContext.h
                       GraphicsPlaneAML.h
                       GraphicsRasterAML.h)
