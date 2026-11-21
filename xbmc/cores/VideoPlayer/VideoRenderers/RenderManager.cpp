@@ -38,6 +38,7 @@
 #include "filesystem/SpecialProtocol.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -875,6 +876,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   // 5.E2-7 (L-9): the gates count reconfigures without debug logging (shadow sessions only)
   if (aml_transaction_shadow_on())
     CLog::Log(LOGINFO, "RM configure change {} ({})", ++m_configureChanges, changeReason);
+  // 5.G2 GT-2 (M7): a class change W did not publish (a DV write off W, a picture whose facts
+  // differ from its decoder's open) reaches the published regime through W
+  if (std::strcmp(changeReason, "ConfigChanged") == 0)
+    DISPLAYSTATE::RequestRegimeRepublish(picture.hdrType, picture.color_transfer, "configchanged");
 #endif
 
   // make sure any queued frame was fully presented
@@ -6165,6 +6170,8 @@ void CRenderManager::ReencodeOnOutputChange()
     }
     if (reencoded)
     {
+      // 5.G2 GT-2 (M7): before the apply, which the shadow then compares with W's publish
+      DISPLAYSTATE::RequestRegimeRepublish(picture.hdrType, picture.color_transfer, "reencode");
       aml->ApplyGuiEncoding(picture, dvOutputMode, isHdrDisplay, "reencode");
       encoding = aml->GuiEncodingName();
     }
@@ -6187,6 +6194,9 @@ void CRenderManager::ReencodeOnOutputChange()
       // its SetViewMode reads these
       const CVideoSettings settings = m_pRenderer->GetVideoSettings();
       RecordViewMode(settings.m_ViewMode, settings, "B2-8");
+      // 5.G2 GT-2 (M7): before Configure's apply (a post: W's queue lock only)
+      DISPLAYSTATE::RequestRegimeRepublish(m_picture.hdrType, m_picture.color_transfer,
+                                           "reencode");
       reencoded = m_pRenderer->Configure(m_picture, m_fps, m_orientation);
       outcome = reencoded ? "CRendererAML::Configure, no new picture"
                           : "CRendererAML::Configure failed";
