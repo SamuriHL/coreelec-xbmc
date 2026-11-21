@@ -10,6 +10,7 @@ set(SOURCES WinSystemAmlogic.cpp
             ThreadRole.cpp
             DisplayState.cpp
             GraphicsRegime.cpp
+            GraphicsTick.cpp
             GuiSnapshot.cpp)
 
 set(HEADERS WinSystemAmlogic.h
@@ -24,6 +25,7 @@ set(HEADERS WinSystemAmlogic.h
             ThreadRole.h
             DisplayState.h
             GraphicsRegime.h
+            GraphicsTick.h
             GuiSnapshot.h
             Seqlock.h)
 
