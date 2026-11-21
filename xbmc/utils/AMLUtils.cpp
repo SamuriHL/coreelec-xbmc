@@ -1349,12 +1349,31 @@ void aml_dv_set_vs10_mode_now(unsigned int mode)
     // enum, so that guard can never fire and the helper publishes every resolved
     // mode. Left alone deliberately - publishing IPT_TUNNEL/HDR10 is what the
     // OSD-encoding gate and the target overrides want - but it is not a filter.
-    if (dv_enabled && aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+    //
+    // 2026-11-21: the HDR10 half of that measurement was the defect. HDR10 (and
+    // HLG) resolve to mode 2, which keeps the core up mapping HDR10 -> HDR10 -
+    // a state no film start ever produces: OpenDecoder only enables the core for
+    // a DV stream (or a VS10 conversion), so a fresh HDR10 start runs with the
+    // core OFF. Measured on the user's G12B ugoos: after VS10 DV -> Original on
+    // an HDR10 film, dv_mode read HDR10 and playback was a slide show while every
+    // Kodi counter read clean (no drops, no repeats, a-v 0); stop + start = core
+    // off = smooth. Resolved to 2 on both am9pro and coreelec-br in the G-4
+    // gate. So Original now returns ANY non-DV source to the fresh-start state:
+    // only a DV source (IPT / IPT_TUNNEL) keeps the core, and the published mode
+    // is re-done as BYPASS, the value OpenDecoder records for a core-off start.
+    const unsigned int resolved = dv_enabled ? aml_dv_dolby_vision_mode()
+                                             : DOLBY_VISION_OUTPUT_MODE_BYPASS;
+    if (dv_enabled && resolved != DOLBY_VISION_OUTPUT_MODE_IPT &&
+        resolved != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
     {
-      CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to BYPASS on a non-DV "
+      CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to {} on a non-DV "
                          "source - taking the DV core down so the wire can go native",
-                "aml_dv_set_vs10_mode");
+                "aml_dv_set_vs10_mode",
+                resolved == DOLBY_VISION_OUTPUT_MODE_BYPASS ? std::string("BYPASS")
+                                                            : "mode " + std::to_string(resolved));
       dv_teardown_to_bypass();
+      if (resolved != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+        aml_dv_publish_follow_source_mode(false); // core off: publish BYPASS, as a start does
     }
     return;
   }
