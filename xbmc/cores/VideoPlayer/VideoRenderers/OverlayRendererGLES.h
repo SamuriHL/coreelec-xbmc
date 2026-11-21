@@ -47,6 +47,7 @@ class COverlayGlyphGLES : public COverlay
 {
 public:
   COverlayGlyphGLES(ASS_Image* images, float width, float height);
+  COverlayGlyphGLES(const SQuads& quads, float width, float height);
 
   ~COverlayGlyphGLES() override;
 

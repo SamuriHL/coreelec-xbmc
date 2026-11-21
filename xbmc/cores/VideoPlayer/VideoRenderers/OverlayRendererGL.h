@@ -43,6 +43,7 @@ namespace OVERLAY {
   {
   public:
     COverlayGlyphGL(ASS_Image* images, float width, float height);
+    COverlayGlyphGL(const SQuads& quads, float width, float height);
 
     ~COverlayGlyphGL() override;
 

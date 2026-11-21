@@ -35,6 +35,8 @@ class CDVDOverlayText;
 
 namespace OVERLAY {
 
+  struct SQuads;
+
   struct SRenderState
   {
     float x;
@@ -91,6 +93,8 @@ namespace OVERLAY {
     static std::shared_ptr<COverlay> Create(const CDVDOverlayImage& o, CRect& rSource);
     static std::shared_ptr<COverlay> Create(const CDVDOverlaySpu& o);
     static std::shared_ptr<COverlay> Create(ASS_Image* images, float width, float height);
+    //! libass output already converted (convert_quad) under the handler's lock
+    static std::shared_ptr<COverlay> Create(const SQuads& quads, float width, float height);
 
     COverlay();
     virtual ~COverlay();

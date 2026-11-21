@@ -23,6 +23,7 @@ namespace OVERLAY {
   {
   public:
     COverlayQuadsDX(ASS_Image* images, float width, float height);
+    COverlayQuadsDX(const SQuads& quads, float width, float height);
     virtual ~COverlayQuadsDX();
 
     void Render(SRenderState& state);

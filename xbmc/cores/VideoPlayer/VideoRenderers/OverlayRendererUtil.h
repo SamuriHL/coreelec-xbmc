@@ -92,6 +92,8 @@ void FindVisibleBox(const uint8_t* src,
                     int& y1);
 
 bool convert_quad(ASS_Image* images, SQuads& quads, int max_x);
+//! convert_quad's quads, empty when it gives none
+SQuads QuadsOf(ASS_Image* images, int max_x);
 int GetStereoscopicDepth(bool isPgs, int subtitleDepth);
 
 } // namespace OVERLAY

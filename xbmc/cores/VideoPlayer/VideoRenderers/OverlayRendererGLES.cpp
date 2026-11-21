@@ -421,7 +421,17 @@ std::shared_ptr<COverlay> COverlay::Create(ASS_Image* images, float width, float
   return std::make_shared<COverlayGlyphGLES>(images, width, height);
 }
 
+std::shared_ptr<COverlay> COverlay::Create(const SQuads& quads, float width, float height)
+{
+  return std::make_shared<COverlayGlyphGLES>(quads, width, height);
+}
+
 COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float height)
+  : COverlayGlyphGLES(QuadsOf(images, static_cast<int>(width)), width, height)
+{
+}
+
+COverlayGlyphGLES::COverlayGlyphGLES(const SQuads& quads, float width, float height)
 {
   m_width = 1.0;
   m_height = 1.0;
@@ -430,8 +440,7 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
   m_x = 0.0f;
   m_y = 0.0f;
 
-  SQuads quads;
-  if (!convert_quad(images, quads, static_cast<int>(width)))
+  if (quads.quad.empty())
     return;
 
   glGenTextures(1, &m_texture);
@@ -449,7 +458,7 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
   m_vertex.resize(quads.quad.size() * 4);
 
   VERTEX* vt = m_vertex.data();
-  SQuad* vs = quads.quad.data();
+  const SQuad* vs = quads.quad.data();
 
   for (size_t i = 0; i < quads.quad.size(); i++)
   {

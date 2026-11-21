@@ -251,6 +251,14 @@ void convert_rgba(const CDVDOverlaySpu& o,
   }
 }
 
+SQuads QuadsOf(ASS_Image* images, int max_x)
+{
+  SQuads quads;
+  if (!convert_quad(images, quads, max_x))
+    return SQuads();
+  return quads;
+}
+
 bool convert_quad(ASS_Image* images, SQuads& quads, int max_x)
 {
   ASS_Image* img;

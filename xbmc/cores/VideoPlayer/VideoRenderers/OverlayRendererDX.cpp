@@ -66,7 +66,17 @@ std::shared_ptr<COverlay> COverlay::Create(ASS_Image* images, float width, float
   return std::make_shared<COverlayQuadsDX>(images, width, height);
 }
 
+std::shared_ptr<COverlay> COverlay::Create(const SQuads& quads, float width, float height)
+{
+  return std::make_shared<COverlayQuadsDX>(quads, width, height);
+}
+
 COverlayQuadsDX::COverlayQuadsDX(ASS_Image* images, float width, float height)
+  : COverlayQuadsDX(QuadsOf(images, static_cast<int>(width)), width, height)
+{
+}
+
+COverlayQuadsDX::COverlayQuadsDX(const SQuads& quads, float width, float height)
 {
   m_width  = 1.0;
   m_height = 1.0;
@@ -76,8 +86,7 @@ COverlayQuadsDX::COverlayQuadsDX(ASS_Image* images, float width, float height)
   m_y      = 0.0f;
   m_count  = 0;
 
-  SQuads quads;
-  if (!convert_quad(images, quads, static_cast<int>(width)))
+  if (quads.quad.empty())
     return;
 
   float u, v;
@@ -89,7 +98,7 @@ COverlayQuadsDX::COverlayQuadsDX(ASS_Image* images, float width, float height)
 
   Vertex* vt = new Vertex[6 * quads.quad.size()];
   Vertex* vt_orig = vt;
-  SQuad* vs = quads.quad.data();
+  const SQuad* vs = quads.quad.data();
 
   float scale_u = u / quads.size_x;
   float scale_v = v / quads.size_y;
