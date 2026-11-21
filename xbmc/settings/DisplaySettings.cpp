@@ -384,6 +384,12 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionFromString(std::static_pointer_cast<const CSettingString>(setting)->GetValue());
 
     SetCurrentResolution(newRes, false);
+#if defined(HAS_LIBAMCODEC)
+    // 5.G-5 (docs/phase5_g0_design.md §4.5, S12, S13): on P's mid-play path session the pick is
+    // P's sticky target (no GC set, no wait); the keep dialog's revert enters here with the abort
+    // set: a clear, not a pick. Otherwise today's direct set
+    if (!DISPLAYSTATE::PostMidPlayPick(newRes, m_resolutionChangeAborted, "screenmode"))
+#endif
     {
 #if defined(HAS_LIBAMCODEC)
       OUTPUT::CRequestOrigin requestOrigin("user-pick");

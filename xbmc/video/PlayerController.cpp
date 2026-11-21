@@ -37,6 +37,7 @@
 #include "video/guilib/VideoStreamSelectHelper.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/OutputWorker.h"
 #endif
 
@@ -579,6 +580,10 @@ bool CPlayerController::OnAction(const CAction &action)
           {
             auto res = CDisplaySettings::GetInstance().GetResFromString(indexList[idx].asString());
 #if defined(HAS_LIBAMCODEC)
+            // 5.G-5 (docs/phase5_g0_design.md §4.5, S12): on P's mid-play path session the pick
+            // is P's sticky target; otherwise today's direct set
+            if (DISPLAYSTATE::PostMidPlayPick(res, false, "osd"))
+              return true;
             OUTPUT::CRequestOrigin requestOrigin("user-pick");
 #endif
             CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
