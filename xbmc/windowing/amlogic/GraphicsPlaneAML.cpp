@@ -679,6 +679,8 @@ void CGraphicsPlaneAML::Process()
   OUTPUT::SetThreadRole("G");
   if (!InitGL() || (!m_testPattern && !InitProgram()))
   {
+    // never ready, so CanShow() keeps the HDR graphics on main's route B
+    CLog::Log(LOGWARNING, "GPLANE off (gl init)");
     DeinitGL();
     return;
   }
