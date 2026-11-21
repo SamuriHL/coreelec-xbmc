@@ -993,6 +993,10 @@ void aml_dv_release_disc_engage()
 
 bool aml_dv_disc_engaged() { return s_dv_disc_engaged.load(); }
 
+static std::atomic<bool> s_dv_source_is_dv{false};
+void aml_dv_set_source_is_dv(bool isDv) { s_dv_source_is_dv = isDv; }
+bool aml_dv_source_is_dv() { return s_dv_source_is_dv.load(); }
+
 bool aml_dv_file_engaged() { return s_dv_file_engaged.load(); }
 
 void aml_dv_release_file_engage()
@@ -1358,13 +1362,16 @@ void aml_dv_set_vs10_mode_now(unsigned int mode)
     // an HDR10 film, dv_mode read HDR10 and playback was a slide show while every
     // Kodi counter read clean (no drops, no repeats, a-v 0); stop + start = core
     // off = smooth. Resolved to 2 on both am9pro and coreelec-br in the G-4
-    // gate. So Original now returns ANY non-DV source to the fresh-start state:
-    // only a DV source (IPT / IPT_TUNNEL) keeps the core, and the published mode
-    // is re-done as BYPASS, the value OpenDecoder records for a core-off start.
+    // gate. So Original now returns ANY non-DV source to the fresh-start state,
+    // and the published mode is re-done as BYPASS, the value OpenDecoder records
+    // for a core-off start. "Non-DV" is the SOURCE (aml_dv_source_is_dv), never
+    // the resolved mode: on a non-DV display a real DV source resolves to HDR10
+    // too (the core converting DV -> HDR10, what OpenDecoder forces there), and
+    // tearing that down would leave profile 5 - no HDR10 base layer - broken.
+    // Measured 2026-11-21 on coreelec-br with its TV in standby (no DV in EDID).
     const unsigned int resolved = dv_enabled ? aml_dv_dolby_vision_mode()
                                              : DOLBY_VISION_OUTPUT_MODE_BYPASS;
-    if (dv_enabled && resolved != DOLBY_VISION_OUTPUT_MODE_IPT &&
-        resolved != DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+    if (dv_enabled && (resolved == DOLBY_VISION_OUTPUT_MODE_BYPASS || !aml_dv_source_is_dv()))
     {
       CLog::Log(LOGINFO, "AMLUtils::{} - follow source resolved to {} on a non-DV "
                          "source - taking the DV core down so the wire can go native",

@@ -2438,6 +2438,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   bool dv_enable(device_support_dv && !user_dv_disable &&
     hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
     (display_support_dv || hints.dovi.dv_profile == 5 || vs10_active));
+  // real DV source (VS10 conversions carry the DV label with profile 0): read
+  // by a live VS10 Original to keep the core only for a DV source
+  aml_dv_set_source_is_dv(hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                          hints.dovi.dv_profile != 0);
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder Amlogic device {} support DV, DV is {} by user, display {} support DV, DV system is {}",
     device_support_dv ? "does" : "does not", user_dv_disable ? "disabled" : "enabled",
     display_support_dv ? "does" : "does not", dv_enable ? "enabled" : "disabled");
@@ -2938,6 +2942,7 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 void CAMLCodec::CloseDecoder()
 {
   WIRECLASS::CWireClassProbe::Get().SetDecoderSource(WIRECLASS::Source::UNKNOWN);
+  aml_dv_set_source_is_dv(false);
   // TEST (felkeep_on): closed before its first frame - the kept picture goes
   // as a plain FEL open would have dropped it
   if (m_felKeepStage.exchange(0) == 1)

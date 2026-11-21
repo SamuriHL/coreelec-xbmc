@@ -180,6 +180,11 @@ void aml_dv_cancel_file_engage_request();
 void aml_dv_release_disc_engage();
 // Whether the disc-session DV output engage is currently applied.
 bool aml_dv_disc_engaged();
+// The open decoder's source is real Dolby Vision (a DV profile, including the
+// HDR10+ -> 8.1 conversion), not an SDR/HDR10/HLG stream the VS10 path labels
+// DV with profile 0. Set by CAMLCodec::OpenDecoder, cleared by CloseDecoder.
+void aml_dv_set_source_is_dv(bool isDv);
+bool aml_dv_source_is_dv();
 // Clear a DV core left engaged by a previous run that died before its teardown
 // (crash, OOM, the JVM SIGABRT after BD-J). Call once at window-system init.
 void aml_dv_recover_stale_disc_session();
