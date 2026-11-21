@@ -1280,6 +1280,8 @@ protected:
     std::optional<RESOLUTION_INFO> sticky;
     bool pickDue = false; //!< a pick or its clear not yet carried by a job
     bool pickFresh = false; //!< taken this pass
+    int stickyIndex = -1; //!< the sticky pick's own index (preferred while its row matches)
+    bool pickClear = false; //!< the pending one is a keep dialog's clear
     int pickIndex = -1; //!< the last pick's (or revert's) main index, for today's route
     uint64_t pickId = 0;
     //! 5.G-5 (§4.5, T10): a VSVDB setting not yet run by a job (the body reads the settings live)

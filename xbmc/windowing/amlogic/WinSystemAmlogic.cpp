@@ -1883,6 +1883,19 @@ int CWinSystemAmlogic::FindResolution(const std::string& strId, float refresh, u
   return -1;
 }
 
+int CWinSystemAmlogic::FindResolutionPreferring(int preferred,
+                                                const std::string& strId,
+                                                float refresh,
+                                                uint32_t flags)
+{
+  const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  if (preferred >= RES_DESKTOP &&
+      static_cast<size_t>(preferred) < displaySettings.ResolutionInfoSize() &&
+      SameMode(displaySettings.GetResolutionInfo(preferred), strId, refresh, flags))
+    return preferred;
+  return FindResolution(strId, refresh, flags);
+}
+
 void CWinSystemAmlogic::ApplyHotplugTable(const SHotplugReply& reply, bool throwInside)
 {
   // HotplugEvent's rebuild (ClearCustomResolutions, RefreshResolutions, ApplyCalibrations) from
@@ -2218,7 +2231,8 @@ void CWinSystemAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // 5.G-5 (docs/phase5_g0_design.md §4.5, T10, S11): with a DV stream decoding on P's mid-play
   // path session the body runs inside a freeze (P's setting job); otherwise today's job, whose
   // body does nothing without DV
-  if (DvDecoding() && DISPLAYSTATE::PostMidPlaySetting(settingId))
+  // code review r1: the switch before the sysfs read, so midplaytx_off is exactly G-4's
+  if (aml_midplaytx_on() && DvDecoding() && DISPLAYSTATE::PostMidPlaySetting(settingId))
     return;
   OUTPUT::COutputWorker::Get().Post(OUTPUT::Lane::SETTINGS, "vsvdb setting",
                                     [] { ApplyVsvdbSetting(); });

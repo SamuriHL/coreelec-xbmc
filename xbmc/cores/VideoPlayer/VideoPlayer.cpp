@@ -3555,7 +3555,9 @@ void CVideoPlayer::TxMidPlayEnd(const char* why)
   // today's way at a later set, and is dropped by the stop and the next file
   if (std::exchange(m_midTx.pickDue, false))
   {
-    if (laterSet)
+    // code review r1 N1: a keep dialog's clear is dropped: sent, the old GUI mode would become
+    // the next set's target
+    if (laterSet && !m_midTx.pickClear)
       TxMidPickToMain(m_midTx.pickIndex, m_midTx.pickId, "after the path");
     else
       CLog::Log(LOGINFO, "MIDPLAY pick id={} dropped ({})", m_midTx.pickId, why);
@@ -3804,11 +3806,11 @@ void CVideoPlayer::TxMidPlayPass()
     why = "owed";
   else if (m_midTx.inputsDue && !busy && DISPLAYSTATE::DecideInputsSeq() > m_midTx.inputsAtOn)
     why = "path-on inputs";
-  // 5.G-5 (§4.5, T10): a setting's job in a pass with no DECIDE, one at a time, after the start's
-  // window (OW would defer it and drop it at StartDone, re-raising a decision)
-  if (!why && m_midTx.settingDue && !m_midTx.handback && !m_txDeferF &&
-      std::none_of(m_midJobs.begin(), m_midJobs.end(),
-                   [](const SMidJob& j) { return j.path && j.setting; }))
+  // 5.G-5 (§4.5, T10): a setting's job in a pass with no DECIDE and no path job in flight (code
+  // review r1 B1: its incumbent would be the mode before that job's commit, and its forced commit
+  // would revert it), after the start's window (OW would defer it and drop it at StartDone,
+  // re-raising a decision)
+  if (!why && m_midTx.settingDue && !busy && !m_midTx.handback && !m_txDeferF)
   {
     TxMidSettingJob();
     return;
@@ -4014,6 +4016,21 @@ bool CVideoPlayer::TxMidApplySticky(CRenderManager::SStartResolve& r,
   if (!m_midTx.sticky)
     return false;
   const RESOLUTION_INFO& t = *m_midTx.sticky;
+  const auto same = [&t](const RESOLUTION_INFO& info)
+  {
+    return info.strId == t.strId && info.dwFlags == t.dwFlags &&
+           std::abs(info.fRefreshRate - t.fRefreshRate) <= 0.01f;
+  };
+  // code review r1 B2: the pick's own index while its row matches (RES_DESKTOP may hold the same
+  // mode: GC would land on it and the settings window re-write the screenmode)
+  if (const auto own = latest.res.infos.find(m_midTx.stickyIndex);
+      m_midTx.stickyIndex >= RES_DESKTOP && own != latest.res.infos.end() && same(own->second))
+  {
+    r.res = static_cast<RESOLUTION>(m_midTx.stickyIndex);
+    r.info = own->second;
+    r.change = r.res != latest.res.videoResolution;
+    return true;
+  }
   for (const auto& [index, info] : latest.res.infos)
   {
     if (index < RES_DESKTOP || info.strId != t.strId || info.dwFlags != t.dwFlags ||
@@ -4086,10 +4103,12 @@ void CVideoPlayer::TxMidPick(const DISPLAYSTATE::STxInboxEntry& e, uint32_t word
       return;
     }
     m_midTx.sticky = e.res;
+    m_midTx.stickyIndex = e.resIndex;
     CLog::Log(LOGINFO, "MIDPLAY pick id={} res={} ({}) sticky", e.reqId, e.resIndex,
               e.res.strMode);
   }
   m_midTx.pickDue = m_midTx.pickFresh = true;
+  m_midTx.pickClear = clear;
   m_midTx.pickIndex = e.resIndex;
   m_midTx.pickId = e.reqId;
 }

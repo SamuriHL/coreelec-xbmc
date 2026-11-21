@@ -3179,7 +3179,12 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
     return;
   }
 
-  const int index = FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
+  // 5.G-5 (code review r1 B2): a mid-play job keeps its own row (a pick's index, not an earlier
+  // row of the same mode such as RES_DESKTOP)
+  const int index =
+      start.midplay ? FindResolutionPreferring(start.resIndex, job->res.strId,
+                                               job->res.fRefreshRate, job->res.dwFlags)
+                    : FindResolution(job->res.strId, job->res.fRefreshRate, job->res.dwFlags);
   if (index < 0)
   {
     // E2-8b NOTE: as the hotplug ADOPT's not-in-table exit: GC unmoved; the wire is unknown to
@@ -3194,6 +3199,32 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
     }
     NoteDriveShadowBackups();
     answer(Answer::FAILED, Form::FAILED);
+    return;
+  }
+
+  // 5.G-5 (code review r1 B2): a setting job re-commits GC's own row: adopted as GC's set's adopt
+  // form would (SetFullScreenOnW), with no GC set: no WINDOW_RESIZE, so the settings window over
+  // the film never re-writes the screenmode (and opens no keep dialog); today's job sends none
+  if (start.midplay && start.setting && index == static_cast<int>(gfx.GetVideoResolution()))
+  {
+    {
+      std::unique_lock gfxLock(gfx);
+      DISPLAYSTATE::CGcSetScope gcSetScope;
+      m_guiDiscarded = 0;
+      if (!SupersededOnW(*job))
+      {
+        const bool created = ApplyDriveReply(*job);
+        OUTPUT::NoteDriveReply(job->kind);
+        ReportDriveSet(*job, created, -1, -1, false);
+        NoteDriveShadowBackups();
+        if (created)
+          CRenderSystemGLES::ResetRenderSystem(job->res.iWidth, job->res.iHeight);
+      }
+    }
+    gfx.SetHDRType(job->hdrType);
+    CLog::Log(LOGINFO, "MIDPLAY setting job seq={} adopted on GC's row {}: no GC set", start.seq,
+              index);
+    answer(Answer::ADOPTED, Form::ADOPTED);
     return;
   }
 

@@ -327,6 +327,11 @@ protected:
   //! main: the first entry from RES_DESKTOP with this mode string, refresh (0.01 Hz) and flags
   //! (HotplugEvent's restore match); -1 when none
   static int FindResolution(const std::string& strId, float refresh, uint32_t flags);
+  //! 5.G-5 (code review r1 B2): preferred when its row is that mode, else FindResolution
+  static int FindResolutionPreferring(int preferred,
+                                      const std::string& strId,
+                                      float refresh,
+                                      uint32_t flags);
   //! main: one W retry job now, whatever the span (the recovery of a dropped Restore)
   //! committed: the mode the dropped Restore committed (DisplayState's), which the retry
   //! re-commits when W's table has it (row 1 otherwise)
