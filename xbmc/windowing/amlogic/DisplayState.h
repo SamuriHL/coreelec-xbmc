@@ -118,6 +118,9 @@ struct DisplayState
   bool linkUncommitted = false;
   //! W's last HPD read (from B3-6); not read before
   HpdRead hpd;
+  //! 5.K (D-G2-7): the running kernel processes an osd_pq_passthrough change with nothing
+  //! toggling (patch 0029, written 1 at init); false = the unpatched rule. Unread before 5.G2
+  bool knobForceProcess = false;
 };
 
 //! null before the seed and under displaystate_off

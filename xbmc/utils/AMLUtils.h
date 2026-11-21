@@ -70,6 +70,12 @@ int  aml_get_cpufamily_id();
 // the SoCs the presentation timeline work is validated on (S6, G12B): elsewhere
 // the player keeps today's behaviour
 bool aml_presentation_validated();
+// 5.K (D-G2-7): kernel patch 0029's aml_media.knob_force_process. Written once at init
+// (before W starts): 1 on a validated SoC, 0 with special://profile/knobforce_off or elsewhere
+// (the kernel then behaves as unpatched). aml_knob_force_process(): the patch is present and 1
+// was written and read back; false = the unpatched rule (REGIME no-toggle from 5.G2).
+void aml_knob_force_process_init();
+bool aml_knob_force_process();
 //! 5.V3's list (Q5): the SoCs its switch is on by default on (S6; G12B from 5.G-6)
 bool aml_geometrytick_validated();
 //! 5.C: the decoder keeps the stream's speed across its open and a display

@@ -2348,6 +2348,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     m_outputWorkerStarted = true;
     aml_presenter_set_test_cstall(OUTPUT::TestCStallMs(), OUTPUT::TestCStallNth());
     aml_displaystate_init();
+    aml_knob_force_process_init(); // 5.K: before W, read once; DisplayState carries it
     OUTPUT::COutputWorker::Get().Start();
     // 5.B2-5b: from here on W runs main's mode sets
     OUTPUT::NoteModeSetsOnW(OUTPUT::COutputWorker::Get().Active() && ModeSetsOnWSwitch());

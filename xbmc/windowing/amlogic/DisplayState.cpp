@@ -296,6 +296,7 @@ void PublishWithCaps(DisplayState& s,
   {
     FillLink(s, display);
     FillCaps(s, display, has2160);
+    s.knobForceProcess = aml_knob_force_process();
     Store(s, kind);
     s_capsFailed = false;
     s_capsDoneGen = gen;

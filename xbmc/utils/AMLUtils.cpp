@@ -102,6 +102,32 @@ bool aml_presentation_validated()
   return id == AML_S6 || id == AML_G12B;
 }
 
+static std::atomic<bool> s_knobForceProcess{false};
+
+void aml_knob_force_process_init()
+{
+  CSysfsPath knob{"/sys/module/aml_media/parameters/knob_force_process"};
+  if (!knob.Exists())
+  {
+    s_knobForceProcess = false;
+    CLog::Log(LOGINFO, "KNOBFORCE knobForceProcess 0 (kernel unpatched: no knob_force_process)");
+    return;
+  }
+  const bool off = XFILE::CFile::Exists("special://profile/knobforce_off");
+  const bool validated = aml_presentation_validated();
+  const int want = (!off && validated) ? 1 : 0;
+  // written at every init, so a reboot or a Kodi restart always starts from our value
+  knob.Set(want);
+  const int got = knob.Get<int>().value_or(-1);
+  s_knobForceProcess = want == 1 && got == 1;
+  CLog::Log(got == want ? LOGINFO : LOGWARNING,
+            "KNOBFORCE knobForceProcess {} (wrote {}, reads back {}; {})",
+            s_knobForceProcess.load() ? 1 : 0, want, got,
+            off ? "knobforce_off" : validated ? "validated SoC" : "SoC not validated");
+}
+
+bool aml_knob_force_process() { return s_knobForceProcess.load(); }
+
 bool aml_geometrytick_validated()
 {
   // 5.V3 (Q5 (b)): G12B joins after its look through VRROOM input 0.
