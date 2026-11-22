@@ -337,6 +337,10 @@ private:
   //! GT-4 (C's thread): drops what a floor or a later pick made stale, and moves the buffer of
   //! the frame on screen next into the graphics plane's queue. ticked: after a video tick
   void SelectTimed(bool ticked);
+  //! GT-5 (GT-D15, C's thread, a wake with no tick): the frame on screen next missed its slot
+  //! and G has handed its buffer in since; picked if its commit can still land on that vblank
+  void SelectTimedLate(int64_t now);
+  bool m_gtSlotMissed = false; //!< C's thread: this interval's slot found no buffer for its frame
   //! GT-4: a released frame, for the pick at the next tick
   struct SReleasedFrame
   {
@@ -485,6 +489,8 @@ private:
     //! GT-4: timed buffers placed after their frame's first vblank; ticks whose frame G had not
     //! reached; timed buffers dropped unshown (replaced, passed, or under a floor)
     int gfxLate = 0, gfxMissing = 0, gfxTimedReplaced = 0, gfxTimed = 0;
+    //! GT-5 (GT-D15): missed at the slot, picked when G handed it in before the next vblank
+    int gfxLatePick = 0;
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart

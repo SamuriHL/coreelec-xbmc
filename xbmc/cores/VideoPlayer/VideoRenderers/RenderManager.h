@@ -89,6 +89,7 @@ struct SPresentTick
   const char* holdSite = nullptr; //!< the hold whose release started epoch; null = none
   int holdTid = 0;
   int64_t holdReleaseNs = 0; //!< steady_clock
+  int64_t periodNs = 0; //!< 5.G2 GT-5: C's measured vblank period; 0 = none yet
 };
 
 class CAMLCodec;
@@ -599,8 +600,9 @@ protected:
   void PresentHdrGraphics(int idx, const CRect& source, const CRect& dest, const CRect& view);
   bool GraphicsWithheld();
   //! GraphicsWithheld past its fullscreen check; stateLocked: the caller holds m_statelock
-  //! (5.G2 GT-4: C's tick, with main's fullscreen from GuiSnapshot)
-  bool GraphicsWithheldFullScreen(bool stateLocked);
+  //! (5.G2 GT-4: C's tick, with main's fullscreen from GuiSnapshot). landingNs (GT-5, item 10):
+  //! the T0 clause is judged at that CLOCK_MONOTONIC time, not now; 0 = now
+  bool GraphicsWithheldFullScreen(bool stateLocked, int64_t landingNs = 0);
 #if defined(HAS_LIBAMCODEC)
   //! GUNTIMED (guntimed_log, main): a change of the untimed HDR images, or their going
   //! away, is a post. toPlane: route C's posts, sent with the images; null: route B's,

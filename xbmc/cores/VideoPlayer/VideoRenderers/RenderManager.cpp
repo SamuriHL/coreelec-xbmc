@@ -2456,7 +2456,7 @@ bool CRenderManager::GraphicsWithheld()
   return GraphicsWithheldFullScreen(false);
 }
 
-bool CRenderManager::GraphicsWithheldFullScreen(bool stateLocked)
+bool CRenderManager::GraphicsWithheldFullScreen(bool stateLocked, int64_t landingNs)
 {
 #if defined(HAS_LIBAMCODEC)
   // 5.E2-8a (D3): an engaged start's graphics, from OPEN
@@ -2484,9 +2484,11 @@ bool CRenderManager::GraphicsWithheldFullScreen(bool stateLocked)
   if (aml_transaction_on())
   {
     const int64_t fromNs = m_txGraphicsFromNs.load(std::memory_order_acquire);
-    if (fromNs != 0 && std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                               .count() < fromNs)
+    const int64_t atNs = landingNs ? landingNs
+                                   : std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count();
+    if (fromNs != 0 && atNs < fromNs)
       return true;
   }
 #endif
@@ -6488,7 +6490,12 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     GUISNAPSHOT::SSnapshot snapshot;
     const bool fullScreen = !GUISNAPSHOT::Read(snapshot) || !snapshot.valid ||
                             snapshot.fullScreenVideo;
-    result.graphicsWithheld = fullScreen && GraphicsWithheldFullScreen(true);
+    // GT-5 (item 10, GT-D15): C commits at this tick's slot and the commit shows at the next
+    // vblank, so the start's first composition goes in the slot one tick before T0, on screen
+    // at T0 with its frame; judged now, it waited for T0's own slot and landed one vblank late
+    const int64_t landingNs =
+        tick.periodNs > 0 ? (tick.vblankNs ? tick.vblankNs : tick.wokeNs) + tick.periodNs : 0;
+    result.graphicsWithheld = fullScreen && GraphicsWithheldFullScreen(true, landingNs);
   }
 #endif
   if (GeometryTickSession())

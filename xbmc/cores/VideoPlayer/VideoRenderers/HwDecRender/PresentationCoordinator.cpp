@@ -47,6 +47,9 @@ constexpr int64_t SYNTHETIC_TICK_NS = 50000000;
 constexpr int64_t EVENT_LOST_NS = 100000000;
 // a flip event that never came (CRTC off mid-flight): take the flip as done
 constexpr int64_t FLIP_LOST_NS = 500000000;
+// GT-5 (GT-D15): a timed buffer picked after its slot still lands on the next vblank only if
+// committed this long before it (the commit worker's ioctl and the driver's latch)
+constexpr int64_t LATE_PICK_MARGIN_NS = 3000000;
 // 5.B2-7: a plane off C has not started by then runs inline (today's hold bound)
 constexpr auto PLANE_OFF_BOUND = std::chrono::seconds(2);
 
@@ -1086,6 +1089,8 @@ void CPresentationCoordinator::Process()
         RunWakeTail();
         wakePending = false;
       }
+      // GT-5: a buffer G handed in after its slot (GT-D15)
+      SelectTimedLate(now);
       // no vblank for a while (CRTC off or stalled): keep time with a timer
       // tick, as the render thread's 50 ms poll fallback did
       if (now - m_lastTickNs < SYNTHETIC_TICK_NS)
@@ -1531,7 +1536,17 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
 int CPresentationCoordinator::TimedHeld()
 {
   std::unique_lock lock(m_uiMutex);
-  return static_cast<int>(m_timed.size()) + (m_planes[PLANE_GRAPHICS].ready.timed ? 1 : 0);
+  // GT-D15: a clear is not a composition drawn ahead (it goes at the first slot), so a floor's
+  // clear held while C is (a seek's re-prime) no longer takes the segment's first frames' depth;
+  // the buffer itself still counts in G's LOCK_CAP
+  int held = 0;
+  for (const UiBuffer& b : m_timed)
+    if (!b.clear)
+      held++;
+  const UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
+  if (ready.timed && !ready.clear)
+    held++;
+  return held;
 }
 
 void CPresentationCoordinator::SelectTimed(bool ticked)
@@ -1550,8 +1565,13 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       m_gtSession = session;
       m_gtPickedSerial = 0;
     }
+    if (ticked)
+      m_gtSlotMissed = false;
+    const bool due = ticked && on && !m_gtWithheld && m_gtTarget.valid &&
+                     m_gtTarget.serial > m_gtPickedSerial;
     if (m_timed.empty())
     {
+      m_gtSlotMissed = due;
       if (!on && m_planeSubsVisible)
       {
         m_planeSubsVisible = false;
@@ -1595,6 +1615,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     {
       if (ticked && on && !m_gtWithheld && target.valid && target.serial > GRAPHICSTICK::Processed())
         m_report.gfxMissing++;
+      m_gtSlotMissed = due;
     }
     else
     {
@@ -1637,6 +1658,61 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     if (write(m_wakeFd, &one, sizeof(one)) < 0)
       CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   }
+}
+
+void CPresentationCoordinator::SelectTimedLate(int64_t now)
+{
+  if (!m_gtSlotMissed || !GRAPHICSTICK::Requested())
+    return;
+  // the commit must land on the vblank this interval's slot was for, never later: else the next
+  // slot picks (for the next frame, which a late commit of this one would push off)
+  const int64_t period = m_diagPeriodNs;
+  if (period <= 0 || !m_diagVblankNs || m_diagVblankNs + period - now < LATE_PICK_MARGIN_NS)
+  {
+    m_gtSlotMissed = false;
+    return;
+  }
+  bool on;
+  uint64_t session;
+  GRAPHICSTICK::RouteState(on, session);
+  const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
+  const SReleasedFrame& target = m_gtTarget;
+  {
+    std::unique_lock lock(m_uiMutex);
+    UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
+    // a commit in flight would hold it to the flip, one vblank late: the next slot decides
+    if (!on || m_gtWithheld || !target.valid || session != m_gtSession || m_inFlight || ready.req)
+      return;
+    int pick = -1;
+    for (int i = 0; i < static_cast<int>(m_timed.size()); i++)
+    {
+      const UiBuffer& b = m_timed[i];
+      if (!b.clear && !b.bridge && b.session == session && b.serial > floor.floor &&
+          b.serial >= m_gtPickedSerial && b.serial <= target.serial)
+        pick = i;
+    }
+    if (pick < 0)
+      return;
+    for (int i = 0; i < pick; i++)
+    {
+      Drop(PLANE_GRAPHICS, m_timed[i]);
+      if (!m_timed[i].clear)
+        m_report.gfxTimedReplaced++;
+    }
+    UiBuffer chosen = std::move(m_timed[pick]);
+    m_timed.erase(m_timed.begin(), m_timed.begin() + pick + 1);
+    chosen.qbuf = target.qbuf;
+    chosen.target = target.tick + 2;
+    m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
+    ready = std::move(chosen);
+    m_gtSlotMissed = false;
+    m_report.gfxLatePick++;
+  }
+  GRAPHICSTICK::Kick();
+  m_uiCond.notify_all();
+  const uint64_t one = 1;
+  if (write(m_wakeFd, &one, sizeof(one)) < 0)
+    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 }
 
 bool CPresentationCoordinator::UntimedLog()
@@ -1829,6 +1905,8 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     return false;
 
   SPresentResult result;
+  // GT-5 (item 10): the route's start withhold is judged at the vblank this slot's commit lands on
+  tick.periodNs = m_diagPeriodNs;
   const int64_t start = MonotonicNs();
   m_video->PresentTick(tick, result);
   const int64_t work = MonotonicNs() - start;
@@ -2111,8 +2189,8 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxSuspect)
     CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
-    CLog::Log(LOGINFO, "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={}",
-              r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced);
+    CLog::Log(LOGINFO, "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={}",
+              r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick);
   if (r.uiTimed)
     CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
