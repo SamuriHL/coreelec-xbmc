@@ -255,6 +255,7 @@ private:
     //! GT-D15: picked at the first slot after C's start withhold (on screen at T0): its frame was
     //! released, and held as a still, before T0, so delta counts the hold
     bool afterHold = false;
+    bool staleDeferred = false; //!< held back at a flip's wake: its own frame had left the screen
     // GT-D15 measurement (log only)
     int64_t assUs = -1;
     int64_t drawUs = -1;
@@ -397,6 +398,11 @@ private:
   SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
   bool m_gtWithheld = false;
   bool m_gtWasWithheld = false; //!< C's thread: the last ticked slot's withhold
+  //! under m_uiMutex: the newest vblank a flip of C's commits reported
+  uint32_t m_gtFlipSeq = 0;
+  bool m_gtFlipSeqValid = false;
+  int64_t m_gtStaleWindowNs = 0; //!< GTICK stalePickReplaced: lines in the current second
+  int m_gtStaleLines = 0;
   int64_t m_gtNoPickWindowNs = 0; //!< GTICK no pick: lines in the current second
   int m_gtNoPickLines = 0;
   // GT-D15 measurement (C's thread, log only): when C last entered its poll, and how long the
@@ -563,6 +569,8 @@ private:
     int gfxLatePick = 0;
     //! late picks whose fence or a flight held them past their deadline: back to the next slot
     int gfxLatePickBack = 0;
+    //! GT-D15 re-sync: picks whose own frame had left the screen, replaced at the slot
+    int stalePickReplaced = 0;
     //! GT-D15: C's loop bodies [<1 ms, <5, <10, <20, >=20 ms] and the longest, us
     int bodyHist[5] = {};
     int64_t bodyMaxUs = 0;

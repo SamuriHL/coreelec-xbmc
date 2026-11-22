@@ -1319,6 +1319,20 @@ void CPresentationCoordinator::CommitUi()
         GiveBackLatePick();
         continue;
       }
+      // GT-D15 (user ruling 2026-11-22, "re-sync at once"): a timed composition whose own frame
+      // has left the screen is not committed at a flip's wake ahead of this vblank's slot: it
+      // would land a vblank late and its flight would push every following pick one late (RC12
+      // coreelec-br K1 n50: 37 frames). It waits for the slot, which replaces it with the
+      // current frame's pick, or commits it there when nothing newer exists (a still frame).
+      // Timed frame entries only: no clear, bridge or first page
+      if (plane == PLANE_GRAPHICS && ready.req && ready.timed && !ready.clear && !ready.bridge &&
+          !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq &&
+          static_cast<int32_t>(m_gtFlipSeq + 1 - static_cast<uint32_t>(ready.target)) > 0 &&
+          static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
+      {
+        ready.staleDeferred = true;
+        continue;
+      }
       if (!ready.req || ready.fence >= 0)
         continue;
       if (plane == PLANE_GRAPHICS)
@@ -1886,6 +1900,22 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
           m_report.gfxTimedReplaced++;
         else
           m_report.gfxReplaced++;
+        // the re-sync: a pick held back because its own frame had left the screen, replaced by
+        // the current frame's (gated at 0 once C's stalls are gone)
+        if (ready.staleDeferred)
+        {
+          m_report.stalePickReplaced++;
+          const int64_t now = MonotonicNs();
+          if (now - m_gtStaleWindowNs >= 1000000000)
+          {
+            m_gtStaleWindowNs = now;
+            m_gtStaleLines = 0;
+          }
+          if (++m_gtStaleLines <= 5)
+            GRAPHICSTICK::GTLogF(LOGWARNING,
+                                 "GTICK stalePickReplaced serial={} target={} by serial={} flip={}",
+                                 ready.serial, ready.target, chosen.serial, m_gtFlipSeq);
+        }
         Drop(PLANE_GRAPHICS, ready);
       }
       if (chosen.req)
@@ -2083,6 +2113,9 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   std::unique_lock lock(m_uiMutex);
   if (!m_inFlight || tag != m_inCommitTag)
     return;
+  // the newest vblank C has seen (its flip can come before that vblank's tick)
+  m_gtFlipSeq = sequence;
+  m_gtFlipSeqValid = true;
   std::vector<SUntimedPost> untimed;
   if (s_untimedLog && flipNs > 0)
   {
@@ -2593,9 +2626,9 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
-              "latePickBack={}",
+              "latePickBack={} stalePickReplaced={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
-              r.gfxLatePickBack);
+              r.gfxLatePickBack, r.stalePickReplaced);
   // GT-D15: C's loop body (bounded: no I/O on it) and the log writer that took C's lines
   if (GRAPHICSTICK::Requested())
   {
