@@ -219,6 +219,7 @@ enum class UntimedCount
   NEWEST_OVERFLOW, //!< gnewest_off: states dropped at the queue's bound (review rA m1)
   PAGE_LATE_POSTED, //!< review rB m8: a segment's page posted after its first frame's release
   PAGE_FALLBACK, //!< a waiting page released by the P-side 3 s fallback, not by its picture
+  TIMED_PASSED, //!< GT-D15: a timed composition past its slot when a buffer came, not drawn
   COUNT
 };
 void Count(UntimedCount what, int n = 1);
