@@ -1693,6 +1693,13 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     }
     if (ticked)
       m_gtSlotMissed = false;
+    // r2 N2: a late pick past its deadline no longer waits for anything (its commit would land
+    // late): back to the list before this slot's pick, so it never holds the next frame's slot.
+    // Before the stale filter (review r3 R3-2): a floor or a session change since its pick
+    // drops it like any other entry
+    if (m_planes[PLANE_GRAPHICS].ready.req && m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs &&
+        MonotonicNs() > m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs)
+      GiveBackLatePick();
     const bool due = ticked && on && !m_gtWithheld && m_gtTarget.valid &&
                      m_gtTarget.serial > m_gtPickedSerial;
     if (m_timed.empty())
@@ -1739,11 +1746,6 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     }
     // GT-5 item 5 (f): a segment's first page, once picked, is committed at its slot or the next
     // flip; nothing replaces it meanwhile (later entries wait for the next slot)
-    // r2 N2: a late pick past its deadline no longer waits for anything (its commit would land
-    // late): back to the list before this slot's pick, so it never holds the next frame's slot
-    if (m_planes[PLANE_GRAPHICS].ready.req && m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs &&
-        MonotonicNs() > m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs)
-      GiveBackLatePick();
     const UiBuffer& waiting = m_planes[PLANE_GRAPHICS].ready;
     // only while it waits for the flight or its fence, which end: a page CommitUi cannot place
     // (no GUI plane up) never holds the later entries back
@@ -1762,7 +1764,11 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       // judged at its slot; with none: RM's start hold, cleared at E1's point)
       const bool bridgeHeld =
           b.untimedRoute && (ticked ? m_gtWithheld : GRAPHICSTICK::UntimedHeld());
-      if (b.clear || (b.bridge && on && !bridgeHeld) ||
+      // R3-1: a floor's clear carrying the menu, before this session showed any untimed state
+      // (a floor between the route start and T0), waits for the start's hold like the menu
+      // itself; the plane is empty then (the start clear went), so holding it hides nothing
+      const bool clearHeld = b.clear && b.u && m_gtPickedU == 0 && bridgeHeld;
+      if ((b.clear && !clearHeld) || (b.bridge && on && !bridgeHeld) ||
           (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
         pick = i;
     }
