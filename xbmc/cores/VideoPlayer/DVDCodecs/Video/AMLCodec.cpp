@@ -2185,6 +2185,17 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_park_last_data_len = -1;
   m_sessionGen++;
 
+  // The kernel's 4:2:0 -> 4:4:4 formatter sites chroma by the stream's chroma
+  // location (common_drivers patch 0028, design: Silverbak). Written at every
+  // open, never at close: a close/open pair across a disc stream change must
+  // not reprogram the formatter twice under a held frame. Unspecified (0)
+  // keeps the stock phase, which is also the spec default (type 0).
+  CSysfsPath("/sys/module/aml_media/parameters/vfmt_chroma_loc",
+             static_cast<int>(hints.chromaLocation));
+  CLog::Log(LOGDEBUG,
+            "CAMLCodec::OpenDecoder - chroma location {} (AVChromaLocation; 3 = topleft)",
+            static_cast<int>(hints.chromaLocation));
+
   if (!OpenAmlVideo(hints))
   {
     CLog::Log(LOGERROR, "CAMLCodec::OpenDecoder - cannot open amlvideo device");

@@ -2304,6 +2304,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         st->colorSpace = pStream->codecpar->color_space;
         st->colorTransferCharacteristic = pStream->codecpar->color_trc;
         st->colorRange = pStream->codecpar->color_range;
+        st->chromaLocation = pStream->codecpar->chroma_location;
         st->hdr_type = DetermineHdrType(pStream);
 
 #ifdef HAVE_LIBBLURAY

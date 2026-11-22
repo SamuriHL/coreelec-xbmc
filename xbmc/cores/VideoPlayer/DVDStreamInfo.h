@@ -100,6 +100,7 @@ public:
   AVColorRange colorRange;
   AVColorPrimaries colorPrimaries;
   AVColorTransferCharacteristic colorTransferCharacteristic;
+  AVChromaLocation chromaLocation; // not part of Equal(): never forces a decoder reopen
   std::shared_ptr<AVMasteringDisplayMetadata> masteringMetadata;
   std::shared_ptr<AVContentLightMetadata> contentLightMetadata;
   std::string stereo_mode; // stereoscopic 3d mode

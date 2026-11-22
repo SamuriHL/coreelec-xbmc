@@ -66,6 +66,7 @@ void CDVDStreamInfo::Clear()
   colorRange = AVCOL_RANGE_UNSPECIFIED;
   colorPrimaries = AVCOL_PRI_UNSPECIFIED;
   colorTransferCharacteristic = AVCOL_TRC_UNSPECIFIED;
+  chromaLocation = AVCHROMA_LOC_UNSPECIFIED;
   masteringMetadata = nullptr;
   contentLightMetadata = nullptr;
   stereo_mode.clear();
@@ -239,6 +240,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   colorRange = right.colorRange;
   colorPrimaries = right.colorPrimaries;
   colorTransferCharacteristic = right.colorTransferCharacteristic;
+  chromaLocation = right.chromaLocation;
   masteringMetadata = right.masteringMetadata;
   contentLightMetadata = right.contentLightMetadata;
   stereo_mode = right.stereo_mode;
@@ -308,6 +310,7 @@ void CDVDStreamInfo::Assign(const CDemuxStream& right, bool withextradata)
     colorRange = stream->colorRange;
     colorPrimaries = stream->colorPrimaries;
     colorTransferCharacteristic = stream->colorTransferCharacteristic;
+    chromaLocation = stream->chromaLocation;
     masteringMetadata = stream->masteringMetaData;
     contentLightMetadata = stream->contentLightMetaData;
     stereo_mode = stream->stereo_mode;
