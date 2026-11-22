@@ -963,7 +963,6 @@ void CDVDInputStreamBluray::OverlayClose()
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
   group->SetDiscMenu(true);
-  group->SetOverlayContainerFlushable(false);
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   m_hasOverlay = false;
 #endif
@@ -1025,7 +1024,6 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
   group->SetDiscMenu(true);
-  group->SetOverlayContainerFlushable(false);
 
   for(SPlane& plane : m_planes)
   {
