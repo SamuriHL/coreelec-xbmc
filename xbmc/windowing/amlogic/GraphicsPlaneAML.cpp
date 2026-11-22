@@ -11,6 +11,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayStereoUtils.h"
+#include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibass.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h"
@@ -18,6 +19,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
+#include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/GraphicsRasterAML.h"
 #include "settings/Settings.h"
@@ -932,24 +934,78 @@ void CGraphicsPlaneAML::RenderLibass(SComposition& comp)
 
 bool CGraphicsPlaneAML::Same(const SComposition& a, const SComposition& b) const
 {
-  return a.images == b.images && a.glyphs == b.glyphs && a.hidden == b.hidden;
+  return a.images == b.images && a.glyphs == b.glyphs && a.hidden == b.hidden &&
+         a.untimedIds == b.untimedIds;
 }
 
 bool CGraphicsPlaneAML::CanDraw(bool redraw) const
 {
   // depth LOCK_CAP - 2 ahead: the buffer on screen and the one in flight are C's too. A redraw
   // replaces C's buffer of its serial, or the one on screen (review rB M-2: paused with two drawn
-  // ahead, a setting change still shows)
-  return m_locked < LOCK_CAP && (redraw || m_coordinator->TimedHeld() < LOCK_CAP - 2);
+  // ahead, a setting change still shows). GT-5 (item 2): with an untimed state up, one ahead,
+  // so a buffer stays for the frame on screen's untimed entry (item 5 (e))
+  const int depth = m_untimedOnG && UntimedUp() ? LOCK_CAP - 3 : LOCK_CAP - 2;
+  return m_locked < LOCK_CAP && (redraw || m_coordinator->TimedHeld() < depth);
 }
 
 bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
 {
   if (!CanDraw(comp.redraw))
     return false;
+  std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
+  if (!DrawComposition(comp, unit.front()))
+    return false;
+  m_coordinator->SubmitTimed(unit);
+  return true;
+}
+
+void CGraphicsPlaneAML::RetainRoute(std::vector<std::shared_ptr<CDVDOverlay>>& images,
+                                    std::vector<CGraphicsRasterAML::SGlyphs>& glyphs) const
+{
+  // GT-5: a redraw (item 5 (d), a regime or geometry change) of an entry G still holds, and the
+  // untimed pages, are pass 2 only: their textures and glyph atlases are not dropped and made
+  // again at every draw of another entry (GT-D15's per-frame redraw cost)
+  const auto keepImages = [&](const std::vector<std::shared_ptr<CDVDOverlay>>& list)
+  { images.insert(images.end(), list.begin(), list.end()); };
+  for (const SComposition& comp : m_routeDrawn)
+  {
+    for (const OVERLAY::SFrameOverlay& o : comp.overlays)
+      if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+        images.push_back(o.overlay);
+    keepImages(comp.untimed);
+    for (const std::shared_ptr<const OVERLAY::SQuads>& quads : comp.glyphs)
+      if (quads)
+      {
+        CGraphicsRasterAML::SGlyphs item;
+        item.quads = quads;
+        glyphs.push_back(std::move(item));
+      }
+  }
+  keepImages(m_uCur.images);
+  keepImages(m_uWait.images);
+}
+
+bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
+                                        CPresentationCoordinator::STimedBuffer& out)
+{
+  if (m_locked >= LOCK_CAP)
+    return false;
   const CGraphicsRasterAML::SRegime regime = RouteRegime();
   m_raster->SetRegime(regime);
-  const GRAPHICSTICK::SRects rects = RouteRects(comp);
+  GRAPHICSTICK::SRects rects = RouteRects(comp);
+  // GT-5: a menu-only screen has no video rects; main draws it over the whole GUI then
+  // (RenderWithoutPicture), and so does G
+  if (!rects.valid && comp.bridge && m_untimedOnG)
+  {
+    float width = 0.0f;
+    float height = 0.0f;
+    GuiSize(width, height);
+    if (width > 0.0f && height > 0.0f)
+    {
+      rects.source = rects.dest = rects.view = CRect(0.0f, 0.0f, width, height);
+      rects.valid = true;
+    }
+  }
   comp.rects = rects;
   SHdrGraphics area;
   area.source = rects.source;
@@ -988,9 +1044,16 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
     for (const OVERLAY::SFrameOverlay& o : comp.overlays)
       if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
         visible |= place(o.overlay, area);
-    // the untimed bridge: main's present-latest images, over the frame's, in Composite only
-    // (in Srgb and Scalar main draws them on the GUI plane)
-    if (regime.encoding == DISPLAYSTATE::GuiEncoding::Composite)
+    // GT-5: the state comp carries, over the frame's timed overlays, in every regime (item 6)
+    if (m_untimedOnG)
+    {
+      for (const std::shared_ptr<CDVDOverlay>& image : comp.untimed)
+        if (image->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+          visible |= place(image, area);
+    }
+    // the untimed bridge (guntimed_off): main's present-latest images, over the frame's, in
+    // Composite only (in Srgb and Scalar main draws them on the GUI plane)
+    else if (regime.encoding == DISPLAYSTATE::GuiEncoding::Composite)
       for (const std::shared_ptr<CDVDOverlay>& image : m_shown.images)
         place(image, m_shown);
     const float toPlaneX = WIDTH / area.width;
@@ -1009,7 +1072,15 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
       visible = true;
     }
   }
-  m_raster->Retain(kept, glyphs);
+  if (m_untimedOnG)
+  {
+    std::vector<std::shared_ptr<CDVDOverlay>> keepImages = kept;
+    std::vector<CGraphicsRasterAML::SGlyphs> keepGlyphs = glyphs;
+    RetainRoute(keepImages, keepGlyphs);
+    m_raster->Retain(keepImages, keepGlyphs);
+  }
+  else
+    m_raster->Retain(kept, glyphs);
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(0, 0, WIDTH, HEIGHT);
@@ -1024,22 +1095,25 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
   int fence = -1;
   if (!TakeFrame(bo, fb, req, fence))
     return false;
-  std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
-  CPresentationCoordinator::STimedBuffer& buffer = unit.front();
-  buffer.bo = bo;
-  buffer.fb = fb;
-  buffer.req = req;
-  buffer.fence = fence;
-  buffer.pts = comp.pts;
-  buffer.serial = comp.serial;
-  buffer.visible = visible;
-  buffer.bridge = comp.bridge;
-  buffer.session = m_routeSession;
-  m_coordinator->SubmitTimed(unit);
+  out = CPresentationCoordinator::STimedBuffer();
+  out.bo = bo;
+  out.fb = fb;
+  out.req = req;
+  out.fence = fence;
+  out.pts = comp.pts;
+  out.serial = comp.serial;
+  out.visible = visible;
+  out.bridge = comp.bridge;
+  out.session = m_routeSession;
+  out.u = comp.u;
+  out.firstPage = comp.firstPage;
+  out.regimeEpoch = regime.epoch;
+  out.untimedRoute = m_untimedOnG;
   m_lastFb = fb;
   m_lastVisible = !placed.empty() || !glyphs.empty();
   m_routeLastVisible = m_lastVisible;
   comp.redraw = false;
+  comp.untimedStale = false;
   return true;
 }
 
@@ -1095,6 +1169,26 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_routeClearSerial = 0;
   GRAPHICSTICK::NoteGSide(m_routeSession, true);
   CLog::Log(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
+  // GT-5: the untimed graphics too, unless guntimed_off keeps GT-4's bridge
+  m_uCur = SUntimedPage();
+  m_uWait = SUntimedPage();
+  m_uReleasedSegment = 0;
+  m_uNotedSegment = 0;
+  m_uFirstPageGen = 0;
+  m_uFirstPageSerial = 0;
+  m_uExpired = false;
+  m_uDeferredU = 0;
+  m_uTakenU = 0;
+  m_untimedOnG = !GRAPHICSTICK::UntimedOff();
+  if (m_untimedOnG)
+  {
+    GRAPHICSTICK::SetUntimedHook(true);
+    // what the container shows now (main stops selecting it at its next pass)
+    GRAPHICSTICK::WithContainer([](CDVDOverlayContainer& container)
+                                { container.PostUntimedSnapshot(); });
+    CLog::Log(LOGINFO, "GUNTIMED G on: the untimed graphics are taken here, newest first{}",
+              GRAPHICSTICK::NewestOff() ? " (gnewest_off: every state, in post order)" : "");
+  }
 }
 
 void CGraphicsPlaneAML::RouteEnd()
@@ -1115,6 +1209,16 @@ void CGraphicsPlaneAML::RouteEnd()
   // main renders the timed libass overlays again from here (review rA M1)
   GRAPHICSTICK::NoteGSide(m_routeSession, false);
   CLog::Log(LOGINFO, "GTICK G off: the timed graphics are main's again");
+  if (m_untimedOnG)
+  {
+    // main selects the untimed composition again from its next pass
+    GRAPHICSTICK::SetUntimedHook(false);
+    m_untimedOnG = false;
+    m_uCur = SUntimedPage();
+    m_uWait = SUntimedPage();
+    m_uExpiredPage = SUntimedPage();
+    CLog::Log(LOGINFO, "GUNTIMED G off: the untimed graphics are main's again");
+  }
 }
 
 bool CGraphicsPlaneAML::RouteStep()
@@ -1202,6 +1306,18 @@ bool CGraphicsPlaneAML::RouteStep()
     if (moved)
       for (SComposition& comp : m_routeDrawn)
         comp.redraw = true;
+    // GT-5 (item 5): the page gate moves to C's release. A page of this segment waiting in the
+    // container becomes current now; G drew it ahead with the segment's frames, and C commits it
+    // with the first of them (that frame's slot is the next tick's)
+    if (m_untimedOnG && in.last.segmentGen > m_uNotedSegment)
+    {
+      // the page counts as released when the container's snapshot says so (taken below), so no
+      // frame is drawn with the old page in between
+      const unsigned int gen = in.last.segmentGen;
+      m_uNotedSegment = gen;
+      GRAPHICSTICK::WithContainer([gen](CDVDOverlayContainer& container)
+                                  { container.NotePresentedSegment(gen); });
+    }
   }
   if (m_routeDrawn.size() > 8)
     m_routeDrawn.erase(m_routeDrawn.begin(), m_routeDrawn.end() - 8);
@@ -1214,9 +1330,23 @@ bool CGraphicsPlaneAML::RouteStep()
       if (!comp.glyphs.empty())
         comp.redraw = true;
   }
+  // GT-5: the newest state is taken before the timed draws, so a frame drawn now carries it
+  // (item 5 (c)); its re-draws wait for the timed work (RedrawUntimed, below)
+  if (m_untimedOnG)
+  {
+    TakeUntimedStates();
+    CheckKeepAlive();
+  }
   RouteRegime();
-  // the untimed bridge: main's composition changed
-  if (TakeShown())
+  // GT-5: main hands nothing untimed over (its sets are empty while G holds the hook)
+  if (m_untimedOnG)
+  {
+    if (TakeShown())
+      m_untimed.clear();
+    m_redraw = false;
+  }
+  // the untimed bridge (guntimed_off): main's composition changed
+  else if (TakeShown())
   {
     m_redraw = false;
     m_untimed.clear();
@@ -1239,17 +1369,24 @@ bool CGraphicsPlaneAML::RouteStep()
       return true;
     m_routeClearOwed = false;
   }
+  // the draw-ahead depth or the buffers stop the timed draws; GT-5's untimed work still runs
+  // then (the frames within the depth have their entries, item 5 (c))
+  bool timedWaits = false;
   for (SComposition& comp : m_routeDrawn)
   {
-    if (!comp.redraw)
+    // GT-5: an entry owing a newer untimed state is redrawn by RedrawUntimed's unit, in order
+    if (!comp.redraw || comp.untimedStale)
       continue;
     if (!comp.glyphs.empty())
       RenderLibass(comp);
     if (!DrawTimed(comp))
-      return true;
+    {
+      timedWaits = true;
+      break;
+    }
   }
   // timed first: in serial order, a draw only where the composition changed
-  while (m_routeHasPending || !m_routeQueue.empty())
+  while (!timedWaits && (m_routeHasPending || !m_routeQueue.empty()))
   {
     if (!m_routeHasPending)
     {
@@ -1261,9 +1398,13 @@ bool CGraphicsPlaneAML::RouteStep()
       comp.overlays = std::move(queued.overlays);
       comp.rects = queued.rects;
       comp.hidden = m_routeHidden;
+      comp.segmentGen = queued.segmentGen;
       for (const OVERLAY::SFrameOverlay& o : comp.overlays)
         if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
           comp.images.push_back(o.overlay.get());
+      // GT-5: the newest state whose images G has (item 5 (c)); a segment's frames its page
+      if (m_untimedOnG)
+        AssignPage(comp);
       RenderLibass(comp);
       if (Same(comp, m_routeLast))
       {
@@ -1276,7 +1417,10 @@ bool CGraphicsPlaneAML::RouteStep()
       m_routeHasPending = true;
     }
     if (!DrawTimed(m_routePending))
-      return true;
+    {
+      timedWaits = true;
+      break;
+    }
     GRAPHICSTICK::NoteProcessed(m_routePending.serial);
     // a bridge is only for while nothing timed is drawn
     m_routeDrawn.erase(std::remove_if(m_routeDrawn.begin(), m_routeDrawn.end(),
@@ -1286,6 +1430,273 @@ bool CGraphicsPlaneAML::RouteStep()
     m_routeDrawn.push_back(std::move(m_routePending));
     m_routePending = SComposition();
     m_routeHasPending = false;
+  }
+  // GT-5: untimed work only once every frame within the draw-ahead has its timed entry (item 5
+  // (c), timed first)
+  if (m_untimedOnG && RedrawUntimed())
+    return true;
+  return timedWaits;
+}
+
+const CGraphicsPlaneAML::SUntimedPage& CGraphicsPlaneAML::PageFor(const SComposition& comp) const
+{
+  // item 5: a frame of a segment not yet released shows that segment's newest waiting page; an
+  // untimed-only entry never does (a page waits for its picture)
+  if (!comp.bridge && !m_uWait.ids.empty() && m_uWait.gen > m_uReleasedSegment &&
+      comp.segmentGen >= m_uWait.gen)
+    return m_uWait;
+  return m_uCur;
+}
+
+void CGraphicsPlaneAML::AssignPage(SComposition& comp)
+{
+  const SUntimedPage& page = PageFor(comp);
+  comp.u = page.u;
+  // item 5 (f): the first page is the one committed with the segment's first frame; later
+  // frames of the segment carry the same page as an ordinary entry
+  comp.firstPage = false;
+  if (&page == &m_uWait)
+  {
+    if (m_uFirstPageGen != m_uWait.gen)
+    {
+      m_uFirstPageGen = m_uWait.gen;
+      m_uFirstPageSerial = comp.serial;
+    }
+    comp.firstPage = comp.serial == m_uFirstPageSerial;
+  }
+  comp.untimed = page.images;
+  comp.untimedIds = page.ids;
+}
+
+void CGraphicsPlaneAML::MarkUntimedStale()
+{
+  for (SComposition& comp : m_routeDrawn)
+    if (PageFor(comp).ids != comp.untimedIds)
+      comp.untimedStale = true;
+}
+
+void CGraphicsPlaneAML::TakeUntimedStates()
+{
+  // item 5 (j), gnewest_off: the next state only once C has committed (or dropped) the one
+  // before, never waiting for it (timed draws go on); 500 ms bounds a state C never gets
+  if (GRAPHICSTICK::NewestOff() && m_uTakenU != 0 && GRAPHICSTICK::UntimedCommitted() < m_uTakenU &&
+      MonotonicNs() - m_uTakenNs < 500000000)
+    return;
+  GRAPHICSTICK::SUntimedState state;
+  size_t depth = 0;
+  if (!GRAPHICSTICK::TakeUntimed(state, depth))
+    return;
+  GRAPHICSTICK::CountMax(GRAPHICSTICK::UntimedCount::NEWEST_DEPTH_MAX, static_cast<int>(depth));
+  GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::STATES);
+  ApplyUntimed(state);
+}
+
+void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
+{
+  const auto ids = [](const std::vector<std::shared_ptr<CDVDOverlay>>& images)
+  {
+    std::vector<const CDVDOverlay*> out;
+    for (const auto& image : images)
+      out.push_back(image.get());
+    return out;
+  };
+  std::vector<SUntimedPost> posts;
+  for (const GRAPHICSTICK::SUntimedPosted& skipped : state.skipped)
+  {
+    SUntimedPost post;
+    post.u = skipped.u;
+    post.postNs = skipped.postNs;
+    post.route = 'G';
+    post.cleared = skipped.cleared;
+    post.skipped = true;
+    posts.push_back(post);
+  }
+  std::vector<const CDVDOverlay*> current = ids(state.current);
+  std::vector<const CDVDOverlay*> waiting = ids(state.waiting);
+  bool changed = false;
+  // the waiting page became current (its picture was released, or the P-side fallback): it is
+  // the state G already drew with the segment's frames, under its own u
+  if (!m_uWait.ids.empty() && current == m_uWait.ids)
+  {
+    m_uCur = m_uWait;
+    m_uCur.gen = 0;
+    m_uWait = SUntimedPage();
+    m_uExpired = false;
+    changed = true;
+  }
+  else if (current != m_uCur.ids || (m_uExpired && !current.empty()))
+  {
+    m_uCur.u = state.u;
+    m_uCur.postNs = state.postNs;
+    m_uCur.images = std::move(state.current);
+    m_uCur.ids = std::move(current);
+    m_uCur.gen = 0;
+    m_uExpired = false;
+    SUntimedPost post;
+    post.u = state.u;
+    post.postNs = state.postNs;
+    post.route = 'G';
+    post.cleared = m_uCur.ids.empty();
+    posts.push_back(post);
+    changed = true;
+  }
+  if (waiting != m_uWait.ids || (!waiting.empty() && state.waitingGen != m_uWait.gen))
+  {
+    if (waiting.empty())
+      m_uWait = SUntimedPage();
+    else
+    {
+      m_uWait.u = state.u;
+      m_uWait.postNs = state.postNs;
+      m_uWait.images = std::move(state.waiting);
+      m_uWait.ids = std::move(waiting);
+      m_uWait.gen = state.waitingGen;
+      SUntimedPost post;
+      post.u = state.u;
+      post.postNs = state.postNs;
+      post.route = 'G';
+      post.firstPage = true;
+      posts.push_back(post);
+      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::FIRST_PAGES);
+    }
+    changed = true;
+  }
+  m_uReleasedSegment = std::max(m_uReleasedSegment, state.releasedSegment);
+  if (!posts.empty() && CPresentationCoordinator::UntimedLog())
+    m_coordinator->NoteUntimedRoute(std::move(posts));
+  if (changed)
+  {
+    m_uTakenU = state.u;
+    m_uTakenNs = MonotonicNs();
+    MarkUntimedStale();
+  }
+}
+
+void CGraphicsPlaneAML::CheckKeepAlive()
+{
+  // VPV's rule for timed overlays, on G for the untimed composition: a BD-J composition the Xlet
+  // keeps alive by re-posts goes about 1 s after they stop (BD-J sends no clear). Not while C is
+  // PAUSED: the repaint loop may pause too
+  constexpr int64_t KEEPALIVE_TTL_MS = 1000;
+  const int64_t stamp = GRAPHICSTICK::UntimedKeepAlive();
+  if (stamp == 0 || CPresentationCoordinator::PublishedPaused())
+    return;
+  const bool stale =
+      CurrentHostCounter() - stamp > CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000;
+  if (!m_uExpired && stale && !m_uCur.ids.empty())
+  {
+    m_uExpired = true;
+    m_uExpiredStamp = stamp;
+    m_uExpiredPage = m_uCur;
+    m_uCur = SUntimedPage();
+    m_uCur.u = GRAPHICSTICK::NextUntimedU();
+    m_uCur.postNs = MonotonicNs();
+    GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::KEEPALIVE_EXPIRED);
+    CLog::Log(LOGINFO, "GUNTIMED keep-alive expired u={} (was u={})", m_uCur.u,
+              m_uExpiredPage.u);
+  }
+  // the Xlet re-posts the same composition again: it comes back (the container's repost of the
+  // same images is no new state)
+  else if (m_uExpired && !stale && stamp != m_uExpiredStamp && m_uCur.ids.empty())
+  {
+    m_uExpired = false;
+    m_uCur = m_uExpiredPage;
+    m_uCur.u = GRAPHICSTICK::NextUntimedU();
+    m_uCur.postNs = MonotonicNs();
+    m_uExpiredPage = SUntimedPage();
+  }
+  else
+    return;
+  if (CPresentationCoordinator::UntimedLog())
+  {
+    SUntimedPost post;
+    post.u = m_uCur.u;
+    post.postNs = m_uCur.postNs;
+    post.route = 'G';
+    post.cleared = m_uCur.ids.empty();
+    m_coordinator->NoteUntimedRoute({post});
+  }
+  MarkUntimedStale();
+}
+
+bool CGraphicsPlaneAML::RedrawUntimed()
+{
+  // nothing drawn to carry the state (a menu-only screen, or a floor or the start before the
+  // first frame): the state alone, at C's next slot, above a floor's clear
+  if (m_routeDrawn.empty() && !m_routeHasPending && m_routeQueue.empty() &&
+      m_uCur.ids != m_routeLast.untimedIds)
+  {
+    SComposition comp = m_routeLast;
+    comp.serial = std::max(comp.serial, m_routeClearSerial);
+    comp.bridge = true;
+    comp.redraw = true;
+    comp.untimedStale = true;
+    m_routeDrawn.push_back(std::move(comp));
+  }
+  const uint64_t onScreen = m_routeHaveReleased ? m_routeReleased.serial : 0;
+  std::vector<size_t> ahead;
+  int screen = -1;
+  for (size_t i = 0; i < m_routeDrawn.size(); i++)
+  {
+    const SComposition& comp = m_routeDrawn[i];
+    if (comp.bridge || (m_routeHaveReleased && comp.serial <= onScreen))
+      screen = static_cast<int>(i);
+    else if (comp.untimedStale)
+      ahead.push_back(i);
+  }
+  // (d): the entries C holds above the frame on screen, re-drawn with the new state under their
+  // own serials and handed over together, or none of them: C never holds the newer state at a
+  // lower serial than an entry of the older one
+  if (!ahead.empty())
+  {
+    if (LOCK_CAP - m_locked < static_cast<int>(ahead.size()))
+    {
+      if (m_uDeferredU != m_uCur.u)
+      {
+        m_uDeferredU = m_uCur.u;
+        GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::UNIT_DEFERRED);
+        CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} locked={}", m_uCur.u,
+                  ahead.size(), m_locked);
+      }
+      // ended by a buffer back (C's flip or pick wakes G) or by the next frame's entry, which
+      // carries the new state at a higher serial
+      return true;
+    }
+    std::vector<CPresentationCoordinator::STimedBuffer> unit;
+    for (size_t i : ahead)
+    {
+      SComposition& comp = m_routeDrawn[i];
+      AssignPage(comp);
+      if (!comp.glyphs.empty())
+        RenderLibass(comp);
+      unit.emplace_back();
+      if (!DrawComposition(comp, unit.back()))
+      {
+        unit.pop_back();
+        break;
+      }
+    }
+    m_coordinator->SubmitTimed(unit);
+    if (std::any_of(ahead.begin(), ahead.end(),
+                    [this](size_t i) { return m_routeDrawn[i].untimedStale; }))
+      return true;
+    if (m_uDeferredU == m_uCur.u)
+      CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} ended (buffers)", m_uCur.u);
+  }
+  // then the frame on screen's composition with the new state, picked at the next slot (an
+  // untimed change is not frame-paced, item 3); never while an older entry waits above it
+  if (screen >= 0 && m_routeDrawn[screen].untimedStale)
+  {
+    SComposition& comp = m_routeDrawn[screen];
+    if (!CanDraw(true))
+      return true;
+    AssignPage(comp);
+    if (!comp.glyphs.empty())
+      RenderLibass(comp);
+    if (!DrawTimed(comp))
+      return true;
+    if (comp.bridge)
+      m_routeLast.untimedIds = comp.untimedIds;
   }
   return false;
 }
@@ -1373,16 +1784,31 @@ void CGraphicsPlaneAML::Process()
     else if (m_rasterReady && (m_routeOn || GRAPHICSTICK::RouteSession() != m_routeSession))
     {
       // a redraw's replacement hands C's old buffer back with no event to wake G (review r2 N5)
-      if (RouteStep())
+      bool waits = RouteStep();
+      if (waits)
       {
         ReleaseReturned();
         if (m_locked < LOCK_CAP)
-          RouteStep();
+          waits = RouteStep();
       }
       if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
+      // GT-5 (item 12): G's only wait on C is for a free buffer, which the in-flight commit's
+      // flip ends; bounded at 50 ms (as WaitTaken off the route), counted gWaitBuffer
+      const bool bufferWait = waits && m_routeOn && m_locked >= LOCK_CAP;
+      if (bufferWait && !m_waitBufferNs)
+      {
+        m_waitBufferNs = MonotonicNs();
+        GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::WAIT_BUFFER);
+      }
+      else if (!bufferWait && m_waitBufferNs)
+      {
+        GRAPHICSTICK::CountMax(GRAPHICSTICK::UntimedCount::WAIT_BUFFER_MAX_MS,
+                               static_cast<int>((MonotonicNs() - m_waitBufferNs) / 1000000));
+        m_waitBufferNs = 0;
+      }
       // C wakes G for a buffer back or a pick, V for a picture; only the end clear polls
-      m_wake.Wait(m_routeEndClearOwed ? 4ms : 100ms);
+      m_wake.Wait(m_routeEndClearOwed ? 4ms : bufferWait ? 50ms : 100ms);
     }
     else
     {
@@ -1421,6 +1847,9 @@ void CGraphicsPlaneAML::Process()
   m_ready = false;
   if (m_routeOn)
     GRAPHICSTICK::NoteGSide(m_routeSession, false);
+  // main selects the untimed composition again
+  if (m_untimedOnG)
+    GRAPHICSTICK::SetUntimedHook(false);
   SwitchOff("stop");
   ReleaseReturned();
   DeinitGL();

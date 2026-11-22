@@ -10,6 +10,7 @@
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
+#include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "windowing/amlogic/GraphicsRasterAML.h"
 #include "windowing/amlogic/GraphicsTick.h"
 #include "threads/CriticalSection.h"
@@ -30,7 +31,6 @@
 class CAMLDisplay;
 class CDVDOverlayImage;
 class CDVDSubtitlesLibass;
-class CPresentationCoordinator;
 struct gbm_bo;
 struct gbm_device;
 struct gbm_surface;
@@ -126,6 +126,22 @@ private:
     bool hidden = false; //!< no video window: drawn cleared (D-G2-1)
     bool redraw = false; //!< submitted, but an input of its draw changed since
     bool bridge = false; //!< the untimed images alone (no picture's overlays shown)
+    // GT-5: the untimed state it carries (item 5 (a)); part of its identity
+    unsigned int segmentGen = 0; //!< of its picture
+    uint64_t u = 0;
+    bool firstPage = false; //!< its segment's waiting page (item 5 (f))
+    std::vector<std::shared_ptr<CDVDOverlay>> untimed;
+    std::vector<const CDVDOverlay*> untimedIds;
+    bool untimedStale = false; //!< submitted with an older state: item 5 (d)'s re-draw is owed
+  };
+  //! GT-5: an untimed state as G holds it: the current composition or a segment's waiting page
+  struct SUntimedPage
+  {
+    uint64_t u = 0;
+    int64_t postNs = 0;
+    std::vector<std::shared_ptr<CDVDOverlay>> images;
+    std::vector<const CDVDOverlay*> ids;
+    unsigned int gen = 0; //!< a waiting page: its segment
   };
   //! one route step; true when work is left that waits for a buffer
   bool RouteStep();
@@ -136,7 +152,29 @@ private:
   bool Same(const SComposition& a, const SComposition& b) const;
   //! false: no buffer free now
   bool CanDraw(bool redraw) const;
+  //! draws comp and takes its buffer into out; false: no buffer (nothing locked)
+  bool DrawComposition(SComposition& comp, CPresentationCoordinator::STimedBuffer& out);
+  //! DrawComposition, handed to C alone
   bool DrawTimed(SComposition& comp);
+  // GT-5 (design §10.2 item 5): untimed graphics on G
+  //! takes the newest posted state (gnewest_off: the next one, once C has the one before)
+  void TakeUntimedStates();
+  void ApplyUntimed(GRAPHICSTICK::SUntimedState& state);
+  //! the state comp's frame shows: its segment's waiting page, or the current composition
+  const SUntimedPage& PageFor(const SComposition& comp) const;
+  void AssignPage(SComposition& comp);
+  //! marks every drawn entry whose state is no longer its frame's
+  void MarkUntimedStale();
+  //! item 5 (d): the stale entries ahead of the frame on screen as one unit, then the frame on
+  //! screen's; true when it waits for buffers
+  bool RedrawUntimed();
+  //! the keep-alive TTL (BD-J's abandoned compositions), from C's PAUSED state
+  void CheckKeepAlive();
+  //! an untimed state is up (G draws one frame entry ahead, item 2)
+  bool UntimedUp() const { return !m_uCur.ids.empty() || !m_uWait.ids.empty(); }
+  //! images and glyphs of what G may still redraw: their textures stay cached
+  void RetainRoute(std::vector<std::shared_ptr<CDVDOverlay>>& images,
+                   std::vector<CGraphicsRasterAML::SGlyphs>& glyphs) const;
   bool SubmitClear(uint64_t serial);
   CGraphicsRasterAML::SRegime RouteRegime();
   GRAPHICSTICK::SRects RouteRects(const SComposition& comp) const;
@@ -163,6 +201,21 @@ private:
   uint64_t m_routeRegimeEpoch = 0; //!< the raster's cache key, one per (applied epoch, peak)
   bool m_routeHidden = false;
   std::atomic<bool> m_rasterReady{false};
+  // GT-5, this thread only
+  bool m_untimedOnG = false; //!< this route session: G takes the container's states
+  SUntimedPage m_uCur;
+  SUntimedPage m_uWait;
+  unsigned int m_uReleasedSegment = 0; //!< as the container's last snapshot says
+  unsigned int m_uNotedSegment = 0; //!< the newest segment G called NotePresentedSegment for
+  unsigned int m_uFirstPageGen = 0; //!< item 5 (f): the segment whose first frame is ...
+  uint64_t m_uFirstPageSerial = 0; //!< ... this picture
+  bool m_uExpired = false; //!< the keep-alive TTL took the current composition away
+  SUntimedPage m_uExpiredPage;
+  int64_t m_uExpiredStamp = 0;
+  uint64_t m_uDeferredU = 0; //!< gUnitDeferred logged for this state
+  uint64_t m_uTakenU = 0; //!< gnewest_off: the last state taken, and when
+  int64_t m_uTakenNs = 0;
+  int64_t m_waitBufferNs = 0; //!< item 12: G waits on C for a free buffer since
 
   static constexpr int WIDTH = 1920;
   static constexpr int HEIGHT = 1080;
