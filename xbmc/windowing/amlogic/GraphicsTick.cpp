@@ -8,6 +8,8 @@
 
 #include "GraphicsTick.h"
 
+#include "ServiceBroker.h"
+
 #include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "filesystem/File.h"
 #include "utils/StringUtils.h"
@@ -17,6 +19,9 @@
 #include <algorithm>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <thread>
 #include <deque>
 #include <cstring>
 #include <mutex>
@@ -542,6 +547,126 @@ uint64_t GraphicsLost()
 uint64_t UntimedPosts()
 {
   return s_posts.load(std::memory_order_relaxed);
+}
+
+namespace
+{
+constexpr size_t GTLOG_CAP = 4096;
+std::mutex s_logMutex;
+std::condition_variable s_logCond;
+std::deque<std::pair<int, std::string>> s_logQueue;
+bool s_logWriting = false; //!< the writer holds a batch it took
+bool s_logStop = false;
+//! never destroyed: a process that ends without C's stop must not terminate in its destructor
+std::thread* s_logThread = nullptr;
+int64_t s_logLines = 0;
+int64_t s_logDropped = 0;
+int64_t s_logSlow = 0;
+int64_t s_logMaxUs = 0;
+
+void LogWriter()
+{
+  std::unique_lock lock(s_logMutex);
+  while (true)
+  {
+    s_logCond.wait(lock, [] { return s_logStop || !s_logQueue.empty(); });
+    if (s_logQueue.empty() && s_logStop)
+      break;
+    std::deque<std::pair<int, std::string>> batch;
+    batch.swap(s_logQueue);
+    s_logWriting = true;
+    lock.unlock();
+    int64_t slow = 0;
+    int64_t maxUs = 0;
+    for (const auto& [level, line] : batch)
+    {
+      const auto start = std::chrono::steady_clock::now();
+      CLog::Log(level, "{}", line);
+      const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+      if (us > 5000)
+        slow++;
+      maxUs = std::max(maxUs, us);
+    }
+    lock.lock();
+    s_logWriting = false;
+    s_logLines += static_cast<int64_t>(batch.size());
+    s_logSlow += slow;
+    s_logMaxUs = std::max(s_logMaxUs, maxUs);
+    s_logCond.notify_all();
+  }
+}
+} // namespace
+
+bool GTLogLevelOn(int level)
+{
+  return CServiceBroker::GetLogging().IsLogLevelLogged(level);
+}
+
+void GTLog(int level, std::string line)
+{
+  if (!Requested())
+  {
+    CLog::Log(level, "{}", line);
+    return;
+  }
+  {
+    std::unique_lock lock(s_logMutex);
+    if (s_logStop)
+    {
+      // after C's stop (teardown): at once, nothing is queued any more
+      lock.unlock();
+      CLog::Log(level, "{}", line);
+      return;
+    }
+    if (!s_logThread)
+      s_logThread = new std::thread(LogWriter);
+    if (s_logQueue.size() >= GTLOG_CAP)
+    {
+      s_logDropped++;
+      return;
+    }
+    s_logQueue.emplace_back(level, std::move(line));
+  }
+  s_logCond.notify_all();
+}
+
+void GTLogFlush(int timeoutMs)
+{
+  std::unique_lock lock(s_logMutex);
+  if (!s_logThread)
+    return;
+  s_logCond.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                     [] { return s_logQueue.empty() && !s_logWriting; });
+}
+
+void GTLogStop()
+{
+  std::thread* writer = nullptr;
+  {
+    std::unique_lock lock(s_logMutex);
+    s_logStop = true;
+    writer = std::exchange(s_logThread, nullptr);
+  }
+  s_logCond.notify_all();
+  // the writer drains the queue before it ends
+  if (writer)
+  {
+    writer->join();
+    delete writer;
+  }
+}
+
+std::string GTLogStatsLine(bool reset)
+{
+  std::unique_lock lock(s_logMutex);
+  const std::string line =
+      StringUtils::Format("GTLOG lines={} dropped={} slow={} max_us={} queued={}", s_logLines,
+                          s_logDropped, s_logSlow, s_logMaxUs, s_logQueue.size());
+  if (reset)
+    s_logLines = s_logDropped = s_logSlow = s_logMaxUs = 0;
+  return line;
 }
 
 } // namespace GRAPHICSTICK

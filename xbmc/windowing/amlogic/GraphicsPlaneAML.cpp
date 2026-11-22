@@ -86,8 +86,8 @@ int TestHoldMs()
         file.LoadFile("special://profile/displaystate_ghold", buf) <= 0)
       return 0;
     const int value = std::atoi(std::string(buf.begin(), buf.end()).c_str());
-    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - test: plane off and re-submitted every {} ms",
-              value);
+    GRAPHICSTICK::GTLogF(LOGWARNING,
+                         "CGraphicsPlaneAML - test: plane off and re-submitted every {} ms", value);
     return value;
   }();
   return ms;
@@ -112,7 +112,7 @@ GLuint CompileShader(GLenum type, const char* source)
   {
     char log[512] = {};
     glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - shader: {}", log);
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - shader: {}", log);
     glDeleteShader(shader);
     return 0;
   }
@@ -145,7 +145,7 @@ bool CGraphicsPlaneAML::Start()
 {
   if (!m_amlDisplay->HasOverlayPlane())
   {
-    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - no overlay plane on the GUI's CRTC");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CGraphicsPlaneAML - no overlay plane on the GUI's CRTC");
     return false;
   }
   m_gholdMs = TestHoldMs();
@@ -210,7 +210,7 @@ bool CGraphicsPlaneAML::InitGL()
   }
   if (!m_config)
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no 8-bit RGBA EGL config");
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no 8-bit RGBA EGL config");
     return false;
   }
 
@@ -223,7 +223,7 @@ bool CGraphicsPlaneAML::InitGL()
                                       GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
   if (!m_gbmSurface)
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no GBM surface");
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no GBM surface");
     return false;
   }
 
@@ -236,7 +236,7 @@ bool CGraphicsPlaneAML::InitGL()
                                            nullptr);
   if (m_surface == EGL_NO_SURFACE)
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no EGL surface ({:#x})", eglGetError());
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no EGL surface ({:#x})", eglGetError());
     return false;
   }
 
@@ -247,7 +247,7 @@ bool CGraphicsPlaneAML::InitGL()
   if (m_context == EGL_NO_CONTEXT ||
       !eglMakeCurrent(m_display, m_surface, m_surface, m_context))
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no EGL context ({:#x})", eglGetError());
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no EGL context ({:#x})", eglGetError());
     return false;
   }
   eglSwapInterval(m_display, 0);
@@ -256,7 +256,7 @@ bool CGraphicsPlaneAML::InitGL()
       CEGLUtils::HasExtension(m_display, "EGL_KHR_fence_sync"))
     m_fence = std::make_unique<KODI::UTILS::EGL::CEGLFence>(m_display);
 
-  CLog::Log(LOGINFO, "CGraphicsPlaneAML - {}x{} {:.4s} surface, own context", WIDTH, HEIGHT,
+  GRAPHICSTICK::GTLogF(LOGINFO, "CGraphicsPlaneAML - {}x{} {:.4s} surface, own context", WIDTH, HEIGHT,
             reinterpret_cast<const char*>(&m_format));
   return true;
 }
@@ -297,7 +297,7 @@ bool CGraphicsPlaneAML::InitProgram()
     glGetProgramiv(m_program, GL_LINK_STATUS, &linked);
   if (!linked)
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no program");
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no program");
     if (m_program)
       glDeleteProgram(m_program);
     m_program = 0;
@@ -362,7 +362,7 @@ uint32_t CGraphicsPlaneAML::FbFromBo(gbm_bo* bo)
                                  gbm_bo_get_format(bo), handles, strides, offsets, modifiers,
                                  &fb->id, flags) != 0)
   {
-    CLog::Log(LOGERROR, "CGraphicsPlaneAML - no framebuffer: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no framebuffer: {}", strerror(errno));
     delete fb;
     return 0;
   }
@@ -473,7 +473,7 @@ bool CGraphicsPlaneAML::InitRing()
     const uint64_t boModifier = gbm_bo_get_modifier(buffer.bo);
     if (status != GL_FRAMEBUFFER_COMPLETE)
     {
-      CLog::Log(LOGWARNING,
+      GRAPHICSTICK::GTLogF(LOGWARNING,
                 "GRING buffer {}: FBO incomplete: texture {:#x} (target error {:#x}), "
                 "renderbuffer {:#x} (target error {:#x}{}); format {:.4s} modifier {:#x} stride {}",
                 i, texStatus, texError, status, rbError,
@@ -485,23 +485,23 @@ bool CGraphicsPlaneAML::InitRing()
     {
       // FbFromBo logged AddFB2's errno; its flags: DRM_MODE_FB_MODIFIERS only for a modifier
       // other than 0 (LINEAR) or INVALID, as for the surface's buffers
-      CLog::Log(LOGWARNING, "GRING buffer {}: no fb; format {:.4s} modifier {:#x} stride {}", i,
+      GRAPHICSTICK::GTLogF(LOGWARNING, "GRING buffer {}: no fb; format {:.4s} modifier {:#x} stride {}", i,
                 reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
       why = "addfb";
     }
     else if (i == 0)
-      CLog::Log(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}",
+      GRAPHICSTICK::GTLogF(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}",
                 buffer.renderbuffer ? "renderbuffer" : "texture",
                 reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
   }
   if (why)
   {
     DeinitRing();
-    CLog::Log(LOGWARNING, "GRING off ({}): the route draws on the surface ({} buffers)", why,
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING off ({}): the route draws on the surface ({} buffers)", why,
               LOCK_CAP);
     return false;
   }
-  CLog::Log(LOGINFO, "GRING on: {} scanout buffers {}x{} ({:.1f} MB), G's own", RING_SIZE, WIDTH,
+  GRAPHICSTICK::GTLogF(LOGINFO, "GRING on: {} scanout buffers {}x{} ({:.1f} MB), G's own", RING_SIZE, WIDTH,
             HEIGHT, RING_SIZE * WIDTH * HEIGHT * 4 / 1048576.0);
   return true;
 }
@@ -667,7 +667,7 @@ bool CGraphicsPlaneAML::TakeFrame(gbm_bo*& bo,
     m_fence->CreateGPUFence();
 #endif
   if (!eglSwapBuffers(m_display, m_surface))
-    CLog::Log(LOGDEBUG, "CGraphicsPlaneAML - swap failed ({:#x})", eglGetError());
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CGraphicsPlaneAML - swap failed ({:#x})", eglGetError());
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
   if (m_fence)
     fence = m_fence->FlushFence();
@@ -697,7 +697,7 @@ void CGraphicsPlaneAML::SwitchOff(const char* who)
   if (!m_coordinator->SwitchGraphicsOff([this](uint32_t primaryFb)
                                         { return m_amlDisplay->BuildOverlayOffRequest(primaryFb); },
                                         who))
-    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
 }
 
 bool CGraphicsPlaneAML::SubmitGeometry()
@@ -732,7 +732,7 @@ bool CGraphicsPlaneAML::TakeShown()
   m_untimed.insert(m_untimed.end(), m_shown.untimed.begin(), m_shown.untimed.end());
   m_shown.untimed.clear();
   m_redraw = true;
-  CLog::Log(LOGDEBUG, "CGraphicsPlaneAML - showing {} images, video pts {:.3f}",
+  GRAPHICSTICK::GTLogF(LOGDEBUG, "CGraphicsPlaneAML - showing {} images, video pts {:.3f}",
             m_shown.images.size(), m_shown.pts / 1000000.0);
   return true;
 }
@@ -977,7 +977,7 @@ void CGraphicsPlaneAML::InitRaster()
         m_selfTestEvery = every;
     }
   }
-  CLog::Log(LOGINFO, "GPROG on graphicstick_on={} gselftest={} every={} failcompile={}",
+  GRAPHICSTICK::GTLogF(LOGINFO, "GPROG on graphicstick_on={} gselftest={} every={} failcompile={}",
             tick ? 1 : 0, m_selfTest ? 1 : 0, m_selfTestEvery, failCompile ? 1 : 0);
 
   // the LUTs follow the regime's peak from the first draw; this one only seeds them
@@ -987,7 +987,7 @@ void CGraphicsPlaneAML::InitRaster()
   {
     // route C (UpdateTextures/DrawGraphics) is untouched; the new route cannot start
     m_raster.reset();
-    CLog::Log(LOGWARNING, "GTICK off (programs)");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GTICK off (programs)");
   }
   m_rasterReady = m_raster != nullptr;
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1000,7 +1000,7 @@ void CGraphicsPlaneAML::ShadowDraw()
   if (!published.epoch)
   {
     if (!m_shadowNoRegime)
-      CLog::Log(LOGINFO, "GSELFTEST real: no published regime (gregime_off?), not drawn");
+      GRAPHICSTICK::GTLogF(LOGINFO, "GSELFTEST real: no published regime (gregime_off?), not drawn");
     m_shadowNoRegime = true;
     return;
   }
@@ -1043,7 +1043,7 @@ void CGraphicsPlaneAML::ShadowDraw()
   glFinish();
   const int64_t end = MonotonicNs();
   const unsigned int comp = ++m_shadowComps;
-  CLog::Log(LOGINFO,
+  GRAPHICSTICK::GTLogF(LOGINFO,
             "GDRAW comp={} regime={} epoch={} peak={:.4f} n={} misses={} px={} cold={} "
             "expand_us={} draw_us={} total_us={}",
             comp, DISPLAYSTATE::GuiEncodingName(regime.encoding), regime.epoch, regime.peak,
@@ -1117,7 +1117,7 @@ CGraphicsRasterAML::SRegime CGraphicsPlaneAML::RouteRegime()
     m_routeRegimeEpoch++;
     for (SComposition& comp : m_routeDrawn)
       comp.redraw = true;
-    CLog::Log(LOGINFO, "GREGIME G draws in main's applied epoch={} class={} limited={} peak={:.4f}",
+    GRAPHICSTICK::GTLogF(LOGINFO, "GREGIME G draws in main's applied epoch={} class={} limited={} peak={:.4f}",
               applied.epoch, DISPLAYSTATE::GuiEncodingName(applied.encoding),
               applied.limited ? 1 : 0, peak);
   }
@@ -1438,7 +1438,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_routeClearSerial = 0;
   m_routeClearAtFloor = false;
   GRAPHICSTICK::NoteGSide(m_routeSession, true);
-  CLog::Log(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
+  GRAPHICSTICK::GTLogF(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
   // GT-5: the untimed graphics too, unless guntimed_off keeps GT-4's bridge
   m_uCur = SUntimedPage();
   m_uWait = SUntimedPage();
@@ -1462,7 +1462,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
     // what the container shows now (main stops selecting it at its next pass)
     GRAPHICSTICK::WithContainer([](CDVDOverlayContainer& container)
                                 { container.PostUntimedSnapshot(); });
-    CLog::Log(LOGINFO, "GUNTIMED G on: the untimed graphics are taken here, newest first{}",
+    GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED G on: the untimed graphics are taken here, newest first{}",
               GRAPHICSTICK::NewestOff() ? " (gnewest_off: every state, in post order)" : "");
   }
 }
@@ -1484,7 +1484,7 @@ void CGraphicsPlaneAML::RouteEnd()
   m_routeEndClearOwed = true;
   // main renders the timed libass overlays again from here (review rA M1)
   GRAPHICSTICK::NoteGSide(m_routeSession, false);
-  CLog::Log(LOGINFO, "GTICK G off: the timed graphics are main's again");
+  GRAPHICSTICK::GTLogF(LOGINFO, "GTICK G off: the timed graphics are main's again");
   if (m_untimedOnG)
   {
     // main selects the untimed composition again from its next pass
@@ -1493,8 +1493,10 @@ void CGraphicsPlaneAML::RouteEnd()
     m_uCur = SUntimedPage();
     m_uWait = SUntimedPage();
     m_uExpiredPage = SUntimedPage();
-    CLog::Log(LOGINFO, "GUNTIMED G off: the untimed graphics are main's again");
+    GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED G off: the untimed graphics are main's again");
   }
+  // a gate greps the log right after a stop: every queued line is written by then (G's thread)
+  GRAPHICSTICK::GTLogFlush(500);
 }
 
 bool CGraphicsPlaneAML::RouteStep()
@@ -1870,7 +1872,7 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
     if (state.releasedSegment > m_uNotedSegment)
     {
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_FALLBACK);
-      CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} released by the fallback", m_uWait.u,
+      GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED page u={} of segment {} released by the fallback", m_uWait.u,
                 m_uWait.gen);
     }
     m_uCur = m_uWait;
@@ -1887,7 +1889,7 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
         state.currentGen <= m_uNotedSegment)
     {
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_LATE_POSTED);
-      CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} posted after its picture", state.u,
+      GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED page u={} of segment {} posted after its picture", state.u,
                 state.currentGen);
     }
     m_uPageGenSeen = std::max(m_uPageGenSeen, state.currentGen);
@@ -1950,7 +1952,7 @@ void CGraphicsPlaneAML::PlaceFirstPage()
   {
     // its picture is on screen already: the page is late (it shows at the next slot)
     GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_LATE_POSTED);
-    CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} posted after its first picture", m_uWait.u,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED page u={} of segment {} posted after its first picture", m_uWait.u,
               m_uWait.gen);
     return;
   }
@@ -1996,7 +1998,7 @@ void CGraphicsPlaneAML::CheckKeepAlive()
     m_uCur.u = GRAPHICSTICK::NextUntimedU();
     m_uCur.postNs = MonotonicNs();
     GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::KEEPALIVE_EXPIRED);
-    CLog::Log(LOGINFO, "GUNTIMED keep-alive expired u={} (was u={})", m_uCur.u,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED keep-alive expired u={} (was u={})", m_uCur.u,
               m_uExpiredPage.u);
   }
   // the Xlet re-posts the same composition again: it comes back (the container's repost of the
@@ -2072,7 +2074,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::WAIT_SUPPRESSED);
       return;
     }
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "GUNTIMED wait u={} why={} free={} drawn={} ahead={} screen={} released={} "
               "advancing={}",
               m_uCur.u, why, RouteFree(), m_routeDrawn.size(), ahead.size(),
@@ -2158,7 +2160,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       {
         m_uDeferredU = m_uCur.u;
         GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::UNIT_DEFERRED);
-        CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} free={}", m_uCur.u,
+        GRAPHICSTICK::GTLogF(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} free={}", m_uCur.u,
                   ahead.size(), RouteFree());
       }
       // ended by a buffer back (C advances: its flip or pick wakes G) or by the next frame's
@@ -2199,7 +2201,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     // gUnitDeferred 0)
     ReleaseReturned();
     if (m_uDeferredU == m_uCur.u)
-      CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} ended (buffers)", m_uCur.u);
+      GRAPHICSTICK::GTLogF(LOGDEBUG, "GUNTIMED gUnitDeferred u={} ended (buffers)", m_uCur.u);
   }
   // then the frame on screen's composition with the new state, picked at the next slot (an
   // untimed change is not frame-paced, item 3); never while an older entry waits above it
@@ -2246,7 +2248,7 @@ void CGraphicsPlaneAML::Process()
   if (!InitGL() || (!m_testPattern && !InitProgram()))
   {
     // never ready, so CanShow() keeps the HDR graphics on main's route B
-    CLog::Log(LOGWARNING, "GPLANE off (gl init)");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GPLANE off (gl init)");
     DeinitGL();
     return;
   }
@@ -2395,5 +2397,5 @@ void CGraphicsPlaneAML::Process()
   SwitchOff("stop");
   ReleaseReturned();
   DeinitGL();
-  CLog::Log(LOGINFO, "CGraphicsPlaneAML - stopped");
+  GRAPHICSTICK::GTLogF(LOGINFO, "CGraphicsPlaneAML - stopped");
 }

@@ -12,6 +12,9 @@
 #include "utils/Geometry.h"
 
 #include <cstdint>
+#include <utility>
+
+#include <fmt/format.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -33,6 +36,30 @@ class CDVDOverlayContainer;
 // or logged, and every caller keeps GT-3's route.
 namespace GRAPHICSTICK
 {
+// 5.G2 GT-5 (GT-D15): the log writer for C's and G's per-frame lines. RC6 coreelec-br: C's loop
+// body took 20-27 ms while the whole log was silent and V stalled with it, a log write blocking
+// (C logged under m_uiMutex too). With graphicstick_on, C and G hand lines to a bounded queue
+// (a short lock, never held across I/O) that a normal-priority GTLOG thread writes, in push
+// order; a full queue drops and counts. Without graphicstick_on a line is logged at once, as
+// before.
+//! queue one line (formatted already)
+void GTLog(int level, std::string line);
+//! the log keeps this level (a debug line is not even formatted when debug logging is off)
+bool GTLogLevelOn(int level);
+template<typename... Args>
+void GTLogF(int level, fmt::format_string<Args...> format, Args&&... args)
+{
+  if (GTLogLevelOn(level))
+    GTLog(level, fmt::format(format, std::forward<Args>(args)...));
+}
+//! waits (up to timeoutMs) until every queued line is written: at a route end and at C's stop,
+//! so a gate's grep after a stop sees every line. Never called on main
+void GTLogFlush(int timeoutMs);
+//! C's stop: flushes and ends the writer
+void GTLogStop();
+//! lines, drops, writes over 5 ms and the slowest write since the last call with reset
+std::string GTLogStatsLine(bool reset);
+
 //! special://profile/graphicstick_on, read once
 bool Requested();
 //! test file special://profile/gt_delay1 (never a setting): C picks the buffer of the frame

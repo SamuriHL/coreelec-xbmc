@@ -68,7 +68,7 @@ void LogUntimed(const SUntimedPost& post,
     vbl = (std::max<int64_t>(0, flipNs - post.postNs) + periodNs - 1) / periodNs;
     postSeq = sequence - vbl;
   }
-  CLog::Log(LOGINFO,
+  GRAPHICSTICK::GTLogF(LOGINFO,
             "GUNTIMED u={} route={} post_seq={} post_vbl={} post_ns={} flip={} flipseq={} "
             "flip_ns={} period_us={} vbl={} upd_us={} by={} what={} page={}",
             post.u, post.route, postSeq, postSeq, post.postNs, sequence, sequence, flipNs,
@@ -173,7 +173,7 @@ bool CPresentationCoordinator::Start()
   m_crtc = winSystem->GetDRMCrtcId();
   if (m_vblankFd < 0 || m_wakeFd < 0)
   {
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - no event fds (vblank:{} wake:{})",
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - no event fds (vblank:{} wake:{})",
               m_vblankFd, m_wakeFd);
     if (m_vblankFd >= 0)
       close(m_vblankFd);
@@ -187,16 +187,16 @@ bool CPresentationCoordinator::Start()
   m_kernelDrops = ReadKernelDrops();
   s_untimedLog = XFILE::CFile::Exists("special://profile/guntimed_log");
   if (s_untimedLog)
-    CLog::Log(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
   aml_presenter_set_wake_fd(m_wakeFd);
   m_commitStop = false;
   m_commitThread = std::thread(&CPresentationCoordinator::CommitWorker, this);
   Create();
   s_instance = this;
-  CLog::Log(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
+  GRAPHICSTICK::GTLogF(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
   // the gate tooling (gx2d_summ_soc.py) keys its bound cell on this exact form,
   // never on a box's name
-  CLog::Log(LOGINFO, "P5 SoC family={} validated={}", aml_get_cpufamily_name(),
+  GRAPHICSTICK::GTLogF(LOGINFO, "P5 SoC family={} validated={}", aml_get_cpufamily_name(),
             aml_presentation_validated() ? 1 : 0);
   return true;
 }
@@ -210,7 +210,7 @@ void CPresentationCoordinator::Stop()
   m_bStop = true;
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   StopThread(true);
   aml_presenter_set_wake_fd(-1);
   {
@@ -244,7 +244,9 @@ void CPresentationCoordinator::Stop()
   close(m_wakeFd);
   m_vblankFd = m_wakeFd = -1;
   LogReport();
-  CLog::Log(LOGINFO, "CPresentationCoordinator - stopped");
+  GRAPHICSTICK::GTLogF(LOGINFO, "CPresentationCoordinator - stopped");
+  // every queued C/G line is written before the window system goes on with its teardown
+  GRAPHICSTICK::GTLogStop();
 }
 
 void CPresentationCoordinator::SetTickSource(int tickFd, uint32_t tickCrtc)
@@ -268,14 +270,14 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
   const int64_t start = MonotonicNs();
   const bool timeline = m_tickFd >= 0 && m_crtc == m_tickCrtc;
   if (m_tickFd >= 0 && !timeline)
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - crtc {} is not the timekeeper's ({}), "
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - crtc {} is not the timekeeper's ({}), "
                           "queueing its own vblank events", m_crtc.load(), m_tickCrtc.load());
   m_attachNs = start;
   m_useTimeline = timeline;
   m_videoAttached = true;
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 
   // presenting needs a vblank source that delivers: a vblank after this
   // point, not an event left queued by an earlier attach
@@ -283,7 +285,7 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
   const bool delivering = m_vblankCond.wait_for(lock, std::chrono::milliseconds(150),
                                                 [&] { return m_lastVblankNs > start; });
   if (!delivering)
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - no vblank event from crtc {}, "
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - no vblank event from crtc {}, "
                           "video stays on the render thread", m_crtc.load());
   return delivering;
 }
@@ -320,7 +322,7 @@ uint64_t CPresentationCoordinator::Submit(int plane,
       if (fence >= 0)
         close(fence);
       if (refused <= 3 || refused % 100 == 0)
-        CLog::Log(LOGINFO, "UIEPOCH refused submit {} of epoch {} below {}", refused, epoch,
+        GRAPHICSTICK::GTLogF(LOGINFO, "UIEPOCH refused submit {} of epoch {} below {}", refused, epoch,
                   current);
       return 0;
     }
@@ -359,10 +361,10 @@ uint64_t CPresentationCoordinator::Submit(int plane,
       m_report.gfxSubmits++;
   }
   if (replacedCbuf)
-    CLog::Log(LOGINFO, "CBUF replaced by main before its commit");
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF replaced by main before its commit");
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   return seq;
 }
 
@@ -401,7 +403,7 @@ void CPresentationCoordinator::TakeReturned(std::vector<gbm_bo*>& returned,
     // never C's own buffers (5.B2-4)
     if (buffer.fb && cbuf(buffer.fb))
     {
-      CLog::Log(LOGERROR, "UIEPOCH ASSERT a returned buffer carries C's fb {}", buffer.fb);
+      GRAPHICSTICK::GTLogF(LOGERROR, "UIEPOCH ASSERT a returned buffer carries C's fb {}", buffer.fb);
       continue;
     }
     returned.push_back(buffer.bo);
@@ -444,13 +446,13 @@ uint64_t CPresentationCoordinator::DetachUiSurfaceNewEpoch(uint32_t format)
     m_cbufReq = nullptr;
   }
   if (stale)
-    CLog::Log(LOGINFO, "CBUF dropped an unused request at epoch {}", epoch);
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF dropped an unused request at epoch {}", epoch);
   // Still parked, with nothing in C's books on it: its RmFB takes the GUI plane off before
   // commit 1, as the EGL destroy's RmFB of main's buffer does today. The next set makes a
   // new buffer.
   if (shown.fb)
   {
-    CLog::Log(LOGINFO, "CBUF off at the detach: fb={} {}x{} freed", shown.fb, shown.width,
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF off at the detach: fb={} {}x{} freed", shown.fb, shown.width,
               shown.height);
     FreeDumb(shown);
   }
@@ -468,7 +470,7 @@ bool CPresentationCoordinator::ReclaimUiForModeSet(uint64_t& newEpoch,
   // the caller's park: C acknowledged it, so no GUI flip is in flight (R4-M1); unacked twice,
   // the caller runs today's way on purpose (logged there)
   if (acked && !aml_presenter_parked())
-    CLog::Log(LOGERROR, "UIEPOCH ASSERT the GUI plane reclaim runs with C not parked");
+    GRAPHICSTICK::GTLogF(LOGERROR, "UIEPOCH ASSERT the GUI plane reclaim runs with C not parked");
   // G's own switch-off (a refusal, ghold) would put the GUI plane's fb it read back up
   std::unique_lock planeOff(m_planeOffMutex);
   uint32_t shownFb;
@@ -510,18 +512,18 @@ bool CPresentationCoordinator::ReclaimUiForModeSet(uint64_t& newEpoch,
   }
   // W is the one writer from 5.B2-5b: its next epoch is always the one taken here
   if (newEpoch != requested)
-    CLog::Log(LOGERROR, "UIEPOCH ASSERT epoch {} asked for at epoch {}, {} taken", requested,
+    GRAPHICSTICK::GTLogF(LOGERROR, "UIEPOCH ASSERT epoch {} asked for at epoch {}, {} taken", requested,
               previous, newEpoch);
   if (stale)
-    CLog::Log(LOGINFO, "CBUF dropped an unused request at epoch {}", newEpoch);
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF dropped an unused request at epoch {}", newEpoch);
   if (done)
-    CLog::Log(LOGINFO, "PLANE ui off done epoch={} fb={} cbuf={} took_us={}{}", newEpoch, shownFb,
+    GRAPHICSTICK::GTLogF(LOGINFO, "PLANE ui off done epoch={} fb={} cbuf={} took_us={}{}", newEpoch, shownFb,
               cbufShown ? 1 : 0, tookUs, acked ? "" : " (unparked)");
   else if (!off)
-    CLog::Log(LOGWARNING, "PLANE ui off not built (no plane or CRTC) epoch={} fb={} n={}",
+    GRAPHICSTICK::GTLogF(LOGWARNING, "PLANE ui off not built (no plane or CRTC) epoch={} fb={} n={}",
               newEpoch, shownFb, ++s_unbuilt);
   else
-    CLog::Log(LOGERROR, "PLANE ui off refused (SB3 state) epoch={} fb={} {} n={}", newEpoch,
+    GRAPHICSTICK::GTLogF(LOGERROR, "PLANE ui off refused (SB3 state) epoch={} fb={} {} n={}", newEpoch,
               shownFb, strerror(err), ++s_refused);
   return done;
 }
@@ -558,7 +560,7 @@ void CPresentationCoordinator::ForgetUiEpoch(uint64_t epoch)
     // a commit still in its ioctl is never handed back
     ui.generation++;
   }
-  CLog::Log(LOGERROR, "UIEPOCH ForgetUiEpoch below {}: {} buffers", epoch, forgotten);
+  GRAPHICSTICK::GTLogF(LOGERROR, "UIEPOCH ForgetUiEpoch below {}: {} buffers", epoch, forgotten);
 }
 
 uint64_t CPresentationCoordinator::UiEpoch()
@@ -583,7 +585,7 @@ void CPresentationCoordinator::PrepareClearedUi(
 {
   if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
   {
-    CLog::Log(LOGERROR, "CBUF no buffer for a {}x{} GUI", width, height);
+    GRAPHICSTICK::GTLogF(LOGERROR, "CBUF no buffer for a {}x{} GUI", width, height);
     return;
   }
   uint32_t format;
@@ -624,11 +626,11 @@ void CPresentationCoordinator::PrepareClearedUi(
     m_cbufReq = stale ? nullptr : req;
     m_cbufEpoch = epoch;
   }
-  CLog::Log(LOGINFO, "CBUF armed epoch={} fb={} {}x{} src={}x{} made={} request={}{}", epoch, fb,
+  GRAPHICSTICK::GTLogF(LOGINFO, "CBUF armed epoch={} fb={} {}x{} src={}x{} made={} request={}{}", epoch, fb,
             width, height, srcWidth, srcHeight, reuse ? 0 : 1, req ? 1 : 0,
             stale ? " (stale epoch: dropped)" : "");
   if (req && (srcWidth != width || srcHeight != height))
-    CLog::Log(LOGERROR, "CBUF request src {}x{} is not the buffer's {}x{}", srcWidth, srcHeight,
+    GRAPHICSTICK::GTLogF(LOGERROR, "CBUF request src {}x{} is not the buffer's {}x{}", srcWidth, srcHeight,
               width, height);
 }
 
@@ -640,7 +642,7 @@ bool CPresentationCoordinator::CreateDumb(int width, int height, uint32_t format
   create.bpp = 32;
   if (drmIoctl(m_masterFd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0)
   {
-    CLog::Log(LOGERROR, "CBUF dumb buffer {}x{} failed: {}", width, height, strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGERROR, "CBUF dumb buffer {}x{} failed: {}", width, height, strerror(errno));
     return false;
   }
   dumb.handle = create.handle;
@@ -667,12 +669,12 @@ bool CPresentationCoordinator::CreateDumb(int width, int height, uint32_t format
   if (!cleared || drmModeAddFB2(m_masterFd, create.width, create.height, format, handles,
                                 pitches, offsets, &dumb.fb, 0) != 0)
   {
-    CLog::Log(LOGERROR, "CBUF fb {}x{} failed (cleared {}): {}", width, height, cleared,
+    GRAPHICSTICK::GTLogF(LOGERROR, "CBUF fb {}x{} failed (cleared {}): {}", width, height, cleared,
               strerror(errno));
     FreeDumb(dumb);
     return false;
   }
-  CLog::Log(LOGINFO, "CBUF made fb={} {}x{} pitch={}", dumb.fb, width, height, create.pitch);
+  GRAPHICSTICK::GTLogF(LOGINFO, "CBUF made fb={} {}x{} pitch={}", dumb.fb, width, height, create.pitch);
   return true;
 }
 
@@ -717,7 +719,7 @@ bool CPresentationCoordinator::GraphicsPlaneOff(
     {
       done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
       if (!done)
-        CLog::Log(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
+        GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
                   strerror(errno));
       drmModeAtomicFree(req);
     }
@@ -741,7 +743,7 @@ bool CPresentationCoordinator::SwitchGraphicsOff(
     return op->result;
   // C not running (stop, teardown): inline at once, as today
   if (op->state == PlaneOffOp::State::QUEUED)
-    CLog::Log(LOGERROR, "graphics plane off: C did not answer in 2 s, inline (who={})", who);
+    GRAPHICSTICK::GTLogF(LOGERROR, "graphics plane off: C did not answer in 2 s, inline (who={})", who);
   return DisableGraphicsPlane(build);
 }
 
@@ -773,7 +775,7 @@ bool CPresentationCoordinator::PlanesOffForModeSet(
     ops.push_back(ui);
     if (!RunByC(ops, std::chrono::steady_clock::now() + PLANE_OFF_BOUND) &&
         ui->state == PlaneOffOp::State::QUEUED)
-      CLog::Log(LOGERROR,
+      GRAPHICSTICK::GTLogF(LOGERROR,
                 "mode set planes off: C did not answer in 2 s, inline on W (graphics {}, ui {})",
                 !graphics ? "-" : graphics->state == PlaneOffOp::State::DONE ? "done" : "inline",
                 ui->state == PlaneOffOp::State::DONE ? "done" : "inline");
@@ -786,7 +788,7 @@ bool CPresentationCoordinator::PlanesOffForModeSet(
   else if (graphicsOff)
     graphicsDone = graphics ? GraphicsPlaneOff(graphicsOff) : DisableGraphicsPlane(graphicsOff);
   if (graphicsOff && !graphicsDone)
-    CLog::Log(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
 
   if (ui && ui->state == PlaneOffOp::State::DONE)
   {
@@ -816,7 +818,7 @@ bool CPresentationCoordinator::RunByC(const std::vector<std::shared_ptr<PlaneOff
   // under the lock: C has not left its loop, so the fd is open
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   const auto state = [&ops](PlaneOffOp::State a, PlaneOffOp::State b)
   {
     return std::all_of(ops.begin(), ops.end(),
@@ -865,7 +867,7 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
     const bool ticking = !held && m_videoAttached && m_tickVblankNs && m_tickPeriodNs;
     const int64_t lateUs =
         ticking ? std::max<int64_t>(0, end - (m_tickVblankNs + m_tickPeriodNs)) / 1000 : -1;
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "PLANEOFF by C n={} op={} who={} epoch={} uiepoch={} held={} result={} wait_us={} "
               "took_us={} tick_late_us={} uiflip_at_post={} ui_deferred={}",
               ++m_planeOffSeq, op->ui ? "ui" : "graphics", op->who, aml_presenter_epoch(),
@@ -985,7 +987,7 @@ bool CPresentationCoordinator::UiInFlight()
   {
     m_flipLostLogged = true;
     m_report.uiLostFlips++;
-    CLog::Log(LOGWARNING, "CPresentationCoordinator - no flip event 500 ms after a plane commit");
+    GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - no flip event 500 ms after a plane commit");
   }
   return false;
 }
@@ -1054,11 +1056,16 @@ void CPresentationCoordinator::Process()
       // poll from before the vblank)
       const int64_t enter = MonotonicNs();
       if (m_pollReturnNs)
+      {
         m_lastBodyNs = enter - m_pollReturnNs;
+        const int64_t us = m_lastBodyNs / 1000;
+        m_report.bodyHist[us < 1000 ? 0 : us < 5000 ? 1 : us < 10000 ? 2 : us < 20000 ? 3 : 4]++;
+        m_report.bodyMaxUs = std::max(m_report.bodyMaxUs, us);
+      }
       m_pollEnterNs = enter;
     }
     if (poll(fds, 3 + PLANE_COUNT, timeout) < 0 && errno != EINTR)
-      CLog::Log(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
+      GRAPHICSTICK::GTLogF(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
     m_pollReturnNs = MonotonicNs();
     if (m_bStop)
       break;
@@ -1069,7 +1076,7 @@ void CPresentationCoordinator::Process()
     {
       uint64_t count;
       if (read(m_wakeFd, &count, sizeof(count)) < 0 && errno != EAGAIN)
-        CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake read failed: {}", strerror(errno));
+        GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake read failed: {}", strerror(errno));
     }
 
     for (int plane = 0; plane < PLANE_COUNT; plane++)
@@ -1226,7 +1233,7 @@ void CPresentationCoordinator::ReadTimelineTick(SPresentTick& tick,
 {
   uint64_t count;
   if (read(m_tickFd, &count, sizeof(count)) < 0 && errno != EAGAIN)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - tick read failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - tick read failed: {}", strerror(errno));
 
   int64_t tl[PRESENTATION::TL_COUNT];
   // timer-made ticks are not vblanks: no vblank keeps the coordinator's own
@@ -1373,7 +1380,7 @@ void CPresentationCoordinator::CommitUi()
     if (!commit.req)
       return;
     if (commit.cOwned)
-      CLog::Log(LOGINFO, "CBUF on epoch={} fb={} graphics={}", m_cbufEpoch, m_cbuf.fb,
+      GRAPHICSTICK::GTLogF(LOGINFO, "CBUF on epoch={} fb={} graphics={}", m_cbufEpoch, m_cbuf.fb,
                 commit.has[PLANE_GRAPHICS] ? 1 : 0);
     // in flight from here: the flip event can arrive before the ioctl returns
     m_committing = commit;
@@ -1423,7 +1430,7 @@ void CPresentationCoordinator::PlaceClearedUi()
   if (mainFirst || m_cbufUp)
   {
     drmModeAtomicFree(req);
-    CLog::Log(LOGINFO, "CBUF not needed at epoch {} ({})", m_cbufEpoch,
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF not needed at epoch {} ({})", m_cbufEpoch,
               mainFirst ? "main's buffer first" : "already up");
     return;
   }
@@ -1467,7 +1474,7 @@ void CPresentationCoordinator::CommitWorker()
     m_report.commitMax = std::max(m_report.commitMax, took);
     // TEMP TICKDIAG (timebase audit Q6)
     if (took >= 20000.0)
-      CLog::Log(LOGINFO, "TICKDIAG commit {:.0f} us (ui {} graphics {})", took,
+      GRAPHICSTICK::GTLogF(LOGINFO, "TICKDIAG commit {:.0f} us (ui {} graphics {})", took,
                 commit.has[PLANE_UI], commit.has[PLANE_GRAPHICS]);
     m_report.commitHist[took < 1000.0 ? 0 : took < 5000.0 ? 1 : took < 20000.0 ? 2 : 3]++;
     if (ret == 0)
@@ -1485,7 +1492,7 @@ void CPresentationCoordinator::CommitWorker()
         m_gfxSuspect = false;
         m_gfxRetryArmed = false;
         m_gfxRetriesRefused = 0;
-        CLog::Log(LOGINFO, "CPresentationCoordinator - the graphics plane was accepted again "
+        GRAPHICSTICK::GTLogF(LOGINFO, "CPresentationCoordinator - the graphics plane was accepted again "
                            "after a suspect refusal");
       }
       else if (m_gfxSuspect && !m_gfxRetryArmed)
@@ -1525,12 +1532,12 @@ void CPresentationCoordinator::CommitWorker()
         state.committedCOwned = false;
       }
       if (m_report.uiFailed++ < 3)
-        CLog::Log(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
+        GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
                   strerror(err));
       // not retried: main's first buffer of the epoch brings the GUI plane back (R4-M4);
       // the graphics plane is not blamed for it
       if (commit.cOwned)
-        CLog::Log(LOGERROR, "CBUF refused: {}", strerror(err));
+        GRAPHICSTICK::GTLogF(LOGERROR, "CBUF refused: {}", strerror(err));
       else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected && OUTPUT::RefusalConfirmLive())
       {
         m_report.gfxSuspect++;
@@ -1542,14 +1549,14 @@ void CPresentationCoordinator::CommitWorker()
         if (m_gfxRetriesRefused >= 3)
         {
           m_graphicsRejected = true;
-          CLog::Log(LOGERROR,
+          GRAPHICSTICK::GTLogF(LOGERROR,
                     "CPresentationCoordinator - the graphics plane was refused ({}), committing "
                     "the GUI plane alone from now on (confirmed: {} retries after GUI-only "
                     "commits)",
                     strerror(err), m_gfxRetriesRefused);
         }
         else if (m_gfxSuspectLogs++ < 3)
-          CLog::Log(LOGWARNING,
+          GRAPHICSTICK::GTLogF(LOGWARNING,
                     "CPresentationCoordinator - the graphics plane was refused ({}): suspect, "
                     "held until a GUI-only commit succeeds (retries refused {})",
                     strerror(err), m_gfxRetriesRefused);
@@ -1557,7 +1564,7 @@ void CPresentationCoordinator::CommitWorker()
       else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
       {
         m_graphicsRejected = true;
-        CLog::Log(LOGERROR, "CPresentationCoordinator - the graphics plane was refused ({}), "
+        GRAPHICSTICK::GTLogF(LOGERROR, "CPresentationCoordinator - the graphics plane was refused ({}), "
                             "committing the GUI plane alone from now on",
                   strerror(err));
       }
@@ -1565,7 +1572,7 @@ void CPresentationCoordinator::CommitWorker()
     lock.unlock();
     const uint64_t one = 1;
     if (write(m_wakeFd, &one, sizeof(one)) < 0)
-      CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+      GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
     lock.lock();
   }
 }
@@ -1599,7 +1606,7 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
         refused.fence = std::exchange(in.fence, -1);
         Drop(PLANE_GRAPHICS, refused);
         m_report.gfxEpochDrop++;
-        CLog::Log(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} (its unit)", in.serial,
+        GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} (its unit)", in.serial,
                   in.regimeEpoch);
         continue;
       }
@@ -1621,7 +1628,7 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
           refused.fence = std::exchange(in.fence, -1);
           Drop(PLANE_GRAPHICS, refused);
           m_report.gfxEpochDrop++;
-          CLog::Log(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} under={}", in.serial,
+          GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} under={}", in.serial,
                     in.regimeEpoch, it->regimeEpoch);
           continue;
         }
@@ -1664,7 +1671,7 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
   }
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 }
 
 int CPresentationCoordinator::TimedHeld()
@@ -1852,7 +1859,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     m_uiCond.notify_all();
     const uint64_t one = 1;
     if (write(m_wakeFd, &one, sizeof(one)) < 0)
-      CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+      GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   }
 }
 
@@ -1894,7 +1901,7 @@ void CPresentationCoordinator::NotePickedU(const UiBuffer& chosen)
   else if (chosen.u < m_gtPickedU)
   {
     m_report.untimedRegress++;
-    CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
+    GRAPHICSTICK::GTLogF(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
               chosen.u, m_gtPickedU);
   }
   m_gtPickedU = std::max(m_gtPickedU, chosen.u);
@@ -1958,7 +1965,7 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
   m_uiCond.notify_all();
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
-    CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 }
 
 void CPresentationCoordinator::NoteUntimedRoute(std::vector<SUntimedPost> posts)
@@ -2140,17 +2147,17 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
   if (timed.timed && timed.clear)
-    CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed && timed.bridge)
-    CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed)
   {
     // GT-D15 measurement: G's libass and draw times, its hand-in against the picking slot's
     // vblank (negative: ahead), the fence at the pick, and the commit against that vblank
     const int64_t slot = timed.pickVblankNs;
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={} "
               "ass_us={} draw_us={} submit_us={} fence={} commit_us={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
@@ -2162,12 +2169,12 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   if (timed.timed)
     GRAPHICSTICK::Kick();
   if (cbufUp)
-    CLog::Log(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF up epoch={} flip_seq={}", epoch, sequence);
   if (replacedMs >= 0)
-    CLog::Log(LOGINFO, "CBUF replaced by main after {} ms", replacedMs);
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF replaced by main after {} ms", replacedMs);
   for (DumbBuffer& dumb : freed)
   {
-    CLog::Log(LOGINFO, "CBUF retired fb={} {}x{} freed", dumb.fb, dumb.width, dumb.height);
+    GRAPHICSTICK::GTLogF(LOGINFO, "CBUF retired fb={} {}x{} freed", dumb.fb, dumb.width, dumb.height);
     FreeDumb(dumb);
   }
 }
@@ -2185,7 +2192,7 @@ void CPresentationCoordinator::CountPlacement(double pts, unsigned int sequence)
     return;
   const int frames = static_cast<int>(std::lround((pts - shown->pts) / m_frameUs));
   m_report.gfxPlacement[std::clamp(frames, -2, 2) + 2]++;
-  CLog::Log(LOGDEBUG,
+  GRAPHICSTICK::GTLogF(LOGDEBUG,
             "CPresentationCoordinator - graphics for pts {:.3f} on screen at vblank {} with video "
             "pts {:.3f} (shown from vblank {}, last tick {}): {:+d} frames",
             pts / 1000000.0, sequence, shown->pts / 1000000.0, shown->fromSeq, m_lastSeq, frames);
@@ -2208,7 +2215,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   std::unique_lock lock(m_videoMutex);
   // TEMP TICKDIAG (timebase audit Q6)
   if (MonotonicNs() - diagWait > 5000000)
-    CLog::Log(LOGINFO, "TICKDIAG video mutex wait {} us",
+    GRAPHICSTICK::GTLogF(LOGINFO, "TICKDIAG video mutex wait {} us",
               (MonotonicNs() - diagWait) / 1000);
   if (!m_video)
     return false;
@@ -2265,7 +2272,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
                                     released.rects.view, released.rects.rgen);
       GRAPHICSTICK::PostReleased(released);
       if (GRAPHICSTICK::ReleasedLog())
-        CLog::Log(LOGINFO, "GRELEASED serial={} gen={} qbuf={} tick={}", released.serial,
+        GRAPHICSTICK::GTLogF(LOGINFO, "GRELEASED serial={} gen={} qbuf={} tick={}", released.serial,
                   released.segmentGen, released.qbuf, released.tick);
     }
   }
@@ -2281,7 +2288,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     if (m_planeOffTickOwed)
     {
       m_planeOffTickOwed = false;
-      CLog::Log(LOGINFO, "PLANEOFF next tick n={} seq={} missed={} woke_us={} released_us={}",
+      GRAPHICSTICK::GTLogF(LOGINFO, "PLANEOFF next tick n={} seq={} missed={} woke_us={} released_us={}",
                 m_planeOffSeq, tick.seq,
                 m_tickSeq && tick.seq > m_tickSeq ? tick.seq - m_tickSeq - 1 : 0,
                 (tick.wokeNs - tick.vblankNs) / 1000, (start + work - tick.vblankNs) / 1000);
@@ -2355,7 +2362,7 @@ void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,
   if (m_shadowStartFrames < 2)
   {
     m_shadowStartFrames++;
-    CLog::Log(LOGINFO, "PINS video: frame {} after the start, pts {:.3f}, on screen at {} ns",
+    GRAPHICSTICK::GTLogF(LOGINFO, "PINS video: frame {} after the start, pts {:.3f}, on screen at {} ns",
               m_shadowStartFrames, pts / 1e6, onScreenNs);
   }
 }
@@ -2366,7 +2373,7 @@ void CPresentationCoordinator::SetState(State state, unsigned int epoch)
     return;
   if (state != State::PLAYING)
     m_shadowStartFrames = 0;
-  CLog::Log(LOGINFO, "CPresentationCoordinator - {} -> {} (display epoch {})",
+  GRAPHICSTICK::GTLogF(LOGINFO, "CPresentationCoordinator - {} -> {} (display epoch {})",
             StateName(static_cast<int>(m_state)), StateName(static_cast<int>(state)), epoch);
   m_state = state;
   s_publishedState = static_cast<int>(state);
@@ -2399,7 +2406,7 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
     // poll from before the vblank (not run: scheduling or the event late); body_us: the loop
     // body before that poll
     if (wake > 3000.0 && GRAPHICSTICK::Requested())
-      CLog::Log(LOGINFO,
+      GRAPHICSTICK::GTLogF(LOGINFO,
                 "GTLAT C tick seq={} wake_us={:.0f} poll_since_us={} poll_return_us={} body_us={}",
                 tick.seq, wake, (tick.vblankNs - m_pollEnterNs) / 1000,
                 (m_pollReturnNs - tick.vblankNs) / 1000, m_lastBodyNs / 1000);
@@ -2460,7 +2467,7 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
         }
         if (++m_shadowCandidateN == SHADOW_HOLD_SAMPLES)
         {
-          CLog::Log(LOGINFO,
+          GRAPHICSTICK::GTLogF(LOGINFO,
                     "real_player shadow: audio reference {:+d} frames from the screen (was "
                     "{:+d}): diff={:.2f}ms vsyncAdjust={:.2f}ms",
                     frames, m_shadowFrames, diff, result.shadowAdjust / 1000.0);
@@ -2494,7 +2501,7 @@ void CPresentationCoordinator::LogReport()
   if (!r.ticks && !r.uiSubmits)
     return;
   const int drops = ReadKernelDrops();
-  CLog::Log(r.ticks ? LOGINFO : LOGDEBUG,
+  GRAPHICSTICK::GTLogF(r.ticks ? LOGINFO : LOGDEBUG,
             "real_player coordinator: ticks={} source={} missed={} synthetic={} stale={} held={} "
             "frames={} repeats={} skipped={} wake mean={:.0f}us max={:.0f}us "
             "work mean={:.0f}us max={:.0f}us kernel drops={} | gui submits={} replaced={} "
@@ -2510,13 +2517,22 @@ void CPresentationCoordinator::LogReport()
             r.gfxCommits, r.gfxPlacement[0], r.gfxPlacement[1], r.gfxPlacement[2],
             r.gfxPlacement[3], r.gfxPlacement[4]);
   if (r.gfxSuspect)
-    CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
+    GRAPHICSTICK::GTLogF(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
               "latePickBack={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
               r.gfxLatePickBack);
+  // GT-D15: C's loop body (bounded: no I/O on it) and the log writer that took C's lines
+  if (GRAPHICSTICK::Requested())
+  {
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "GTICK C body [<1ms {} <5ms {} <10ms {} <20ms {} >=20ms {}] max_us={}",
+                         r.bodyHist[0], r.bodyHist[1], r.bodyHist[2], r.bodyHist[3],
+                         r.bodyHist[4], r.bodyMaxUs);
+    GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
+  }
   // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
   // (G's counters are taken and reset with C's)
   if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff())
@@ -2525,14 +2541,14 @@ void CPresentationCoordinator::LogReport()
     const std::string counts = GRAPHICSTICK::UntimedCountsLine(true, any);
     if (any || GRAPHICSTICK::RouteOn() || r.untimedReplaced || r.untimedRegress ||
         r.gfxEpochDrop || r.firstPages)
-      CLog::Log(LOGINFO,
+      GRAPHICSTICK::GTLogF(LOGINFO,
                 "GUNTIMED report untimedReplaced={} untimedRegress={} gfxEpochDrop={} "
                 "firstPageFlips={} pageLate={} {}",
                 r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
                 counts);
   }
   if (r.uiTimed)
-    CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
   if (std::any_of(std::begin(r.releaseHist), std::end(r.releaseHist), [](int n) { return n; }) ||
       r.releaseOver)
@@ -2541,11 +2557,11 @@ void CPresentationCoordinator::LogReport()
     for (int i = 0; i < RELEASE_BINS; i++)
       if (r.releaseHist[i])
         bins += fmt::format(" {}:{}", i, r.releaseHist[i]);
-    CLog::Log(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
+    GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
               r.releaseOver);
   }
   if (r.tails || r.wakeTails)
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "GEOMDIAG C tails: tick {} (wrote {}, max {} us, over a vblank {}), wake {} "
               "(wrote {}, max {} us)",
               r.tails, r.tailWrites, r.tailMaxNs / 1000, r.tailsOverVblank, r.wakeTails,
@@ -2553,7 +2569,7 @@ void CPresentationCoordinator::LogReport()
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;
-    CLog::Log(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGINFO,
               "real_player shadow: n={} audio-minus-screen mean={:.2f}ms sd={:.2f}ms "
               "min={:.2f}ms max={:.2f}ms beyond half a frame={} vsyncAdjust mean={:.2f}ms "
               "unsynced={}",
@@ -2562,7 +2578,7 @@ void CPresentationCoordinator::LogReport()
               r.shadowMax, r.shadowFolds, r.shadowAdjustSum / r.shadowN, r.shadowUnsynced);
   }
   else if (r.shadowUnsynced)
-    CLog::Log(LOGINFO, "real_player shadow: clock sync off, {} samples not compared",
+    GRAPHICSTICK::GTLogF(LOGINFO, "real_player shadow: clock sync off, {} samples not compared",
               r.shadowUnsynced);
   m_kernelDrops = drops;
   m_report = Report();

@@ -544,6 +544,9 @@ private:
     int gfxLatePick = 0;
     //! late picks whose fence or a flight held them past their deadline: back to the next slot
     int gfxLatePickBack = 0;
+    //! GT-D15: C's loop bodies [<1 ms, <5, <10, <20, >=20 ms] and the longest, us
+    int bodyHist[5] = {};
+    int64_t bodyMaxUs = 0;
     //! GT-5: item 5 (b) (ii) replaces, untimedRegress (must stay 0), item 5 (h) refusals,
     //! first pages flipped and those after their frame's vblank
     int untimedReplaced = 0, untimedRegress = 0, gfxEpochDrop = 0, firstPages = 0, pageLate = 0;
