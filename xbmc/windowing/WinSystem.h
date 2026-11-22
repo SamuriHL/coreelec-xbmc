@@ -259,6 +259,13 @@ public:
   virtual HDR_STATUS ToggleHDR() { return HDR_STATUS::HDR_UNSUPPORTED; }
   virtual HDR_STATUS GetOSHDRStatus() { return HDR_STATUS::HDR_UNSUPPORTED; }
   virtual CHDRCapabilities GetDisplayHDRCapabilities() const { return {}; }
+  /*!
+   * \brief Highest refresh rate the refresh-rate whitelist may reach through a
+   * frame-rate multiple (double refresh rate, whole-number repeat) for the
+   * stream now playing.
+   * \return The limit in Hz, or 0 for no limit.
+   */
+  virtual float GetRefreshRateMultiplesLimit() const { return 0.0f; }
   virtual KODI::UTILS::Eotf GetEotf() const { return KODI::UTILS::Eotf::TRADITIONAL_SDR; }
   virtual KODI::UTILS::Colorimetry GetColorimetry() const
   {

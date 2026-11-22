@@ -796,6 +796,24 @@ bool CWinSystemAmlogic::IsHDRDisplay()
          (caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE));
 }
 
+float CWinSystemAmlogic::GetRefreshRateMultiplesLimit() const
+{
+  // Dolby Vision cannot be carried above 60 Hz (the sink's DV support list stops
+  // at 2160p60, and the DV core has no mode beyond it). With double refresh rate
+  // or whole-number repeat on, the whitelist would otherwise pick 1080p100 for a
+  // 50 fps DV stream, or 1080p120 for a 24/30 fps one. Key on the output mode
+  // CAMLCodec::OpenDecoder resolved for this stream (native DV, VS10 or SDR2DV/
+  // HDR2DV into DV, the HDR10+ -> DV conversion, a disc-session DV mapping, or a
+  // live VS10 switch), not on the source HDR type: a VS10 conversion to HDR10 or
+  // SDR carries no DV and keeps every multiple. The decoder opens before the
+  // first picture reaches the render manager, so this is current when the mode
+  // is chosen, and the HDR type set order of the start is left untouched.
+  const unsigned int mode = aml_dv_get_output_mode();
+  if (mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+    return 60.0f;
+  return 0.0f;
+}
+
 CHDRCapabilities CWinSystemAmlogic::GetDisplayHDRCapabilities() const
 {
   return m_amlDisplay->GetHDRCaps();

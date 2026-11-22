@@ -103,6 +103,14 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   std::vector<CVariant> indexList = CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(CSettings::SETTING_VIDEOSCREEN_WHITELIST);
 
   bool noWhiteList = indexList.empty();
+  // A refresh-rate multiple may not go past what the output can carry (Dolby
+  // Vision stops at 60 Hz); a capped multiple falls through to the exact rate.
+  const float multiplesLimit = CServiceBroker::GetWinSystem()->GetRefreshRateMultiplesLimit();
+  const auto multipleAllowed = [multiplesLimit](float refresh)
+  { return multiplesLimit <= 0.0f || refresh <= multiplesLimit + 0.01f; };
+  if (multiplesLimit > 0.0f)
+    CLog::Log(LOGINFO, "[WHITELIST] Refresh rate multiples are capped at {:.0f} Hz for this output",
+              multiplesLimit);
 
   CLog::Log(LOGINFO,
             "[WHITELIST] Searching the whitelist for: width: {}, height: {}, fps: {:0.3f}, 3D: {}:(0x{:x}), stereo mode: {:d}",
@@ -171,7 +179,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
       // note: height has greater tolerance due to 32/64px boundaries e.g. 1080→1088 or 2160→2176
       if (MatchesMode(width, height, info) &&
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
-          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(LOGDEBUG,
                   "[WHITELIST] Matched an exact resolution with double the refresh rate {} ({})",
@@ -209,7 +218,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
       if (MatchesMode(width, height, info) &&
           ModeFlagsMatch(info.dwFlags, dwFlags) &&
           (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
-           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
+           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(LOGDEBUG,
                   "[WHITELIST] Matched an exact resolution with a whole-number repeat refresh rate "
@@ -342,7 +352,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
 
       // allow resolutions that are closest resolutions but have double refresh rate
       if (ModeFlagsMatch(info.dwFlags, dwFlags) &&
-          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f) &&
+          multipleAllowed(info.fRefreshRate))
       {
         unsigned int pen = abs(info.iScreenHeight - height) + abs(info.iScreenWidth - width);
         if (pen <= penalty)
@@ -396,7 +407,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
 
       // allow resolutions that are desktop resolution but have double the refresh rate
       if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
-          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f))
+          MathUtils::FloatEquals(info.fRefreshRate, fps * 2, 0.01f) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(LOGDEBUG,
                   "[WHITELIST] Matched a desktop resolution with double the refresh rate {} ({})",
@@ -454,7 +466,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
       // allow resolutions that are desktop resolution but have whole-number refresh rate
       if (info.iScreenWidth == desktop_info.iScreenWidth && ModeFlagsMatch(info.dwFlags, dwFlags) &&
           (MathUtils::FloatEquals(info.fRefreshRate, fps * 4.0f, 0.01f) ||
-           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)))
+           MathUtils::FloatEquals(info.fRefreshRate, fps * 5.0f, 0.01f)) &&
+          multipleAllowed(info.fRefreshRate))
       {
         CLog::Log(LOGDEBUG,
                   "[WHITELIST] Matched a desktop resolution with a whole-number repeat refresh "

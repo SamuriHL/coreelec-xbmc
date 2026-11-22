@@ -48,6 +48,7 @@ public:
   void UpdateResolutions() override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
+  float GetRefreshRateMultiplesLimit() const override;
   float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
   // Player Information view: output lines (cached, see aml_player_info_get).
