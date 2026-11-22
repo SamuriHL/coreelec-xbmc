@@ -1996,6 +1996,21 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     else if (comp.untimedStale)
       ahead.push_back(i);
   }
+  // measurement (log only, once per state): a new state that cannot reach C's next slot, and
+  // why (the RC4 B1 untimed stalls: 13 vblanks with no graphics flip)
+  const auto noteWait = [&](const char* why)
+  {
+    if (m_uWaitLoggedU == m_uCur.u)
+      return;
+    m_uWaitLoggedU = m_uCur.u;
+    CLog::Log(LOGINFO,
+              "GUNTIMED wait u={} why={} free={} drawn={} ahead={} screen={} released={} "
+              "advancing={}",
+              m_uCur.u, why, RouteFree(), m_routeDrawn.size(), ahead.size(),
+              screen >= 0 ? static_cast<int64_t>(m_routeDrawn[screen].serial) : -1,
+              m_routeHaveReleased ? static_cast<int64_t>(m_routeReleased.serial) : -1,
+              m_uAdvancing ? 1 : 0);
+  };
   // review rA M1, rB M2: C picks no frame entry now (paused, RM unconfigured between titles,
   // video detached; C's own state, CAdvancing). Neither a frame entry nor the re-draw unit
   // would ever be committed or get its buffers back, so the frame on screen's composition with
@@ -2069,6 +2084,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
   {
     if (RouteFree() < static_cast<int>(ahead.size()))
     {
+      noteWait("unit deferred");
       if (m_uDeferredU != m_uCur.u)
       {
         m_uDeferredU = m_uCur.u;
@@ -2106,16 +2122,30 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       return true;
     }
     m_coordinator->SubmitTimed(unit);
+    // the unit's hand-over replaced C's entries of the older state: their buffers are back at
+    // once, for the frame on screen's entry below. Without this, under a menu animating every
+    // frame (a state per vblank), every unit took the buffers and the frame on screen's entry
+    // never got one: the change waited for an ahead entry's own frame, up to the queue's depth
+    // later (RC4 am9pro B1_m3gan: 13 vblanks with no graphics flip, untimedReplaced 16,
+    // gUnitDeferred 0)
+    ReleaseReturned();
     if (m_uDeferredU == m_uCur.u)
       CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} ended (buffers)", m_uCur.u);
   }
   // then the frame on screen's composition with the new state, picked at the next slot (an
   // untimed change is not frame-paced, item 3); never while an older entry waits above it
+  const bool staleAny = std::any_of(m_routeDrawn.begin(), m_routeDrawn.end(),
+                                    [](const SComposition& c) { return c.untimedStale; });
+  if (staleAny && screen < 0)
+    noteWait("no frame on screen's entry");
   if (screen >= 0 && m_routeDrawn[screen].untimedStale)
   {
     SComposition& comp = m_routeDrawn[screen];
     if (!CanDraw(true))
+    {
+      noteWait("no buffer for the frame on screen's entry");
       return true;
+    }
     AssignPage(comp);
     if (!comp.glyphs.empty())
       RenderLibass(comp);
