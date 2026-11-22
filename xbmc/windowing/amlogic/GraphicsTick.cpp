@@ -58,6 +58,7 @@ std::vector<const CDVDOverlay*> s_lastWaiting;
 unsigned int s_lastWaitingGen = 0;
 std::atomic<int64_t> s_keepAlive{0};
 std::atomic<bool> s_untimedHeld{false};
+std::atomic<bool> s_cAdvancing{true};
 std::atomic<uint64_t> s_untimedCommitted{0};
 std::mutex s_containerMutex;
 std::atomic<CDVDOverlayContainer*> s_container{nullptr};
@@ -444,6 +445,19 @@ void SetUntimedHeld(bool held)
 bool UntimedHeld()
 {
   return s_untimedHeld.load(std::memory_order_relaxed);
+}
+
+void SetCAdvancing(bool advancing)
+{
+  if (!Requested())
+    return;
+  if (s_cAdvancing.exchange(advancing, std::memory_order_relaxed) != advancing)
+    Wake();
+}
+
+bool CAdvancing()
+{
+  return s_cAdvancing.load(std::memory_order_relaxed);
 }
 
 void NoteUntimedCommitted(uint64_t u)

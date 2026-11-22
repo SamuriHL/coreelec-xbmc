@@ -52,8 +52,6 @@ using namespace std::chrono_literals;
 namespace
 {
 constexpr int LOCK_CAP = 4; // R5
-// GT-5: no Released for this long, and the screen is taken as menu-only (no frame entry is picked)
-constexpr int64_t MENU_ONLY_NS = 250000000;
 
 int64_t MonotonicNs()
 {
@@ -1190,6 +1188,9 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uExpired = false;
   m_uDeferredU = 0;
   m_uTakenU = 0;
+  m_uAdvancing = true;
+  m_uFramelessShown = false;
+  m_uFramelessIds.clear();
   m_untimedOnG = !GRAPHICSTICK::UntimedOff();
   if (m_untimedOnG)
   {
@@ -1308,7 +1309,6 @@ bool CGraphicsPlaneAML::RouteStep()
                        was.source != now.source || was.dest != now.dest || was.view != now.view;
     m_routeReleased = in.last;
     m_routeHaveReleased = true;
-    m_routeReleasedNs = MonotonicNs();
     // compositions before the frame on screen are no longer anyone's
     size_t current = 0;
     for (size_t i = 0; i < m_routeDrawn.size(); i++)
@@ -1346,6 +1346,17 @@ bool CGraphicsPlaneAML::RouteStep()
   // (item 5 (c)); its re-draws wait for the timed work (RedrawUntimed, below)
   if (m_untimedOnG)
   {
+    // review rB M2: C stopped picking frame entries (paused, a title's end with RM unconfigured,
+    // video detached): what C last picked may be a frame entry it will never commit, so the
+    // frame on screen's composition is re-drawn (as an untimed-only entry) with what is up
+    const bool advancing = GRAPHICSTICK::CAdvancing();
+    if (advancing != m_uAdvancing)
+    {
+      m_uAdvancing = advancing;
+      m_uFramelessShown = false;
+      if (!advancing && UntimedUp())
+        MarkScreenStale();
+    }
     TakeUntimedStates();
     CheckKeepAlive();
   }
@@ -1481,6 +1492,19 @@ void CGraphicsPlaneAML::AssignPage(SComposition& comp)
   }
   comp.untimed = page.images;
   comp.untimedIds = page.ids;
+}
+
+void CGraphicsPlaneAML::MarkScreenStale()
+{
+  const uint64_t onScreen = m_routeHaveReleased ? m_routeReleased.serial : 0;
+  int screen = -1;
+  for (size_t i = 0; i < m_routeDrawn.size(); i++)
+    if (m_routeDrawn[i].bridge || (m_routeHaveReleased && m_routeDrawn[i].serial <= onScreen))
+      screen = static_cast<int>(i);
+  if (screen >= 0)
+    m_routeDrawn[screen].untimedStale = true;
+  else
+    m_routeLast.untimedIds.clear(); // nothing held: the untimed-only entry is made again
 }
 
 void CGraphicsPlaneAML::MarkUntimedStale()
@@ -1659,6 +1683,50 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     else if (comp.untimedStale)
       ahead.push_back(i);
   }
+  // review rA M1, rB M2: C picks no frame entry now (paused, RM unconfigured between titles,
+  // video detached; C's own state, CAdvancing). Neither a frame entry nor the re-draw unit
+  // would ever be committed or get its buffers back, so the frame on screen's composition with
+  // the new state goes as one untimed-only entry, above every entry G holds (C drops them under
+  // it at its pick; the unit re-draws them once C advances again)
+  if (!m_uAdvancing)
+  {
+    const bool stale =
+        !ahead.empty() || (screen >= 0 && m_routeDrawn[screen].untimedStale);
+    if (!stale)
+      return false;
+    SComposition comp;
+    if (screen >= 0)
+      comp = m_routeDrawn[screen];
+    else if (ahead.empty())
+      comp = m_routeLast;
+    comp.hidden = m_routeHidden;
+    comp.bridge = true;
+    comp.serial = std::max(m_routeLast.serial, m_routeClearSerial);
+    for (const SComposition& held : m_routeDrawn)
+      comp.serial = std::max(comp.serial, held.serial);
+    AssignPage(comp);
+    if (comp.untimedIds == m_uFramelessIds && m_uFramelessShown)
+    {
+      if (screen >= 0)
+        m_routeDrawn[screen].untimedStale = false;
+      return false;
+    }
+    if (!CanDraw(true))
+      return true;
+    if (!comp.glyphs.empty())
+      RenderLibass(comp);
+    if (!DrawTimed(comp))
+      return true;
+    m_uFramelessIds = comp.untimedIds;
+    m_uFramelessShown = true;
+    if (screen >= 0 && m_routeDrawn[screen].bridge)
+      m_routeDrawn.erase(m_routeDrawn.begin() + screen);
+    else if (screen >= 0)
+      m_routeDrawn[screen].untimedStale = false;
+    m_routeLast.untimedIds = comp.untimedIds;
+    m_routeDrawn.push_back(std::move(comp));
+    return false;
+  }
   // (d): the entries C holds above the frame on screen, re-drawn with the new state under their
   // own serials and handed over together, or none of them: C never holds the newer state at a
   // lower serial than an entry of the older one
@@ -1673,11 +1741,12 @@ bool CGraphicsPlaneAML::RedrawUntimed()
         CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} locked={}", m_uCur.u,
                   ahead.size(), m_locked);
       }
-      // ended by a buffer back (C's flip or pick wakes G) or by the next frame's entry, which
-      // carries the new state at a higher serial
+      // ended by a buffer back (C advances: its flip or pick wakes G) or by the next frame's
+      // entry, which carries the new state at a higher serial
       return true;
     }
     std::vector<CPresentationCoordinator::STimedBuffer> unit;
+    bool drawn = true;
     for (size_t i : ahead)
     {
       SComposition& comp = m_routeDrawn[i];
@@ -1688,13 +1757,20 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       if (!DrawComposition(comp, unit.back()))
       {
         unit.pop_back();
+        drawn = false;
         break;
       }
     }
-    m_coordinator->SubmitTimed(unit);
-    if (std::any_of(ahead.begin(), ahead.end(),
-                    [this](size_t i) { return m_routeDrawn[i].untimedStale; }))
+    // review rA m2, rB m6: all or none; a part would leave C the new state below the old one
+    if (!drawn)
+    {
+      for (CPresentationCoordinator::STimedBuffer& buffer : unit)
+        ReleaseUnsubmitted(buffer);
+      for (size_t i : ahead)
+        m_routeDrawn[i].untimedStale = true;
       return true;
+    }
+    m_coordinator->SubmitTimed(unit);
     if (m_uDeferredU == m_uCur.u)
       CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} ended (buffers)", m_uCur.u);
   }
@@ -1705,11 +1781,6 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     SComposition& comp = m_routeDrawn[screen];
     if (!CanDraw(true))
       return true;
-    // no frame released for a while (a menu-only screen between titles: RM unconfigured, C
-    // picks no frame entry; or a pause): the frame on screen's composition goes as an
-    // untimed-only entry, which C takes at its next slot whatever the frame
-    if (!comp.bridge && MonotonicNs() - m_routeReleasedNs > MENU_ONLY_NS)
-      comp.bridge = true;
     AssignPage(comp);
     if (!comp.glyphs.empty())
       RenderLibass(comp);
@@ -1719,6 +1790,20 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       m_routeLast.untimedIds = comp.untimedIds;
   }
   return false;
+}
+
+void CGraphicsPlaneAML::ReleaseUnsubmitted(CPresentationCoordinator::STimedBuffer& buffer)
+{
+  if (buffer.req)
+    drmModeAtomicFree(buffer.req);
+  if (buffer.fence >= 0)
+    close(buffer.fence);
+  if (buffer.bo)
+  {
+    gbm_surface_release_buffer(m_gbmSurface, buffer.bo);
+    m_locked--;
+  }
+  buffer = CPresentationCoordinator::STimedBuffer();
 }
 
 void CGraphicsPlaneAML::Process()

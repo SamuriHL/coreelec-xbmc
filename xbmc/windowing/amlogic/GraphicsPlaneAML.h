@@ -165,6 +165,10 @@ private:
   void AssignPage(SComposition& comp);
   //! marks every drawn entry whose state is no longer its frame's
   void MarkUntimedStale();
+  //! the frame on screen's entry (or the untimed-only one) is drawn again with what is up
+  void MarkScreenStale();
+  //! a drawn buffer never handed to C goes back to the surface
+  void ReleaseUnsubmitted(CPresentationCoordinator::STimedBuffer& buffer);
   //! item 5 (d): the stale entries ahead of the frame on screen as one unit, then the frame on
   //! screen's; true when it waits for buffers
   bool RedrawUntimed();
@@ -193,7 +197,6 @@ private:
   std::vector<SComposition> m_routeDrawn; //!< submitted from the one of the frame on screen on
   bool m_routeLastVisible = false;
   bool m_routeHaveReleased = false;
-  int64_t m_routeReleasedNs = 0; //!< GT-5: when the last Released came
   GRAPHICSTICK::SReleased m_routeReleased;
   uint64_t m_routeFloorGen = 0;
   uint64_t m_routeLayoutGen = 0;
@@ -217,6 +220,10 @@ private:
   uint64_t m_uTakenU = 0; //!< gnewest_off: the last state taken, and when
   int64_t m_uTakenNs = 0;
   int64_t m_waitBufferNs = 0; //!< item 12: G waits on C for a free buffer since
+  bool m_uAdvancing = true; //!< C picks frame entries (GRAPHICSTICK::CAdvancing), as last seen
+  //! the state the last untimed-only entry drawn while C did not advance carries
+  std::vector<const CDVDOverlay*> m_uFramelessIds;
+  bool m_uFramelessShown = false;
 
   static constexpr int WIDTH = 1920;
   static constexpr int HEIGHT = 1080;

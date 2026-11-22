@@ -197,6 +197,10 @@ uint64_t NextUntimedU();
 //! commits no untimed-only buffer while it is set and no video ticks
 void SetUntimedHeld(bool held);
 bool UntimedHeld();
+//! C: it picks frame entries (the route on, RM configured, the clock running); false while
+//! paused, between titles with RM unconfigured, or with video detached. A change wakes G
+void SetCAdvancing(bool advancing);
+bool CAdvancing();
 //! C, gnewest_off only (item 5 (j)): the newest untimed state committed, or dropped whole
 void NoteUntimedCommitted(uint64_t u);
 uint64_t UntimedCommitted();

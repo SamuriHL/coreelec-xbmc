@@ -9,6 +9,7 @@
 #include "PresentationCoordinator.h"
 
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "filesystem/File.h"
@@ -1099,6 +1100,7 @@ void CPresentationCoordinator::Process()
         if (planeOffOnC)
           RunPlaneOffs(false);
         // GT-4: the route's end clear, with no ticks to pick it
+        GRAPHICSTICK::SetCAdvancing(false);
         SelectTimed(false);
       }
       int flips;
@@ -2119,6 +2121,12 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 
   // GT-4: this tick picks for the frame released at an earlier one (G-X1, offset 1); the frame
   // released now is G's next Released
+  // GT-5 (review rA M1, rB M2): whether C picks frame entries at all, for G's untimed-only path.
+  // Paused is the player's pause (as main's IsPausedPlayback), not the clock's: a scheduled
+  // start's clock waits for T0 while its first frames' entries (the first page) are due
+  if (GRAPHICSTICK::Requested())
+    GRAPHICSTICK::SetCAdvancing(GRAPHICSTICK::RouteOn() && result.configured &&
+                                CDataCacheCore::GetInstance().GetSpeed() != 0.0f);
   if (GRAPHICSTICK::RouteOn() && result.configured)
   {
     m_gtTarget = GRAPHICSTICK::TestDelay1() ? m_gtReleased[1] : m_gtReleased[0];
