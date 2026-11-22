@@ -8,6 +8,7 @@
 
 #include "GraphicsTick.h"
 
+#include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "filesystem/File.h"
 #include "utils/StringUtils.h"
 #include "windowing/amlogic/GraphicsRegime.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 
 #include <atomic>
+#include <deque>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -41,6 +43,34 @@ SFloor s_floor;
 std::function<void()> s_wake;
 std::atomic<uint64_t> s_processed{0};
 SSide s_gSide;
+
+// GT-5, the untimed channel. s_untimedMutex is a leaf (taken under the container's lock);
+// s_containerMutex is taken before the container's lock (WithContainer), never under it
+std::mutex s_untimedMutex;
+std::atomic<bool> s_hook{false};
+uint64_t s_u = 0;
+bool s_hasPending = false;
+SUntimedState s_pending;
+std::deque<SUntimedState> s_queue; //!< gnewest_off
+bool s_haveLast = false;
+std::vector<const CDVDOverlay*> s_lastCurrent; //!< the last posted state, to know a repost
+std::vector<const CDVDOverlay*> s_lastWaiting;
+unsigned int s_lastWaitingGen = 0;
+std::atomic<int64_t> s_keepAlive{0};
+std::atomic<bool> s_untimedHeld{false};
+std::atomic<uint64_t> s_untimedCommitted{0};
+std::mutex s_containerMutex;
+std::atomic<CDVDOverlayContainer*> s_container{nullptr};
+std::atomic<int> s_counts[static_cast<int>(UntimedCount::COUNT)];
+
+std::vector<const CDVDOverlay*> Ids(const std::vector<std::shared_ptr<CDVDOverlay>>& images)
+{
+  std::vector<const CDVDOverlay*> ids;
+  ids.reserve(images.size());
+  for (const auto& image : images)
+    ids.push_back(image.get());
+  return ids;
+}
 
 bool Exists(const char* file)
 {
@@ -281,6 +311,180 @@ void NoteProcessed(uint64_t serial)
 uint64_t Processed()
 {
   return s_processed.load(std::memory_order_relaxed);
+}
+
+bool UntimedOff()
+{
+  static const bool off = Requested() && Exists("guntimed_off");
+  return off;
+}
+
+bool NewestOff()
+{
+  static const bool off = Requested() && Exists("gnewest_off");
+  return off;
+}
+
+bool UntimedHook()
+{
+  return s_hook.load(std::memory_order_acquire);
+}
+
+void RegisterContainer(CDVDOverlayContainer* container)
+{
+  if (Requested())
+    s_container.store(container, std::memory_order_release);
+}
+
+void ContainerGone(CDVDOverlayContainer* container)
+{
+  if (!Requested())
+    return;
+  // waits for a WithContainer call in progress on it
+  std::unique_lock lock(s_containerMutex);
+  CDVDOverlayContainer* expected = container;
+  s_container.compare_exchange_strong(expected, nullptr);
+}
+
+bool WithContainer(const std::function<void(CDVDOverlayContainer&)>& fn)
+{
+  std::unique_lock lock(s_containerMutex);
+  CDVDOverlayContainer* container = s_container.load(std::memory_order_acquire);
+  if (!container)
+    return false;
+  fn(*container);
+  return true;
+}
+
+void PostUntimed(SUntimedState&& state)
+{
+  if (!UntimedHook())
+    return;
+  {
+    std::unique_lock lock(s_untimedMutex);
+    s_keepAlive.store(state.keepAliveTick, std::memory_order_relaxed);
+    std::vector<const CDVDOverlay*> current = Ids(state.current);
+    std::vector<const CDVDOverlay*> waiting = Ids(state.waiting);
+    // BD-J re-posts the retained composition every few ms: the same images are no new state,
+    // only its keep-alive (above). Nor is a page release whose snapshot G already has
+    if (s_haveLast && current == s_lastCurrent && waiting == s_lastWaiting &&
+        state.waitingGen == s_lastWaitingGen)
+      return;
+    s_haveLast = true;
+    s_lastCurrent = std::move(current);
+    s_lastWaiting = std::move(waiting);
+    s_lastWaitingGen = state.waitingGen;
+    state.u = ++s_u;
+    if (NewestOff())
+      s_queue.push_back(std::move(state));
+    else
+    {
+      // item 5 (b) (i): the newest only; one G never took is skipped, judged on its successor
+      if (s_hasPending)
+      {
+        state.skipped = std::move(s_pending.skipped);
+        state.skipped.push_back({s_pending.u, s_pending.postNs, s_pending.current.empty()});
+        s_counts[static_cast<int>(UntimedCount::SKIPPED)]++;
+      }
+      s_pending = std::move(state);
+      s_hasPending = true;
+    }
+  }
+  Wake();
+}
+
+void SetUntimedHook(bool on)
+{
+  {
+    std::unique_lock lock(s_untimedMutex);
+    s_haveLast = false;
+    s_hasPending = false;
+    s_pending = SUntimedState();
+    s_queue.clear();
+  }
+  s_hook.store(on, std::memory_order_release);
+}
+
+bool TakeUntimed(SUntimedState& state, size_t& depth)
+{
+  std::unique_lock lock(s_untimedMutex);
+  depth = s_queue.size();
+  if (NewestOff())
+  {
+    if (s_queue.empty())
+      return false;
+    state = std::move(s_queue.front());
+    s_queue.pop_front();
+    return true;
+  }
+  if (!s_hasPending)
+    return false;
+  state = std::move(s_pending);
+  s_pending = SUntimedState();
+  s_hasPending = false;
+  return true;
+}
+
+int64_t UntimedKeepAlive()
+{
+  return s_keepAlive.load(std::memory_order_relaxed);
+}
+
+uint64_t NextUntimedU()
+{
+  std::unique_lock lock(s_untimedMutex);
+  return ++s_u;
+}
+
+void SetUntimedHeld(bool held)
+{
+  s_untimedHeld.store(held, std::memory_order_relaxed);
+}
+
+bool UntimedHeld()
+{
+  return s_untimedHeld.load(std::memory_order_relaxed);
+}
+
+void NoteUntimedCommitted(uint64_t u)
+{
+  uint64_t was = s_untimedCommitted.load(std::memory_order_relaxed);
+  while (u > was && !s_untimedCommitted.compare_exchange_weak(was, u))
+  {
+  }
+  Wake();
+}
+
+uint64_t UntimedCommitted()
+{
+  return s_untimedCommitted.load(std::memory_order_relaxed);
+}
+
+void Count(UntimedCount what, int n)
+{
+  s_counts[static_cast<int>(what)].fetch_add(n, std::memory_order_relaxed);
+}
+
+void CountMax(UntimedCount what, int value)
+{
+  std::atomic<int>& cell = s_counts[static_cast<int>(what)];
+  int was = cell.load(std::memory_order_relaxed);
+  while (value > was && !cell.compare_exchange_weak(was, value))
+  {
+  }
+}
+
+std::string UntimedCountsLine()
+{
+  const auto at = [](UntimedCount what)
+  { return s_counts[static_cast<int>(what)].load(std::memory_order_relaxed); };
+  return StringUtils::Format(
+      "states={} untimedSkipped={} gUnitDeferred={} gWaitBuffer={} gWaitBufferMax_ms={} "
+      "firstPages={} keepAliveExpired={} gnewestDepth={}",
+      at(UntimedCount::STATES), at(UntimedCount::SKIPPED), at(UntimedCount::UNIT_DEFERRED),
+      at(UntimedCount::WAIT_BUFFER), at(UntimedCount::WAIT_BUFFER_MAX_MS),
+      at(UntimedCount::FIRST_PAGES), at(UntimedCount::KEEPALIVE_EXPIRED),
+      at(UntimedCount::NEWEST_DEPTH_MAX));
 }
 
 } // namespace GRAPHICSTICK

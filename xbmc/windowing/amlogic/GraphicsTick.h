@@ -13,7 +13,12 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <string>
 #include <vector>
+
+class CDVDOverlay;
+class CDVDOverlayContainer;
 
 // Phase 5 step 5.G2 GT-4 (design draft42 §10.2 items 2-4, 7, 8, 10-12; docs/phase5_g2_plan.md
 // "GT-4", §7 M1-M3, M5): the timed graphics (PGS, DVB, libass text/SSA) leave main. V posts each
@@ -126,5 +131,89 @@ void Kick();
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing
 void NoteProcessed(uint64_t serial);
 uint64_t Processed();
+
+// 5.G2 GT-5 (design draft42 §10.2 items 5 (a)-(k), 10, 12; docs/phase5_g2_plan.md "GT-5"): the
+// untimed graphics (BD-J ARGB, present-latest menu pages, reposts, clears) leave main too. The
+// overlay container posts each change of its present-latest set here (its wake hook, under the
+// container lock); G takes the newest posted state (skip-to-newest), draws it over the frames'
+// timed overlays, and calls the container's NotePresentedSegment at C's Released. Only while
+// G has the hook on: without graphicstick_on, or with guntimed_off, nothing is posted.
+
+//! special://profile/guntimed_off (with graphicstick_on): untimed content keeps GT-4's bridge
+//! (main selects it and hands it over), not today's route. Retires at GT-7
+bool UntimedOff();
+//! special://profile/gnewest_off (with graphicstick_on): item 5 (j), no superseded state is
+//! dropped; G draws every posted state in post order
+bool NewestOff();
+
+//! a state replaced in the slot before G took it (item 5 (b) (i)), judged on its successor
+struct SUntimedPosted
+{
+  uint64_t u = 0;
+  int64_t postNs = 0;
+  bool cleared = false;
+};
+
+//! one untimed state (item 5 (a)): the container's present-latest set at a change
+struct SUntimedState
+{
+  uint64_t u = 0; //!< numbered here, in post order (G's keep-alive expiry takes one too)
+  uint64_t change = 0; //!< the container's change counter
+  int64_t postNs = 0; //!< CLOCK_MONOTONIC, at the change
+  //! the current composition's images, bottom first (empty: cleared)
+  std::vector<std::shared_ptr<CDVDOverlay>> current;
+  int64_t keepAliveTick = 0; //!< CDVDOverlay::m_keepAliveTick of the current group
+  //! the newest page waiting for its segment's first picture, and that segment
+  std::vector<std::shared_ptr<CDVDOverlay>> waiting;
+  unsigned int waitingGen = 0;
+  unsigned int releasedSegment = 0;
+  std::vector<SUntimedPosted> skipped; //!< posted since G's last take, never taken
+};
+
+// the container's side (under its lock: only this file's locks are taken)
+//! true while G takes the container's states
+bool UntimedHook();
+//! the container that posts; cleared at its destruction (never called under its lock)
+void RegisterContainer(CDVDOverlayContainer* container);
+void ContainerGone(CDVDOverlayContainer* container);
+//! a change of the present-latest set (a repost of the same images only refreshes the keep-alive)
+void PostUntimed(SUntimedState&& state);
+
+// G's side
+//! the container's states go to G from now on (on: the next post is never taken as a repeat)
+void SetUntimedHook(bool on);
+//! runs fn on the registered container, which cannot go away meanwhile; false: none. Never call
+//! with another lock held: fn takes the container's lock, which posts here
+bool WithContainer(const std::function<void(CDVDOverlayContainer&)>& fn);
+//! the newest posted state (gnewest_off: the oldest not taken); false: none since the last take
+bool TakeUntimed(SUntimedState& state, size_t& depth);
+//! the latest keep-alive stamp of the current composition (BD-J's re-posts refresh it)
+int64_t UntimedKeepAlive();
+//! G's own state change (the keep-alive expiry), numbered with the posts
+uint64_t NextUntimedU();
+//! RM: the start's graphics hold (E1's point for a no-video start, errata E1 row 3b); C
+//! commits no untimed-only buffer while it is set and no video ticks
+void SetUntimedHeld(bool held);
+bool UntimedHeld();
+//! C, gnewest_off only (item 5 (j)): the newest untimed state committed, or dropped whole
+void NoteUntimedCommitted(uint64_t u);
+uint64_t UntimedCommitted();
+
+//! counters for C's report line (GUNTIMED report)
+enum class UntimedCount
+{
+  STATES, //!< states G took
+  SKIPPED, //!< replaced in the slot before G took them
+  UNIT_DEFERRED, //!< item 5 (d): a re-draw unit with no buffers for it
+  WAIT_BUFFER, //!< item 12: G waited on C for a free buffer
+  WAIT_BUFFER_MAX_MS,
+  FIRST_PAGES, //!< pages G drew for a segment's frames before its Released
+  KEEPALIVE_EXPIRED,
+  NEWEST_DEPTH_MAX, //!< gnewest_off: the deepest queue seen
+  COUNT
+};
+void Count(UntimedCount what, int n = 1);
+void CountMax(UntimedCount what, int value);
+std::string UntimedCountsLine();
 
 } // namespace GRAPHICSTICK

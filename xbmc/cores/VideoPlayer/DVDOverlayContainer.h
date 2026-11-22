@@ -59,6 +59,16 @@ public:
   //! every menu page still waiting for its picture becomes current
   void ReleasePendingMenu();
   bool HasPendingMenu();
+  /*!
+   * \brief 5.G2 GT-5: the waiting counterpart of GetPresentLatestOverlay: the newest
+   * presentation-time page still waiting for its segment's first picture, or nullptr; gen is
+   * that segment. G draws it ahead with the segment's frames (design §10.2 item 5).
+   */
+  std::shared_ptr<CDVDOverlay> GetWaitingPageOverlay(unsigned int& gen);
+  //! 5.G2 GT-5: changes of the menu set so far
+  uint64_t UntimedChanges();
+  //! 5.G2 GT-5 (G, at its route start): posts the current state through the wake hook
+  void PostUntimedSnapshot();
 
   void Clear(); // clear the fifo and delete all overlays
 
@@ -77,6 +87,12 @@ public:
 private:
   VecOverlays::iterator Remove(VecOverlays::iterator itOverlay); // removes a specific overlay
 
+  //! 5.G2 GT-5 (under the lock): a change of the menu set, posted to G while its hook is on
+  void NoteUntimedChange();
+  std::shared_ptr<CDVDOverlay> PresentLatestLocked();
+  std::shared_ptr<CDVDOverlay> WaitingPageLocked(unsigned int& gen);
+
   VecOverlays m_overlays;
   unsigned int m_releasedSegment = 0; //!< pages of this generation or older are current
+  uint64_t m_untimedChanges = 0; //!< 5.G2 GT-5: the change counter
 };

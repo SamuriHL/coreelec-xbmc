@@ -11,6 +11,11 @@
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
 #include "utils/log.h"
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/GraphicsTick.h"
+#endif
+
+#include <chrono>
 
 #include <algorithm>
 #include <memory>
@@ -18,6 +23,10 @@
 
 CDVDOverlayContainer::~CDVDOverlayContainer()
 {
+#if defined(HAS_LIBAMCODEC)
+  // 5.G2 GT-5: G calls back only through the registry, which this waits for
+  GRAPHICSTICK::ContainerGone(this);
+#endif
   Clear();
 }
 
@@ -83,6 +92,8 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
   }
 
   m_overlays.emplace_back(pOverlay);
+  if (!pOverlay->IsOverlayContainerFlushable())
+    NoteUntimedChange();
 }
 
 VecOverlays* CDVDOverlayContainer::GetOverlays()
@@ -111,6 +122,8 @@ void CDVDOverlayContainer::CleanUp(double pts)
     // which means we cannot delete overlays with stoptime 0
     if (!pOverlay->bForced && pOverlay->iPTSStopTime <= pts && pOverlay->iPTSStopTime != 0)
     {
+      if (!pOverlay->IsOverlayContainerFlushable())
+        NoteUntimedChange();
       //CLog::Log(LOGDEBUG,"CDVDOverlay::CleanUp, removing {}", (int)(pts / 1000));
       //CLog::Log(LOGDEBUG,"CDVDOverlay::CleanUp, remove, start : {}, stop : {}", (int)(pOverlay->iPTSStartTime / 1000), (int)(pOverlay->iPTSStopTime / 1000));
       it = Remove(it);
@@ -132,6 +145,8 @@ void CDVDOverlayContainer::CleanUp(double pts)
 
       if (bNewer)
       {
+        if (!pOverlay->IsOverlayContainerFlushable())
+          NoteUntimedChange();
         it = Remove(it);
         continue;
       }
@@ -156,7 +171,12 @@ void CDVDOverlayContainer::Flush()
 void CDVDOverlayContainer::Clear()
 {
   std::unique_lock lock(*this);
+  const bool menu = std::any_of(m_overlays.begin(), m_overlays.end(),
+                                [](const std::shared_ptr<CDVDOverlay>& o)
+                                { return !o->IsOverlayContainerFlushable(); });
   m_overlays.clear();
+  if (menu)
+    NoteUntimedChange();
 }
 
 size_t CDVDOverlayContainer::GetSize()
@@ -184,6 +204,11 @@ bool CDVDOverlayContainer::ContainsOverlayType(DVDOverlayType type)
 std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetPresentLatestOverlay()
 {
   std::unique_lock lock(*this);
+  return PresentLatestLocked();
+}
+
+std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::PresentLatestLocked()
+{
   for (auto it = m_overlays.rbegin(); it != m_overlays.rend(); ++it)
   {
     if ((*it)->m_presentLatest && !(*it)->IsOverlayContainerFlushable() &&
@@ -193,27 +218,101 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetPresentLatestOverlay()
   return nullptr;
 }
 
+std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetWaitingPageOverlay(unsigned int& gen)
+{
+  std::unique_lock lock(*this);
+  return WaitingPageLocked(gen);
+}
+
+std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::WaitingPageLocked(unsigned int& gen)
+{
+  gen = 0;
+  // pages posted while one waits wait with it (ProcessAndAddOverlayIfValid): the newest is the
+  // page the segment's first picture shows
+  for (auto it = m_overlays.rbegin(); it != m_overlays.rend(); ++it)
+  {
+    if ((*it)->m_presentLatest && !(*it)->IsOverlayContainerFlushable() &&
+        (*it)->m_segmentGen > m_releasedSegment)
+    {
+      gen = (*it)->m_segmentGen;
+      return *it;
+    }
+  }
+  return nullptr;
+}
+
+uint64_t CDVDOverlayContainer::UntimedChanges()
+{
+  std::unique_lock lock(*this);
+  return m_untimedChanges;
+}
+
+void CDVDOverlayContainer::NoteUntimedChange()
+{
+  m_untimedChanges++;
+#if defined(HAS_LIBAMCODEC)
+  GRAPHICSTICK::RegisterContainer(this);
+  if (!GRAPHICSTICK::UntimedHook())
+    return;
+  // the snapshot is the overlays' references, taken under this lock: an image a posted state
+  // holds is never changed after the post (BD replaces a cut or re-paletted image by a new one)
+  const auto images = [](const std::shared_ptr<CDVDOverlay>& group)
+  {
+    std::vector<std::shared_ptr<CDVDOverlay>> out;
+    if (group && group->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
+      for (const auto& o : static_cast<CDVDOverlayGroup&>(*group).m_overlays)
+        if (o)
+          out.push_back(o);
+    return out;
+  };
+  GRAPHICSTICK::SUntimedState state;
+  state.change = m_untimedChanges;
+  state.postNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                     std::chrono::steady_clock::now().time_since_epoch())
+                     .count();
+  const std::shared_ptr<CDVDOverlay> current = PresentLatestLocked();
+  state.current = images(current);
+  state.keepAliveTick = current ? current->m_keepAliveTick : 0;
+  state.waiting = images(WaitingPageLocked(state.waitingGen));
+  state.releasedSegment = m_releasedSegment;
+  GRAPHICSTICK::PostUntimed(std::move(state));
+#endif
+}
+
+void CDVDOverlayContainer::PostUntimedSnapshot()
+{
+  std::unique_lock lock(*this);
+  NoteUntimedChange();
+}
+
 void CDVDOverlayContainer::NotePresentedSegment(unsigned int gen)
 {
   std::unique_lock lock(*this);
   if (gen <= m_releasedSegment)
     return;
+  bool released = false;
   for (const auto& o : m_overlays)
     if (!o->IsOverlayContainerFlushable() && o->m_segmentGen > m_releasedSegment &&
         o->m_segmentGen <= gen)
     {
       CLog::Log(LOGDEBUG, "CDVDOverlayContainer - menu page of segment {} shown with its picture",
                 o->m_segmentGen);
+      released = true;
       break;
     }
   m_releasedSegment = gen;
+  if (released)
+    NoteUntimedChange();
 }
 
 void CDVDOverlayContainer::ReleasePendingMenu()
 {
   std::unique_lock lock(*this);
+  const unsigned int was = m_releasedSegment;
   for (const auto& o : m_overlays)
     m_releasedSegment = std::max(m_releasedSegment, o->m_segmentGen);
+  if (m_releasedSegment != was)
+    NoteUntimedChange();
 }
 
 bool CDVDOverlayContainer::HasPendingMenu()
