@@ -1011,6 +1011,7 @@ void CPresentationCoordinator::Process()
     // a hold is acknowledged only once the flip in flight has landed
     const bool held = aml_presenter_check_hold(epoch, !UiInFlight());
     StampPhase(PHASE_HOLD);
+    m_bodyHeld |= held;
     if (epoch != m_seenEpoch)
     {
       m_seenEpoch = epoch;
@@ -1065,8 +1066,18 @@ void CPresentationCoordinator::Process()
         m_lastBodyNs = enter - m_pollReturnNs;
         LogSlowBody(enter);
         const int64_t us = m_lastBodyNs / 1000;
-        m_report.bodyHist[us < 1000 ? 0 : us < 5000 ? 1 : us < 10000 ? 2 : us < 20000 ? 3 : 4]++;
-        m_report.bodyMaxUs = std::max(m_report.bodyMaxUs, us);
+        // a held body (a display transaction: C runs its plane offs, no frame is due) apart, so
+        // the histogram is the playing bodies' only
+        if (m_bodyHeld)
+        {
+          m_report.bodyHeld++;
+          m_report.bodyHeldMaxUs = std::max(m_report.bodyHeldMaxUs, us);
+        }
+        else
+        {
+          m_report.bodyHist[us < 1000 ? 0 : us < 5000 ? 1 : us < 10000 ? 2 : us < 20000 ? 3 : 4]++;
+          m_report.bodyMaxUs = std::max(m_report.bodyMaxUs, us);
+        }
       }
       m_pollEnterNs = enter;
     }
@@ -1074,6 +1085,7 @@ void CPresentationCoordinator::Process()
       GRAPHICSTICK::GTLogF(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
     m_pollReturnNs = MonotonicNs();
     std::fill(std::begin(m_phaseNs), std::end(m_phaseNs), 0);
+    m_bodyHeld = false;
     if (m_bStop)
       break;
 
@@ -2006,8 +2018,10 @@ void CPresentationCoordinator::LogSlowBody(int64_t enter)
     parts += StringUtils::Format(" {}={}", names[i], (m_phaseNs[i] - last) / 1000);
     last = m_phaseNs[i];
   }
-  GRAPHICSTICK::GTLogF(LOGINFO, "GTLAT C body us={}{} rest={}", m_lastBodyNs / 1000, parts,
-                       (enter - last) / 1000);
+  GRAPHICSTICK::GTLogF(LOGINFO, "GTLAT C body us={}{} rest={} held={} tail={} wake={}",
+                       m_lastBodyNs / 1000, parts, (enter - last) / 1000, m_bodyHeld ? 1 : 0,
+                       m_phaseTailUs, m_phaseWakeUs);
+  m_phaseTailUs = m_phaseWakeUs = 0;
 }
 
 void CPresentationCoordinator::SelectTimedLate(int64_t now)
@@ -2340,6 +2354,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     const int64_t tailStart = MonotonicNs();
     const bool wrote = m_video->GeometryTailOnC(result);
     const int64_t tailNs = MonotonicNs() - tailStart;
+    m_phaseTailUs = tailNs / 1000; // GT-D15 measurement: GTLAT C body tail=
     m_report.tails++;
     m_report.tailWrites += wrote;
     m_report.tailMaxNs = std::max(m_report.tailMaxNs, tailNs);
@@ -2348,7 +2363,12 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   }
   // 5.V3-4f: the worker's wake for the buffers PresentTick freed, after the release
   if (result.wakeWorker)
+  {
+    // GT-D15 measurement: the wake takes RM's m_presentlock (V's and main's too): GTLAT wake=
+    const int64_t wakeStart = MonotonicNs();
     m_video->WakeWorkerOnC();
+    m_phaseWakeUs = (MonotonicNs() - wakeStart) / 1000;
+  }
 
   // GT-4: this tick picks for the frame released at an earlier one (G-X1, offset 1); the frame
   // released now is G's next Released
@@ -2633,9 +2653,10 @@ void CPresentationCoordinator::LogReport()
   if (GRAPHICSTICK::Requested())
   {
     GRAPHICSTICK::GTLogF(LOGINFO,
-                         "GTICK C body [<1ms {} <5ms {} <10ms {} <20ms {} >=20ms {}] max_us={}",
+                         "GTICK C body [<1ms {} <5ms {} <10ms {} <20ms {} >=20ms {}] max_us={} "
+                         "held={} held_max_us={}",
                          r.bodyHist[0], r.bodyHist[1], r.bodyHist[2], r.bodyHist[3],
-                         r.bodyHist[4], r.bodyMaxUs);
+                         r.bodyHist[4], r.bodyMaxUs, r.bodyHeld, r.bodyHeldMaxUs);
   }
   // the video path's log writer, in each report (its drops are lost lines)
   GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));

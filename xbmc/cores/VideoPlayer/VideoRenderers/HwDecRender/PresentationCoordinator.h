@@ -425,6 +425,9 @@ private:
     PHASE_COUNT
   };
   int64_t m_phaseNs[PHASE_COUNT] = {};
+  bool m_bodyHeld = false; //!< this body ran C's held branch
+  int64_t m_phaseTailUs = 0; //!< the tick phase's geometry tail and worker wake, us
+  int64_t m_phaseWakeUs = 0;
   void StampPhase(int phase);
   //! "GTLAT C body" for a body over 3 ms (graphicstick_on), at the next poll's entry
   void LogSlowBody(int64_t enter);
@@ -574,6 +577,8 @@ private:
     //! GT-D15: C's loop bodies [<1 ms, <5, <10, <20, >=20 ms] and the longest, us
     int bodyHist[5] = {};
     int64_t bodyMaxUs = 0;
+    int bodyHeld = 0; //!< bodies under a display hold (C's plane offs), not in the histogram
+    int64_t bodyHeldMaxUs = 0;
     //! GT-5: item 5 (b) (ii) replaces, untimedRegress (must stay 0), item 5 (h) refusals,
     //! first pages flipped and those after their frame's vblank
     int untimedReplaced = 0, untimedRegress = 0, gfxEpochDrop = 0, firstPages = 0, pageLate = 0;
