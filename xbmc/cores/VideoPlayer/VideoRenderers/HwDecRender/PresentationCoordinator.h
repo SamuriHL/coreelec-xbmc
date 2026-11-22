@@ -405,6 +405,8 @@ private:
   int64_t m_gtFlipNs = 0; //!< when C handled that flip
   int64_t m_uiHoldStartNs = 0; //!< a GUI frame waits for the slot since (0: none)
   int64_t m_uiHoldUntilNs = 0; //!< its bound
+  //! under m_uiMutex: a GUI frame at this wake waits for the imminent slot (MC-29)
+  bool UiHoldForSlot();
   int64_t m_gtStaleWindowNs = 0; //!< GTICK stalePickReplaced: lines in the current second
   int m_gtStaleLines = 0;
   int64_t m_gtNoPickWindowNs = 0; //!< GTICK no pick: lines in the current second

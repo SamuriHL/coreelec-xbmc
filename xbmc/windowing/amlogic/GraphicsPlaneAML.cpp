@@ -20,6 +20,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
+#include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
 #include "windowing/amlogic/GraphicsRasterAML.h"
@@ -1831,9 +1832,43 @@ bool CGraphicsPlaneAML::RouteStep()
   }
   // GT-5: untimed work only once every frame within the draw-ahead has its timed entry (item 5
   // (c), timed first)
-  if (m_untimedOnG && RedrawUntimed())
-    return true;
-  return timedWaits;
+  const bool untimedWaits = m_untimedOnG && RedrawUntimed();
+  if (m_untimedOnG)
+    NoteScreenOwed(untimedWaits);
+  return untimedWaits || timedWaits;
+}
+
+void CGraphicsPlaneAML::NoteScreenOwed(bool waits)
+{
+  // measurement (log only, at most 5 lines a second): a new untimed state still not drawn at or
+  // below the frame on screen after a route step, with what G holds (RC15-RC17: on M3GAN the
+  // same frames, 584..653, never got the change; neither the owed entry nor the bridge fired)
+  if (!m_uScreenOwed || (m_uOwedLogged && m_uOwedLoggedU == m_uCur.u))
+    return;
+  const int64_t now = MonotonicNs();
+  if (now - m_uOwedWindowNs >= 1000000000)
+  {
+    m_uOwedWindowNs = now;
+    m_uOwedLines = 0;
+  }
+  if (++m_uOwedLines > 5)
+    return;
+  m_uOwedLogged = true;
+  m_uOwedLoggedU = m_uCur.u;
+  std::string drawn;
+  for (const SComposition& c : m_routeDrawn)
+    drawn += StringUtils::Format(" {}:u{}{}{}", c.serial, c.u, c.untimedStale ? "s" : "",
+                                 c.bridge ? "b" : "");
+  GRAPHICSTICK::GTLogF(
+      LOGINFO,
+      "GUNTIMED owed u={} released={} advancing={} free={} waits={} history={}..{}({}) queue={} "
+      "pending={} drawn:{}",
+      m_uCur.u, m_routeHaveReleased ? static_cast<int64_t>(m_routeReleased.serial) : -1,
+      m_uAdvancing ? 1 : 0, RouteFree(), waits ? 1 : 0,
+      m_routeHistory.empty() ? 0 : m_routeHistory.front().serial,
+      m_routeHistory.empty() ? 0 : m_routeHistory.back().serial, m_routeHistory.size(),
+      m_routeQueue.size(), m_routeHasPending ? static_cast<int64_t>(m_routePending.serial) : -1,
+      drawn);
 }
 
 const CGraphicsPlaneAML::SUntimedPage& CGraphicsPlaneAML::PageFor(const SComposition& comp) const

@@ -1316,10 +1316,27 @@ void CPresentationCoordinator::NoteVblank(int64_t vblankNs)
   m_vblankCond.notify_all();
 }
 
+bool CPresentationCoordinator::UiHoldForSlot()
+{
+  return m_videoAttached && m_gtFlipSeqValid && m_diagVblankSeq &&
+         static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) == 1 &&
+         MonotonicNs() - m_gtFlipNs < UI_SLOT_HOLD_NS && GRAPHICSTICK::RouteOn();
+}
+
 void CPresentationCoordinator::CommitUi()
 {
   {
     std::unique_lock lock(m_uiMutex);
+    // the GUI hold ends when its condition does (the tick came, or the 3 ms bound): measured
+    // here, before any commit in flight can delay the frame further (that wait is any GUI
+    // frame's, not the hold's; RC17 read 16-20 ms by measuring to the commit)
+    if (m_uiHoldStartNs && !UiHoldForSlot())
+    {
+      m_report.uiHeldMaxUs =
+          std::max(m_report.uiHeldMaxUs, (MonotonicNs() - m_uiHoldStartNs) / 1000);
+      m_uiHoldStartNs = 0;
+      m_uiHoldUntilNs = 0;
+    }
     // one commit in flight across both planes; its flip can land before the
     // worker is back from the ioctl
     if (m_inFlight || m_committing.req)
@@ -1398,10 +1415,12 @@ void CPresentationCoordinator::CommitUi()
       // commit; committed alone it took the slot and the timed pick landed a vblank late behind
       // its flight (RC14 FP n5994 while the seek bar closed). Bounded at 3 ms after the flip: a
       // missing tick never holds the GUI. The route only, video ticking
-      if (plane == PLANE_UI && !ready.cOwned && m_videoAttached && m_gtFlipSeqValid &&
-          m_diagVblankSeq &&
-          static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) == 1 &&
-          MonotonicNs() - m_gtFlipNs < UI_SLOT_HOLD_NS && GRAPHICSTICK::RouteOn())
+      // never while a graphics buffer goes in this commit: the GUI joins it, rather than wait
+      // for its flight (RC17: uiHeldMax 16-20 ms, one period, a graphics commit alone during
+      // the hold)
+      const UiBuffer& graphicsReady = m_planes[PLANE_GRAPHICS].ready;
+      const bool graphicsNow = graphicsReady.req && graphicsReady.fence < 0;
+      if (plane == PLANE_UI && !ready.cOwned && !graphicsNow && UiHoldForSlot())
       {
         if (!m_uiHoldStartNs)
         {
@@ -1411,13 +1430,7 @@ void CPresentationCoordinator::CommitUi()
         m_uiHoldUntilNs = m_gtFlipNs + UI_SLOT_HOLD_NS;
         continue;
       }
-      if (plane == PLANE_UI && m_uiHoldStartNs)
-      {
-        m_report.uiHeldMaxUs =
-            std::max(m_report.uiHeldMaxUs, (MonotonicNs() - m_uiHoldStartNs) / 1000);
-        m_uiHoldStartNs = 0;
-        m_uiHoldUntilNs = 0;
-      }
+
       if (plane == PLANE_GRAPHICS)
       {
         // a plane the driver refused would take every GUI frame down with it

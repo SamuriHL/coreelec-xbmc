@@ -265,6 +265,12 @@ private:
   bool m_uFramelessShown = false;
   //! an untimed change not yet in an entry at or below the frame on screen
   bool m_uScreenOwed = false;
+  //! GUNTIMED owed (log only): once per state, at most 5 lines a second
+  void NoteScreenOwed(bool waits);
+  bool m_uOwedLogged = false;
+  uint64_t m_uOwedLoggedU = 0;
+  int64_t m_uOwedWindowNs = 0;
+  int m_uOwedLines = 0;
   //! the pictures G took (drawn or Same), newest last: the frame on screen's composition when
   //! it has no entry of its own
   std::deque<SComposition> m_routeHistory;
