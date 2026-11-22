@@ -1776,6 +1776,9 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
           (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
         pick = i;
     }
+    // GT-D15: this slot's frame, for G's pass-over of compositions whose slot is gone
+    if (ticked && on && !m_gtWithheld && target.valid)
+      GRAPHICSTICK::NoteSlotTarget(session, target.serial);
     if (pick < 0)
     {
       // with a first page waiting in the queue this slot picks nothing (not a miss)
@@ -1798,6 +1801,17 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       chosen.qbuf = target.qbuf;
       chosen.target = target.tick + 2;
       chosen.afterHold = afterHold;
+      // GT-D15 (RC4 coreelec-br K1: runs of 8-37 GPLACE delta=1 in a row, gfxMissing 0): once
+      // one commit lands a vblank late (a fence or a GUI commit in flight), the next frame's pick
+      // waited for that flip and was committed right after it, too late to latch, and so on for
+      // every changing frame. A slot's timed pick has the late pick's deadline too: past it, it
+      // goes back to the list and the next slot picks the next frame's entry, one composition
+      // missed (counted slotBack) instead of a chain of late ones
+      if (ticked && !chosen.clear && !chosen.bridge && m_diagPeriodNs > 0 && m_diagVblankNs)
+      {
+        chosen.lateDeadlineNs = m_diagVblankNs + m_diagPeriodNs - LATE_PICK_MARGIN_NS;
+        chosen.slotPick = true;
+      }
       if (!chosen.clear && !chosen.bridge)
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
       // item 5 (d): no commit carries an older untimed state than the plane's (impossible by
@@ -1838,7 +1852,11 @@ void CPresentationCoordinator::GiveBackLatePick()
   UiBuffer back = std::move(ready);
   ready = UiBuffer();
   back.lateDeadlineNs = 0;
-  m_report.gfxLatePickBack++;
+  if (back.slotPick)
+    m_report.gfxSlotBack++;
+  else
+    m_report.gfxLatePickBack++;
+  back.slotPick = false;
   // r2 N4: a redraw of it G handed in meanwhile (it found nothing to replace) is newer: the
   // given-back buffer goes, else it sorts first among its serial so the newest is picked
   const bool newer = std::any_of(m_timed.begin(), m_timed.end(),
@@ -2473,9 +2491,9 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
     CLog::Log(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
-              "latePickBack={}",
+              "latePickBack={} slotBack={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
-              r.gfxLatePickBack);
+              r.gfxLatePickBack, r.gfxSlotBack);
   // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
   // (G's counters are taken and reset with C's)
   if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff())

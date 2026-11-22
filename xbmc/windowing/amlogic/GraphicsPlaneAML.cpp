@@ -1487,14 +1487,16 @@ bool CGraphicsPlaneAML::RouteStep()
       m_routePending = std::move(comp);
       m_routeHasPending = true;
     }
-    // GT-D15 (RC2 K1 n50: gfxLate 8 in a row with gWaitBuffer 479): a composition whose frame
-    // was released before the newest Released has had its slot. Drawn now it is only ever
-    // picked one slot late, for the next frame, and with one buffer back per flip G never
+    // GT-D15 (RC2 am9pro K1 n50: gfxLate 8 in a row; RC4 coreelec-br: runs of 8-51): a
+    // composition whose frame C's last slot picked for has had its slot. Drawn now it is only
+    // ever picked one slot late, for the next frame, and with one buffer back per flip G never
     // catches up while every frame changes (karaoke): each slot shows the previous frame's
-    // entry. It is passed over (counted), so the buffer goes to the frame still due; that
-    // frame's slot shows the last entry drawn, the one before. Not a first page (pageLate
-    // judges it), and not when nothing newer is queued
-    if (m_routeHaveReleased && m_routePending.serial < m_routeReleased.serial &&
+    // entry. It is passed over (counted), so the buffer goes to the frame still due. The slot
+    // is C's (published after its pick), not G's last Released: the buffer comes back at the
+    // flip of the same vblank C's tick is handled at, before that tick's Released reaches G
+    // (RC4: timedPassed 0 with the Released test). Not a first page (pageLate judges it), and
+    // not when nothing newer is queued
+    if (m_routePending.serial <= GRAPHICSTICK::SlotTarget(m_routeSession) &&
         !m_routePending.firstPage && !m_routeQueue.empty())
     {
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::TIMED_PASSED);

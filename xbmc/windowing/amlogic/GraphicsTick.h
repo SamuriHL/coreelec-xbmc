@@ -128,6 +128,11 @@ SSide GSide();
 //! wakes G (C: buffers back or picked)
 void Kick();
 
+//! C, after each ticked slot that picked for a frame: that frame's serial, in its route session.
+//! A composition at or below it has had its slot (GT-D15: G passes over it when behind)
+void NoteSlotTarget(uint64_t session, uint64_t serial);
+//! 0 when the last slot was of another session
+uint64_t SlotTarget(uint64_t session);
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing
 void NoteProcessed(uint64_t serial);
 uint64_t Processed();
