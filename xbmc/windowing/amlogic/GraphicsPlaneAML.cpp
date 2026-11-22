@@ -1362,7 +1362,7 @@ void CGraphicsPlaneAML::Process()
       }
       if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
-      // C wakes G for a buffer back, main for its side; only the end clear polls
+      // C wakes G for a buffer back or a pick, V for a picture; only the end clear polls
       m_wake.Wait(m_routeEndClearOwed ? 4ms : 100ms);
     }
     else

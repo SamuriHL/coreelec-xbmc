@@ -1724,8 +1724,11 @@ void CRenderManager::FrameMove()
     bool on;
     uint64_t session;
     GRAPHICSTICK::RouteState(on, session);
-    // a hand-back: main draws the timed overlays again once G has left, so a line is never
-    // on both planes (both copy libass's output under its lock, in either order)
+    // a hand-back: main draws the timed overlays again once G has left, so a line is never on
+    // both planes at a hand-back (both copy libass's output under its lock, in either order).
+    // One way only (GT-D13): at a mid-file route-on G draws the line at once, while main's last
+    // GUI frame keeps its copy until this pass repaints it (one main pass, or a main stall), the
+    // I1 trade: G never waits for main
     m_overlays.SetTimedOnPlane(on || GRAPHICSTICK::GSide().on);
     if (on)
     {

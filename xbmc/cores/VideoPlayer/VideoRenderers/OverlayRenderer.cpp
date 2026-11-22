@@ -641,6 +641,9 @@ void OVERLAY::ResetPublishedSubtitleLayout()
 
 SSubtitleLayout OVERLAY::PublishedSubtitleLayout()
 {
+  // GT-D14: main's layout, read by G for libass (the named I1 exception: a file's first libass
+  // line waits for main's first publish, one main pass); the lock is the publish's alone
+  MAINCOUPLING_ACCESSOR("subtitle layout (main's publish, I1 exception)");
   std::unique_lock lock(s_layoutMutex);
   return s_layout;
 }
