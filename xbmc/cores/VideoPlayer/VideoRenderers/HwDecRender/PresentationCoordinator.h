@@ -245,6 +245,9 @@ private:
     bool firstPage = false;
     uint64_t regimeEpoch = 0;
     bool untimedRoute = false;
+    //! GT-5 late pick (review rA M2, rB M1): committed only up to this (monotonic), else it goes
+    //! back to the ready list for the next slot; 0: a slot's pick, no deadline
+    int64_t lateDeadlineNs = 0;
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
   };
@@ -514,6 +517,8 @@ private:
     int gfxLate = 0, gfxMissing = 0, gfxTimedReplaced = 0, gfxTimed = 0;
     //! GT-5 (GT-D15): missed at the slot, picked when G handed it in before the next vblank
     int gfxLatePick = 0;
+    //! late picks whose fence or a flight held them past their deadline: back to the next slot
+    int gfxLatePickBack = 0;
     //! GT-5: item 5 (b) (ii) replaces, untimedRegress (must stay 0), item 5 (h) refusals,
     //! first pages flipped and those after their frame's vblank
     int untimedReplaced = 0, untimedRegress = 0, gfxEpochDrop = 0, firstPages = 0, pageLate = 0;

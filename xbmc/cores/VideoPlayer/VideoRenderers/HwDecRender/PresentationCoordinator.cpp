@@ -1277,6 +1277,22 @@ void CPresentationCoordinator::CommitUi()
     for (int plane = 0; plane < PLANE_COUNT; plane++)
     {
       UiBuffer& ready = m_planes[plane].ready;
+      // GT-5 (review rA M2, rB M1): a late pick whose GPU fence or a commit in flight held it
+      // past the point where its commit still latches on its frame's vblank would land one late
+      // and push the next frame's composition late behind its flight: it goes back to the ready
+      // list, and the next slot picks (the next frame's entry, or this one as the latest earlier)
+      if (plane == PLANE_GRAPHICS && ready.req && ready.lateDeadlineNs &&
+          MonotonicNs() > ready.lateDeadlineNs)
+      {
+        UiBuffer back = std::move(ready);
+        ready = UiBuffer();
+        back.lateDeadlineNs = 0;
+        const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), back.serial,
+                                         [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
+        m_timed.insert(at, std::move(back));
+        m_report.gfxLatePickBack++;
+        continue;
+      }
       if (!ready.req || ready.fence >= 0)
         continue;
       if (plane == PLANE_GRAPHICS)
@@ -1809,6 +1825,9 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     m_timed.erase(m_timed.begin(), m_timed.begin() + pick + 1);
     chosen.qbuf = target.qbuf;
     chosen.target = target.tick + 2;
+    // its fence is usually still pending: the commit must still go out by the margin, or CommitUi
+    // gives it back to the next slot
+    chosen.lateDeadlineNs = m_diagVblankNs + period - LATE_PICK_MARGIN_NS;
     m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
     if (chosen.u)
     {
@@ -2358,8 +2377,11 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxSuspect)
     CLog::Log(LOGINFO, "real_player coordinator: graphics suspect refusals={}", r.gfxSuspect);
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
-    CLog::Log(LOGINFO, "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={}",
-              r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick);
+    CLog::Log(LOGINFO,
+              "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
+              "latePickBack={}",
+              r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
+              r.gfxLatePickBack);
   if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff() &&
       (r.untimedReplaced || r.untimedRegress || r.gfxEpochDrop || r.firstPages))
     CLog::Log(LOGINFO,
