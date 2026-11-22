@@ -171,6 +171,11 @@ SSide GSide();
 //! wakes G (C: buffers back or picked)
 void Kick();
 
+//! C: the newest picture serial it picked in this route session (its stale filter drops entries
+//! below it); G makes the frame on screen's entry at or above it
+void NotePickedSerial(uint64_t session, uint64_t serial);
+//! 0 when C's last pick was of another session
+uint64_t PickedSerial(uint64_t session);
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing
 void NoteProcessed(uint64_t serial);
 uint64_t Processed();

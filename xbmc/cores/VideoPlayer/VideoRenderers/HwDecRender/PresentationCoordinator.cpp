@@ -1981,7 +1981,10 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
         chosen.fenceAtPick = poll(&pf, 1, 0) > 0 ? 1 : 0;
       }
       if (!chosen.clear && !chosen.bridge)
+      {
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
+        GRAPHICSTICK::NotePickedSerial(session, m_gtPickedSerial);
+      }
       // item 5 (d): no commit carries an older untimed state than the plane's (impossible by
       // G's re-draw unit; gated at 0)
       NotePickedU(chosen);
@@ -2155,6 +2158,7 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     // gives it back to the next slot
     chosen.lateDeadlineNs = m_diagVblankNs + period - LATE_PICK_MARGIN_NS;
     m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
+    GRAPHICSTICK::NotePickedSerial(session, m_gtPickedSerial);
     NotePickedU(chosen);
     ready = std::move(chosen);
     m_gtSlotMissed = false;

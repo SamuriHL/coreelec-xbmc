@@ -1843,7 +1843,9 @@ void CGraphicsPlaneAML::NoteScreenOwed(bool waits)
   // measurement (log only, at most 5 lines a second): a new untimed state still not drawn at or
   // below the frame on screen after a route step, with what G holds (RC15-RC17: on M3GAN the
   // same frames, 584..653, never got the change; neither the owed entry nor the bridge fired)
-  if (!m_uScreenOwed || (m_uOwedLogged && m_uOwedLoggedU == m_uCur.u))
+  // with no video yet (a menu before its first picture) the change goes as an untimed-only
+  // entry: no signal
+  if (!m_uScreenOwed || !m_routeHaveReleased || (m_uOwedLogged && m_uOwedLoggedU == m_uCur.u))
     return;
   const int64_t now = MonotonicNs();
   if (now - m_uOwedWindowNs >= 1000000000)
@@ -2146,13 +2148,19 @@ bool CGraphicsPlaneAML::RedrawUntimed()
   // one drawn was Same, and the entries drawn since are for frames still queued): the frame on
   // screen's composition from G's history becomes that entry, so the change reaches C's next
   // slot (picked for a frame at or above it) instead of riding the queue to its own frame
+  // ... one C can take: not below the serial it last picked, which its stale filter drops
+  const uint64_t picked = GRAPHICSTICK::PickedSerial(m_routeSession);
   if (m_uScreenOwed && m_routeHaveReleased && m_uAdvancing &&
-      std::none_of(m_routeDrawn.begin(), m_routeDrawn.end(), [onScreen](const SComposition& c)
-                   { return c.bridge || c.serial <= onScreen; }))
+      std::none_of(m_routeDrawn.begin(), m_routeDrawn.end(),
+                   [onScreen, picked](const SComposition& c)
+                   { return c.bridge || (c.serial <= onScreen && c.serial >= picked); }))
   {
+    // newest at or below the frame on screen; one below C's picked serial would be dropped by
+    // C and re-inserted here at every pass, so then the bridge (picked runs ahead of released
+    // only across a race with the release)
     const auto it = std::find_if(m_routeHistory.rbegin(), m_routeHistory.rend(),
                                  [onScreen](const SComposition& c) { return c.serial <= onScreen; });
-    if (it != m_routeHistory.rend())
+    if (it != m_routeHistory.rend() && it->serial >= picked)
     {
       SComposition comp = *it;
       comp.redraw = false;
@@ -2204,6 +2212,10 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     else if (comp.untimedStale)
       ahead.push_back(i);
   }
+  // an entry below C's picked serial is no frame-on-screen entry C can take: the owed one
+  // (inserted above, at or above it) is the last at or below the frame on screen, so it is this
+  if (screen >= 0 && !m_routeDrawn[screen].bridge && m_routeDrawn[screen].serial < picked)
+    screen = -1;
   if (screen >= 0 && !m_routeDrawn[screen].untimedStale)
     m_uScreenOwed = false;
   // measurement (log only, once per state): a new state that cannot reach C's next slot, and
@@ -2283,6 +2295,8 @@ bool CGraphicsPlaneAML::RedrawUntimed()
         return true;
       if (!comp.glyphs.empty())
         RenderLibass(comp);
+      // a redraw: never held to the draw-ahead depth (DrawTimed's CanDraw(comp.redraw))
+      comp.redraw = true;
       if (!DrawTimed(comp))
         return true;
       m_uFramelessIds = comp.untimedIds;
@@ -2374,6 +2388,11 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     AssignPage(comp);
     if (!comp.glyphs.empty())
       RenderLibass(comp);
+    // a redraw: DrawTimed's CanDraw(comp.redraw) held a not-redraw entry to the draw-ahead
+    // depth, which the ahead entries fill (RC19 B1_m3gan_5: "GUNTIMED owed ... free=2 waits=1
+    // drawn: 656:u133s 668:u133 669:u133": the frame on screen's entry stayed stale with two
+    // buffers free, because the two ahead entries were the depth)
+    comp.redraw = true;
     if (!DrawTimed(comp))
       return true;
     m_uScreenOwed = false;

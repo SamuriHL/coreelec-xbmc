@@ -53,6 +53,8 @@ SFloor s_floor;
 std::function<void()> s_wake;
 std::atomic<uint64_t> s_processed{0};
 SSide s_gSide;
+uint64_t s_pickedSession = 0; //!< under s_mutex: C's picked serial and its route session
+uint64_t s_pickedSerial = 0;
 
 // GT-5, the untimed channel. s_untimedMutex is a leaf (taken under the container's lock);
 // s_containerMutex is taken before the container's lock (WithContainer), never under it
@@ -316,6 +318,19 @@ SSide GSide()
 void Kick()
 {
   Wake();
+}
+
+void NotePickedSerial(uint64_t session, uint64_t serial)
+{
+  std::unique_lock lock(s_mutex);
+  s_pickedSession = session;
+  s_pickedSerial = serial;
+}
+
+uint64_t PickedSerial(uint64_t session)
+{
+  std::unique_lock lock(s_mutex);
+  return s_pickedSession == session ? s_pickedSerial : 0;
 }
 
 void NoteProcessed(uint64_t serial)
