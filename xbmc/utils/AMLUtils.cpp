@@ -2705,7 +2705,16 @@ AMLPlayerInfoLines aml_player_info_get()
       jobs->Submit(
           []
           {
-            PiBuildLines();
+            // a failed sysfs read can throw (optional::value()); the flag
+            // must still clear or the overlay stays stale until restart
+            try
+            {
+              PiBuildLines();
+            }
+            catch (const std::exception& e)
+            {
+              CLog::Log(LOGDEBUG, "Player information refresh failed: {}", e.what());
+            }
             s_piRefreshQueued = false;
           });
     else
