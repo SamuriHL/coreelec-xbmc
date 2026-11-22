@@ -2617,7 +2617,8 @@ void CPresentationCoordinator::RunWakeTail()
     return;
   const int64_t start = MonotonicNs();
   const char* busy = nullptr;
-  const bool wrote = m_video->GeometryWakeOnC(busy);
+  SRMLockOwner owner;
+  const bool wrote = m_video->GeometryWakeOnC(busy, owner);
   const int64_t ns = MonotonicNs() - start;
   if (busy)
   {
@@ -2631,8 +2632,11 @@ void CPresentationCoordinator::RunWakeTail()
       m_wakeBusyLines = 0;
     }
     if (++m_wakeBusyLines <= 5)
-      GRAPHICSTICK::GTLogF(LOGINFO, "GEOMWAKE busy lock={} (wake tail skipped)", busy);
-    return;
+      GRAPHICSTICK::GTLogF(LOGINFO, "GEOMWAKE busy lock={}: {}", busy,
+                           CRenderManager::LockOwnerText(owner, now)); // steady = MONOTONIC
+    // a kept decoder: the tail itself ran; otherwise it was skipped
+    if (std::strcmp(busy, "presentlock (decoder kept)") != 0)
+      return;
   }
   m_report.wakeTails++;
   m_report.wakeWrites += wrote;

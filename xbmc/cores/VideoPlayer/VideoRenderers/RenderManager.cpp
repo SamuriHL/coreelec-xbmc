@@ -8,6 +8,7 @@
 
 #include "RenderManager.h"
 
+#include <dlfcn.h>
 #include <unistd.h>
 
 /* to use the same as player */
@@ -705,6 +706,46 @@ void CRenderManager::FillGeometryIn(SGeometryIn& in)
 #endif
 }
 
+void CRMTrackedSection::Note(const void* site)
+{
+  m_sinceNs.store(SteadyNs(), std::memory_order_relaxed);
+  m_site.store(site, std::memory_order_relaxed);
+#if defined(HAS_LIBAMCODEC)
+  m_role.store(OUTPUT::ThreadRole(), std::memory_order_relaxed);
+#endif
+  m_tid.store(static_cast<int>(gettid()), std::memory_order_relaxed);
+}
+
+void CRMTrackedSection::ResumeOwner(const SRMLockOwner& owner)
+{
+  if (!owner.tid)
+    return;
+  m_sinceNs.store(SteadyNs(), std::memory_order_relaxed);
+  m_site.store(owner.site, std::memory_order_relaxed);
+  m_role.store(owner.role, std::memory_order_relaxed);
+  m_tid.store(owner.tid, std::memory_order_relaxed);
+}
+
+std::string CRenderManager::LockOwnerText(const SRMLockOwner& owner, int64_t atNs)
+{
+  if (!owner.tid)
+    return "owner=none";
+  const char* role = "?";
+#if defined(HAS_LIBAMCODEC)
+  role = OUTPUT::ThreadRoleName(owner.role);
+#endif
+  Dl_info info = {};
+  std::string site;
+  if (owner.site && dladdr(owner.site, &info) && info.dli_fname)
+    site = StringUtils::Format("{}+{:#x}", info.dli_fname,
+                               reinterpret_cast<uintptr_t>(owner.site) -
+                                   reinterpret_cast<uintptr_t>(info.dli_fbase));
+  else
+    site = StringUtils::Format("{}", owner.site);
+  return StringUtils::Format("owner role={} tid={} site={} held_us={}", role, owner.tid, site,
+                             owner.sinceNs ? (atNs - owner.sinceNs) / 1000 : -1);
+}
+
 void CRenderManager::ReleaseCodecFromC(std::shared_ptr<CAMLCodec>&& codec)
 {
   if (!codec && !m_wakeCodecHeld)
@@ -747,9 +788,10 @@ void CRenderManager::WakeWorkerOnC()
   NotifyWorker();
 }
 
-bool CRenderManager::GeometryWakeOnC(const char*& busy)
+bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner)
 {
   busy = nullptr;
+  owner = SRMLockOwner();
 #if defined(HAS_LIBAMCODEC)
   // RC21 coreelec-br K1 n5994: C waited 116 ms here mid-playback ("GEOMDIAG C tails ... wake
   // max 116262 us", the GTLAT body's no-tick phase), six ticks missed and the frames dropped.
@@ -762,6 +804,7 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy)
     if (!lock.owns_lock())
     {
       busy = "presentlock";
+      owner = m_presentlock.Owner();
       return false;
     }
     m_codecReleased.push_back(std::move(m_wakeCodecHeld));
@@ -773,6 +816,7 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy)
     if (!lock.owns_lock())
     {
       busy = "statelock";
+      owner = m_statelock.Owner();
       return false;
     }
     if (!GeometryTickSession())
@@ -790,7 +834,11 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy)
     if (lock.owns_lock())
       m_codecReleased.push_back(std::move(codec));
     else
+    {
       m_wakeCodecHeld = std::move(codec);
+      busy = "presentlock (decoder kept)";
+      owner = m_presentlock.Owner();
+    }
   }
   return wrote;
 #else
@@ -1023,7 +1071,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_forceNext = false;
         return false;
       }
-      m_presentevent.wait(lock, endtime.GetTimeLeft());
+      PresentWait(lock, endtime.GetTimeLeft());
     }
     m_forceNext = false;
   }
@@ -1497,7 +1545,7 @@ void CRenderManager::FrameWait(std::chrono::milliseconds duration)
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock lock(m_presentlock);
   while(m_presentstep == PRESENT_IDLE && !timeout.IsTimePast())
-    m_presentevent.wait(lock, timeout.GetTimeLeft());
+    PresentWait(lock, timeout.GetTimeLeft());
 }
 
 bool CRenderManager::IsPresenting()
@@ -1945,7 +1993,7 @@ void CRenderManager::PreInit()
   if (!m_pRenderer)
   {
     // 5.V2-4: V uses the renderer under m_presentlock and m_datalock
-    std::unique_lock<CCriticalSection> lock2(m_presentlock, std::defer_lock);
+    std::unique_lock<CRMTrackedSection> lock2(m_presentlock, std::defer_lock);
     std::unique_lock<CCriticalSection> lock3(m_datalock, std::defer_lock);
     if (V24On())
     {
@@ -2047,7 +2095,7 @@ void CRenderManager::UnInit()
     MAINCOUPLING_ACCESSOR("RM m_statelock");
     std::unique_lock lock(m_statelock);
     // V uses the renderer under m_presentlock
-    std::unique_lock<CCriticalSection> lock2(m_presentlock, std::defer_lock);
+    std::unique_lock<CRMTrackedSection> lock2(m_presentlock, std::defer_lock);
     if (v22 || v24)
       lock2.lock();
     CMainHold hold("UnInit", v22);
@@ -2389,7 +2437,7 @@ void CRenderManager::ServiceVideoCaptures(CBaseRenderer& renderer)
       // NOTE: m_picture, not m_pConfigPicture, which Configure() has already
       // reset by the time this frame reaches CONFIGURED.
       // 5.V2-4: V writes m_picture under m_statelock
-      std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+      std::unique_lock<CRMTrackedSection> lock(m_statelock, std::defer_lock);
       if (V24On())
       {
         MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -3236,7 +3284,7 @@ bool CRenderManager::IsResolutionUpdatePending(std::optional<unsigned int>& deci
   // commits after START or an exit.
   // 5.G-6: not asked on P's path session either (VP's midSync: TxMidHoldPending, which holds for
   // a hand-back too); kept for legacy, midplaytx_off, a later set and a path-off session
-  std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+  std::unique_lock<CRMTrackedSection> lock(m_statelock, std::defer_lock);
 #if defined(HAS_LIBAMCODEC)
   if (HeldStartPendingWindow())
   {
@@ -3899,7 +3947,7 @@ void CRenderManager::UpdateResolution()
       std::chrono::time_point<std::chrono::steady_clock> started;
       {
         // 5.V2-4: V's swap writes it under m_statelock
-        std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+        std::unique_lock<CRMTrackedSection> lock(m_statelock, std::defer_lock);
         if (V24On())
         {
           MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -5312,7 +5360,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture,
     XbmcThreads::EndTime<> endtime(200ms);
     while (m_presentstep == PRESENT_READY)
     {
-      m_presentevent.wait(lock, 20ms);
+      PresentWait(lock, 20ms);
       if(endtime.IsTimePast() || bStop)
       {
         if (!bStop)
@@ -5482,7 +5530,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
     if (sleeptime < 0ms)
       sleeptime = 0ms;
     sleeptime = std::min(sleeptime, 20ms);
-    m_presentevent.wait(lock, sleeptime);
+    PresentWait(lock, sleeptime);
     DiscardBuffer();
     return 0;
   }
@@ -5490,7 +5538,7 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   XbmcThreads::EndTime<> endtime{timeout};
   while(m_free.empty())
   {
-    m_presentevent.wait(lock, std::min(50ms, timeout));
+    PresentWait(lock, std::min(50ms, timeout));
     if (endtime.IsTimePast() || bStop)
     {
       return -1;
@@ -6217,7 +6265,7 @@ void CRenderManager::StopCoordinator()
   {
     // 5.V2-4: V tests both under m_statelock; the detach runs after it (the coordinator takes
     // m_videoMutex before m_statelock)
-    std::unique_lock<CCriticalSection> lock(m_statelock, std::defer_lock);
+    std::unique_lock<CRMTrackedSection> lock(m_statelock, std::defer_lock);
     if (V24On())
     {
       MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -6479,6 +6527,11 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     const diagClock::time_point& b;
     const diagClock::time_point& c;
     const diagClock::time_point& d;
+    //! RC22: a lock C found taken, its owner then and when (log only, after the locks)
+    SRMLockOwner stateOwner;
+    int64_t stateAtNs = 0;
+    SRMLockOwner presentOwner;
+    int64_t presentAtNs = 0;
     ~DiagLog()
     {
       const auto us = [](auto from, auto to)
@@ -6491,9 +6544,20 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 #else
       const int64_t threshold = 5000;
 #endif
+      const auto last = [&](auto t) { return t < t0 ? t0 : t; };
+#if defined(HAS_LIBAMCODEC)
+      // the owner C waited behind (over 3 ms), built here after both locks are released
+      const int64_t stateWait = us(t0, last(a));
+      const int64_t presentWait = us(last(a), last(b));
+      if (stateAtNs && stateWait > 3000)
+        GRAPHICSTICK::GTLogF(LOGINFO, "RMLOCK C tick waited {} us for statelock: {}", stateWait,
+                             CRenderManager::LockOwnerText(stateOwner, stateAtNs));
+      if (presentAtNs && presentWait > 3000)
+        GRAPHICSTICK::GTLogF(LOGINFO, "RMLOCK C tick waited {} us for presentlock: {}",
+                             presentWait, CRenderManager::LockOwnerText(presentOwner, presentAtNs));
+#endif
       if (us(t0, end) < threshold)
         return;
-      const auto last = [&](auto t) { return t < t0 ? t0 : t; };
 #if defined(HAS_LIBAMCODEC)
       GRAPHICSTICK::GTLogF(LOGINFO,
 #else
@@ -6503,7 +6567,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
                 us(t0, end), us(t0, last(a)), us(last(a), last(b)), us(last(b), last(c)),
                 us(last(c), last(d)), us(last(d), end));
     }
-  } diagLog{diag0, diagLock, diagPresent, diagPrepare, diagFrame};
+  } diagLog{diag0, diagLock, diagPresent, diagPrepare, diagFrame, {}, 0, {}, 0};
 
   // a refusal this tick ended, logged once the locks are released
   struct RefusedLog
@@ -6545,7 +6609,14 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   // 5.E2-6: TXGATE lines after the locks (review L5)
   STxLog txLog;
   MAINCOUPLING_ACCESSOR("RM m_statelock");
-  std::unique_lock lock(m_statelock);
+  std::unique_lock lock(m_statelock, std::try_to_lock);
+  if (!lock.owns_lock())
+  {
+    // RC22 measurement: who C waits behind (read before the wait, logged after the locks)
+    diagLog.stateOwner = m_statelock.Owner();
+    diagLog.stateAtNs = SteadyNs();
+    lock.lock();
+  }
   diagLock = diagClock::now();
   if (m_renderState != STATE_CONFIGURED || m_vConfiguring || !m_presenterMode || !m_pRenderer)
     return;
@@ -6724,7 +6795,13 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
 #endif
 
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
-  std::unique_lock presentLock(m_presentlock);
+  std::unique_lock presentLock(m_presentlock, std::try_to_lock);
+  if (!presentLock.owns_lock())
+  {
+    diagLog.presentOwner = m_presentlock.Owner();
+    diagLog.presentAtNs = SteadyNs();
+    presentLock.lock();
+  }
   diagPresent = diagClock::now();
   lock.unlock();
 #if defined(HAS_LIBAMCODEC)

@@ -126,6 +126,68 @@ struct SGeometryIn
   std::string videoStereoMode;
 };
 
+//! GT-5 measurement (RC22, log only): RM's m_statelock and m_presentlock with their outermost
+//! owner (RC21 coreelec-br K1 n5994: C waited 116 ms on one of them, the holder unnamed). A take
+//! is a few relaxed stores (no allocation, no logging); C reads the owner when it waits and
+//! builds its line after the wait
+struct SRMLockOwner
+{
+  int tid = 0; //!< 0: none recorded (free, or a take outside the tracked calls)
+  int role = 0;
+  const void* site = nullptr; //!< the take's return address
+  int64_t sinceNs = 0; //!< steady clock
+};
+
+class CRMTrackedSection : public CCriticalSection
+{
+public:
+  __attribute__((noinline)) void lock()
+  {
+    CCriticalSection::lock();
+    if (count == 1)
+      Note(__builtin_return_address(0));
+  }
+  __attribute__((noinline)) bool try_lock()
+  {
+    if (!CCriticalSection::try_lock())
+      return false;
+    if (count == 1)
+      Note(__builtin_return_address(0));
+    return true;
+  }
+  void unlock()
+  {
+    if (count == 1)
+      m_tid.store(0, std::memory_order_relaxed);
+    CCriticalSection::unlock();
+  }
+  SRMLockOwner Owner() const
+  {
+    SRMLockOwner owner;
+    owner.tid = m_tid.load(std::memory_order_relaxed);
+    owner.role = m_role.load(std::memory_order_relaxed);
+    owner.site = m_site.load(std::memory_order_relaxed);
+    owner.sinceNs = m_sinceNs.load(std::memory_order_relaxed);
+    return owner;
+  }
+  //! a condition wait releases the mutex without unlock(): no owner while it waits, and the
+  //! waiter owns it again after (its take site kept, timed from the re-take)
+  SRMLockOwner SuspendOwner()
+  {
+    const SRMLockOwner owner = Owner();
+    m_tid.store(0, std::memory_order_relaxed);
+    return owner;
+  }
+  void ResumeOwner(const SRMLockOwner& owner);
+
+private:
+  void Note(const void* site);
+  std::atomic<int> m_tid{0};
+  std::atomic<int> m_role{0};
+  std::atomic<const void*> m_site{nullptr};
+  std::atomic<int64_t> m_sinceNs{0};
+};
+
 struct SPresentResult
 {
   bool configured = false;
@@ -545,7 +607,9 @@ public:
   bool GeometryTailOnC(SPresentResult& result); //!< true when it wrote
   //! never waits: a lock another thread holds skips this wake (busy names it; the next wake
   //! or tick tail runs it)
-  bool GeometryWakeOnC(const char*& busy);
+  bool GeometryWakeOnC(const char*& busy, SRMLockOwner& owner);
+  //! "role=.. tid=.. site=<binary>+<offset> held_us=.." for C's lines (built after its wait)
+  static std::string LockOwnerText(const SRMLockOwner& owner, int64_t atNs);
   //! 5.V3-4f (C): the worker's wake for the buffers PresentTick freed, after the release
   void WakeWorkerOnC();
   //! 5.V3-4 (V): reset the decoders C used
@@ -802,8 +866,19 @@ protected:
   CDebugRenderer m_debugRenderer;
   //! one set-up attempt per session when built on first show (a failed one is not retried per frame)
   bool m_debugRendererTried{false};
-  mutable CCriticalSection m_statelock;
-  mutable CCriticalSection m_presentlock;
+  mutable CRMTrackedSection m_statelock;
+  mutable CRMTrackedSection m_presentlock;
+  //! m_presentevent's wait on m_presentlock with its owner suspended
+  template<typename Rep, typename Period>
+  bool PresentWait(std::unique_lock<CRMTrackedSection>& lock,
+                   std::chrono::duration<Rep, Period> duration)
+  {
+    CRMTrackedSection& section = *lock.mutex();
+    const SRMLockOwner owner = section.SuspendOwner();
+    const bool woken = m_presentevent.wait(static_cast<CCriticalSection&>(section), duration);
+    section.ResumeOwner(owner);
+    return woken;
+  }
   CCriticalSection m_datalock;
   std::atomic<bool> m_bTriggerUpdateResolution{false};
   bool m_bRenderGUI = true;
