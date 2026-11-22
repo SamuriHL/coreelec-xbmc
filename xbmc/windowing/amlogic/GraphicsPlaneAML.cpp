@@ -904,6 +904,13 @@ GRAPHICSTICK::SRects CGraphicsPlaneAML::RouteRects(const SComposition& comp) con
 
 void CGraphicsPlaneAML::RenderLibass(SComposition& comp)
 {
+  const int64_t start = MonotonicNs();
+  RenderLibassTimed(comp);
+  comp.assUs = (MonotonicNs() - start) / 1000; // GT-D15 measurement (GPLACE ass_us)
+}
+
+void CGraphicsPlaneAML::RenderLibassTimed(SComposition& comp)
+{
   comp.glyphs.clear();
   const OVERLAY::SSubtitleLayout layout = OVERLAY::PublishedSubtitleLayout();
   const GRAPHICSTICK::SRects rects = RouteRects(comp);
@@ -1000,6 +1007,7 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
 {
   if (m_locked >= LOCK_CAP)
     return false;
+  const int64_t drawStart = MonotonicNs(); // GT-D15 measurement (GPLACE draw_us)
   const CGraphicsRasterAML::SRegime regime = RouteRegime();
   m_raster->SetRegime(regime);
   GRAPHICSTICK::SRects rects = RouteRects(comp);
@@ -1119,6 +1127,9 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
   out.firstPage = comp.firstPage;
   out.regimeEpoch = regime.epoch;
   out.untimedRoute = m_untimedOnG;
+  out.assUs = comp.assUs;
+  out.submitNs = MonotonicNs();
+  out.drawUs = (out.submitNs - drawStart) / 1000;
   m_lastFb = fb;
   m_lastVisible = !placed.empty() || !glyphs.empty();
   m_routeLastVisible = m_lastVisible;

@@ -187,6 +187,10 @@ public:
     //! under no floor
     bool bridge = false;
     uint64_t session = 0; //!< G's route session it was drawn for (GT-D12)
+    // GT-D15 measurement (log only, GPLACE): G's libass render and draw, and its hand-in time
+    int64_t assUs = -1;
+    int64_t drawUs = -1;
+    int64_t submitNs = 0; //!< CLOCK_MONOTONIC
     // GT-5 (design §10.2 item 5): the untimed state it carries, tagged {serial, u, regimeEpoch}
     uint64_t u = 0; //!< 0: none (GT-4's bridge, or nothing untimed drawn with it)
     bool firstPage = false; //!< a segment's first page with its frame: never dropped once picked
@@ -252,6 +256,12 @@ private:
     //! released, and held as a still, before T0, so delta counts the hold
     bool afterHold = false;
     bool slotPick = false; //!< its deadline is a slot pick's (counted slotBack when missed)
+    // GT-D15 measurement (log only)
+    int64_t assUs = -1;
+    int64_t drawUs = -1;
+    int64_t submitNs = 0;
+    int64_t pickVblankNs = 0; //!< the vblank of the slot that picked it
+    int fenceAtPick = -1; //!< its GPU fence at the pick: 1 signalled, 0 pending, -1 none
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
   };
@@ -388,6 +398,12 @@ private:
   SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
   bool m_gtWithheld = false;
   bool m_gtWasWithheld = false; //!< C's thread: the last ticked slot's withhold
+  // GT-D15 measurement (C's thread, log only): when C last entered its poll, and how long the
+  // loop body before it ran
+  int64_t m_pollEnterNs = 0;
+  int64_t m_pollReturnNs = 0;
+  int64_t m_lastBodyNs = 0;
+  int64_t m_inFlightCommitNs = 0; //!< the commit time of the commit in flight
   //! review rB m-1: the newest picture serial picked this route session; nothing older goes up
   uint64_t m_gtPickedSerial = 0;
   uint64_t m_gtSession = 0;

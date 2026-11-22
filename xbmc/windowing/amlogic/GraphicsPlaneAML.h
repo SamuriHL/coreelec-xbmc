@@ -133,6 +133,7 @@ private:
     std::vector<std::shared_ptr<CDVDOverlay>> untimed;
     std::vector<const CDVDOverlay*> untimedIds;
     bool untimedStale = false; //!< submitted with an older state: item 5 (d)'s re-draw is owed
+    int64_t assUs = -1; //!< GT-D15 measurement: its last libass render
   };
   //! GT-5: an untimed state as G holds it: the current composition or a segment's waiting page
   struct SUntimedPage
@@ -149,6 +150,7 @@ private:
   void RouteEnd();
   //! the libass output of comp's overlays at its pts over its rects
   void RenderLibass(SComposition& comp);
+  void RenderLibassTimed(SComposition& comp);
   bool Same(const SComposition& a, const SComposition& b) const;
   //! false: no buffer free now
   bool CanDraw(bool redraw) const;

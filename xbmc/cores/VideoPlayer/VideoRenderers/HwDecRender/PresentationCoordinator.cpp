@@ -1049,8 +1049,17 @@ void CPresentationCoordinator::Process()
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
     const int timeout = held ? 20 : (video || inFlight ? 50 : -1);
+    {
+      // GT-D15 measurement: a late tick is C busy (a long body) or C not run (it waited in
+      // poll from before the vblank)
+      const int64_t enter = MonotonicNs();
+      if (m_pollReturnNs)
+        m_lastBodyNs = enter - m_pollReturnNs;
+      m_pollEnterNs = enter;
+    }
     if (poll(fds, 3 + PLANE_COUNT, timeout) < 0 && errno != EINTR)
       CLog::Log(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
+    m_pollReturnNs = MonotonicNs();
     if (m_bStop)
       break;
 
@@ -1353,6 +1362,11 @@ void CPresentationCoordinator::CommitUi()
         timedTags.u = ready.u;
         timedTags.firstPage = ready.firstPage;
         timedTags.afterHold = ready.afterHold;
+        timedTags.assUs = ready.assUs;
+        timedTags.drawUs = ready.drawUs;
+        timedTags.submitNs = ready.submitNs;
+        timedTags.pickVblankNs = ready.pickVblankNs;
+        timedTags.fenceAtPick = ready.fenceAtPick;
       }
       ready = UiBuffer();
     }
@@ -1377,6 +1391,7 @@ void CPresentationCoordinator::CommitUi()
     }
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
+    m_inFlightCommitNs = m_commitNs;
   }
   m_uiCond.notify_all();
 }
@@ -1633,6 +1648,9 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
       buffer.session = in.session;
       buffer.u = in.u;
       buffer.firstPage = in.firstPage;
+      buffer.assUs = in.assUs;
+      buffer.drawUs = in.drawUs;
+      buffer.submitNs = in.submitNs ? in.submitNs : MonotonicNs();
       buffer.regimeEpoch = in.regimeEpoch;
       buffer.untimedRoute = in.untimedRoute;
       const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), in.serial,
@@ -1801,6 +1819,12 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       chosen.qbuf = target.qbuf;
       chosen.target = target.tick + 2;
       chosen.afterHold = afterHold;
+      chosen.pickVblankNs = m_diagVblankNs;
+      if (chosen.fence >= 0)
+      {
+        struct pollfd pf = {chosen.fence, POLLIN, 0};
+        chosen.fenceAtPick = poll(&pf, 1, 0) > 0 ? 1 : 0;
+      }
       // GT-D15 (RC4 coreelec-br K1: runs of 8-37 GPLACE delta=1 in a row, gfxMissing 0): once
       // one commit lands a vblank late (a fence or a GUI commit in flight), the next frame's pick
       // waited for that flip and was committed right after it, too late to latch, and so on for
@@ -2014,6 +2038,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   const int64_t untimedPeriodNs = m_untimedPeriodNs;
   const UiBuffer timed = std::exchange(m_inFlightTimed, UiBuffer());
+  const int64_t commitNs = m_inFlightCommitNs;
   const int64_t periodNs = m_diagPeriodNs;
   int delta = 0;
   if (timed.timed && !timed.clear && !timed.bridge)
@@ -2139,10 +2164,18 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed)
+  {
+    // GT-D15 measurement: G's libass and draw times, its hand-in against the picking slot's
+    // vblank (negative: ahead), the fence at the pick, and the commit against that vblank
+    const int64_t slot = timed.pickVblankNs;
     CLog::Log(LOGINFO,
-              "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={}",
+              "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={} "
+              "ass_us={} draw_us={} submit_us={} fence={} commit_us={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
-              timed.firstPage ? 1 : 0, timed.afterHold ? 1 : 0);
+              timed.firstPage ? 1 : 0, timed.afterHold ? 1 : 0, timed.assUs, timed.drawUs,
+              slot && timed.submitNs ? (timed.submitNs - slot) / 1000 : 0, timed.fenceAtPick,
+              slot && commitNs ? (commitNs - slot) / 1000 : 0);
+  }
   // the buffer this one replaced is G's again
   if (timed.timed)
     GRAPHICSTICK::Kick();
@@ -2380,6 +2413,14 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
       r.missed += static_cast<int>(tick.seq - m_lastSeq - 1);
     m_lastSeq = tick.seq;
     const double wake = static_cast<double>(tick.wokeNs - tick.vblankNs) / 1000.0;
+    // GT-D15 measurement (route only): where a late tick's time went. poll_since_us > 0: C sat in
+    // poll from before the vblank (not run: scheduling or the event late); body_us: the loop
+    // body before that poll
+    if (wake > 3000.0 && GRAPHICSTICK::Requested())
+      CLog::Log(LOGINFO,
+                "GTLAT C tick seq={} wake_us={:.0f} poll_since_us={} poll_return_us={} body_us={}",
+                tick.seq, wake, (tick.vblankNs - m_pollEnterNs) / 1000,
+                (m_pollReturnNs - tick.vblankNs) / 1000, m_lastBodyNs / 1000);
     r.woke++;
     r.wakeSum += wake;
     r.wakeMax = std::max(r.wakeMax, wake);
