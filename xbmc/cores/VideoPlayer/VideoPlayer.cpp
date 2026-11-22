@@ -6612,10 +6612,22 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
       m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
   {
     // make sure players are properly flushed, should put them in stalled state
-    auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, SYNCSOURCE_AUDIO | SYNCSOURCE_VIDEO);
-    m_VideoPlayerAudio->SendMessage(msg, 1);
-    m_VideoPlayerVideo->SendMessage(msg, 1);
-    msg->Wait(m_bStop, 0);
+    // A closed player's queue drops the message, so waiting on it only runs
+    // out the 1 s timeout (and holds the open player for as long): wait on
+    // the players that are open.
+    const bool audioInited = m_VideoPlayerAudio->IsInited();
+    const bool videoInited = m_VideoPlayerVideo->IsInited();
+    const unsigned int sources =
+        (audioInited ? SYNCSOURCE_AUDIO : 0) | (videoInited ? SYNCSOURCE_VIDEO : 0);
+    if (sources)
+    {
+      auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, sources);
+      if (audioInited)
+        m_VideoPlayerAudio->SendMessage(msg, 1);
+      if (videoInited)
+        m_VideoPlayerVideo->SendMessage(msg, 1);
+      msg->Wait(m_bStop, 0);
+    }
 
     // purge any pending PLAYER_STARTED messages
     m_messenger.Flush(CDVDMsg::PLAYER_STARTED);
