@@ -118,32 +118,83 @@ static uint16_t maximum_pq(const Hdr10PlusMetadata& meta, const PeakBrightnessSo
   return 0;
 }
 
+// Mean PQ of the maxRGB distribution, from any 1..15 percentile layout.
+// Adapted from metadata_statistics() in CroqueMr's CB1
+// (libreelec-CB1 commit 8d173a51, CB1/src/cb1_hdr10plus_dovi.c,
+// GPL-2.0-or-later), itself a generalisation of the AVDVPlus HistogramPlus
+// weights. Returns false for metadata that describes no distribution.
+static bool histogram_average_pq(const Hdr10PlusMetadata& meta, double& mean_pq) {
+
+  // ST 2094-40 values are multiples of 0.00001, 100000 = 10000 nits
+  constexpr uint32_t ONE = 100000;
+  const Luminance& lum = meta.luminance[0];
+  const auto& d = lum.distribution_maxrgb;
+  const uint16_t n = lum.num_distribution_maxrgb_percentiles;
+  if (n < 1 || n > 15 || d.size() < n) return false;
+
+  uint32_t peak = 0;
+  for (uint32_t v : lum.maxscl) {
+    if (v > ONE) return false;
+    peak = std::max(peak, v);
+  }
+  if (lum.average_maxrgb > ONE) return false;
+
+  // ST 2094-40 8.5.4: with application version 1 the entries at 5 and 10 are
+  // not part of the distribution; version 0 with exactly 0 and 0.00255 there
+  // is taken the same way.
+  const bool reserved = n >= 3 && d[1].percentage == 5 && d[2].percentage == 10 &&
+                        (meta.application_version >= 1 || (d[1].percentile == 0 && d[2].percentile == 255));
+
+  double ps[17], vs[17];
+  unsigned k = 0;
+  unsigned last_percentage = 0;
+  ps[k] = 0;
+  vs[k++] = 0;
+  for (uint16_t i = 0; i < n; i++) {
+    const unsigned j = d[i].percentage;
+    if (j > 100 || (i && j <= last_percentage) || d[i].percentile > ONE) return false;
+    last_percentage = j;
+    if (reserved && (i == 1 || i == 2)) continue;
+    const double v = static_cast<double>(d[i].percentile);
+    if (d[i].percentile > peak || (k > 1 && v < vs[k - 1])) return false;
+    ps[k] = j == 99 ? 0.9998 : j / 100.0;
+    vs[k++] = v;
+  }
+  if (k < 3) return false;
+  vs[0] = vs[1];
+  ps[k] = 1;
+  vs[k] = std::max(static_cast<double>(peak), vs[k - 1]);
+  k++;
+
+  // AverageMaxRGB must lie within the bounds of the distribution, give or
+  // take one source step.
+  double minimum_mean = 0, maximum_mean = 0;
+  for (unsigned i = 0; i + 1 < k; i++) {
+    const double width = ps[i + 1] - ps[i];
+    minimum_mean += (i ? vs[i] : 0) * width;
+    maximum_mean += vs[i + 1] * width;
+  }
+  const double average = static_cast<double>(lum.average_maxrgb);
+  if (average + 1 < minimum_mean || average > maximum_mean + 1) return false;
+
+  double es[17];
+  for (unsigned i = 0; i < k; i++)
+    es[i] = nits_to_pq(vs[i] / 10.0);
+  // MaxSCL bounds the tail above the last percentile but does not describe it
+  es[k - 1] = es[k - 2];
+  mean_pq = 0;
+  for (unsigned i = 0; i + 1 < k; i++)
+    mean_pq += (ps[i + 1] - ps[i]) * (es[i] + es[i + 1]) / 2.0;
+  return true;
+}
+
 static uint16_t average_pq(const Hdr10PlusMetadata& meta, const PeakBrightnessSource& source) {
 
   if (meta.num_windows == 0) return 0;
 
-  if ((source == PeakBrightnessSource::HistogramPlus) &&
-      (meta.luminance[0].num_distribution_maxrgb_percentiles == 9) &&
-      (meta.luminance[0].distribution_maxrgb[1].percentage == 5) && 
-      (meta.luminance[0].distribution_maxrgb[2].percentage == 10)) {
-
-    double pq1 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[0].percentile) / 10.0);
-    double pq2 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[3].percentile) / 10.0);
-    double pq3 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[4].percentile) / 10.0);
-    double pq4 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[5].percentile) / 10.0);
-    double pq5 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[6].percentile) / 10.0);
-    double pq6 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[7].percentile) / 10.0);
-    double pq7 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[8].percentile) / 10.0);
-
-    double mean_pq = (pq1 + pq2) / 2.0 * 0.2400 +
-                     (pq2 + pq3) / 2.0 * 0.2500 +
-                     (pq3 + pq4) / 2.0 * 0.2500 +
-                     (pq4 + pq5) / 2.0 * 0.1500 +
-                     (pq5 + pq6) / 2.0 * 0.0500 +
-                     (pq6 + pq7) / 2.0 * 0.0498;
-
-    return static_cast<uint16_t>(std::round(mean_pq * 4095.0)); 
-  }
+  double mean_pq = 0;
+  if ((source == PeakBrightnessSource::HistogramPlus) && histogram_average_pq(meta, mean_pq))
+    return static_cast<uint16_t>(std::round(mean_pq * 4095.0));
 
   return cast_pq(static_cast<double>(meta.luminance[0].average_maxrgb) / 10.0);
 }
