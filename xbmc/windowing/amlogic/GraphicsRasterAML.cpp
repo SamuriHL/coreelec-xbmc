@@ -769,8 +769,8 @@ void CGraphicsRasterAML::DrawImages(const std::vector<SImage>& images, bool comp
     const CRect& r = image.rect;
     const GLfloat left = r.x1 / m_width * 2.0f - 1.0f;
     const GLfloat right = r.x2 / m_width * 2.0f - 1.0f;
-    const GLfloat top = 1.0f - r.y1 / m_height * 2.0f;
-    const GLfloat bottom = 1.0f - r.y2 / m_height * 2.0f;
+    const GLfloat top = NdcY(r.y1);
+    const GLfloat bottom = NdcY(r.y2);
     const GLfloat pos[] = {left, top, right, top, left, bottom, right, bottom};
     const GLfloat tex[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
     glBindTexture(GL_TEXTURE_2D, texture->texture);
@@ -840,7 +840,7 @@ void CGraphicsRasterAML::DrawGlyphs(const std::vector<SGlyphs>& glyphs)
       const float sx = view.x1 + (q.x + dx * q.w) / item.frameWidth * view.Width();
       const float sy = view.y1 + (q.y + dy * q.h) / item.frameHeight * view.Height();
       return Vertex{sx / m_width * 2.0f - 1.0f,
-                    1.0f - sy / m_height * 2.0f,
+                    NdcY(sy),
                     static_cast<GLfloat>(q.u + dx * q.w) / quads->size_x,
                     static_cast<GLfloat>(q.v + dy * q.h) / quads->size_y,
                     q.r,

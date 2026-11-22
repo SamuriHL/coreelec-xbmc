@@ -124,6 +124,10 @@ public:
   //! ones through the pre-encode buffer and the composite pass first, then the raw PQ images.
   //! Leaves target bound, the viewport full size, blending off
   void Draw(const std::vector<SImage>& images, const std::vector<SGlyphs>& glyphs, GLuint target);
+  //! 5.G2 GT-5 (G's buffer ring): the target is a texture-backed FBO that is scanned out, whose
+  //! first memory row is GL's bottom (a window surface's is its top): plane rows go up in NDC.
+  //! The composite pass copies row for row, so only the content draws turn
+  void SetTargetFlipped(bool flipped) { m_flipY = flipped; }
 
   //! the placed rect r is width x height on whole plane pixels (within ALIGN_EPS); x, y its
   //! top-left plane pixel (diag F's P5Aligned, diag G's P5OneToOne)
@@ -201,6 +205,12 @@ private:
   const int m_width;
   const int m_height;
   bool m_ready = false;
+  bool m_flipY = false;
+  //! a plane row in NDC: GL's y runs up, the plane's rows down (flipped FBO: the same way)
+  GLfloat NdcY(float y) const
+  {
+    return m_flipY ? y / m_height * 2.0f - 1.0f : 1.0f - y / m_height * 2.0f;
+  }
   SRegime m_regime;
   bool m_regimeSet = false;
 

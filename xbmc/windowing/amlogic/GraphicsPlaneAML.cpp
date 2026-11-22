@@ -310,6 +310,7 @@ bool CGraphicsPlaneAML::InitProgram()
 
 void CGraphicsPlaneAML::DeinitGL()
 {
+  DeinitRing();
   if (m_context != EGL_NO_CONTEXT)
   {
     for (auto& [key, texture] : m_textures)
@@ -373,9 +374,189 @@ void CGraphicsPlaneAML::ReleaseReturned()
 {
   m_coordinator->TakeReturned(CPresentationCoordinator::PLANE_GRAPHICS, m_returned);
   for (gbm_bo* bo : m_returned)
+  {
+    // a ring buffer goes back to the ring, a surface buffer to its surface
+    if (RingRelease(bo))
+      continue;
     gbm_surface_release_buffer(m_gbmSurface, bo);
-  m_locked -= static_cast<int>(m_returned.size());
+    m_locked--;
+  }
   m_returned.clear();
+}
+
+bool CGraphicsPlaneAML::InitRing()
+{
+  auto createImage =
+      reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
+  auto targetTexture = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+      eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+  const char* why = nullptr;
+  if (!createImage || !targetTexture ||
+      !CEGLUtils::HasExtension(m_display, "EGL_EXT_image_dma_buf_import"))
+    why = "no dma-buf EGL image import";
+  for (int i = 0; i < RING_SIZE && !why; i++)
+  {
+    SRingBuffer buffer;
+    // a scanout buffer as the surface's are (linear, the plane's format), allocated by the same
+    // GBM device, so from the same heap (heap-fb, then heap-gfx)
+    buffer.bo = gbm_bo_create(m_device, WIDTH, HEIGHT, m_format,
+                              GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!buffer.bo)
+    {
+      why = "gbm_bo_create";
+      break;
+    }
+    const int fd = gbm_bo_get_fd(buffer.bo);
+    const EGLint attribs[] = {EGL_WIDTH,
+                              WIDTH,
+                              EGL_HEIGHT,
+                              HEIGHT,
+                              EGL_LINUX_DRM_FOURCC_EXT,
+                              static_cast<EGLint>(m_format),
+                              EGL_DMA_BUF_PLANE0_FD_EXT,
+                              fd,
+                              EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+                              0,
+                              EGL_DMA_BUF_PLANE0_PITCH_EXT,
+                              static_cast<EGLint>(gbm_bo_get_stride(buffer.bo)),
+                              EGL_NONE};
+    buffer.image = fd >= 0 ? createImage(m_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                                         nullptr, attribs)
+                           : EGL_NO_IMAGE_KHR;
+    if (fd >= 0)
+      close(fd); // the image holds its own reference
+    if (buffer.image == EGL_NO_IMAGE_KHR)
+    {
+      gbm_bo_destroy(buffer.bo);
+      why = "EGL image";
+      break;
+    }
+    glGenTextures(1, &buffer.texture);
+    glBindTexture(GL_TEXTURE_2D, buffer.texture);
+    targetTexture(GL_TEXTURE_2D, buffer.image);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glGenFramebuffers(1, &buffer.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, buffer.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buffer.texture,
+                           0);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    m_ring.push_back(buffer);
+    if (status != GL_FRAMEBUFFER_COMPLETE || !FbFromBo(buffer.bo))
+      why = "framebuffer";
+  }
+  if (why)
+  {
+    DeinitRing();
+    CLog::Log(LOGWARNING, "GRING off ({}): the route draws on the surface ({} buffers)", why,
+              LOCK_CAP);
+    return false;
+  }
+  CLog::Log(LOGINFO, "GRING on: {} scanout buffers {}x{} ({:.1f} MB), G's own", RING_SIZE, WIDTH,
+            HEIGHT, RING_SIZE * WIDTH * HEIGHT * 4 / 1048576.0);
+  return true;
+}
+
+void CGraphicsPlaneAML::DeinitRing()
+{
+  if (m_ring.empty())
+    return;
+  auto destroyImage =
+      reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
+  for (SRingBuffer& buffer : m_ring)
+  {
+    if (buffer.fbo)
+      glDeleteFramebuffers(1, &buffer.fbo);
+    if (buffer.texture)
+      glDeleteTextures(1, &buffer.texture);
+    if (buffer.image != EGL_NO_IMAGE_KHR && destroyImage)
+      destroyImage(m_display, buffer.image);
+    // its fb goes with it (DestroyPlaneFb, the bo's user data)
+    if (buffer.bo)
+      gbm_bo_destroy(buffer.bo);
+  }
+  m_ring.clear();
+}
+
+int CGraphicsPlaneAML::RouteFree() const
+{
+  if (!RingOn())
+    return LOCK_CAP - m_locked;
+  return static_cast<int>(
+      std::count_if(m_ring.begin(), m_ring.end(), [](const SRingBuffer& b) { return b.free; }));
+}
+
+int CGraphicsPlaneAML::RouteCap() const
+{
+  return RingOn() ? RING_SIZE : LOCK_CAP;
+}
+
+bool CGraphicsPlaneAML::RouteBeginDraw(int& slot)
+{
+  slot = -1;
+  if (!RingOn())
+  {
+    if (m_locked >= LOCK_CAP)
+      return false;
+    m_raster->SetTargetFlipped(false);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return true;
+  }
+  for (int i = 0; i < static_cast<int>(m_ring.size()); i++)
+    if (m_ring[i].free)
+    {
+      slot = i;
+      m_raster->SetTargetFlipped(true);
+      glBindFramebuffer(GL_FRAMEBUFFER, m_ring[i].fbo);
+      return true;
+    }
+  return false;
+}
+
+bool CGraphicsPlaneAML::RouteTakeFrame(
+    int slot, gbm_bo*& bo, uint32_t& fb, drmModeAtomicReqPtr& req, int& fence)
+{
+  if (slot < 0)
+    return TakeFrame(bo, fb, req, fence);
+  fence = -1;
+#if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
+  if (m_fence)
+    m_fence->CreateGPUFence();
+#endif
+  glFlush();
+#if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
+  if (m_fence)
+    fence = m_fence->FlushFence();
+#endif
+  // without a fence C would scan out an unfinished draw
+  if (!m_fence)
+    glFinish();
+  bo = m_ring[slot].bo;
+  fb = FbFromBo(bo);
+  const int refuseAt = OUTPUT::TestGraphicsRefuseAt();
+  const bool refused = refuseAt > 0 && fb && (m_submits >= refuseAt || ++m_submits >= refuseAt);
+  req = fb ? m_amlDisplay->BuildOverlayRequest(fb, WIDTH, HEIGHT, refused) : nullptr;
+  if (!req)
+  {
+    if (fence >= 0)
+      close(fence);
+    bo = nullptr;
+    fence = -1;
+    return false;
+  }
+  m_ring[slot].free = false;
+  return true;
+}
+
+bool CGraphicsPlaneAML::RingRelease(gbm_bo* bo)
+{
+  for (SRingBuffer& buffer : m_ring)
+    if (buffer.bo == bo)
+    {
+      buffer.free = true;
+      return true;
+    }
+  return false;
 }
 
 bool CGraphicsPlaneAML::SubmitFrame(bool visible, int64_t nowNs, double pts)
@@ -961,8 +1142,12 @@ bool CGraphicsPlaneAML::CanDraw(bool redraw) const
   // replaces C's buffer of its serial, or the one on screen (review rB M-2: paused with two drawn
   // ahead, a setting change still shows). GT-5 (item 2): with an untimed state up, one ahead,
   // so a buffer stays for the frame on screen's untimed entry (item 5 (e))
-  const int depth = m_untimedOnG && UntimedUp() ? LOCK_CAP - 3 : LOCK_CAP - 2;
-  return m_locked < LOCK_CAP && (redraw || m_coordinator->TimedHeld() < depth);
+  // GT-D15 ring: on screen, in flight, then RouteCap() - 3 drawn ahead (3 of 6), one buffer
+  // left to draw the next; with an untimed state up one fewer (2 of 6), for the frame on screen's
+  // untimed entry
+  const int cap = RouteCap();
+  const int depth = cap - (m_untimedOnG && UntimedUp() ? 4 : 3) + (RingOn() ? 0 : 1);
+  return RouteFree() > 0 && (redraw || m_coordinator->TimedHeld() < depth);
 }
 
 bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
@@ -1005,7 +1190,7 @@ void CGraphicsPlaneAML::RetainRoute(std::vector<std::shared_ptr<CDVDOverlay>>& i
 bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
                                         CPresentationCoordinator::STimedBuffer& out)
 {
-  if (m_locked >= LOCK_CAP)
+  if (RouteFree() <= 0)
     return false;
   const int64_t drawStart = MonotonicNs(); // GT-D15 measurement (GPLACE draw_us)
   const CGraphicsRasterAML::SRegime regime = RouteRegime();
@@ -1100,18 +1285,22 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
   else
     m_raster->Retain(kept, glyphs);
 
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  int slot = -1;
+  if (!RouteBeginDraw(slot))
+    return false;
   glViewport(0, 0, WIDTH, HEIGHT);
   glDisable(GL_SCISSOR_TEST);
   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   glClear(GL_COLOR_BUFFER_BIT);
-  m_raster->Draw(placed, glyphs, 0);
+  m_raster->Draw(placed, glyphs, slot >= 0 ? m_ring[slot].fbo : 0);
+  // the self-test and the shadow draw render for read-back, unflipped
+  m_raster->SetTargetFlipped(false);
 
   gbm_bo* bo = nullptr;
   uint32_t fb = 0;
   drmModeAtomicReqPtr req = nullptr;
   int fence = -1;
-  if (!TakeFrame(bo, fb, req, fence))
+  if (!RouteTakeFrame(slot, bo, fb, req, fence))
     return false;
   out = CPresentationCoordinator::STimedBuffer();
   out.bo = bo;
@@ -1140,9 +1329,9 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
 
 bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
 {
-  if (m_locked >= LOCK_CAP)
+  int slot = -1;
+  if (RouteFree() <= 0 || !RouteBeginDraw(slot))
     return false;
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(0, 0, WIDTH, HEIGHT);
   glDisable(GL_SCISSOR_TEST);
   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1151,7 +1340,7 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
   uint32_t fb = 0;
   drmModeAtomicReqPtr req = nullptr;
   int fence = -1;
-  if (!TakeFrame(bo, fb, req, fence))
+  if (!RouteTakeFrame(slot, bo, fb, req, fence))
     return false;
   std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
   CPresentationCoordinator::STimedBuffer& buffer = unit.front();
@@ -1171,6 +1360,11 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
 
 void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
 {
+  if (!m_ringTried)
+  {
+    m_ringTried = true;
+    InitRing();
+  }
   m_routeOn = true;
   m_routeQueue.clear();
   m_routeHasPending = false;
@@ -1840,7 +2034,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       // entries are re-drawn with the new state under their own serials while still paused,
       // ready for the resume's first release; C keeps them (above its paused target)
       if (ahead.empty() || GRAPHICSTICK::UntimedCommitted() < comp.u ||
-          LOCK_CAP - m_locked < static_cast<int>(ahead.size()))
+          RouteFree() < static_cast<int>(ahead.size()))
         return false;
     }
     else
@@ -1873,14 +2067,14 @@ bool CGraphicsPlaneAML::RedrawUntimed()
   // lower serial than an entry of the older one
   if (!ahead.empty())
   {
-    if (LOCK_CAP - m_locked < static_cast<int>(ahead.size()))
+    if (RouteFree() < static_cast<int>(ahead.size()))
     {
       if (m_uDeferredU != m_uCur.u)
       {
         m_uDeferredU = m_uCur.u;
         GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::UNIT_DEFERRED);
-        CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} locked={}", m_uCur.u,
-                  ahead.size(), m_locked);
+        CLog::Log(LOGDEBUG, "GUNTIMED gUnitDeferred u={} entries={} free={}", m_uCur.u,
+                  ahead.size(), RouteFree());
       }
       // ended by a buffer back (C advances: its flip or pick wakes G) or by the next frame's
       // entry, which carries the new state at a higher serial
@@ -1939,7 +2133,7 @@ void CGraphicsPlaneAML::ReleaseUnsubmitted(CPresentationCoordinator::STimedBuffe
     drmModeAtomicFree(buffer.req);
   if (buffer.fence >= 0)
     close(buffer.fence);
-  if (buffer.bo)
+  if (buffer.bo && !RingRelease(buffer.bo))
   {
     gbm_surface_release_buffer(m_gbmSurface, buffer.bo);
     m_locked--;
@@ -2037,14 +2231,14 @@ void CGraphicsPlaneAML::Process()
       if (waits)
       {
         ReleaseReturned();
-        if (m_locked < LOCK_CAP)
+        if (RouteFree() > 0)
           waits = RouteStep();
       }
       if (!m_routeOn && m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
       // GT-5 (item 12): G's only wait on C is for a free buffer, which the in-flight commit's
       // flip ends; bounded at 50 ms (as WaitTaken off the route), counted gWaitBuffer
-      const bool bufferWait = waits && m_routeOn && m_locked >= LOCK_CAP;
+      const bool bufferWait = waits && m_routeOn && RouteFree() <= 0;
       if (bufferWait && !m_waitBufferNs)
       {
         m_waitBufferNs = MonotonicNs();

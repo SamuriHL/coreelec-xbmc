@@ -27,6 +27,7 @@
 #include <GLES2/gl2.h>
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 class CAMLDisplay;
 class CDVDOverlayImage;
@@ -186,6 +187,34 @@ private:
   bool SubmitClear(uint64_t serial);
   CGraphicsRasterAML::SRegime RouteRegime();
   GRAPHICSTICK::SRects RouteRects(const SComposition& comp) const;
+
+  // GT-5 (GT-D15, user ruling 2026-11-22): G's own ring of scanout buffers for the route, not
+  // the Mali GBM surface (exhausting that surface segfaulted libMali on the S6; it stays for
+  // route C and the test pattern). One size: 6, up to 8 allowed (about 8.3 MB each)
+  static constexpr int RING_SIZE = 6;
+  struct SRingBuffer
+  {
+    gbm_bo* bo = nullptr;
+    EGLImageKHR image = EGL_NO_IMAGE_KHR;
+    GLuint texture = 0;
+    GLuint fbo = 0;
+    bool free = true;
+  };
+  std::vector<SRingBuffer> m_ring;
+  bool m_ringTried = false;
+  //! the ring, made at the first route start; false: G's route draws on the surface (LOCK_CAP)
+  bool InitRing();
+  void DeinitRing();
+  bool RingOn() const { return !m_ring.empty(); }
+  //! the route's free buffers and its capacity (ring or surface)
+  int RouteFree() const;
+  int RouteCap() const;
+  //! binds a free buffer to draw a route composition into; slot -1: the surface's back buffer
+  bool RouteBeginDraw(int& slot);
+  //! after the draw: its buffer, fb, request and GPU fence; false leaves nothing locked
+  bool RouteTakeFrame(int slot, gbm_bo*& bo, uint32_t& fb, drmModeAtomicReqPtr& req, int& fence);
+  //! a ring buffer back (C returned it or it was never handed over); false: not the ring's
+  bool RingRelease(gbm_bo* bo);
 
   bool m_routeOn = false;
   bool m_routeClearOwed = false; //!< at the start and at a floor: what the plane shows goes
