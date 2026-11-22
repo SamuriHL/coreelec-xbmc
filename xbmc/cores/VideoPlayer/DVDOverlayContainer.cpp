@@ -12,6 +12,7 @@
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -68,7 +69,13 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
       m_overlays[i]->iPTSStopTime = pOverlay->iPTSStartTime;
   }
 
-  m_overlays.emplace_back(pOverlay);
+  // overlays are drawn in container order, and a disc menu (IG) sits above
+  // the subtitles (PG)
+  auto position = m_overlays.end();
+  if (pOverlay->IsOverlayContainerFlushable())
+    position = std::ranges::find_if(m_overlays, [](const auto& overlay)
+                                    { return !overlay->IsOverlayContainerFlushable(); });
+  m_overlays.insert(position, pOverlay);
 }
 
 VecOverlays* CDVDOverlayContainer::GetOverlays()
@@ -112,7 +119,10 @@ void CDVDOverlayContainer::CleanUp(double pts)
         const std::shared_ptr<CDVDOverlay>& pOverlay2 = *it2;
         // There can be multiple overlays queued at same start point.
         // Skip them to find a new start point.
-        if (pOverlay2->bForced && pOverlay2->iPTSStartTime <= pts)
+        // a disc menu and a forced subtitle do not replace each other
+        if (pOverlay2->bForced &&
+            pOverlay2->IsOverlayContainerFlushable() == pOverlay->IsOverlayContainerFlushable() &&
+            pOverlay2->iPTSStartTime <= pts)
           bNewer = true;
       }
 
