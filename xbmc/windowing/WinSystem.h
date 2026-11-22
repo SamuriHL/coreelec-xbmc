@@ -51,15 +51,6 @@ struct REFRESHRATE
   int   ResInfo_Index;
 };
 
-struct HdrCompositeVideo
-{
-  int transfer{0};
-  float sdrWhite{0.0f};
-  float sdrGamma{0.0f};
-
-  bool operator==(const HdrCompositeVideo&) const = default;
-};
-
 class CDPMSSupport;
 class CGraphicContext;
 class CRenderSystemBase;
@@ -304,8 +295,6 @@ public:
   // yields wrong transparency. The composite shader compensates by squaring
   // the GUI coverage (see gles_gui_composite.frag).
   virtual bool IsHdrComposite() const { return false; }
-  // composited transfer and the sdr white and gamma of the video under the GUI
-  virtual HdrCompositeVideo GetHdrCompositeVideo() { return {}; }
 
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)
