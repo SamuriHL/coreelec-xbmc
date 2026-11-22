@@ -4857,7 +4857,13 @@ void CVideoPlayer::HandleMessages()
       if (m_CurrentAudio.id >= 0 || m_CurrentVideo.id >= 0)
         FlushBuffers(DVD_NOPTS_VALUE, true, true);
       else
+      {
         m_VideoPlayerSubtitle->Flush();
+        // FlushBuffers() would have released the held BD-J events and
+        // dropped the stamps of the dead timeline; with no stream open
+        // they must still go, or BD-J waits on a release that never comes
+        ApplyDiscTimelineEvents(true);
+      }
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -6710,7 +6716,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       if (m_CurrentAudio.id >= 0 || m_CurrentVideo.id >= 0)
         m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_FLUSH));
       else
+      {
         m_VideoPlayerSubtitle->Flush();
+        // as in the GENERAL_FLUSH handler: release held BD-J events and
+        // drop old-timeline stamps even though no stream is open
+        ApplyDiscTimelineEvents(true);
+      }
       break;
     case BD_EVENT_AUDIO_STREAM:
       m_dvd.iSelectedAudioStream = *static_cast<int*>(pData);

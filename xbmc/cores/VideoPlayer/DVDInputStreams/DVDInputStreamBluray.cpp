@@ -1574,8 +1574,8 @@ void CDVDInputStreamBluray::PollEvents()
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   if (!m_bd || !m_navmode || !m_bdjTiming || !IsBdjTitle())
     return;
-  // a held, still or dead stream belongs to the normal read path
-  if (m_hold != HOLD_NONE && m_hold != HOLD_DATA)
+  // a held, still, dead or aborted stream belongs to the normal read path
+  if (m_aborted || (m_hold != HOLD_NONE && m_hold != HOLD_DATA))
     return;
   for (int i = 0; i < 64; ++i)
   {
