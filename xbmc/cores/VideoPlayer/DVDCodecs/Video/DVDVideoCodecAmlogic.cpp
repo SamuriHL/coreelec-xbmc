@@ -1457,6 +1457,13 @@ void CDVDVideoCodecAmlogic::Reopen(void)
       case AV_CODEC_ID_H264:
         m_bitstream->ResetStartDecode();
         break;
+      case AV_CODEC_ID_HEVC:
+        // same gate as Open() and Reset(): the reopened decoder has no
+        // parameter sets, so annex-b data before the next VPS/SPS is
+        // undecodable. The gate drops whole merged BL+EL access units.
+        if (!m_bitstream->NeedConvert())
+          m_bitstream->ResetStartDecode();
+        break;
       default:
         break;
     }
