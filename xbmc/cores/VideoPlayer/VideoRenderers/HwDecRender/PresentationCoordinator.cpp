@@ -9,6 +9,7 @@
 #include "PresentationCoordinator.h"
 
 #include "ServiceBroker.h"
+#include "utils/StringUtils.h"
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
@@ -1802,6 +1803,29 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       if ((b.clear && !clearHeld) || (b.bridge && on && !bridgeHeld) ||
           (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
         pick = i;
+    }
+    // measurement (log only, at most 5 lines a second): a ticked slot that holds entries but
+    // picks none, with what it holds (the RC8 Superman BD-J menu: 12 vblanks with no graphics
+    // commit while a state was posted every vblank)
+    if (pick < 0 && ticked && on && !m_timed.empty())
+    {
+      const int64_t now = MonotonicNs();
+      if (now - m_gtNoPickWindowNs >= 1000000000)
+      {
+        m_gtNoPickWindowNs = now;
+        m_gtNoPickLines = 0;
+      }
+      if (++m_gtNoPickLines <= 5)
+      {
+        std::string held;
+        for (const UiBuffer& b : m_timed)
+          held += StringUtils::Format(" {}:u{}{}{}{}", b.serial, b.u, b.clear ? "c" : "",
+                                      b.bridge ? "b" : "", b.session != session ? "o" : "");
+        GRAPHICSTICK::GTLogF(LOGINFO,
+                             "GTICK no pick target={} withheld={} picked={} pageWaits={} held:{}",
+                             target.valid ? static_cast<int64_t>(target.serial) : -1,
+                             m_gtWithheld ? 1 : 0, m_gtPickedSerial, pageWaits ? 1 : 0, held);
+      }
     }
     if (pick < 0)
     {

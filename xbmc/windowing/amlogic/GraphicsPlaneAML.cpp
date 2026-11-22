@@ -53,6 +53,9 @@ using namespace std::chrono_literals;
 namespace
 {
 constexpr int LOCK_CAP = 4; // R5
+// GT-5: the compositions G keeps to redraw: the frame on screen's and those ahead of it, one
+// per queued frame at most (the video queue held up to 14 in RC8)
+constexpr size_t ROUTE_DRAWN_CAP = 32;
 
 int64_t MonotonicNs()
 {
@@ -1596,8 +1599,29 @@ bool CGraphicsPlaneAML::RouteStep()
                                   { container.NotePresentedSegment(gen); });
     }
   }
-  if (m_routeDrawn.size() > 8)
-    m_routeDrawn.erase(m_routeDrawn.begin(), m_routeDrawn.end() - 8);
+  // bounded, but never the frame on screen's entry: it carries an untimed change to C's next
+  // slot. Trimmed from the front, a deep video queue (RC8 Superman BD-J: 14 frames queued, a
+  // state per frame) took it with the oldest and a menu change then waited for an entry's own
+  // frame, the queue's depth later (u=34..42: 12 vblanks). The bound covers the deepest queue
+  if (m_routeDrawn.size() > ROUTE_DRAWN_CAP)
+  {
+    const uint64_t onScreen = m_routeHaveReleased ? m_routeReleased.serial : 0;
+    size_t screen = 0;
+    for (size_t i = 0; i < m_routeDrawn.size(); i++)
+      if (m_routeDrawn[i].serial <= onScreen)
+        screen = i;
+    // the entries G may still redraw: the frame on screen's and every later one, then the
+    // oldest of those later ones if still over
+    m_routeDrawn.erase(m_routeDrawn.begin(), m_routeDrawn.begin() + static_cast<long>(screen));
+    if (m_routeDrawn.size() > ROUTE_DRAWN_CAP)
+    {
+      GRAPHICSTICK::GTLogF(LOGWARNING, "GTICK drawn over {}: {} entries ahead dropped from G's books",
+                           ROUTE_DRAWN_CAP, m_routeDrawn.size() - ROUTE_DRAWN_CAP);
+      m_routeDrawn.erase(m_routeDrawn.begin() + 1,
+                         m_routeDrawn.begin() + 1 +
+                             static_cast<long>(m_routeDrawn.size() - ROUTE_DRAWN_CAP));
+    }
+  }
 
   const uint64_t layoutGen = OVERLAY::PublishedSubtitleLayout().gen;
   if (layoutGen != m_routeLayoutGen)

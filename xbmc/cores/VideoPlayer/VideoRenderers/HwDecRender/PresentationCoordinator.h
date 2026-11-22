@@ -397,6 +397,8 @@ private:
   SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
   bool m_gtWithheld = false;
   bool m_gtWasWithheld = false; //!< C's thread: the last ticked slot's withhold
+  int64_t m_gtNoPickWindowNs = 0; //!< GTICK no pick: lines in the current second
+  int m_gtNoPickLines = 0;
   // GT-D15 measurement (C's thread, log only): when C last entered its poll, and how long the
   // loop body before it ran
   int64_t m_pollEnterNs = 0;
