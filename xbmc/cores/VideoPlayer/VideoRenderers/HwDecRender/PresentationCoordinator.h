@@ -255,7 +255,6 @@ private:
     //! GT-D15: picked at the first slot after C's start withhold (on screen at T0): its frame was
     //! released, and held as a still, before T0, so delta counts the hold
     bool afterHold = false;
-    bool slotPick = false; //!< its deadline is a slot pick's (counted slotBack when missed)
     // GT-D15 measurement (log only)
     int64_t assUs = -1;
     int64_t drawUs = -1;
@@ -545,9 +544,6 @@ private:
     int gfxLatePick = 0;
     //! late picks whose fence or a flight held them past their deadline: back to the next slot
     int gfxLatePickBack = 0;
-    //! GT-D15: slot picks whose commit could no longer latch on their frame's vblank, given back
-    //! (their composition missed, the next frame's on time)
-    int gfxSlotBack = 0;
     //! GT-5: item 5 (b) (ii) replaces, untimedRegress (must stay 0), item 5 (h) refusals,
     //! first pages flipped and those after their frame's vblank
     int untimedReplaced = 0, untimedRegress = 0, gfxEpochDrop = 0, firstPages = 0, pageLate = 0;

@@ -43,8 +43,6 @@ SFloor s_floor;
 std::function<void()> s_wake;
 std::atomic<uint64_t> s_processed{0};
 SSide s_gSide;
-uint64_t s_slotSession = 0; //!< under s_mutex: C's last slot's route session and frame serial
-uint64_t s_slotTarget = 0;
 
 // GT-5, the untimed channel. s_untimedMutex is a leaf (taken under the container's lock);
 // s_containerMutex is taken before the container's lock (WithContainer), never under it
@@ -310,19 +308,6 @@ void Kick()
   Wake();
 }
 
-void NoteSlotTarget(uint64_t session, uint64_t serial)
-{
-  std::unique_lock lock(s_mutex);
-  s_slotSession = session;
-  s_slotTarget = serial;
-}
-
-uint64_t SlotTarget(uint64_t session)
-{
-  std::unique_lock lock(s_mutex);
-  return s_slotSession == session ? s_slotTarget : 0;
-}
-
 void NoteProcessed(uint64_t serial)
 {
   s_processed.store(serial, std::memory_order_relaxed);
@@ -532,13 +517,12 @@ std::string UntimedCountsLine(bool reset, bool& any)
   return StringUtils::Format(
       "states={} untimedSkipped={} gUnitDeferred={} gWaitBuffer={} gWaitBufferMax_ms={} "
       "pagesAhead={} pageLatePosted={} pageFallback={} keepAliveExpired={} gnewestDepth={} "
-      "gnewestOverflow={} timedPassed={}",
+      "gnewestOverflow={}",
       at(UntimedCount::STATES), at(UntimedCount::SKIPPED), at(UntimedCount::UNIT_DEFERRED),
       at(UntimedCount::WAIT_BUFFER), at(UntimedCount::WAIT_BUFFER_MAX_MS),
       at(UntimedCount::FIRST_PAGES), at(UntimedCount::PAGE_LATE_POSTED),
       at(UntimedCount::PAGE_FALLBACK), at(UntimedCount::KEEPALIVE_EXPIRED),
-      at(UntimedCount::NEWEST_DEPTH_MAX), at(UntimedCount::NEWEST_OVERFLOW),
-      at(UntimedCount::TIMED_PASSED));
+      at(UntimedCount::NEWEST_DEPTH_MAX), at(UntimedCount::NEWEST_OVERFLOW));
 }
 
 void NoteGraphicsLost()

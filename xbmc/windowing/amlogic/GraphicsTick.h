@@ -128,11 +128,6 @@ SSide GSide();
 //! wakes G (C: buffers back or picked)
 void Kick();
 
-//! C, after each ticked slot that picked for a frame: that frame's serial, in its route session.
-//! A composition at or below it has had its slot (GT-D15: G passes over it when behind)
-void NoteSlotTarget(uint64_t session, uint64_t serial);
-//! 0 when the last slot was of another session
-uint64_t SlotTarget(uint64_t session);
 //! G: the newest serial it has drawn or found unchanged; C counts a frame past it as missing
 void NoteProcessed(uint64_t serial);
 uint64_t Processed();
@@ -224,7 +219,6 @@ enum class UntimedCount
   NEWEST_OVERFLOW, //!< gnewest_off: states dropped at the queue's bound (review rA m1)
   PAGE_LATE_POSTED, //!< review rB m8: a segment's page posted after its first frame's release
   PAGE_FALLBACK, //!< a waiting page released by the P-side 3 s fallback, not by its picture
-  TIMED_PASSED, //!< GT-D15: a timed composition past its slot when a buffer came, not drawn
   COUNT
 };
 void Count(UntimedCount what, int n = 1);

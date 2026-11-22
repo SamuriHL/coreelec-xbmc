@@ -1498,24 +1498,6 @@ bool CGraphicsPlaneAML::RouteStep()
       m_routePending = std::move(comp);
       m_routeHasPending = true;
     }
-    // GT-D15 (RC2 am9pro K1 n50: gfxLate 8 in a row; RC4 coreelec-br: runs of 8-51): a
-    // composition whose frame C's last slot picked for has had its slot. Drawn now it is only
-    // ever picked one slot late, for the next frame, and with one buffer back per flip G never
-    // catches up while every frame changes (karaoke): each slot shows the previous frame's
-    // entry. It is passed over (counted), so the buffer goes to the frame still due. The slot
-    // is C's (published after its pick), not G's last Released: the buffer comes back at the
-    // flip of the same vblank C's tick is handled at, before that tick's Released reaches G
-    // (RC4: timedPassed 0 with the Released test). Not a first page (pageLate judges it), and
-    // not when nothing newer is queued
-    if (m_routePending.serial <= GRAPHICSTICK::SlotTarget(m_routeSession) &&
-        !m_routePending.firstPage && !m_routeQueue.empty())
-    {
-      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::TIMED_PASSED);
-      GRAPHICSTICK::NoteProcessed(m_routePending.serial);
-      m_routePending = SComposition();
-      m_routeHasPending = false;
-      continue;
-    }
     // GT-5: a composition held back for a buffer goes with the state up when it is drawn (a
     // waiting page that arrived meanwhile, review rB M3)
     if (m_untimedOnG)
