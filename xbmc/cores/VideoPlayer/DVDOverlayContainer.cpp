@@ -23,11 +23,17 @@
 
 CDVDOverlayContainer::~CDVDOverlayContainer()
 {
+  {
+    // 5.G2 GT-5 (review rA B1, rB M4): a dying container never registers or posts again, so
+    // the Clear below cannot put it back into the registry after ContainerGone
+    std::unique_lock lock(*this);
+    m_destroying = true;
+  }
+  Clear();
 #if defined(HAS_LIBAMCODEC)
-  // 5.G2 GT-5: G calls back only through the registry, which this waits for
+  // G calls back only through the registry, which this waits for; last, after every change
   GRAPHICSTICK::ContainerGone(this);
 #endif
-  Clear();
 }
 
 void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDVDOverlay>& pOverlay)
@@ -251,6 +257,8 @@ void CDVDOverlayContainer::NoteUntimedChange()
 {
   m_untimedChanges++;
 #if defined(HAS_LIBAMCODEC)
+  if (m_destroying)
+    return;
   GRAPHICSTICK::RegisterContainer(this);
   if (!GRAPHICSTICK::UntimedHook())
     return;
@@ -272,6 +280,7 @@ void CDVDOverlayContainer::NoteUntimedChange()
                      .count();
   const std::shared_ptr<CDVDOverlay> current = PresentLatestLocked();
   state.current = images(current);
+  state.currentGen = current ? current->m_segmentGen : 0;
   state.keepAliveTick = current ? current->m_keepAliveTick : 0;
   state.waiting = images(WaitingPageLocked(state.waitingGen));
   state.releasedSegment = m_releasedSegment;

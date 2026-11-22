@@ -95,4 +95,5 @@ private:
   VecOverlays m_overlays;
   unsigned int m_releasedSegment = 0; //!< pages of this generation or older are current
   uint64_t m_untimedChanges = 0; //!< 5.G2 GT-5: the change counter
+  bool m_destroying = false; //!< 5.G2 GT-5: in the destructor: no registration, no post
 };

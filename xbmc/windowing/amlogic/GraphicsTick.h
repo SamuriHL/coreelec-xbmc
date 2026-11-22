@@ -167,13 +167,15 @@ struct SUntimedState
   std::vector<std::shared_ptr<CDVDOverlay>> waiting;
   unsigned int waitingGen = 0;
   unsigned int releasedSegment = 0;
+  unsigned int currentGen = 0; //!< the current group's segment (0: none or not gated)
   std::vector<SUntimedPosted> skipped; //!< posted since G's last take, never taken
 };
 
 // the container's side (under its lock: only this file's locks are taken)
 //! true while G takes the container's states
 bool UntimedHook();
-//! the container that posts; cleared at its destruction (never called under its lock)
+//! the container that posts (never from its destructor: it stops posting first); cleared at its
+//! destruction, after its last change (never called under its lock)
 void RegisterContainer(CDVDOverlayContainer* container);
 void ContainerGone(CDVDOverlayContainer* container);
 //! a change of the present-latest set (a repost of the same images only refreshes the keep-alive)
