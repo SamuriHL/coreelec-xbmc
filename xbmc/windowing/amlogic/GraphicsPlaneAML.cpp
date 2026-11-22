@@ -47,6 +47,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <drm_fourcc.h>
+#include <xf86drm.h>
 #include <xf86drmMode.h>
 
 using namespace std::chrono_literals;
@@ -391,6 +392,108 @@ void CGraphicsPlaneAML::ReleaseReturned()
   m_returned.clear();
 }
 
+gbm_bo* CGraphicsPlaneAML::RingBoFromDumb(uint32_t& dumb, int& fd, uint32_t& stride)
+{
+  dumb = 0;
+  fd = -1;
+  struct drm_mode_create_dumb create = {};
+  create.width = WIDTH;
+  create.height = HEIGHT;
+  create.bpp = 32;
+  // flags 0: meson's am_meson_gem_alloc_ion_buff takes heap-fb first, then heap-gfx, then
+  // heap-codecmm (Mali's gbm_bo_create allocates from /dev/dma_heap/heap-gfx only)
+  if (drmIoctl(m_drmFd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0)
+  {
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: {}", strerror(errno));
+    return nullptr;
+  }
+  dumb = create.handle;
+  stride = create.pitch;
+  if (drmPrimeHandleToFD(m_drmFd, dumb, DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
+  {
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer export: {}", strerror(errno));
+    fd = -1;
+  }
+  gbm_bo* bo = nullptr;
+  if (fd >= 0)
+  {
+    struct gbm_import_fd_data data = {fd, WIDTH, HEIGHT, stride, m_format};
+    bo = gbm_bo_import(m_device, GBM_BO_IMPORT_FD, &data,
+                       GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!bo)
+      GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: gbm_bo_import failed");
+  }
+  if (bo)
+  {
+    // its fb from the dumb handle on G's DRM fd (FbFromBo then finds it), whatever handle GBM's
+    // import holds
+    const uint32_t handles[4] = {dumb};
+    const uint32_t strides[4] = {stride};
+    const uint32_t offsets[4] = {};
+    auto* fb = new PlaneFb;
+    fb->fd = m_drmFd;
+    if (drmModeAddFB2(m_drmFd, WIDTH, HEIGHT, m_format, handles, strides, offsets, &fb->id, 0) !=
+        0)
+    {
+      GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: no fb: {}", strerror(errno));
+      delete fb;
+      gbm_bo_destroy(bo);
+      bo = nullptr;
+    }
+    else
+      gbm_bo_set_user_data(bo, fb, DestroyPlaneFb);
+  }
+  if (!bo)
+  {
+    if (fd >= 0)
+      close(fd);
+    fd = -1;
+    struct drm_mode_destroy_dumb destroy = {dumb};
+    drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    dumb = 0;
+  }
+  return bo;
+}
+
+void CGraphicsPlaneAML::LogHeapState(const char* why) const
+{
+  // once, at a ring that could not be made (G's thread, at its start): where the CMA heaps stand
+  const auto read = [](const char* path)
+  {
+    std::string value;
+    if (FILE* f = std::fopen(path, "r"))
+    {
+      char buf[128] = {};
+      if (std::fgets(buf, sizeof(buf), f))
+        value = buf;
+      std::fclose(f);
+    }
+    while (!value.empty() && (value.back() == '\n' || value.back() == ' '))
+      value.pop_back();
+    return value.empty() ? std::string("?") : value;
+  };
+  std::string cmaFree = "?";
+  if (FILE* f = std::fopen("/proc/meminfo", "r"))
+  {
+    char line[128];
+    while (std::fgets(line, sizeof(line), f))
+      if (std::strncmp(line, "CmaFree:", 8) == 0)
+      {
+        cmaFree = StringUtils::Trim(std::string(line + 8));
+        break;
+      }
+    std::fclose(f);
+  }
+  GRAPHICSTICK::GTLogF(
+      LOGWARNING,
+      "GRING heaps at {}: CmaFree {}; heap-fb alloc_pages success {} fail {}; heap-gfx alloc_pages "
+      "success {} fail {}",
+      why, cmaFree, read("/sys/kernel/mm/cma/heap-fb/alloc_pages_success"),
+      read("/sys/kernel/mm/cma/heap-fb/alloc_pages_fail"),
+      read("/sys/kernel/mm/cma/heap-gfx/alloc_pages_success"),
+      read("/sys/kernel/mm/cma/heap-gfx/alloc_pages_fail"));
+}
+
 bool CGraphicsPlaneAML::InitRing()
 {
   auto createImage =
@@ -406,20 +509,31 @@ bool CGraphicsPlaneAML::InitRing()
   for (int i = 0; i < RING_SIZE && !why; i++)
   {
     SRingBuffer buffer;
-    // a scanout buffer as the surface's are (linear, the plane's format), allocated by the same
-    // GBM device, so from the same heap (heap-fb, then heap-gfx)
-    // linear, as the surface's (InitGL) and as the EGL import, which passes no modifier
-    const uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
-    buffer.bo = gbm_bo_create_with_modifiers(m_device, WIDTH, HEIGHT, m_format, &modifier, 1);
-    if (!buffer.bo)
-      buffer.bo = gbm_bo_create(m_device, WIDTH, HEIGHT, m_format,
-                                GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
-    if (!buffer.bo)
+    // RC22 am9pro M3GAN DV: "GRING off (gbm_bo_create)" at buffer 1 with heap-fb 148 MB free and
+    // heap-gfx exhausted: Mali's GBM (libMali dmaheap) allocates from /dev/dma_heap/heap-gfx
+    // only. A DRM dumb buffer is meson's GEM, which takes heap-fb first (meson_gem.c
+    // am_meson_gem_alloc_ion_buff, flags 0): linear, the plane's format, imported into GBM
+    int fd = -1;
+    uint32_t stride = 0;
+    buffer.bo = RingBoFromDumb(buffer.dumb, fd, stride);
+    if (buffer.bo)
+      buffer.dmabuf = fd;
+    else
     {
-      why = "gbm_bo_create";
-      break;
+      // GBM's own (heap-gfx): linear, as the EGL import passes no modifier
+      const uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+      buffer.bo = gbm_bo_create_with_modifiers(m_device, WIDTH, HEIGHT, m_format, &modifier, 1);
+      if (!buffer.bo)
+        buffer.bo = gbm_bo_create(m_device, WIDTH, HEIGHT, m_format,
+                                  GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+      if (!buffer.bo)
+      {
+        why = "no buffer (dumb and gbm_bo_create)";
+        break;
+      }
+      fd = gbm_bo_get_fd(buffer.bo);
+      stride = gbm_bo_get_stride(buffer.bo);
     }
-    const int fd = gbm_bo_get_fd(buffer.bo);
     const EGLint attribs[] = {EGL_WIDTH,
                               WIDTH,
                               EGL_HEIGHT,
@@ -431,16 +545,17 @@ bool CGraphicsPlaneAML::InitRing()
                               EGL_DMA_BUF_PLANE0_OFFSET_EXT,
                               0,
                               EGL_DMA_BUF_PLANE0_PITCH_EXT,
-                              static_cast<EGLint>(gbm_bo_get_stride(buffer.bo)),
+                              static_cast<EGLint>(stride),
                               EGL_NONE};
     buffer.image = fd >= 0 ? createImage(m_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
                                          nullptr, attribs)
                            : EGL_NO_IMAGE_KHR;
-    if (fd >= 0)
+    if (fd >= 0 && fd != buffer.dmabuf)
       close(fd); // the image holds its own reference
     if (buffer.image == EGL_NO_IMAGE_KHR)
     {
-      gbm_bo_destroy(buffer.bo);
+      // into the ring, so DeinitRing frees its bo and dumb buffer with the others
+      m_ring.push_back(buffer);
       why = "EGL image";
       break;
     }
@@ -497,12 +612,15 @@ bool CGraphicsPlaneAML::InitRing()
       why = "addfb";
     }
     else if (i == 0)
-      GRAPHICSTICK::GTLogF(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}",
+      GRAPHICSTICK::GTLogF(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}, {}",
                 buffer.renderbuffer ? "renderbuffer" : "texture",
-                reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
+                reinterpret_cast<const char*>(&m_format), boModifier, stride,
+                buffer.dumb ? "DRM dumb (heap-fb first)" : "GBM (heap-gfx)");
   }
   if (why)
   {
+    // never a partial ring
+    LogHeapState(why);
     DeinitRing();
     GRAPHICSTICK::GTLogF(LOGWARNING, "GRING off ({}): the route draws on the surface ({} buffers)", why,
               LOCK_CAP);
@@ -532,6 +650,15 @@ void CGraphicsPlaneAML::DeinitRing()
     // its fb goes with it (DestroyPlaneFb, the bo's user data)
     if (buffer.bo)
       gbm_bo_destroy(buffer.bo);
+    if (buffer.dmabuf >= 0)
+      close(buffer.dmabuf);
+    // then its dumb buffer (an import of the same GEM object may have closed the handle: an
+    // EINVAL here is that)
+    if (buffer.dumb)
+    {
+      struct drm_mode_destroy_dumb destroy = {buffer.dumb};
+      drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    }
   }
   m_ring.clear();
 }
@@ -1422,6 +1549,7 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
 
 void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
 {
+  // made at G's start (Process); here only if that did not run (a late opt-in)
   if (!m_ringTried)
   {
     m_ringTried = true;
@@ -2434,6 +2562,13 @@ void CGraphicsPlaneAML::Process()
   }
   if (!m_testPattern)
     InitRaster();
+  // GT-5 (RC22 am9pro): the ring once, at G's start, while the heaps are not yet under a 4K DV
+  // playback's pressure; kept for the session (DeinitGL frees it)
+  if (!m_testPattern && m_raster && GRAPHICSTICK::Requested() && !m_ringTried)
+  {
+    m_ringTried = true;
+    InitRing();
+  }
 
   m_epoch = aml_presenter_epoch();
   // establishes the plane, enabled with a cleared buffer (R4: idle is never
