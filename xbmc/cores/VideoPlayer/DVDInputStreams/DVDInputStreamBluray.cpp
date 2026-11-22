@@ -2224,11 +2224,13 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   std::unique_lock lock(m_overlayLock);
   SPlane& plane(m_planes[ov->plane]);
 
-  // The disc supplies the rectangle; the decode below writes w*h pixels and
-  // OverlayClear() cuts existing images by it, so keep it on the plane.
+  // The disc supplies the rectangle. An empty rectangle or one that starts
+  // off the plane is rejected; one that crosses the right or bottom edge is
+  // decoded at its full size and cropped to the plane below, as a hardware
+  // player shows it (the spec forbids such objects, so only mis-authored
+  // discs reach the crop). Idea from matthane's ce-canary 4ef734f4c0.
   if (ov->cmd == BD_OVERLAY_DRAW && !ov->palette_update_flag &&
-      (ov->w == 0 || ov->h == 0 || ov->x > plane.w || ov->y > plane.h || ov->w > plane.w - ov->x ||
-       ov->h > plane.h - ov->y))
+      (ov->w == 0 || ov->h == 0 || ov->x >= plane.w || ov->y >= plane.h))
   {
     CLog::Log(LOGWARNING, "CDVDInputStreamBluray - invalid overlay rectangle {}x{} at {},{} on "
                           "plane {} ({}x{})",
@@ -2355,6 +2357,14 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     overlay->width = ov->w;
     overlay->source_height = plane.h;
     overlay->source_width = plane.w;
+    if (ov->w > plane.w - ov->x || ov->h > plane.h - ov->y)
+    {
+      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - overlay {}x{} at {},{} cropped to plane {} ({}x{})",
+                ov->w, ov->h, ov->x, ov->y, ov->plane, plane.w, plane.h);
+      overlay = std::make_shared<CDVDOverlayImage>(*overlay, ov->x, ov->y,
+                                                   std::min<int>(ov->w, plane.w - ov->x),
+                                                   std::min<int>(ov->h, plane.h - ov->y));
+    }
     plane.o.push_back(overlay);
   }
 
