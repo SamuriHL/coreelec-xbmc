@@ -248,6 +248,9 @@ private:
     //! GT-5 late pick (review rA M2, rB M1): committed only up to this (monotonic), else it goes
     //! back to the ready list for the next slot; 0: a slot's pick, no deadline
     int64_t lateDeadlineNs = 0;
+    //! GT-D15: picked at the first slot after C's start withhold (on screen at T0): its frame was
+    //! released, and held as a still, before T0, so delta counts the hold
+    bool afterHold = false;
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
   };
@@ -383,6 +386,7 @@ private:
   SReleasedFrame m_gtReleased[2]; //!< [0] the newest, before this tick's
   SReleasedFrame m_gtTarget; //!< C's thread: the frame of this tick's pick
   bool m_gtWithheld = false;
+  bool m_gtWasWithheld = false; //!< C's thread: the last ticked slot's withhold
   //! review rB m-1: the newest picture serial picked this route session; nothing older goes up
   uint64_t m_gtPickedSerial = 0;
   uint64_t m_gtSession = 0;

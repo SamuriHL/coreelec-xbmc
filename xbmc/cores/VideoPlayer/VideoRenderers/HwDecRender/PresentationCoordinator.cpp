@@ -1352,6 +1352,7 @@ void CPresentationCoordinator::CommitUi()
         timedTags.fb = ready.fb;
         timedTags.u = ready.u;
         timedTags.firstPage = ready.firstPage;
+        timedTags.afterHold = ready.afterHold;
       }
       ready = UiBuffer();
     }
@@ -1693,6 +1694,9 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     }
     if (ticked)
       m_gtSlotMissed = false;
+    const bool afterHold = ticked && m_gtWasWithheld && !m_gtWithheld;
+    if (ticked)
+      m_gtWasWithheld = m_gtWithheld;
     // r2 N2: a late pick past its deadline no longer waits for anything (its commit would land
     // late): back to the list before this slot's pick, so it never holds the next frame's slot.
     // Before the stale filter (review r3 R3-2): a floor or a session change since its pick
@@ -1793,6 +1797,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       m_timed.erase(m_timed.begin(), m_timed.begin() + pick + 1);
       chosen.qbuf = target.qbuf;
       chosen.target = target.tick + 2;
+      chosen.afterHold = afterHold;
       if (!chosen.clear && !chosen.bridge)
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
       // item 5 (d): no commit carries an older untimed state than the plane's (impossible by
@@ -1997,7 +2002,8 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   {
     delta = static_cast<int32_t>(sequence - static_cast<unsigned int>(timed.target));
     m_report.gfxTimed++;
-    if (delta > 0)
+    // the start's still's composition at T0 is on time by item 10 (its delta counts the hold)
+    if (delta > 0 && !timed.afterHold)
       m_report.gfxLate++;
     // item 5 (f): pageLate when a first page missed its frame's vblank
     if (timed.firstPage)
@@ -2115,9 +2121,10 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed)
-    CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={}",
+    CLog::Log(LOGINFO,
+              "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
-              timed.firstPage ? 1 : 0);
+              timed.firstPage ? 1 : 0, timed.afterHold ? 1 : 0);
   // the buffer this one replaced is G's again
   if (timed.timed)
     GRAPHICSTICK::Kick();
