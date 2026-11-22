@@ -196,6 +196,34 @@ static uint16_t average_pq(const Hdr10PlusMetadata& meta, const PeakBrightnessSo
   if ((source == PeakBrightnessSource::HistogramPlus) && histogram_average_pq(meta, mean_pq))
     return static_cast<uint16_t>(std::round(mean_pq * 4095.0));
 
+  // The general estimator rejected the histogram. On the common 9-entry
+  // layout keep the previous fixed-weight estimate (5/10 always treated as
+  // reserved) instead of dropping to PQ(AverageMaxRGB): a version-0 stream
+  // with real data in those entries would otherwise jump ~500 codes darker
+  // and could pump between scenes. Never worse than before the port.
+  if ((source == PeakBrightnessSource::HistogramPlus) &&
+      (meta.luminance[0].num_distribution_maxrgb_percentiles == 9) &&
+      (meta.luminance[0].distribution_maxrgb[1].percentage == 5) &&
+      (meta.luminance[0].distribution_maxrgb[2].percentage == 10)) {
+
+    double pq1 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[0].percentile) / 10.0);
+    double pq2 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[3].percentile) / 10.0);
+    double pq3 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[4].percentile) / 10.0);
+    double pq4 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[5].percentile) / 10.0);
+    double pq5 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[6].percentile) / 10.0);
+    double pq6 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[7].percentile) / 10.0);
+    double pq7 = nits_to_pq(static_cast<double>(meta.luminance[0].distribution_maxrgb[8].percentile) / 10.0);
+
+    double old_mean_pq = (pq1 + pq2) / 2.0 * 0.2400 +
+                         (pq2 + pq3) / 2.0 * 0.2500 +
+                         (pq3 + pq4) / 2.0 * 0.2500 +
+                         (pq4 + pq5) / 2.0 * 0.1500 +
+                         (pq5 + pq6) / 2.0 * 0.0500 +
+                         (pq6 + pq7) / 2.0 * 0.0498;
+
+    return static_cast<uint16_t>(std::round(old_mean_pq * 4095.0));
+  }
+
   return cast_pq(static_cast<double>(meta.luminance[0].average_maxrgb) / 10.0);
 }
 
