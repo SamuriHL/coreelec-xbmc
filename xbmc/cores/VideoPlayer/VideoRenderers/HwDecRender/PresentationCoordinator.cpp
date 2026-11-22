@@ -84,6 +84,9 @@ constexpr auto PLANE_OFF_BOUND = std::chrono::seconds(2);
 
 std::atomic<CPresentationCoordinator*> s_instance{nullptr};
 std::atomic<bool> s_untimedLog{false};
+//! test only: special://profile/geomwake_always runs the wake tail while ticking too (the old
+//! behaviour), so a run names the slow step by its GEOMWAKE slow line
+std::atomic<bool> s_geomWakeAlways{false};
 
 int64_t MonotonicNs()
 {
@@ -191,6 +194,10 @@ bool CPresentationCoordinator::Start()
   s_untimedLog = XFILE::CFile::Exists("special://profile/guntimed_log");
   if (s_untimedLog)
     GRAPHICSTICK::GTLogF(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
+  s_geomWakeAlways = XFILE::CFile::Exists("special://profile/geomwake_always");
+  if (s_geomWakeAlways)
+    GRAPHICSTICK::GTLogF(LOGWARNING,
+                         "GEOMWAKE test: the wake tail runs while ticking (geomwake_always)");
   aml_presenter_set_wake_fd(m_wakeFd);
   m_commitStop = false;
   m_commitThread = std::thread(&CPresentationCoordinator::CommitWorker, this);
@@ -2619,7 +2626,9 @@ void CPresentationCoordinator::RunWakeTail()
   // at every vblank (the frame-locked moment): a wake tail between two of them only runs it up
   // to a period earlier, so C does not run it then. Paused, held or detached (no tick tail for
   // two periods) it runs as before
-  if (m_tickPeriodNs > 0 && m_lastTailNs && MonotonicNs() - m_lastTailNs < 2 * m_tickPeriodNs)
+  // test only (geomwake_always, read at Start: no file I/O on C): the old behaviour
+  if (!s_geomWakeAlways && m_tickPeriodNs > 0 && m_lastTailNs &&
+      MonotonicNs() - m_lastTailNs < 2 * m_tickPeriodNs)
   {
     m_report.wakeTicking++;
     return;
