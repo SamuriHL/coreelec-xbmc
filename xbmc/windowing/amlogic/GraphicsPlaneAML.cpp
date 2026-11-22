@@ -482,7 +482,16 @@ bool CGraphicsPlaneAML::TakeShown()
     m_hasNext = false;
   }
   if (SameGraphics(next, m_shown))
+  {
+    // GT-1 r1 N2: an A -> B -> A within one wait shows A still; its posts go with a fresh
+    // frame of it, not lost (only with guntimed_log, which alone posts)
+    if (!next.untimed.empty())
+    {
+      m_untimed.insert(m_untimed.end(), next.untimed.begin(), next.untimed.end());
+      m_redraw = true;
+    }
     return false;
+  }
   m_shown = std::move(next);
   m_untimed.insert(m_untimed.end(), m_shown.untimed.begin(), m_shown.untimed.end());
   m_shown.untimed.clear();
@@ -1339,14 +1348,17 @@ bool CGraphicsPlaneAML::RouteStep()
   }
   RouteRegime();
   // GT-5: main hands nothing untimed over (its sets are empty while G holds the hook)
+  // (on the route m_redraw and m_untimed are route C's, unused: GT-4 forwards no GUNTIMED post)
   if (m_untimedOnG)
   {
-    if (TakeShown())
-      m_untimed.clear();
+    TakeShown();
+    m_untimed.clear();
     m_redraw = false;
   }
   // the untimed bridge (guntimed_off): main's composition changed
-  else if (TakeShown())
+  else if (!TakeShown())
+    m_redraw = false;
+  else
   {
     m_redraw = false;
     m_untimed.clear();

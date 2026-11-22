@@ -614,6 +614,8 @@ protected:
   std::vector<const CDVDOverlay*> m_untimedLast;
   bool m_untimedLastUntimed = false;
   uint64_t m_untimedU = 0;
+  uint64_t m_untimedSelfClears = 0; //!< GT-1 r1 N2: the platform's own plane clears seen
+  bool m_untimedCarried = false; //!< the next post re-shows a set such a clear took off
 #endif
 
   void PresentSingle(CBaseRenderer& renderer, bool clear, DWORD flags, DWORD alpha);

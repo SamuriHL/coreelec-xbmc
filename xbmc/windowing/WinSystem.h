@@ -320,6 +320,9 @@ public:
   virtual void PresentHdrGraphics(const SHdrGraphics& graphics) {}
   //! 5.G2 GT-4: why the graphics plane cannot draw the timed graphics; nullptr: it can
   virtual const char* GraphicsTickRefusal() const { return "no graphics plane"; }
+  //! GUNTIMED (GT-1 r1 N2): how often the platform took the HDR graphics off its plane on its
+  //! own (a frame without the video pass, a plane clear), not at the caller's empty set
+  virtual uint64_t HdrGraphicsSelfClears() const { return 0; }
 
   // Force the OSD/overlay plane to a cleared (opaque black) state right now by
   // presenting cleared buffers through the platform present path. Used at

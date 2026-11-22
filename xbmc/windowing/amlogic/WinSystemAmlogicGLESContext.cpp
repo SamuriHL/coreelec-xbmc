@@ -3389,7 +3389,10 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
   SetVSync(true);
   // a frame without a video pass (or without the graphics) takes them off
   if (rendered && !m_hdrGraphicsThisFrame && m_hdrGraphicsShown)
+  {
     PresentHdrGraphics(SHdrGraphics());
+    m_hdrGraphicsSelfClears++;
+  }
   bool paced = false;
   if (m_coordinator)
   {
@@ -3837,7 +3840,10 @@ void CWinSystemAmlogicGLESContext::PresentHdrGraphics(const SHdrGraphics& graphi
 void CWinSystemAmlogicGLESContext::ClearOverlayPlane()
 {
   if (m_hdrGraphicsShown)
+  {
     PresentHdrGraphics(SHdrGraphics());
+    m_hdrGraphicsSelfClears++;
+  }
 
   if (!m_pGLContext || !m_amlGBMUtils)
     return;

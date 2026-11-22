@@ -92,6 +92,7 @@ public:
   bool IsHdrComposite() const override { return m_guiCompositing; }
   bool HdrGraphicsOnPlane() const override;
   const char* GraphicsTickRefusal() const override;
+  uint64_t HdrGraphicsSelfClears() const override { return m_hdrGraphicsSelfClears; }
   void PresentHdrGraphics(const SHdrGraphics& graphics) override;
   void ClearOverlayPlane() override;
 
@@ -155,6 +156,7 @@ private:
   std::unique_ptr<CGraphicsPlaneAML> m_graphicsPlane;
   bool m_hdrGraphicsThisFrame{false}; //!< the video pass handed them over this GUI frame
   bool m_hdrGraphicsShown{false}; //!< the plane was last given something to show
+  uint64_t m_hdrGraphicsSelfClears{0}; //!< main only: HdrGraphicsSelfClears
   //! GUI buffers locked for the coordinator, not yet released
   int m_guiLocked{0};
   //! 5.B2-1 log only: m_guiLocked at the last surface detach; the set whose count is logged

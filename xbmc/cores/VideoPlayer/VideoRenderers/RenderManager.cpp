@@ -2539,6 +2539,18 @@ void CRenderManager::NoteUntimedPost(const std::vector<std::shared_ptr<CDVDOverl
   std::vector<const CDVDOverlay*> ids;
   for (const auto& image : images)
     ids.push_back(image.get());
+  // GT-1 r1 N2: the window system took the set off the plane on its own (a frame without the
+  // video pass); the same set shown again is a new post, logged what=carried
+  const uint64_t selfClears = CServiceBroker::GetWinSystem()->HdrGraphicsSelfClears();
+  if (selfClears != m_untimedSelfClears)
+  {
+    m_untimedSelfClears = selfClears;
+    if (!m_untimedLast.empty() && toPlane)
+    {
+      m_untimedLast.clear();
+      m_untimedCarried = true;
+    }
+  }
   if (ids == m_untimedLast)
     return;
   const bool wasUntimed = m_untimedLastUntimed;
@@ -2554,6 +2566,7 @@ void CRenderManager::NoteUntimedPost(const std::vector<std::shared_ptr<CDVDOverl
                     .count();
   post.route = toPlane ? 'C' : 'B';
   post.cleared = !untimed;
+  post.carried = std::exchange(m_untimedCarried, false) && !post.cleared;
   if (toPlane)
     toPlane->push_back(post);
   else if (CPresentationCoordinator* coordinator = CPresentationCoordinator::Get())
