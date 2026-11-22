@@ -1055,16 +1055,6 @@
           <control type="spinner" format="integer" />
         </setting>
       </group>
-      <group id="2" label="14188">
-        <setting id="videoplayer.queuetimesize" type="integer" label="37130" help="37131">
-          <level>2</level>
-          <default>40</default> <!-- 4.0 s -->
-          <constraints>
-            <options>playerqueuetimesizes</options>
-          </constraints>
-          <control type="list" format="string" />
-        </setting>
-      </group>
     </category>
   </section>
   <section id="media" label="14211" help="38101">
