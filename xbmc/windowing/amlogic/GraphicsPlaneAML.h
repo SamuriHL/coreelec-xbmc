@@ -193,6 +193,7 @@ private:
   std::vector<SComposition> m_routeDrawn; //!< submitted from the one of the frame on screen on
   bool m_routeLastVisible = false;
   bool m_routeHaveReleased = false;
+  int64_t m_routeReleasedNs = 0; //!< GT-5: when the last Released came
   GRAPHICSTICK::SReleased m_routeReleased;
   uint64_t m_routeFloorGen = 0;
   uint64_t m_routeLayoutGen = 0;

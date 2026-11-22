@@ -52,6 +52,8 @@ using namespace std::chrono_literals;
 namespace
 {
 constexpr int LOCK_CAP = 4; // R5
+// GT-5: no Released for this long, and the screen is taken as menu-only (no frame entry is picked)
+constexpr int64_t MENU_ONLY_NS = 250000000;
 
 int64_t MonotonicNs()
 {
@@ -1306,6 +1308,7 @@ bool CGraphicsPlaneAML::RouteStep()
                        was.source != now.source || was.dest != now.dest || was.view != now.view;
     m_routeReleased = in.last;
     m_routeHaveReleased = true;
+    m_routeReleasedNs = MonotonicNs();
     // compositions before the frame on screen are no longer anyone's
     size_t current = 0;
     for (size_t i = 0; i < m_routeDrawn.size(); i++)
@@ -1702,6 +1705,11 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     SComposition& comp = m_routeDrawn[screen];
     if (!CanDraw(true))
       return true;
+    // no frame released for a while (a menu-only screen between titles: RM unconfigured, C
+    // picks no frame entry; or a pause): the frame on screen's composition goes as an
+    // untimed-only entry, which C takes at its next slot whatever the frame
+    if (!comp.bridge && MonotonicNs() - m_routeReleasedNs > MENU_ONLY_NS)
+      comp.bridge = true;
     AssignPage(comp);
     if (!comp.glyphs.empty())
       RenderLibass(comp);
