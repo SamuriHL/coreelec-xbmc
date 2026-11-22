@@ -479,7 +479,8 @@ void CGraphicsPlaneAML::LogHeapState(const char* why) const
     while (std::fgets(line, sizeof(line), f))
       if (std::strncmp(line, "CmaFree:", 8) == 0)
       {
-        cmaFree = StringUtils::Trim(std::string(line + 8));
+        cmaFree = line + 8;
+        StringUtils::Trim(cmaFree);
         break;
       }
     std::fclose(f);
