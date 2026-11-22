@@ -171,23 +171,30 @@ public:
   //! GUNTIMED: the plane's next submit carries these posts to the flip that shows them
   void NoteUntimed(int plane, std::vector<SUntimedPost> posts);
 
+  //! 5.G2 GT-4 (G): one drawn composition for C's ready list
+  struct STimedBuffer
+  {
+    gbm_bo* bo = nullptr;
+    uint32_t fb = 0;
+    drmModeAtomicReqPtr req = nullptr;
+    int fence = -1;
+    double pts = DVD_NOPTS_VALUE;
+    uint64_t serial = 0; //!< the overlays of the pictures from serial on
+    //! a cleared buffer after a flush or at the route's end, shown at C's next slot
+    bool clear = false;
+    bool visible = false;
+    //! the untimed images alone (no picture's overlays), shown at the next slot as a clear is,
+    //! under no floor
+    bool bridge = false;
+    uint64_t session = 0; //!< G's route session it was drawn for (GT-D12)
+  };
   /*!
-   * \brief 5.G2 GT-4 (G): a drawn timed composition, the overlays of the pictures from serial
-   * on. C holds it (a newer one of the same serial replaces it) and commits it at the tick that
-   * follows the release of a frame at or past serial (item 3). clear: a cleared buffer after a
-   * flush or at the route's end, shown at C's next slot. bridge: the untimed images alone
-   * (no picture's overlays), shown at the next slot as a clear is, under no floor. Ownership as
-   * Submit.
+   * \brief 5.G2 GT-4 (G): drawn timed compositions. C holds each (a newer one of the same
+   * serial replaces it) and commits it at the tick that follows the release of a frame at or
+   * past serial (item 3). All of them go in under one lock, so C's next selection sees all or
+   * none. Ownership of each buffer as Submit.
    */
-  void SubmitTimed(gbm_bo* bo,
-                   uint32_t fb,
-                   drmModeAtomicReqPtr req,
-                   int fence,
-                   double pts,
-                   uint64_t serial,
-                   bool clear,
-                   bool visible,
-                   bool bridge = false);
+  void SubmitTimed(std::vector<STimedBuffer>& buffers);
   //! G: timed buffers C holds and has not committed
   int TimedHeld();
 
@@ -222,6 +229,7 @@ private:
     bool clear = false;
     bool bridge = false; //!< the untimed images alone
     bool visible = false;
+    uint64_t session = 0; //!< G's route session (GT-D12)
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
   };

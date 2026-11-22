@@ -1024,8 +1024,18 @@ bool CGraphicsPlaneAML::DrawTimed(SComposition& comp)
   int fence = -1;
   if (!TakeFrame(bo, fb, req, fence))
     return false;
-  m_coordinator->SubmitTimed(bo, fb, req, fence, comp.pts, comp.serial, false, visible,
-                             comp.bridge);
+  std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
+  CPresentationCoordinator::STimedBuffer& buffer = unit.front();
+  buffer.bo = bo;
+  buffer.fb = fb;
+  buffer.req = req;
+  buffer.fence = fence;
+  buffer.pts = comp.pts;
+  buffer.serial = comp.serial;
+  buffer.visible = visible;
+  buffer.bridge = comp.bridge;
+  buffer.session = m_routeSession;
+  m_coordinator->SubmitTimed(unit);
   m_lastFb = fb;
   m_lastVisible = !placed.empty() || !glyphs.empty();
   m_routeLastVisible = m_lastVisible;
@@ -1048,7 +1058,16 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
   int fence = -1;
   if (!TakeFrame(bo, fb, req, fence))
     return false;
-  m_coordinator->SubmitTimed(bo, fb, req, fence, DVD_NOPTS_VALUE, serial, true, false);
+  std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
+  CPresentationCoordinator::STimedBuffer& buffer = unit.front();
+  buffer.bo = bo;
+  buffer.fb = fb;
+  buffer.req = req;
+  buffer.fence = fence;
+  buffer.serial = serial;
+  buffer.clear = true;
+  buffer.session = m_routeSession;
+  m_coordinator->SubmitTimed(unit);
   m_lastFb = fb;
   m_lastVisible = false;
   m_routeLastVisible = false;

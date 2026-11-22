@@ -1481,45 +1481,47 @@ void CPresentationCoordinator::CommitWorker()
   }
 }
 
-void CPresentationCoordinator::SubmitTimed(gbm_bo* bo,
-                                           uint32_t fb,
-                                           drmModeAtomicReqPtr req,
-                                           int fence,
-                                           double pts,
-                                           uint64_t serial,
-                                           bool clear,
-                                           bool visible,
-                                           bool bridge)
+void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
 {
   {
     std::unique_lock lock(m_uiMutex);
-    // a redraw (regime, geometry, untimed images) of a composition C still holds replaces it
-    auto it = std::find_if(m_timed.begin(), m_timed.end(),
-                           [&](const UiBuffer& b)
-                           { return b.serial == serial && b.clear == clear && b.bridge == bridge; });
-    if (it != m_timed.end())
+    for (STimedBuffer& in : buffers)
     {
-      Drop(PLANE_GRAPHICS, *it);
-      m_timed.erase(it);
-      m_report.gfxTimedReplaced++;
+      // a redraw (regime, geometry, untimed images) of a composition C still holds replaces it
+      auto it = std::find_if(m_timed.begin(), m_timed.end(),
+                             [&](const UiBuffer& b)
+                             {
+                               return b.serial == in.serial && b.clear == in.clear &&
+                                      b.bridge == in.bridge && b.session == in.session;
+                             });
+      if (it != m_timed.end())
+      {
+        Drop(PLANE_GRAPHICS, *it);
+        m_timed.erase(it);
+        m_report.gfxTimedReplaced++;
+      }
+      UiBuffer buffer;
+      buffer.bo = in.bo;
+      buffer.fb = in.fb;
+      buffer.req = in.req;
+      buffer.fence = in.fence;
+      buffer.pts = in.pts;
+      buffer.readyNs = in.fence < 0 ? MonotonicNs() : 0;
+      buffer.seq = ++m_submitSeq;
+      buffer.timed = true;
+      buffer.serial = in.serial;
+      buffer.clear = in.clear;
+      buffer.bridge = in.bridge;
+      buffer.visible = in.visible;
+      buffer.session = in.session;
+      const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), in.serial,
+                                       [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
+      m_timed.insert(at, std::move(buffer));
+      m_report.gfxSubmits++;
+      // C owns it from here
+      in.req = nullptr;
+      in.fence = -1;
     }
-    UiBuffer buffer;
-    buffer.bo = bo;
-    buffer.fb = fb;
-    buffer.req = req;
-    buffer.fence = fence;
-    buffer.pts = pts;
-    buffer.readyNs = fence < 0 ? MonotonicNs() : 0;
-    buffer.seq = ++m_submitSeq;
-    buffer.timed = true;
-    buffer.serial = serial;
-    buffer.clear = clear;
-    buffer.bridge = bridge;
-    buffer.visible = visible;
-    const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), serial,
-                                     [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
-    m_timed.insert(at, std::move(buffer));
-    m_report.gfxSubmits++;
   }
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
@@ -1561,10 +1563,13 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     // a composition older than one already picked (a redraw G made before it saw the newer)
     for (auto it = m_timed.begin(); it != m_timed.end();)
     {
-      // a bridge is under no floor, but goes with its route (review r2 N4)
-      const bool stale = it->bridge ? !on
-                                    : (!on || it->serial <= floor.floor ||
-                                       it->serial < m_gtPickedSerial);
+      // a bridge is under no floor, but goes with its route (review r2 N4). GT-D12 (GT-4 r3 m-1):
+      // a buffer of an earlier route session, held across the switch while C was, is gone too;
+      // the session's own first composition stays (G does not redraw it)
+      const bool stale = it->session != session ||
+                         (it->bridge ? !on
+                                     : (!on || it->serial <= floor.floor ||
+                                        it->serial < m_gtPickedSerial));
       if (!it->clear && stale)
       {
         Drop(PLANE_GRAPHICS, *it);
