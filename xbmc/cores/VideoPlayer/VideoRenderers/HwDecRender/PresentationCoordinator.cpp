@@ -1289,13 +1289,7 @@ void CPresentationCoordinator::CommitUi()
       if (plane == PLANE_GRAPHICS && ready.req && ready.lateDeadlineNs &&
           MonotonicNs() > ready.lateDeadlineNs)
       {
-        UiBuffer back = std::move(ready);
-        ready = UiBuffer();
-        back.lateDeadlineNs = 0;
-        const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), back.serial,
-                                         [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
-        m_timed.insert(at, std::move(back));
-        m_report.gfxLatePickBack++;
+        GiveBackLatePick();
         continue;
       }
       if (!ready.req || ready.fence >= 0)
@@ -1310,8 +1304,10 @@ void CPresentationCoordinator::CommitUi()
             LogUntimedLost(ready.untimed, "graphics plane refused");
           if (ready.u)
             m_gtCarriedU = std::max(m_gtCarriedU, ready.u);
-          // review rB m9: G draws what is up again (a static menu gets no further post)
-          if (ready.timed)
+          // review rB m9: G draws what is up again (a static menu gets no further post). Not in
+          // the suspect hold (r2 N5): every buffer is dropped there until a GUI-only commit
+          // succeeds, and GraphicsResubmit brings the fresh frame then
+          if (ready.timed && m_graphicsRejected)
             GRAPHICSTICK::NoteGraphicsLost();
           Drop(plane, ready);
           continue;
@@ -1725,7 +1721,10 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       const bool oldClear = it->clear && it->session != session &&
                             std::any_of(m_timed.begin(), m_timed.end(), [&](const UiBuffer& b)
                                         { return b.session == session; });
-      if ((!it->clear && stale) || oldClear)
+      // r2 N6: a floor's clear that carries the menu is no longer the route's once it is off
+      // (main draws the menu again); only an empty clear goes after the route
+      const bool offMenuClear = it->clear && !on && it->u != 0;
+      if ((!it->clear && stale) || oldClear || offMenuClear)
       {
         // item 5 (j): a state dropped whole is published as done, so G draws the next
         if (it->u && GRAPHICSTICK::NewestOff())
@@ -1740,6 +1739,11 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     }
     // GT-5 item 5 (f): a segment's first page, once picked, is committed at its slot or the next
     // flip; nothing replaces it meanwhile (later entries wait for the next slot)
+    // r2 N2: a late pick past its deadline no longer waits for anything (its commit would land
+    // late): back to the list before this slot's pick, so it never holds the next frame's slot
+    if (m_planes[PLANE_GRAPHICS].ready.req && m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs &&
+        MonotonicNs() > m_planes[PLANE_GRAPHICS].ready.lateDeadlineNs)
+      GiveBackLatePick();
     const UiBuffer& waiting = m_planes[PLANE_GRAPHICS].ready;
     // only while it waits for the flight or its fence, which end: a page CommitUi cannot place
     // (no GUI plane up) never holds the later entries back
@@ -1815,6 +1819,31 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     if (write(m_wakeFd, &one, sizeof(one)) < 0)
       CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
   }
+}
+
+void CPresentationCoordinator::GiveBackLatePick()
+{
+  UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
+  UiBuffer back = std::move(ready);
+  ready = UiBuffer();
+  back.lateDeadlineNs = 0;
+  m_report.gfxLatePickBack++;
+  // r2 N4: a redraw of it G handed in meanwhile (it found nothing to replace) is newer: the
+  // given-back buffer goes, else it sorts first among its serial so the newest is picked
+  const bool newer = std::any_of(m_timed.begin(), m_timed.end(),
+                                 [&](const UiBuffer& b)
+                                 {
+                                   return b.serial == back.serial && b.clear == back.clear &&
+                                          b.bridge == back.bridge && b.session == back.session;
+                                 });
+  if (newer)
+  {
+    Drop(PLANE_GRAPHICS, back);
+    return;
+  }
+  const auto at = std::lower_bound(m_timed.begin(), m_timed.end(), back.serial,
+                                   [](const UiBuffer& b, uint64_t s) { return b.serial < s; });
+  m_timed.insert(at, std::move(back));
 }
 
 void CPresentationCoordinator::NotePickedU(const UiBuffer& chosen)
@@ -2074,7 +2103,8 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
   if (timed.timed && timed.clear)
-    CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
+    CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
+              timed.u);
   else if (timed.timed && timed.bridge)
     CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);

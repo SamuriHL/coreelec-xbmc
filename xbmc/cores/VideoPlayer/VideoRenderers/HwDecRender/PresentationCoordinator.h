@@ -360,6 +360,9 @@ private:
   void SelectTimedLate(int64_t now);
   //! under m_uiMutex: the untimed order of a picked buffer (untimedRegress, gnewest_off)
   void NotePickedU(const UiBuffer& chosen);
+  //! under m_uiMutex: the graphics plane's ready late pick goes back to the list (its deadline
+  //! passed)
+  void GiveBackLatePick();
   bool m_gtSlotMissed = false; //!< C's thread: this interval's slot found no buffer for its frame
   // GT-5, under m_uiMutex: G's posts not shown yet; the newest state a flip showed, picked, and
   // whose first commit failed (its posts are logged "carried")
