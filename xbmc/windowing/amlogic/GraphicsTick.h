@@ -264,6 +264,7 @@ enum class UntimedCount
   PAGE_FALLBACK, //!< a waiting page released by the P-side 3 s fallback, not by its picture
   WAIT_SUPPRESSED, //!< GUNTIMED wait lines over the rate cap, not logged
   SCREEN_BRIDGE, //!< a menu change put on an untimed-only entry: no picture at the frame on screen
+  SCREEN_BRIDGE_NO_TIMED, //!< the same outside a floor or start: it drops what is on screen
   COUNT
 };
 void Count(UntimedCount what, int n = 1);

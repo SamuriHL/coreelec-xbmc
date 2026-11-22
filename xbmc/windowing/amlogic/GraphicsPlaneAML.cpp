@@ -1459,6 +1459,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uFramelessShown = false;
   m_uScreenOwed = false;
   m_routeHistory.clear();
+  m_routeTimedCleared = true; // the start's clear
   m_uSegFirst = SComposition();
   m_uPageGenSeen = 0;
   m_uLostSeen = GRAPHICSTICK::GraphicsLost();
@@ -1569,7 +1570,8 @@ bool CGraphicsPlaneAML::RouteStep()
     const bool hidden = m_routeLast.hidden;
     m_routeLast = SComposition();
     m_routeLast.hidden = hidden;
-    // pictures at or below a floor are gone
+    // pictures at or below a floor are gone, and so is every timed composition from the plane
+    m_routeTimedCleared = true;
     m_routeHistory.erase(std::remove_if(m_routeHistory.begin(), m_routeHistory.end(),
                                         [floor](const SComposition& c) { return c.serial <= floor; }),
                          m_routeHistory.end());
@@ -1589,11 +1591,18 @@ bool CGraphicsPlaneAML::RouteStep()
     // the history keeps the newest picture at or below the frame on screen and all after it
     {
       size_t keep = 0;
+      bool any = false;
       for (size_t i = 0; i < m_routeHistory.size(); i++)
         if (m_routeHistory[i].serial <= in.last.serial)
+        {
           keep = i;
+          any = true;
+        }
       m_routeHistory.erase(m_routeHistory.begin(),
                            m_routeHistory.begin() + static_cast<long>(keep));
+      // the plane shows a picture's timed composition again once one after the clear is out
+      if (any)
+        m_routeTimedCleared = false;
     }
     // compositions before the frame on screen are no longer anyone's
     size_t current = 0;
@@ -2121,9 +2130,14 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     }
     else
     {
-      // nothing taken at or below it (a floor, a route start): the state alone as an
-      // untimed-only entry at the frame on screen's serial, which C takes at its next slot
-      // and which sorts below the entries ahead (they stay C's)
+      // nothing taken at or below it: the state alone as an untimed-only entry at the frame on
+      // screen's serial, which C takes at its next slot and which sorts below the entries ahead
+      // (they stay C's). Its timed part is empty, which is what the plane shows then: the history
+      // loses its last picture at or below the frame on screen only at a floor or a route start
+      // (Released always keeps one), and the floor's or start's clear has taken every timed
+      // composition at or below it off the plane (M2), until the first picture after it is
+      // released, which the history then holds. Anything else would drop what is on screen:
+      // counted apart (screenBridgeNoTimed) and logged
       SComposition comp;
       comp.serial = onScreen;
       comp.hidden = m_routeHidden;
@@ -2133,7 +2147,16 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       while (at != m_routeDrawn.end() && !at->bridge && at->serial <= comp.serial)
         ++at;
       m_routeDrawn.insert(at, std::move(comp));
-      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::SCREEN_BRIDGE);
+      if (m_routeTimedCleared)
+        GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::SCREEN_BRIDGE);
+      else
+      {
+        GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::SCREEN_BRIDGE_NO_TIMED);
+        GRAPHICSTICK::GTLogF(LOGWARNING,
+                             "GUNTIMED screenBridgeNoTimed u={} released={}: no picture at or below "
+                             "the frame on screen outside a floor or start",
+                             m_uCur.u, onScreen);
+      }
     }
   }
   std::vector<size_t> ahead;

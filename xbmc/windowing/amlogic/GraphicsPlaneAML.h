@@ -268,6 +268,9 @@ private:
   //! the pictures G took (drawn or Same), newest last: the frame on screen's composition when
   //! it has no entry of its own
   std::deque<SComposition> m_routeHistory;
+  //! since a floor or the route's start no picture after it was released: the plane carries
+  //! no timed composition
+  bool m_routeTimedCleared = true;
   SComposition m_uSegFirst; //!< the newest segment's first picture, drawn or not
   unsigned int m_uPageGenSeen = 0; //!< the newest segment a page was seen for
   uint64_t m_uLostSeen = 0; //!< GRAPHICSTICK::GraphicsLost, as last seen
