@@ -399,8 +399,12 @@ bool CGraphicsPlaneAML::InitRing()
     SRingBuffer buffer;
     // a scanout buffer as the surface's are (linear, the plane's format), allocated by the same
     // GBM device, so from the same heap (heap-fb, then heap-gfx)
-    buffer.bo = gbm_bo_create(m_device, WIDTH, HEIGHT, m_format,
-                              GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    // linear, as the surface's (InitGL) and as the EGL import, which passes no modifier
+    const uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+    buffer.bo = gbm_bo_create_with_modifiers(m_device, WIDTH, HEIGHT, m_format, &modifier, 1);
+    if (!buffer.bo)
+      buffer.bo = gbm_bo_create(m_device, WIDTH, HEIGHT, m_format,
+                                GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
     if (!buffer.bo)
     {
       why = "gbm_bo_create";
@@ -528,9 +532,12 @@ bool CGraphicsPlaneAML::RouteTakeFrame(
   if (m_fence)
     fence = m_fence->FlushFence();
 #endif
-  // without a fence C would scan out an unfinished draw
-  if (!m_fence)
+  // without a fence (none made, or its fd could not be duplicated: FlushFence -1) C would scan
+  // out an unfinished draw
+  if (fence < 0)
     glFinish();
+  // the self-test and the shadow draw render for read-back, unflipped (also after a clear)
+  m_raster->SetTargetFlipped(false);
   bo = m_ring[slot].bo;
   fb = FbFromBo(bo);
   const int refuseAt = OUTPUT::TestGraphicsRefuseAt();
@@ -2000,9 +2007,24 @@ bool CGraphicsPlaneAML::RedrawUntimed()
   // why (the RC4 B1 untimed stalls: 13 vblanks with no graphics flip)
   const auto noteWait = [&](const char* why)
   {
-    if (m_uWaitLoggedU == m_uCur.u)
+    if (m_uWaitLogged && m_uWaitLoggedU == m_uCur.u)
       return;
+    m_uWaitLogged = true;
     m_uWaitLoggedU = m_uCur.u;
+    // at most WAIT_LINES_PER_S lines a second (BD-J can post a state per vblank); the rest are
+    // counted (waitSuppressed in the GUNTIMED report)
+    constexpr int WAIT_LINES_PER_S = 5;
+    const int64_t now = MonotonicNs();
+    if (now - m_uWaitWindowNs >= 1000000000)
+    {
+      m_uWaitWindowNs = now;
+      m_uWaitLines = 0;
+    }
+    if (++m_uWaitLines > WAIT_LINES_PER_S)
+    {
+      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::WAIT_SUPPRESSED);
+      return;
+    }
     CLog::Log(LOGINFO,
               "GUNTIMED wait u={} why={} free={} drawn={} ahead={} screen={} released={} "
               "advancing={}",

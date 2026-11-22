@@ -251,7 +251,10 @@ private:
   SUntimedPage m_uExpiredPage;
   int64_t m_uExpiredStamp = 0;
   uint64_t m_uDeferredU = 0; //!< gUnitDeferred logged for this state
-  uint64_t m_uWaitLoggedU = 0; //!< GUNTIMED wait logged for this state
+  uint64_t m_uWaitLoggedU = 0; //!< GUNTIMED wait logged for this state (m_uWaitLogged: any yet)
+  bool m_uWaitLogged = false;
+  int64_t m_uWaitWindowNs = 0; //!< GUNTIMED wait: lines in the current second
+  int m_uWaitLines = 0;
   uint64_t m_uTakenU = 0; //!< gnewest_off: the last state taken, and when
   int64_t m_uTakenNs = 0;
   int64_t m_waitBufferNs = 0; //!< item 12: G waits on C for a free buffer since
