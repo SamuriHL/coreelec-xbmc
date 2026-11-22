@@ -28,6 +28,11 @@
 #include <string>
 #include <utility>
 
+#include <pthread.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 namespace GRAPHICSTICK
 {
 namespace
@@ -551,56 +556,88 @@ uint64_t UntimedPosts()
 
 namespace
 {
-constexpr size_t GTLOG_CAP = 4096;
-std::mutex s_logMutex;
-std::condition_variable s_logCond;
+// A lock-free stack the producers push onto (one CAS, never a wait: a starved low-priority
+// writer only lets it grow up to the cap, then lines are dropped and counted); the writer takes
+// the whole stack with one exchange and reverses it, which is push order
+constexpr int64_t GTLOG_CAP = 4096;
 struct SLogLine
 {
   int level;
   uint32_t component; //!< 0: CLog's general component
   std::string line;
+  SLogLine* next = nullptr;
 };
-std::deque<SLogLine> s_logQueue;
-bool s_logWriting = false; //!< the writer holds a batch it took
-bool s_logStop = false;
+std::atomic<SLogLine*> s_logHead{nullptr};
+std::atomic<int64_t> s_logQueued{0};
+std::atomic<int64_t> s_logDropped{0};
+std::atomic<bool> s_logStop{false};
+std::atomic<bool> s_logWriting{false};
+std::once_flag s_logStart;
 //! never destroyed: a process that ends without C's stop must not terminate in its destructor
 std::thread* s_logThread = nullptr;
-int64_t s_logLines = 0;
-int64_t s_logDropped = 0;
+// the writer's own (producers never take it): its idle wait, and flushers waiting for it
+std::mutex s_logMutex;
+std::condition_variable s_logCond;
+int64_t s_logLines = 0; //!< under s_logMutex
 int64_t s_logSlow = 0;
 int64_t s_logMaxUs = 0;
 
+void WriteLine(const SLogLine& entry)
+{
+  if (entry.component)
+    CLog::Log(entry.level, entry.component, "{}", entry.line);
+  else
+    CLog::Log(entry.level, "{}", entry.line);
+}
+
 void LogWriter()
 {
-  std::unique_lock lock(s_logMutex);
+  // the user's ruling (2026-11-22): logging runs below every video-path thread
+  pthread_setname_np(pthread_self(), "GTLOG");
+  setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19);
   while (true)
   {
-    s_logCond.wait(lock, [] { return s_logStop || !s_logQueue.empty(); });
-    if (s_logQueue.empty() && s_logStop)
-      break;
-    std::deque<SLogLine> batch;
-    batch.swap(s_logQueue);
+    SLogLine* list = s_logHead.exchange(nullptr, std::memory_order_acquire);
+    if (!list)
+    {
+      if (s_logStop.load())
+        break;
+      std::unique_lock lock(s_logMutex);
+      s_logCond.notify_all(); // a flusher waits for an empty queue
+      s_logCond.wait_for(lock, std::chrono::milliseconds(10));
+      continue;
+    }
     s_logWriting = true;
-    lock.unlock();
+    SLogLine* ordered = nullptr;
+    while (list)
+    {
+      SLogLine* next = list->next;
+      list->next = ordered;
+      ordered = list;
+      list = next;
+    }
+    int64_t count = 0;
     int64_t slow = 0;
     int64_t maxUs = 0;
-    for (const SLogLine& entry : batch)
+    while (ordered)
     {
+      SLogLine* entry = ordered;
+      ordered = entry->next;
       const auto start = std::chrono::steady_clock::now();
-      if (entry.component)
-        CLog::Log(entry.level, entry.component, "{}", entry.line);
-      else
-        CLog::Log(entry.level, "{}", entry.line);
+      WriteLine(*entry);
       const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - start)
                              .count();
       if (us > 5000)
         slow++;
       maxUs = std::max(maxUs, us);
+      delete entry;
+      count++;
     }
-    lock.lock();
+    s_logQueued.fetch_sub(count);
     s_logWriting = false;
-    s_logLines += static_cast<int64_t>(batch.size());
+    std::unique_lock lock(s_logMutex);
+    s_logLines += count;
     s_logSlow += slow;
     s_logMaxUs = std::max(s_logMaxUs, maxUs);
     s_logCond.notify_all();
@@ -626,62 +663,48 @@ void GTLog(int level, std::string line)
 
 void GTLog(int level, uint32_t component, std::string line)
 {
-  const auto direct = [&]
+  // after the coordinator's stop (teardown): at once
+  if (s_logStop.load(std::memory_order_relaxed))
   {
-    if (component)
-      CLog::Log(level, component, "{}", line);
-    else
-      CLog::Log(level, "{}", line);
-  };
-  if (!Requested())
-  {
-    direct();
+    WriteLine({level, component, std::move(line)});
     return;
   }
+  std::call_once(s_logStart, [] { s_logThread = new std::thread(LogWriter); });
+  if (s_logQueued.fetch_add(1) >= GTLOG_CAP)
   {
-    std::unique_lock lock(s_logMutex);
-    if (s_logStop)
-    {
-      // after C's stop (teardown): at once, nothing is queued any more
-      lock.unlock();
-      direct();
-      return;
-    }
-    if (!s_logThread)
-      s_logThread = new std::thread(LogWriter);
-    if (s_logQueue.size() >= GTLOG_CAP)
-    {
-      s_logDropped++;
-      return;
-    }
-    s_logQueue.push_back({level, component, std::move(line)});
+    s_logQueued.fetch_sub(1);
+    s_logDropped++;
+    return;
   }
-  s_logCond.notify_all();
+  auto* entry = new SLogLine{level, component, std::move(line)};
+  SLogLine* head = s_logHead.load(std::memory_order_relaxed);
+  do
+    entry->next = head;
+  while (!s_logHead.compare_exchange_weak(head, entry, std::memory_order_release,
+                                          std::memory_order_relaxed));
+  // no lock: a wake the writer misses is caught by its 10 ms wait
+  s_logCond.notify_one();
 }
 
 void GTLogFlush(int timeoutMs)
 {
-  std::unique_lock lock(s_logMutex);
   if (!s_logThread)
     return;
+  std::unique_lock lock(s_logMutex);
   s_logCond.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                     [] { return s_logQueue.empty() && !s_logWriting; });
+                     [] { return s_logQueued.load() == 0 && !s_logWriting.load(); });
 }
 
 void GTLogStop()
 {
-  std::thread* writer = nullptr;
-  {
-    std::unique_lock lock(s_logMutex);
-    s_logStop = true;
-    writer = std::exchange(s_logThread, nullptr);
-  }
+  s_logStop = true;
   s_logCond.notify_all();
-  // the writer drains the queue before it ends
-  if (writer)
+  // the writer drains the stack before it ends
+  if (s_logThread)
   {
-    writer->join();
-    delete writer;
+    s_logThread->join();
+    delete s_logThread;
+    s_logThread = nullptr;
   }
 }
 
@@ -690,9 +713,12 @@ std::string GTLogStatsLine(bool reset)
   std::unique_lock lock(s_logMutex);
   const std::string line =
       StringUtils::Format("GTLOG lines={} dropped={} slow={} max_us={} queued={}", s_logLines,
-                          s_logDropped, s_logSlow, s_logMaxUs, s_logQueue.size());
+                          s_logDropped.load(), s_logSlow, s_logMaxUs, s_logQueued.load());
   if (reset)
-    s_logLines = s_logDropped = s_logSlow = s_logMaxUs = 0;
+  {
+    s_logLines = s_logSlow = s_logMaxUs = 0;
+    s_logDropped = 0;
+  }
   return line;
 }
 

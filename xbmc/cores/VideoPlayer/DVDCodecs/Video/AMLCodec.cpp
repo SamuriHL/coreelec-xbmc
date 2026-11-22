@@ -3335,7 +3335,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 95.0f)
   {
-    CLog::Log(LOGDEBUG, LOGVIDEO,
+    GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO,
       "CAMLCodec::{}: skip add data dl:{:d} fl:{:d} sz:{:d}({:d}) lv:{:.1f}% dts:{:.3f} pts:{:.3f}", __FUNCTION__,
       data_len,
       free_len,
@@ -3558,7 +3558,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   }
 
   if (iSize > 0)
-    CLog::Log(LOGDEBUG, LOGVIDEO,
+    GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO,
       "CAMLCodec::{}: dl:{:d} fl:{:d} sz:{:d}({:d}) lv:{:.1f}% dts:{:.3f} pts:{:.3f}", __FUNCTION__,
       data_len + chunk_size,
       free_len - chunk_size,
@@ -3767,7 +3767,7 @@ int CAMLCodec::DequeueBuffer()
     m_cur_pts =  static_cast<uint64_t>(static_cast<uint32_t>(vbuf.timestamp.tv_sec)) << 32;
     m_cur_pts += static_cast<uint32_t>(vbuf.timestamp.tv_usec);
 
-    CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::DequeueBuffer: pts:{:.3f} idx:{:d}",
+    GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGAVTIMING, "CAMLCodec::DequeueBuffer: pts:{:.3f} idx:{:d}",
   			static_cast<double>(m_cur_pts) /  DVD_TIME_BASE, vbuf.index);
 
     m_bufferIndex = vbuf.index;
@@ -4003,7 +4003,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     pVideoPicture->dts = DVD_NOPTS_VALUE;
     pVideoPicture->pts = static_cast<double>(m_cur_pts);
 
-    CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: index: {:d}, pts: {:.3f}, dur:{:.3f}ms elf:{:d}ms",
+    GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: index: {:d}, pts: {:.3f}, dur:{:.3f}ms elf:{:d}ms",
       m_bufferIndex, pVideoPicture->pts / DVD_TIME_BASE, pVideoPicture->iDuration / 1000, elapsed_since_last_frame.count());
 
     if (m_park_reported)

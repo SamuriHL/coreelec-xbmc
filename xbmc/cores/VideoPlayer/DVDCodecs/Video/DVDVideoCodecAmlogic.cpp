@@ -12,6 +12,7 @@
 #include "DVDCodecs/DVDFactoryCodec.h"
 #include "utils/MemUtils.h"
 #include "DVDVideoCodecAmlogic.h"
+#include "windowing/amlogic/GraphicsTick.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
@@ -793,7 +794,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       const double queuedDts = std::get<5>(m_packages.front());
       if (queuedDts == DVD_NOPTS_VALUE || queuedDts <= restartDts + DVD_MSEC_TO_TIME(1000))
         break;
-      CLog::Log(LOGDEBUG, LOGVIDEO,
+      GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO,
                 "CDVDVideoCodecAmlogic::{}: timeline restart - dropping outgoing clip's {} "
                 "package with demux dts: {:.3f} (incoming demux dts: {:.3f})",
                 __FUNCTION__, std::get<2>(m_packages.front()) ? "EL" : "BL",
@@ -882,7 +883,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // (BL+EL+RPU) and tone-mapped by VS10 rather than played base-layer-only.
       if (packet.isDualStream && aml_dv_core_active())
       {
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
+        GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
           packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
 
         // Pair BL and EL strictly by the DEMUXER's dts: both layers of a frame
@@ -945,7 +946,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           }
           if (dtsKnown && demuxDtsBackup < pairDts - DL_PAIR_DTS_TOLERANCE)
           {
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with demux dts: {:.3f} (incoming {} demux dts: {:.3f})", __FUNCTION__,
+            GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with demux dts: {:.3f} (incoming {} demux dts: {:.3f})", __FUNCTION__,
               isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE,
               packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE);
             PopPackageFront();
@@ -964,13 +965,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             // straggler must eventually present itself.
             if (demuxDtsBackup > pairDts + DL_STALE_QUEUE_LEAD)
             {
-              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping stale queued {} package with demux dts: {:.3f} ({:.3f}s ahead of incoming {} - previous clip)", __FUNCTION__,
+              GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping stale queued {} package with demux dts: {:.3f} ({:.3f}s ahead of incoming {} - previous clip)", __FUNCTION__,
                 isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE,
                 (demuxDtsBackup - pairDts)/DVD_TIME_BASE, packet.isELPackage ? "EL" : "BL");
               PopPackageFront();
               continue;
             }
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with demux dts: {:.3f} (queued {} demux dts: {:.3f})", __FUNCTION__,
+            GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired incoming {} package with demux dts: {:.3f} (queued {} demux dts: {:.3f})", __FUNCTION__,
               packet.isELPackage ? "EL" : "BL", pairDts/DVD_TIME_BASE,
               isELPackageBackup ? "EL" : "BL", demuxDtsBackup/DVD_TIME_BASE);
             return true;
@@ -978,7 +979,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
           if (!packet.isELPackage)
           {
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found EL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+            GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found EL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
               packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
             dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup);
             if (dual_layer_converted)
@@ -993,7 +994,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           }
           else
           {
-            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found BL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+            GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found BL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
               packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
             dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize);
             if (dual_layer_converted)
@@ -1040,7 +1041,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts,
                                               packet.pts, pairDts));
           m_packagesBytes += iSize;
-          CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+          GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
           return true;

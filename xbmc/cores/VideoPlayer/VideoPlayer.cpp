@@ -90,6 +90,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/GraphicsTick.h" // GT-D15: the video path's log queue
+#endif
+
 using namespace KODI;
 using namespace KODI::UTILS;
 using namespace std::chrono_literals;
@@ -8656,9 +8660,16 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
   if (CheckSceneSkip(m_CurrentVideo))
     drop = true;
 
+#if defined(HAS_LIBAMCODEC)
+  // GT-D15: per packet on P, through the video path's log queue (no I/O on P)
+  GRAPHICSTICK::GTLogF(LOGDEBUG, "CVideoPlayer::ProcessVideoData size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms, clock:{:.3f} level:{:d}",
+    pPacket->iSize, pPacket->dts/1000000, pPacket->pts/1000000, pPacket->duration/1000.0,
+    m_clock.GetClock()/1000000.0,m_processInfo->GetLevelVQ());
+#else
   CLog::Log(LOGDEBUG, "CVideoPlayer::ProcessVideoData size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms, clock:{:.3f} level:{:d}",
     pPacket->iSize, pPacket->dts/1000000, pPacket->pts/1000000, pPacket->duration/1000.0,
     m_clock.GetClock()/1000000.0,m_processInfo->GetLevelVQ());
+#endif
   m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
 
   if (!drop)
