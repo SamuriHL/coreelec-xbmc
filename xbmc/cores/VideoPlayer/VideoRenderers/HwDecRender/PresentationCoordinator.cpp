@@ -1076,18 +1076,19 @@ void CPresentationCoordinator::Process()
       fds[2].fd = timeline ? m_tickFd.load() : m_vblankFd;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
-    int timeout = held ? 20 : (video || inFlight ? 50 : -1);
+    const int timeoutMs = held ? 20 : (video || inFlight ? 50 : -1);
+    int64_t timeoutNs = timeoutMs < 0 ? -1 : static_cast<int64_t>(timeoutMs) * 1000000;
     {
       // a GUI frame held for the slot is committed within its bound even with no tick
       std::unique_lock lock(m_uiMutex);
       // the held frame went another way (replaced, dropped at a reclaim): nothing to wait for
       if (m_uiHoldUntilNs && !m_planes[PLANE_UI].ready.req)
         m_uiHoldStartNs = m_uiHoldUntilNs = 0;
+      // to the ns (ppoll): poll's ms rounded up let the hold run to 4 ms
       if (m_uiHoldUntilNs)
       {
-        const int64_t left = m_uiHoldUntilNs - MonotonicNs();
-        const int ms = left <= 0 ? 0 : static_cast<int>((left + 999999) / 1000000);
-        timeout = timeout < 0 ? ms : std::min(timeout, ms);
+        const int64_t left = std::max<int64_t>(0, m_uiHoldUntilNs - MonotonicNs());
+        timeoutNs = timeoutNs < 0 ? left : std::min(timeoutNs, left);
       }
     }
     {
@@ -1114,7 +1115,10 @@ void CPresentationCoordinator::Process()
       }
       m_pollEnterNs = enter;
     }
-    if (poll(fds, 3 + PLANE_COUNT, timeout) < 0 && errno != EINTR)
+    struct timespec ts = {static_cast<time_t>(timeoutNs / 1000000000),
+                          static_cast<long>(timeoutNs % 1000000000)};
+    if (ppoll(fds, 3 + PLANE_COUNT, timeoutNs < 0 ? nullptr : &ts, nullptr) < 0 &&
+        errno != EINTR)
       GRAPHICSTICK::GTLogF(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
     m_pollReturnNs = MonotonicNs();
     std::fill(std::begin(m_phaseNs), std::end(m_phaseNs), 0);
@@ -1195,6 +1199,7 @@ void CPresentationCoordinator::Process()
       }
       // GT-5: a buffer G handed in after its slot (GT-D15)
       SelectTimedLate(now);
+      StampPhase(PHASE_NOTICK);
       // no vblank for a while (CRTC off or stalled): keep time with a timer
       // tick, as the render thread's 50 ms poll fallback did
       if (now - m_lastTickNs < SYNTHETIC_TICK_NS)
@@ -1343,10 +1348,16 @@ void CPresentationCoordinator::CommitUi()
     // the GUI hold ends when its condition does (the tick came, or the 3 ms bound): measured
     // here, before any commit in flight can delay the frame further (that wait is any GUI
     // frame's, not the hold's; RC17 read 16-20 ms by measuring to the commit)
+    // RC21 am9pro FP n50 (uiHeldMax 5489 us): the hold ends at the wake that ended its
+    // condition (the tick, or the bound's timeout); C's own body after that wake (a 5.2 ms tick
+    // waiting 4.8 ms for RM's m_presentlock there) delays any GUI frame and is no hold: apart
     if (m_uiHoldStartNs && !UiHoldForSlot())
     {
-      m_report.uiHeldMaxUs =
-          std::max(m_report.uiHeldMaxUs, (MonotonicNs() - m_uiHoldStartNs) / 1000);
+      const int64_t now = MonotonicNs();
+      const int64_t end = std::clamp(m_pollReturnNs, m_uiHoldStartNs, now);
+      m_report.uiHeldMaxUs = std::max(m_report.uiHeldMaxUs, (end - m_uiHoldStartNs) / 1000);
+      m_report.uiHoldEndToCommitMaxUs =
+          std::max(m_report.uiHoldEndToCommitMaxUs, (now - end) / 1000);
       m_uiHoldStartNs = 0;
       m_uiHoldUntilNs = 0;
     }
@@ -2144,8 +2155,8 @@ void CPresentationCoordinator::LogSlowBody(int64_t enter)
   // tick late by as much). 0: the phase did not run in that body
   if (m_lastBodyNs < 3000000 || !GRAPHICSTICK::Requested())
     return;
-  static constexpr const char* names[PHASE_COUNT] = {"events", "present", "tick",  "select",
-                                                     "end",    "hold",    "commit"};
+  static constexpr const char* names[PHASE_COUNT] = {"events", "present", "tick",   "select",
+                                                     "end",    "notick",  "hold",   "commit"};
   std::string parts;
   int64_t last = m_pollReturnNs;
   for (int i = 0; i < PHASE_COUNT; i++)
@@ -2605,8 +2616,24 @@ void CPresentationCoordinator::RunWakeTail()
   if (!m_video)
     return;
   const int64_t start = MonotonicNs();
-  const bool wrote = m_video->GeometryWakeOnC();
+  const char* busy = nullptr;
+  const bool wrote = m_video->GeometryWakeOnC(busy);
   const int64_t ns = MonotonicNs() - start;
+  if (busy)
+  {
+    // measurement (log only, at most 5 lines a second): the lock a frame's tick would wait for
+    // too (TICKDIAG splits its statelock/presentlock waits)
+    m_report.wakeBusy++;
+    const int64_t now = MonotonicNs();
+    if (now - m_wakeBusyWindowNs >= 1000000000)
+    {
+      m_wakeBusyWindowNs = now;
+      m_wakeBusyLines = 0;
+    }
+    if (++m_wakeBusyLines <= 5)
+      GRAPHICSTICK::GTLogF(LOGINFO, "GEOMWAKE busy lock={} (wake tail skipped)", busy);
+    return;
+  }
   m_report.wakeTails++;
   m_report.wakeWrites += wrote;
   m_report.wakeMaxNs = std::max(m_report.wakeMaxNs, ns);
@@ -2791,10 +2818,10 @@ void CPresentationCoordinator::LogReport()
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
               "latePickBack={} stalePickReplaced={} uiHeldForSlot={} uiHeldMax_us={} "
-              "uiAloneGfxWaits={}",
+              "uiHoldEndToCommitMax_us={} uiAloneGfxWaits={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
               r.gfxLatePickBack, r.stalePickReplaced, r.uiHeldForSlot, r.uiHeldMaxUs,
-              r.uiAloneGfxWaits);
+              r.uiHoldEndToCommitMaxUs, r.uiAloneGfxWaits);
   // GT-D15: C's loop body (bounded: no I/O on it) and the log writer that took C's lines
   if (GRAPHICSTICK::Requested())
   {
@@ -2833,12 +2860,12 @@ void CPresentationCoordinator::LogReport()
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
               r.releaseOver);
   }
-  if (r.tails || r.wakeTails)
+  if (r.tails || r.wakeTails || r.wakeBusy)
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GEOMDIAG C tails: tick {} (wrote {}, max {} us, over a vblank {}), wake {} "
-              "(wrote {}, max {} us)",
+              "(wrote {}, max {} us, busy {})",
               r.tails, r.tailWrites, r.tailMaxNs / 1000, r.tailsOverVblank, r.wakeTails,
-              r.wakeWrites, r.wakeMaxNs / 1000);
+              r.wakeWrites, r.wakeMaxNs / 1000, r.wakeBusy);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

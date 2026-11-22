@@ -707,10 +707,13 @@ void CRenderManager::FillGeometryIn(SGeometryIn& in)
 
 void CRenderManager::ReleaseCodecFromC(std::shared_ptr<CAMLCodec>&& codec)
 {
-  if (!codec)
+  if (!codec && !m_wakeCodecHeld)
     return;
   std::unique_lock lock(m_presentlock);
-  m_codecReleased.push_back(std::move(codec));
+  if (codec)
+    m_codecReleased.push_back(std::move(codec));
+  if (m_wakeCodecHeld)
+    m_codecReleased.push_back(std::move(m_wakeCodecHeld));
 }
 
 void CRenderManager::DrainCodecsFromC()
@@ -744,13 +747,34 @@ void CRenderManager::WakeWorkerOnC()
   NotifyWorker();
 }
 
-bool CRenderManager::GeometryWakeOnC()
+bool CRenderManager::GeometryWakeOnC(const char*& busy)
 {
+  busy = nullptr;
 #if defined(HAS_LIBAMCODEC)
+  // RC21 coreelec-br K1 n5994: C waited 116 ms here mid-playback ("GEOMDIAG C tails ... wake
+  // max 116262 us", the GTLAT body's no-tick phase), six ticks missed and the frames dropped.
+  // A wake tail is no frame's: on a lock another thread holds it is skipped, never waited for
+  // (the tick tail runs the geometry at the next tick)
+  // a decoder held from a busy wake first: never two, so none is ever the last owner on C
+  if (m_wakeCodecHeld)
+  {
+    std::unique_lock lock(m_presentlock, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+      busy = "presentlock";
+      return false;
+    }
+    m_codecReleased.push_back(std::move(m_wakeCodecHeld));
+  }
   std::shared_ptr<CBaseRenderer> renderer;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
-    std::unique_lock lock(m_statelock);
+    std::unique_lock lock(m_statelock, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+      busy = "statelock";
+      return false;
+    }
     if (!GeometryTickSession())
       return false;
     renderer = m_cRenderer;
@@ -760,7 +784,14 @@ bool CRenderManager::GeometryWakeOnC()
     return false;
   std::shared_ptr<CAMLCodec> codec;
   const bool wrote = aml->GeometryOnC(nullptr, codec, false);
-  ReleaseCodecFromC(std::move(codec));
+  if (codec)
+  {
+    std::unique_lock lock(m_presentlock, std::try_to_lock);
+    if (lock.owns_lock())
+      m_codecReleased.push_back(std::move(codec));
+    else
+      m_wakeCodecHeld = std::move(codec);
+  }
   return wrote;
 #else
   return false;

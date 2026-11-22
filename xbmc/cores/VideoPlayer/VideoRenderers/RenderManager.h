@@ -543,7 +543,9 @@ public:
   }
   //! 5.V3-4 (C): the tail after PresentTick (its locks released), and the wake tail
   bool GeometryTailOnC(SPresentResult& result); //!< true when it wrote
-  bool GeometryWakeOnC();
+  //! never waits: a lock another thread holds skips this wake (busy names it; the next wake
+  //! or tick tail runs it)
+  bool GeometryWakeOnC(const char*& busy);
   //! 5.V3-4f (C): the worker's wake for the buffers PresentTick freed, after the release
   void WakeWorkerOnC();
   //! 5.V3-4 (V): reset the decoders C used
@@ -1172,6 +1174,9 @@ protected:
   //! decoders C used, reset by V (WorkerDuties) and UnInit: never the last owner on C
   std::vector<std::shared_ptr<CAMLCodec>> m_codecReleased; // m_presentlock
   void ReleaseCodecFromC(std::shared_ptr<CAMLCodec>&& codec);
+  //! C only: a decoder the wake tail could not hand to m_codecReleased (m_presentlock busy),
+  //! handed at the next wake or tick tail
+  std::shared_ptr<CAMLCodec> m_wakeCodecHeld;
   //! 5.V3-4 (D7): the renderer's rects, C's published ones on the path
   void RendererVideoRect(const CBaseRenderer& renderer, CRect& source, CRect& dest, CRect& view) const;
   bool m_videoRectOnC = false; //!< main: this pass reads C's rects (set in Render)

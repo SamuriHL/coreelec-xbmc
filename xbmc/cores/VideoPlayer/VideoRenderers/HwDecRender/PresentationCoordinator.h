@@ -431,6 +431,7 @@ private:
     PHASE_TICK,
     PHASE_SELECT,
     PHASE_END,
+    PHASE_NOTICK, //!< a wake with no tick: the wake tail and a late pick (RC21: in hold= before)
     PHASE_HOLD,
     PHASE_COMMIT,
     PHASE_COUNT
@@ -620,7 +621,12 @@ private:
     int wakeTails = 0;
     int wakeWrites = 0;
     int64_t wakeMaxNs = 0;
+    int wakeBusy = 0; //!< wake tails skipped on a lock another thread held
+    //! MC-29: a held GUI frame's commit after the wake that ended its hold (C's own body), us
+    int64_t uiHoldEndToCommitMaxUs = 0;
   } m_report;
+  int64_t m_wakeBusyWindowNs = 0; //!< GEOMWAKE busy: lines in the current second
+  int m_wakeBusyLines = 0;
   //! 5.V3-1 (under m_uiMutex): when CommitUi could last start a commit again (the flip in flight
   //! landed or was abandoned, a failed or returned ioctl, a plane off done), monotonic
   int64_t m_diagUnblockedNs = 0;
