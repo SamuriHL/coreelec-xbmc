@@ -199,7 +199,8 @@ void PostQueued(SQueued&& queued)
     }
     s_queued.push_back(std::move(queued));
   }
-  if (dropped == 1 || dropped % 100 == 0)
+  // GT-D15: only on a drop; 0 % 100 logged a WARNING at every post, a log write per picture on V
+  if (dropped > 0 && (dropped == 1 || dropped % 100 == 0))
     CLog::Log(LOGWARNING, "GTICK inbox full: {} pictures dropped unread (G stalled)", dropped);
   Wake();
 }
