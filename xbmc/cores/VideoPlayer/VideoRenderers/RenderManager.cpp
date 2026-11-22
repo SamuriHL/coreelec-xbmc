@@ -4779,6 +4779,11 @@ void CRenderManager::SetTxStartHeld(bool held)
   m_txStartHeldSince = 0;
   m_txStartHeldBoundLogged = false;
   m_txStartHeld = held;
+#if defined(HAS_LIBAMCODEC)
+  // 5.G2 GT-5 (errata E1): G's untimed graphics with no video ticking are held with the start;
+  // a no-video start's hold clears at row 3b's step (TxNoVideoStepPass), never at the set's arm
+  GRAPHICSTICK::SetUntimedHeld(held);
+#endif
   // code review L4: a verdict from an earlier open never reaches this one
   m_txLegacyVerdict = 0;
   if (!held)

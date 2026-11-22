@@ -319,6 +319,9 @@ namespace OVERLAY {
     uint64_t m_frameSerial{0};
     bool m_framed{false};
     bool m_timedOnPlane{false};
+    //! 5.G2 GT-5 (main only): G takes the untimed composition from the container (its hook is
+    //! on), so main neither selects, gates, keeps alive nor draws it
+    bool m_untimedOnPlane{false};
     //! each libass handler's output at main's last render: a render reporting no change shows it
     std::map<const CDVDSubtitlesLibass*, std::shared_ptr<const SQuads>> m_assLast;
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;

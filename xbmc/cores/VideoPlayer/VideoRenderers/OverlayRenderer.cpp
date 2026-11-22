@@ -30,6 +30,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/GraphicsTick.h"
 #include "windowing/amlogic/ThreadRole.h"
 #else
 #define MAINCOUPLING(what) static_cast<void>(0)
@@ -790,15 +791,24 @@ void CRenderer::PrepareOverlays(int idx,
   // below the m_section lock.
   const bool containerEmpty = m_pOverlayContainer && !m_pOverlayContainer->HasDrawableOverlay();
 
+  // 5.G2 GT-5: while G holds the container's hook, the untimed composition, its page gate (G
+  // calls NotePresentedSegment at C's Released) and its keep-alive are G's; read here, on main,
+  // in every path (also with no picture), so main takes them back at G's route end
+  bool untimedOnPlane = false;
+#if defined(HAS_LIBAMCODEC)
+  untimedOnPlane = GRAPHICSTICK::UntimedHook();
+#endif
+
   // A menu page waiting for its segment's first picture (6.1) becomes current
   // on this picture if it is of that segment. Same ordering rule.
-  if (m_pOverlayContainer && segmentGen != 0)
+  if (m_pOverlayContainer && segmentGen != 0 && !untimedOnPlane)
     m_pOverlayContainer->NotePresentedSegment(segmentGen);
 
   // Same ordering rule: the presentation-time menu composition is fetched from
   // the container before m_section is taken.
   std::shared_ptr<CDVDOverlay> presentLatest =
-      m_pOverlayContainer ? m_pOverlayContainer->GetPresentLatestOverlay() : nullptr;
+      m_pOverlayContainer && !untimedOnPlane ? m_pOverlayContainer->GetPresentLatestOverlay()
+                                             : nullptr;
 
   // Keep-alive expiry, as CVideoPlayerVideo::ProcessOverlays applies it to
   // overlays on the video timeline: a composition the Xlet kept alive by
@@ -817,6 +827,14 @@ void CRenderer::PrepareOverlays(int idx,
   std::unique_lock lock(m_section);
   if (m_testStallMs.load(std::memory_order_relaxed) > 0)
     std::this_thread::sleep_for(std::chrono::milliseconds(m_testStallMs.exchange(0)));
+  if (untimedOnPlane != m_untimedOnPlane)
+  {
+    m_untimedOnPlane = untimedOnPlane;
+    // the change test below repaints: main's copy leaves the GUI plane, or main draws it again
+    m_presentLatestGroup.reset();
+    Release(m_presentLatest);
+    MarkDirty();
+  }
   // GT-4: the timed lists are G's; main keeps the untimed composition and the layout
   const bool hasBuffer = idx >= 0 && idx < NUM_BUFFERS && !m_timedOnPlane;
 
