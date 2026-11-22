@@ -967,6 +967,19 @@ void CPresentationCoordinator::ReclaimPlane(int plane)
     m_cbufUp = false;
 }
 
+bool CPresentationCoordinator::ReapFence(UiBuffer& buffer)
+{
+  if (buffer.fence < 0)
+    return true;
+  struct pollfd pf = {buffer.fence, POLLIN, 0};
+  if (poll(&pf, 1, 0) <= 0 || !(pf.revents & (POLLIN | POLLERR)))
+    return false;
+  close(buffer.fence);
+  buffer.fence = -1;
+  buffer.readyNs = MonotonicNs();
+  return true;
+}
+
 void CPresentationCoordinator::Drop(int plane, UiBuffer& buffer)
 {
   if (buffer.bo)
@@ -1352,21 +1365,25 @@ void CPresentationCoordinator::CommitUi()
       PlaceClearedUi();
     // every plane with a submit whose GPU work is done goes in the one commit;
     // a plane left out keeps what it shows (R3)
-    Committing commit;
-    std::vector<SUntimedPost> untimed;
-    UiBuffer timedTags;
-    for (int plane = 0; plane < PLANE_COUNT; plane++)
+    // F2 (RC20 FP n5994 serial 677, delta 2 behind a closing seek bar's GUI commit at every
+    // vblank): the graphics plane is decided first, so the GUI hold below knows whether a
+    // graphics buffer goes in this commit. Decided after the GUI (plane 0) it read a buffer the
+    // stale hold then kept out as going: the GUI was not held and committed alone at the flip's
+    // wake, and its flight pushed the held pick one more vblank late
+    bool gfxHeld = false;
+    const char* gfxWhy = nullptr; //!< why a picked graphics buffer stays out of this commit
+    bool gaveBack = false;
     {
-      UiBuffer& ready = m_planes[plane].ready;
+      UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
       // GT-5 (review rA M2, rB M1): a late pick whose GPU fence or a commit in flight held it
       // past the point where its commit still latches on its frame's vblank would land one late
       // and push the next frame's composition late behind its flight: it goes back to the ready
       // list, and the next slot picks (the next frame's entry, or this one as the latest earlier)
-      if (plane == PLANE_GRAPHICS && ready.req && ready.lateDeadlineNs &&
-          MonotonicNs() > ready.lateDeadlineNs)
+      if (ready.req && ready.lateDeadlineNs && MonotonicNs() > ready.lateDeadlineNs)
       {
         GiveBackLatePick();
-        continue;
+        gaveBack = true;
+        gfxWhy = "late pick given back";
       }
       // GT-D15 (user ruling 2026-11-22, "re-sync at once"): a timed composition whose own frame
       // has left the screen is not committed at a flip's wake ahead of this vblank's slot: it
@@ -1388,7 +1405,7 @@ void CPresentationCoordinator::CommitUi()
       // coordinator's CRTC is the timekeeper's, AttachVideo), the own-vblank path's is the
       // vblank event's, and page_flip_handler2's is that CRTC's vblank count (low 32 bits)
       const int64_t holdPeriodNs = m_diagPeriodNs > 0 ? m_diagPeriodNs : 20000000;
-      if (plane == PLANE_GRAPHICS && ready.req && ready.timed && !ready.clear && !ready.bridge &&
+      if (ready.req && ready.timed && !ready.clear && !ready.bridge &&
           !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq &&
           m_videoAttached && MonotonicNs() - m_gtFlipNs < holdPeriodNs)
       {
@@ -1405,8 +1422,25 @@ void CPresentationCoordinator::CommitUi()
         }
         if (ready.staleDeferred &&
             static_cast<int32_t>(ready.staleSlotSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
-          continue;
+        {
+          gfxHeld = true;
+          gfxWhy = "stale hold";
+        }
       }
+      // F1: a fence signalled since the pick (or the last poll) never costs this commit
+      if (ready.req && !gfxHeld && !ReapFence(ready))
+        gfxWhy = "fence pending";
+    }
+    Committing commit;
+    std::vector<SUntimedPost> untimed;
+    UiBuffer timedTags;
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+    {
+      UiBuffer& ready = m_planes[plane].ready;
+      if (plane == PLANE_GRAPHICS && gfxHeld)
+        continue;
+      if (plane == PLANE_UI && ready.req)
+        ReapFence(ready);
       if (!ready.req || ready.fence >= 0)
         continue;
       // GT-D15 / MC-29 ("C issues all OSD commits in the post-tick slot while video is
@@ -1419,7 +1453,7 @@ void CPresentationCoordinator::CommitUi()
       // for its flight (RC17: uiHeldMax 16-20 ms, one period, a graphics commit alone during
       // the hold)
       const UiBuffer& graphicsReady = m_planes[PLANE_GRAPHICS].ready;
-      const bool graphicsNow = graphicsReady.req && graphicsReady.fence < 0;
+      const bool graphicsNow = graphicsReady.req && !gfxHeld && graphicsReady.fence < 0;
       if (plane == PLANE_UI && !ready.cOwned && !graphicsNow && UiHoldForSlot())
       {
         if (!m_uiHoldStartNs)
@@ -1497,6 +1531,25 @@ void CPresentationCoordinator::CommitUi()
         timedTags.fenceAtPick = ready.fenceAtPick;
       }
       ready = UiBuffer();
+    }
+    // F1/F2 measurement (log only, at most 5 lines a second): a GUI commit sent alone while a
+    // picked graphics buffer waits takes the flight its commit needs (RC20 FP: 1-2 periods)
+    const UiBuffer& gfxLeft = m_planes[PLANE_GRAPHICS].ready;
+    if (commit.req && commit.has[PLANE_UI] && !commit.has[PLANE_GRAPHICS] && m_videoAttached &&
+        ((gfxLeft.req && gfxLeft.timed) || gaveBack))
+    {
+      m_report.uiAloneGfxWaits++;
+      const int64_t now = MonotonicNs();
+      if (now - m_gtUiAloneWindowNs >= 1000000000)
+      {
+        m_gtUiAloneWindowNs = now;
+        m_gtUiAloneLines = 0;
+      }
+      if (++m_gtUiAloneLines <= 5)
+        GRAPHICSTICK::GTLogF(
+            LOGINFO, "GTICK gui alone while a graphics pick waits: why={} serial={} target={} flip={} tick={}",
+            gfxWhy ? gfxWhy : "other", gfxLeft.req ? static_cast<int64_t>(gfxLeft.serial) : -1,
+            gfxLeft.req ? static_cast<int64_t>(gfxLeft.target) : -1, m_gtFlipSeq, m_diagVblankSeq);
     }
     if (!commit.req)
       return;
@@ -1975,11 +2028,11 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       chosen.target = target.tick + 2;
       chosen.afterHold = afterHold;
       chosen.pickVblankNs = m_diagVblankNs;
+      // F1 (RC20 FP: every late placement had fence=1): a fence already signalled is closed
+      // here, so this slot's commit takes the buffer; left open, CommitUi skipped it as pending
+      // and a GUI frame committed alone took the slot (the fence's own wake came after)
       if (chosen.fence >= 0)
-      {
-        struct pollfd pf = {chosen.fence, POLLIN, 0};
-        chosen.fenceAtPick = poll(&pf, 1, 0) > 0 ? 1 : 0;
-      }
+        chosen.fenceAtPick = ReapFence(chosen) ? 1 : 0;
       if (!chosen.clear && !chosen.bridge)
       {
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
@@ -2157,6 +2210,8 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     // its fence is usually still pending: the commit must still go out by the margin, or CommitUi
     // gives it back to the next slot
     chosen.lateDeadlineNs = m_diagVblankNs + period - LATE_PICK_MARGIN_NS;
+    if (chosen.fence >= 0)
+      chosen.fenceAtPick = ReapFence(chosen) ? 1 : 0;
     m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
     GRAPHICSTICK::NotePickedSerial(session, m_gtPickedSerial);
     NotePickedU(chosen);
@@ -2735,9 +2790,11 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
-              "latePickBack={} stalePickReplaced={} uiHeldForSlot={} uiHeldMax_us={}",
+              "latePickBack={} stalePickReplaced={} uiHeldForSlot={} uiHeldMax_us={} "
+              "uiAloneGfxWaits={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
-              r.gfxLatePickBack, r.stalePickReplaced, r.uiHeldForSlot, r.uiHeldMaxUs);
+              r.gfxLatePickBack, r.stalePickReplaced, r.uiHeldForSlot, r.uiHeldMaxUs,
+              r.uiAloneGfxWaits);
   // GT-D15: C's loop body (bounded: no I/O on it) and the log writer that took C's lines
   if (GRAPHICSTICK::Requested())
   {

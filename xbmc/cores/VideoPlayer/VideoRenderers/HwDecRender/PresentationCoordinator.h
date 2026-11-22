@@ -342,6 +342,9 @@ private:
   void CommitUi();
   //! 5.V3-1 (log only, under m_uiMutex on C's thread): a GUI plane commit against its vblank
   void TimeUiCommit(int64_t readyNs);
+  //! under m_uiMutex: a buffer whose GPU fence has signalled is committable now: the fence is
+  //! closed and readyNs stamped here, once (fence -1 after; the poll-revents path then skips it)
+  static bool ReapFence(UiBuffer& buffer);
   void CommitWorker();
   //! flipNs: the flip's vblank time from the event (CLOCK_MONOTONIC)
   void OnFlip(uint64_t tag, unsigned int sequence, int64_t flipNs);
@@ -411,6 +414,8 @@ private:
   int m_gtStaleLines = 0;
   int64_t m_gtNoPickWindowNs = 0; //!< GTICK no pick: lines in the current second
   int m_gtNoPickLines = 0;
+  int64_t m_gtUiAloneWindowNs = 0; //!< GTICK gui alone: lines in the current second
+  int m_gtUiAloneLines = 0;
   // GT-D15 measurement (C's thread, log only): when C last entered its poll, and how long the
   // loop body before it ran
   int64_t m_pollEnterNs = 0;
@@ -583,6 +588,8 @@ private:
     //! GT-D15 / MC-29: GUI frames held at a flip's wake for the imminent slot, and the longest
     int uiHeldForSlot = 0;
     int64_t uiHeldMaxUs = 0;
+    //! RC20 FP: GUI commits sent alone while a picked graphics buffer waited
+    int uiAloneGfxWaits = 0;
     //! GT-D15: C's loop bodies [<1 ms, <5, <10, <20, >=20 ms] and the longest, us
     int bodyHist[5] = {};
     int64_t bodyMaxUs = 0;
