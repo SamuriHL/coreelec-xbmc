@@ -358,6 +358,8 @@ private:
   //! GT-5 (GT-D15, C's thread, a wake with no tick): the frame on screen next missed its slot
   //! and G has handed its buffer in since; picked if its commit can still land on that vblank
   void SelectTimedLate(int64_t now);
+  //! under m_uiMutex: the untimed order of a picked buffer (untimedRegress, gnewest_off)
+  void NotePickedU(const UiBuffer& chosen);
   bool m_gtSlotMissed = false; //!< C's thread: this interval's slot found no buffer for its frame
   // GT-5, under m_uiMutex: G's posts not shown yet; the newest state a flip showed, picked, and
   // whose first commit failed (its posts are logged "carried")

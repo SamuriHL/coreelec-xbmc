@@ -59,6 +59,10 @@ unsigned int s_lastWaitingGen = 0;
 std::atomic<int64_t> s_keepAlive{0};
 std::atomic<bool> s_untimedHeld{false};
 std::atomic<bool> s_cAdvancing{true};
+std::atomic<uint64_t> s_graphicsLost{0};
+std::atomic<uint64_t> s_posts{0};
+// gnewest_off: each queued state holds its post's image references; BD-J posts every ~11 ms
+constexpr size_t NEWEST_QUEUE_CAP = 256;
 std::atomic<uint64_t> s_untimedCommitted{0};
 std::mutex s_containerMutex;
 std::atomic<CDVDOverlayContainer*> s_container{nullptr};
@@ -361,6 +365,7 @@ void PostUntimed(SUntimedState&& state)
 {
   if (!UntimedHook())
     return;
+  s_posts.fetch_add(1, std::memory_order_relaxed);
   {
     std::unique_lock lock(s_untimedMutex);
     s_keepAlive.store(state.keepAliveTick, std::memory_order_relaxed);
@@ -377,7 +382,17 @@ void PostUntimed(SUntimedState&& state)
     s_lastWaitingGen = state.waitingGen;
     state.u = ++s_u;
     if (NewestOff())
+    {
+      // review rA m1: bounded; the oldest goes, counted and logged, never silently
+      if (s_queue.size() >= NEWEST_QUEUE_CAP)
+      {
+        s_queue.pop_front();
+        if (s_counts[static_cast<int>(UntimedCount::NEWEST_OVERFLOW)]++ == 0)
+          CLog::Log(LOGWARNING, "GUNTIMED gnewest_off queue full ({}): oldest states dropped",
+                    NEWEST_QUEUE_CAP);
+      }
       s_queue.push_back(std::move(state));
+    }
     else
     {
       // item 5 (b) (i): the newest only; one G never took is skipped, judged on its successor
@@ -488,17 +503,44 @@ void CountMax(UntimedCount what, int value)
   }
 }
 
-std::string UntimedCountsLine()
+std::string UntimedCountsLine(bool reset, bool& any)
 {
-  const auto at = [](UntimedCount what)
-  { return s_counts[static_cast<int>(what)].load(std::memory_order_relaxed); };
+  int v[static_cast<int>(UntimedCount::COUNT)];
+  any = false;
+  for (int i = 0; i < static_cast<int>(UntimedCount::COUNT); i++)
+  {
+    v[i] = reset ? s_counts[i].exchange(0, std::memory_order_relaxed)
+                 : s_counts[i].load(std::memory_order_relaxed);
+    any |= v[i] != 0;
+  }
+  const auto at = [&v](UntimedCount what) { return v[static_cast<int>(what)]; };
   return StringUtils::Format(
       "states={} untimedSkipped={} gUnitDeferred={} gWaitBuffer={} gWaitBufferMax_ms={} "
-      "firstPages={} keepAliveExpired={} gnewestDepth={}",
+      "pagesAhead={} pageLatePosted={} pageFallback={} keepAliveExpired={} gnewestDepth={} "
+      "gnewestOverflow={}",
       at(UntimedCount::STATES), at(UntimedCount::SKIPPED), at(UntimedCount::UNIT_DEFERRED),
       at(UntimedCount::WAIT_BUFFER), at(UntimedCount::WAIT_BUFFER_MAX_MS),
-      at(UntimedCount::FIRST_PAGES), at(UntimedCount::KEEPALIVE_EXPIRED),
-      at(UntimedCount::NEWEST_DEPTH_MAX));
+      at(UntimedCount::FIRST_PAGES), at(UntimedCount::PAGE_LATE_POSTED),
+      at(UntimedCount::PAGE_FALLBACK), at(UntimedCount::KEEPALIVE_EXPIRED),
+      at(UntimedCount::NEWEST_DEPTH_MAX), at(UntimedCount::NEWEST_OVERFLOW));
+}
+
+void NoteGraphicsLost()
+{
+  if (!Requested())
+    return;
+  s_graphicsLost.fetch_add(1, std::memory_order_relaxed);
+  Wake();
+}
+
+uint64_t GraphicsLost()
+{
+  return s_graphicsLost.load(std::memory_order_relaxed);
+}
+
+uint64_t UntimedPosts()
+{
+  return s_posts.load(std::memory_order_relaxed);
 }
 
 } // namespace GRAPHICSTICK

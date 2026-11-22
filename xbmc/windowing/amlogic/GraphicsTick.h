@@ -216,10 +216,20 @@ enum class UntimedCount
   FIRST_PAGES, //!< pages G drew for a segment's frames before its Released
   KEEPALIVE_EXPIRED,
   NEWEST_DEPTH_MAX, //!< gnewest_off: the deepest queue seen
+  NEWEST_OVERFLOW, //!< gnewest_off: states dropped at the queue's bound (review rA m1)
+  PAGE_LATE_POSTED, //!< review rB m8: a segment's page posted after its first frame's release
+  PAGE_FALLBACK, //!< a waiting page released by the P-side 3 s fallback, not by its picture
   COUNT
 };
 void Count(UntimedCount what, int n = 1);
 void CountMax(UntimedCount what, int value);
-std::string UntimedCountsLine();
+//! the counters since the last call with reset; any: one of them is not 0
+std::string UntimedCountsLine(bool reset, bool& any);
+//! C (review rB m9): a commit carrying the graphics plane failed, lost its flip or was dropped
+//! on a refused plane; G draws what is up again
+void NoteGraphicsLost();
+uint64_t GraphicsLost();
+//! moves at every post, a repost of the same images included (review rB m4 (a))
+uint64_t UntimedPosts();
 
 } // namespace GRAPHICSTICK

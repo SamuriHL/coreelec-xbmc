@@ -70,9 +70,10 @@ void LogUntimed(const SUntimedPost& post,
   }
   CLog::Log(LOGINFO,
             "GUNTIMED u={} route={} post_seq={} post_vbl={} post_ns={} flip={} flipseq={} "
-            "flip_ns={} period_us={} vbl={} upd_us={} by={} what={}",
+            "flip_ns={} period_us={} vbl={} upd_us={} by={} what={} page={}",
             post.u, post.route, postSeq, postSeq, post.postNs, sequence, sequence, flipNs,
-            periodNs > 0 ? periodNs / 1000 : -1, vbl, post.updUs, by, what);
+            periodNs > 0 ? periodNs / 1000 : -1, vbl, post.updUs, by, what,
+            post.firstPage ? 1 : 0);
 }
 
 // 5.B2-7: a plane off C has not started by then runs inline (today's hold bound)
@@ -899,6 +900,8 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
     LogUntimedLost(m_untimedInFlight, "flip lost");
   if (m_inFlightTimed.u)
     m_gtCarriedU = std::max(m_gtCarriedU, m_inFlightTimed.u);
+  if (m_inFlightTimed.timed)
+    GRAPHICSTICK::NoteGraphicsLost();
   m_inFlightTimed = UiBuffer();
   for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
@@ -1307,6 +1310,9 @@ void CPresentationCoordinator::CommitUi()
             LogUntimedLost(ready.untimed, "graphics plane refused");
           if (ready.u)
             m_gtCarriedU = std::max(m_gtCarriedU, ready.u);
+          // review rB m9: G draws what is up again (a static menu gets no further post)
+          if (ready.timed)
+            GRAPHICSTICK::NoteGraphicsLost();
           Drop(plane, ready);
           continue;
         }
@@ -1489,6 +1495,9 @@ void CPresentationCoordinator::CommitWorker()
         LogUntimedLost(m_untimedInFlight, "commit failed");
       if (m_inFlightTimed.u)
         m_gtCarriedU = std::max(m_gtCarriedU, m_inFlightTimed.u);
+      // review rB m9: G draws what is up again (a static menu gets no further post)
+      if (commit.has[PLANE_GRAPHICS] && GRAPHICSTICK::RouteOn())
+        GRAPHICSTICK::NoteGraphicsLost();
       m_inFlightTimed = UiBuffer();
       m_inFlightGfxPts = DVD_NOPTS_VALUE;
       for (int plane = 0; plane < PLANE_COUNT; plane++)
@@ -1553,8 +1562,35 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
 {
   {
     std::unique_lock lock(m_uiMutex);
+    // review rB m6: a unit is refused whole when any of it is an old-regime redraw (item 5 (h)),
+    // never split: a part would leave the new untimed state below the old one
+    const auto refusedByEpoch = [this](const STimedBuffer& in)
+    {
+      return in.regimeEpoch &&
+             std::any_of(m_timed.begin(), m_timed.end(),
+                         [&](const UiBuffer& b)
+                         {
+                           return b.serial == in.serial && b.clear == in.clear &&
+                                  b.bridge == in.bridge && b.session == in.session &&
+                                  b.regimeEpoch > in.regimeEpoch;
+                         });
+    };
+    const bool unitRefused =
+        buffers.size() > 1 && std::any_of(buffers.begin(), buffers.end(), refusedByEpoch);
     for (STimedBuffer& in : buffers)
     {
+      if (unitRefused)
+      {
+        UiBuffer refused;
+        refused.bo = in.bo;
+        refused.req = std::exchange(in.req, nullptr);
+        refused.fence = std::exchange(in.fence, -1);
+        Drop(PLANE_GRAPHICS, refused);
+        m_report.gfxEpochDrop++;
+        CLog::Log(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} (its unit)", in.serial,
+                  in.regimeEpoch);
+        continue;
+      }
       // a redraw (regime, geometry, untimed images) of a composition C still holds replaces it
       auto it = std::find_if(m_timed.begin(), m_timed.end(),
                              [&](const UiBuffer& b)
@@ -1636,13 +1672,16 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
 {
   if (!GRAPHICSTICK::Requested())
     return;
-  bool on;
-  uint64_t session;
-  GRAPHICSTICK::RouteState(on, session);
-  const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
   bool woke = false;
   {
     std::unique_lock lock(m_uiMutex);
+    // review rB m2: read under C's lock, so a buffer of a session that began after the read is
+    // never dropped as stale (m_uiMutex -> GRAPHICSTICK's lock, the order NoteUntimedCommitted
+    // already takes)
+    bool on;
+    uint64_t session;
+    GRAPHICSTICK::RouteState(on, session);
+    const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
     if (session != m_gtSession)
     {
       m_gtSession = session;
@@ -1681,7 +1720,12 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
                          (it->bridge ? !on
                                      : (!on || it->serial <= floor.floor ||
                                         it->serial < m_gtPickedSerial));
-      if (!it->clear && stale)
+      // review rB m2: an old session's clear, held across the switch, would sort after the new
+      // session's first composition (serials restart per player) and drop it at the pick
+      const bool oldClear = it->clear && it->session != session &&
+                            std::any_of(m_timed.begin(), m_timed.end(), [&](const UiBuffer& b)
+                                        { return b.session == session; });
+      if ((!it->clear && stale) || oldClear)
       {
         // item 5 (j): a state dropped whole is published as done, so G draws the next
         if (it->u && GRAPHICSTICK::NewestOff())
@@ -1743,18 +1787,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
       // item 5 (d): no commit carries an older untimed state than the plane's (impossible by
       // G's re-draw unit; gated at 0)
-      if (chosen.u)
-      {
-        if (chosen.u < m_gtPickedU)
-        {
-          m_report.untimedRegress++;
-          CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
-                    chosen.u, m_gtPickedU);
-        }
-        m_gtPickedU = std::max(m_gtPickedU, chosen.u);
-        if (GRAPHICSTICK::NewestOff())
-          GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
-      }
+      NotePickedU(chosen);
       UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
       // review rA m1: route C's frame after a hand-back is newer than the route's end clear; the
       // start clear must still replace route C's last frame (review r2 N6)
@@ -1784,6 +1817,27 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
   }
 }
 
+void CPresentationCoordinator::NotePickedU(const UiBuffer& chosen)
+{
+  if (!chosen.u)
+    return;
+  // item 5 (d): no commit carries an older untimed state than the plane's (impossible by G's
+  // re-draw unit; gated at 0). A segment's first page starts its own order (review rB m5): the
+  // frames before it may carry a newer state made while it waited (a keep-alive expiry, a
+  // CleanUp), which is no regress
+  if (chosen.firstPage)
+    m_gtPickedU = chosen.u;
+  else if (chosen.u < m_gtPickedU)
+  {
+    m_report.untimedRegress++;
+    CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
+              chosen.u, m_gtPickedU);
+  }
+  m_gtPickedU = std::max(m_gtPickedU, chosen.u);
+  if (GRAPHICSTICK::NewestOff())
+    GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
+}
+
 void CPresentationCoordinator::SelectTimedLate(int64_t now)
 {
   if (!m_gtSlotMissed || !GRAPHICSTICK::Requested())
@@ -1796,13 +1850,13 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     m_gtSlotMissed = false;
     return;
   }
-  bool on;
-  uint64_t session;
-  GRAPHICSTICK::RouteState(on, session);
-  const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
   const SReleasedFrame& target = m_gtTarget;
   {
     std::unique_lock lock(m_uiMutex);
+    bool on;
+    uint64_t session;
+    GRAPHICSTICK::RouteState(on, session);
+    const GRAPHICSTICK::SFloor floor = GRAPHICSTICK::Floor();
     UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
     // a commit in flight would hold it to the flip, one vblank late: the next slot decides
     if (!on || m_gtWithheld || !target.valid || session != m_gtSession || m_inFlight || ready.req)
@@ -1831,18 +1885,7 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     // gives it back to the next slot
     chosen.lateDeadlineNs = m_diagVblankNs + period - LATE_PICK_MARGIN_NS;
     m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
-    if (chosen.u)
-    {
-      if (chosen.u < m_gtPickedU)
-      {
-        m_report.untimedRegress++;
-        CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
-                  chosen.u, m_gtPickedU);
-      }
-      m_gtPickedU = std::max(m_gtPickedU, chosen.u);
-      if (GRAPHICSTICK::NewestOff())
-        GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
-    }
+    NotePickedU(chosen);
     ready = std::move(chosen);
     m_gtSlotMissed = false;
     m_report.gfxLatePick++;
@@ -2390,13 +2433,20 @@ void CPresentationCoordinator::LogReport()
               "latePickBack={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
               r.gfxLatePickBack);
-  if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff() &&
-      (r.untimedReplaced || r.untimedRegress || r.gfxEpochDrop || r.firstPages))
-    CLog::Log(LOGINFO,
-              "GUNTIMED report untimedReplaced={} untimedRegress={} gfxEpochDrop={} firstPages={} "
-              "pageLate={} {}",
-              r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
-              GRAPHICSTICK::UntimedCountsLine());
+  // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
+  // (G's counters are taken and reset with C's)
+  if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff())
+  {
+    bool any = false;
+    const std::string counts = GRAPHICSTICK::UntimedCountsLine(true, any);
+    if (any || GRAPHICSTICK::RouteOn() || r.untimedReplaced || r.untimedRegress ||
+        r.gfxEpochDrop || r.firstPages)
+      CLog::Log(LOGINFO,
+                "GUNTIMED report untimedReplaced={} untimedRegress={} gfxEpochDrop={} "
+                "firstPageFlips={} pageLate={} {}",
+                r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
+                counts);
+  }
   if (r.uiTimed)
     CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
