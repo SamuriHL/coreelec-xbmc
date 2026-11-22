@@ -188,6 +188,7 @@ private:
   bool m_routeOn = false;
   bool m_routeClearOwed = false; //!< at the start and at a floor: what the plane shows goes
   uint64_t m_routeClearSerial = 0;
+  bool m_routeClearAtFloor = false; //!< GT-5 (r2 N1): the owed clear is a floor's
   bool m_routeEndClearOwed = false; //!< the route's end (item 11), retried until submitted
   //! each libass handler's output at its last render: a render reporting no change shows it
   std::map<const CDVDSubtitlesLibass*, std::shared_ptr<const OVERLAY::SQuads>> m_assLast;

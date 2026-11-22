@@ -1177,6 +1177,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_routeEndClearOwed = false;
   m_routeClearOwed = true;
   m_routeClearSerial = 0;
+  m_routeClearAtFloor = false;
   GRAPHICSTICK::NoteGSide(m_routeSession, true);
   CLog::Log(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
   // GT-5: the untimed graphics too, unless guntimed_off keeps GT-4's bridge
@@ -1303,6 +1304,7 @@ bool CGraphicsPlaneAML::RouteStep()
     m_routeLast.hidden = hidden;
     m_routeClearOwed = true;
     m_routeClearSerial = floor;
+    m_routeClearAtFloor = true;
   }
 
   if (in.released)
@@ -1407,8 +1409,10 @@ bool CGraphicsPlaneAML::RouteStep()
   if (m_routeClearOwed)
   {
     // review rB m3: a floor (a seek) under a menu clears the timed graphics only; the menu stays
-    // in the clear itself, so it never blinks off until a bridge or the first post-seek frame
-    if (m_untimedOnG && !m_uCur.ids.empty())
+    // in the clear itself, so it never blinks off until a bridge or the first post-seek frame.
+    // Only at a floor (r2 N1): the route's start clear goes before the start's hold (a clear is
+    // picked at the first slot), so a menu up then waits for the hold as an untimed-only entry
+    if (m_untimedOnG && m_routeClearAtFloor && !m_uCur.ids.empty())
     {
       SComposition comp;
       comp.serial = m_routeClearSerial;
@@ -1422,6 +1426,11 @@ bool CGraphicsPlaneAML::RouteStep()
       unit.front().bridge = false;
       m_coordinator->SubmitTimed(unit);
       m_routeLast.untimedIds = comp.untimedIds;
+      // r2 N1: kept as an untimed-only entry, so a regime, geometry or layout redraw (and a
+      // newer state) reaches the menu the clear carries; drawn again only for those
+      comp.redraw = false;
+      comp.untimedStale = false;
+      m_routeDrawn.push_back(std::move(comp));
     }
     else if (!SubmitClear(m_routeClearSerial))
       return true;
@@ -1800,9 +1809,20 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       comp = m_routeLast;
     comp.hidden = m_routeHidden;
     comp.bridge = true;
-    comp.serial = std::max(m_routeLast.serial, m_routeClearSerial);
-    for (const SComposition& held : m_routeDrawn)
-      comp.serial = std::max(comp.serial, held.serial);
+    // above the entries of an older state, so C drops them under it at its pick (the unit
+    // re-draws them when C advances again); r2 N3: with none stale (no state change, only the
+    // edge into not advancing) at the frame on screen's serial, so C keeps the drawn-ahead timed
+    // entries, which G will not draw again
+    if (!ahead.empty())
+    {
+      comp.serial = std::max(m_routeLast.serial, m_routeClearSerial);
+      for (const SComposition& held : m_routeDrawn)
+        comp.serial = std::max(comp.serial, held.serial);
+    }
+    else if (screen >= 0)
+      comp.serial = m_routeDrawn[screen].serial;
+    else
+      comp.serial = std::max(m_routeHaveReleased ? m_routeReleased.serial : 0, m_routeClearSerial);
     AssignPage(comp);
     if (comp.untimedIds == m_uFramelessIds && m_uFramelessShown)
     {
@@ -1823,7 +1843,11 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     else if (screen >= 0)
       m_routeDrawn[screen].untimedStale = false;
     m_routeLast.untimedIds = comp.untimedIds;
-    m_routeDrawn.push_back(std::move(comp));
+    // in serial order, so a Released erases only the entries below it (r2 N3)
+    auto at = m_routeDrawn.begin();
+    while (at != m_routeDrawn.end() && at->serial <= comp.serial)
+      ++at;
+    m_routeDrawn.insert(at, std::move(comp));
     return false;
   }
   // (d): the entries C holds above the frame on screen, re-drawn with the new state under their
@@ -1970,7 +1994,10 @@ void CGraphicsPlaneAML::Process()
       for (SComposition& comp : m_routeDrawn)
         comp.redraw = true;
       if (m_routeDrawn.empty())
+      {
         m_routeClearOwed = true;
+        m_routeClearAtFloor = false;
+      }
       return true;
     };
     const unsigned int epoch = aml_presenter_epoch();
