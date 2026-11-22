@@ -167,6 +167,8 @@ private:
   void MarkUntimedStale();
   //! the frame on screen's entry (or the untimed-only one) is drawn again with what is up
   void MarkScreenStale();
+  //! review rB M3: the waiting page's entry on its segment's first picture
+  void PlaceFirstPage();
   //! a drawn buffer never handed to C goes back to the surface
   void ReleaseUnsubmitted(CPresentationCoordinator::STimedBuffer& buffer);
   //! item 5 (d): the stale entries ahead of the frame on screen as one unit, then the frame on
@@ -224,6 +226,10 @@ private:
   //! the state the last untimed-only entry drawn while C did not advance carries
   std::vector<const CDVDOverlay*> m_uFramelessIds;
   bool m_uFramelessShown = false;
+  SComposition m_uSegFirst; //!< the newest segment's first picture, drawn or not
+  unsigned int m_uPageGenSeen = 0; //!< the newest segment a page was seen for
+  uint64_t m_uLostSeen = 0; //!< GRAPHICSTICK::GraphicsLost, as last seen
+  uint64_t m_uExpiredPosts = 0; //!< GRAPHICSTICK::UntimedPosts at the keep-alive expiry
 
   static constexpr int WIDTH = 1920;
   static constexpr int HEIGHT = 1080;

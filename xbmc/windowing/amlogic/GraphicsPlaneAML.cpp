@@ -8,6 +8,7 @@
 
 #include "GraphicsPlaneAML.h"
 
+#include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayStereoUtils.h"
@@ -1190,6 +1191,9 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uTakenU = 0;
   m_uAdvancing = true;
   m_uFramelessShown = false;
+  m_uSegFirst = SComposition();
+  m_uPageGenSeen = 0;
+  m_uLostSeen = GRAPHICSTICK::GraphicsLost();
   m_uFramelessIds.clear();
   m_untimedOnG = !GRAPHICSTICK::UntimedOff();
   if (m_untimedOnG)
@@ -1357,6 +1361,17 @@ bool CGraphicsPlaneAML::RouteStep()
       if (!advancing && UntimedUp())
         MarkScreenStale();
     }
+    // review rB m9: a commit carrying the plane was lost; a static menu gets no further post
+    const uint64_t lost = GRAPHICSTICK::GraphicsLost();
+    if (lost != m_uLostSeen)
+    {
+      m_uLostSeen = lost;
+      for (SComposition& comp : m_routeDrawn)
+        comp.redraw = true;
+      m_uFramelessShown = false;
+      if (UntimedUp())
+        MarkScreenStale();
+    }
     TakeUntimedStates();
     CheckKeepAlive();
   }
@@ -1391,7 +1406,24 @@ bool CGraphicsPlaneAML::RouteStep()
 
   if (m_routeClearOwed)
   {
-    if (!SubmitClear(m_routeClearSerial))
+    // review rB m3: a floor (a seek) under a menu clears the timed graphics only; the menu stays
+    // in the clear itself, so it never blinks off until a bridge or the first post-seek frame
+    if (m_untimedOnG && !m_uCur.ids.empty())
+    {
+      SComposition comp;
+      comp.serial = m_routeClearSerial;
+      comp.hidden = m_routeHidden;
+      comp.bridge = true; // its images only, no frame; the whole GUI without video rects
+      AssignPage(comp);
+      std::vector<CPresentationCoordinator::STimedBuffer> unit(1);
+      if (!DrawComposition(comp, unit.front()))
+        return true;
+      unit.front().clear = true;
+      unit.front().bridge = false;
+      m_coordinator->SubmitTimed(unit);
+      m_routeLast.untimedIds = comp.untimedIds;
+    }
+    else if (!SubmitClear(m_routeClearSerial))
       return true;
     m_routeClearOwed = false;
   }
@@ -1432,6 +1464,10 @@ bool CGraphicsPlaneAML::RouteStep()
       if (m_untimedOnG)
         AssignPage(comp);
       RenderLibass(comp);
+      // review rB M3: each segment's first picture, drawn or not (a Same frame has no entry): a
+      // page of that segment arriving later still goes on it
+      if (m_untimedOnG && comp.segmentGen > m_uSegFirst.segmentGen)
+        m_uSegFirst = comp;
       if (Same(comp, m_routeLast))
       {
         // the bridge's serial: the newest picture, never one under a later floor
@@ -1442,6 +1478,10 @@ bool CGraphicsPlaneAML::RouteStep()
       m_routePending = std::move(comp);
       m_routeHasPending = true;
     }
+    // GT-5: a composition held back for a buffer goes with the state up when it is drawn (a
+    // waiting page that arrived meanwhile, review rB M3)
+    if (m_untimedOnG)
+      AssignPage(m_routePending);
     if (!DrawTimed(m_routePending))
     {
       timedWaits = true;
@@ -1486,7 +1526,8 @@ void CGraphicsPlaneAML::AssignPage(SComposition& comp)
     if (m_uFirstPageGen != m_uWait.gen)
     {
       m_uFirstPageGen = m_uWait.gen;
-      m_uFirstPageSerial = comp.serial;
+      m_uFirstPageSerial =
+          m_uSegFirst.segmentGen == m_uWait.gen ? m_uSegFirst.serial : comp.serial;
     }
     comp.firstPage = comp.serial == m_uFirstPageSerial;
   }
@@ -1557,6 +1598,13 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
   // the state G already drew with the segment's frames, under its own u
   if (!m_uWait.ids.empty() && current == m_uWait.ids)
   {
+    // review rB m8: released without its picture's Released (the P-side 3 s fallback)
+    if (state.releasedSegment > m_uNotedSegment)
+    {
+      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_FALLBACK);
+      CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} released by the fallback", m_uWait.u,
+                m_uWait.gen);
+    }
     m_uCur = m_uWait;
     m_uCur.gen = 0;
     m_uWait = SUntimedPage();
@@ -1565,6 +1613,16 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
   }
   else if (current != m_uCur.ids || (m_uExpired && !current.empty()))
   {
+    // review rB m8: a segment's page posted after that segment's picture was released never
+    // waited; it is current at once, late
+    if (state.currentGen && state.currentGen > m_uPageGenSeen &&
+        state.currentGen <= m_uNotedSegment)
+    {
+      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_LATE_POSTED);
+      CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} posted after its picture", state.u,
+                state.currentGen);
+    }
+    m_uPageGenSeen = std::max(m_uPageGenSeen, state.currentGen);
     m_uCur.u = state.u;
     m_uCur.postNs = state.postNs;
     m_uCur.images = std::move(state.current);
@@ -1597,6 +1655,8 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
       post.firstPage = true;
       posts.push_back(post);
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::FIRST_PAGES);
+      m_uPageGenSeen = std::max(m_uPageGenSeen, m_uWait.gen);
+      PlaceFirstPage();
     }
     changed = true;
   }
@@ -1611,6 +1671,40 @@ void CGraphicsPlaneAML::ApplyUntimed(GRAPHICSTICK::SUntimedState& state)
   }
 }
 
+void CGraphicsPlaneAML::PlaceFirstPage()
+{
+  // review rB M3: the segment's first picture was taken already, maybe with no entry (Same as
+  // the frame before): an entry at its serial carries the page, so C commits it with that frame
+  if (m_uSegFirst.segmentGen != m_uWait.gen || !m_uSegFirst.serial)
+    return;
+  const uint64_t released = m_routeHaveReleased ? m_routeReleased.serial : 0;
+  if (m_uSegFirst.serial <= released)
+  {
+    // its picture is on screen already: the page is late (it shows at the next slot)
+    GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::PAGE_LATE_POSTED);
+    CLog::Log(LOGINFO, "GUNTIMED page u={} of segment {} posted after its first picture", m_uWait.u,
+              m_uWait.gen);
+    return;
+  }
+  m_uFirstPageGen = m_uWait.gen;
+  m_uFirstPageSerial = m_uSegFirst.serial;
+  const bool held = std::any_of(m_routeDrawn.begin(), m_routeDrawn.end(),
+                                [this](const SComposition& c)
+                                { return !c.bridge && c.serial == m_uSegFirst.serial; }) ||
+                    (m_routeHasPending && m_routePending.serial == m_uSegFirst.serial);
+  if (held)
+    return; // MarkUntimedStale re-draws it with the page (the pending one is assigned at its draw)
+  SComposition comp = m_uSegFirst;
+  comp.redraw = false;
+  comp.bridge = false;
+  comp.untimedStale = true;
+  // in serial order, before any untimed-only entry (those go last)
+  auto at = m_routeDrawn.begin();
+  while (at != m_routeDrawn.end() && !at->bridge && at->serial < comp.serial)
+    ++at;
+  m_routeDrawn.insert(at, std::move(comp));
+}
+
 void CGraphicsPlaneAML::CheckKeepAlive()
 {
   // VPV's rule for timed overlays, on G for the untimed composition: a BD-J composition the Xlet
@@ -1618,14 +1712,17 @@ void CGraphicsPlaneAML::CheckKeepAlive()
   // PAUSED: the repaint loop may pause too
   constexpr int64_t KEEPALIVE_TTL_MS = 1000;
   const int64_t stamp = GRAPHICSTICK::UntimedKeepAlive();
-  if (stamp == 0 || CPresentationCoordinator::PublishedPaused())
-    return;
-  const bool stale =
-      CurrentHostCounter() - stamp > CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000;
-  if (!m_uExpired && stale && !m_uCur.ids.empty())
+  const uint64_t posts = GRAPHICSTICK::UntimedPosts();
+  const bool stale = stamp != 0 && CurrentHostCounter() - stamp >
+                                       CurrentHostFrequency() * KEEPALIVE_TTL_MS / 1000;
+  // review rA m3, rB m4 (b): the player's pause, as main's IsPausedPlayback (its speed), not
+  // C's state (HELD, DISPLAY_LOST or IDLE on a menu-only screen while paused)
+  const bool paused = CDataCacheCore::GetInstance().GetSpeed() == 0.0f;
+  if (!m_uExpired && stale && !paused && !m_uCur.ids.empty())
   {
     m_uExpired = true;
     m_uExpiredStamp = stamp;
+    m_uExpiredPosts = posts;
     m_uExpiredPage = m_uCur;
     m_uCur = SUntimedPage();
     m_uCur.u = GRAPHICSTICK::NextUntimedU();
@@ -1636,7 +1733,9 @@ void CGraphicsPlaneAML::CheckKeepAlive()
   }
   // the Xlet re-posts the same composition again: it comes back (the container's repost of the
   // same images is no new state)
-  else if (m_uExpired && !stale && stamp != m_uExpiredStamp && m_uCur.ids.empty())
+  // review rB m4 (a): a re-post with a zero stamp (no streak) never expires, as main showed it
+  else if (m_uExpired && !stale && posts != m_uExpiredPosts &&
+           (stamp == 0 || stamp != m_uExpiredStamp) && m_uCur.ids.empty())
   {
     m_uExpired = false;
     m_uCur = m_uExpiredPage;
