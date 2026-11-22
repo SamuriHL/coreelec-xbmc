@@ -1802,11 +1802,10 @@ bool CGraphicsPlaneAML::RedrawUntimed()
         !ahead.empty() || (screen >= 0 && m_routeDrawn[screen].untimedStale);
     if (!stale)
       return false;
+    // with no frame on screen the entry carries no timed overlays (ahead's are not shown yet)
     SComposition comp;
     if (screen >= 0)
       comp = m_routeDrawn[screen];
-    else if (ahead.empty())
-      comp = m_routeLast;
     comp.hidden = m_routeHidden;
     comp.bridge = true;
     // above the entries of an older state, so C drops them under it at its pick (the unit
@@ -1819,36 +1818,44 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       for (const SComposition& held : m_routeDrawn)
         comp.serial = std::max(comp.serial, held.serial);
     }
-    else if (screen >= 0)
-      comp.serial = m_routeDrawn[screen].serial;
     else
-      comp.serial = std::max(m_routeHaveReleased ? m_routeReleased.serial : 0, m_routeClearSerial);
+      comp.serial = m_routeDrawn[screen].serial; // stale implies a screen entry here
     AssignPage(comp);
     if (comp.untimedIds == m_uFramelessIds && m_uFramelessShown)
     {
       if (screen >= 0)
         m_routeDrawn[screen].untimedStale = false;
+      // R3-3: once C has taken that entry (and dropped the stale ones under it), the drawn-ahead
+      // entries are re-drawn with the new state under their own serials while still paused,
+      // ready for the resume's first release; C keeps them (above its paused target)
+      if (ahead.empty() || GRAPHICSTICK::UntimedCommitted() < comp.u ||
+          LOCK_CAP - m_locked < static_cast<int>(ahead.size()))
+        return false;
+    }
+    else
+    {
+      if (!CanDraw(true))
+        return true;
+      if (!comp.glyphs.empty())
+        RenderLibass(comp);
+      if (!DrawTimed(comp))
+        return true;
+      m_uFramelessIds = comp.untimedIds;
+      m_uFramelessShown = true;
+      if (screen >= 0 && m_routeDrawn[screen].bridge)
+        m_routeDrawn.erase(m_routeDrawn.begin() + screen);
+      else if (screen >= 0)
+        m_routeDrawn[screen].untimedStale = false;
+      m_routeLast.untimedIds = comp.untimedIds;
+      // in serial order, so a Released erases only the entries below it (r2 N3)
+      auto at = m_routeDrawn.begin();
+      while (at != m_routeDrawn.end() && at->serial <= comp.serial)
+        ++at;
+      m_routeDrawn.insert(at, std::move(comp));
       return false;
     }
-    if (!CanDraw(true))
-      return true;
-    if (!comp.glyphs.empty())
-      RenderLibass(comp);
-    if (!DrawTimed(comp))
-      return true;
-    m_uFramelessIds = comp.untimedIds;
-    m_uFramelessShown = true;
-    if (screen >= 0 && m_routeDrawn[screen].bridge)
-      m_routeDrawn.erase(m_routeDrawn.begin() + screen);
-    else if (screen >= 0)
-      m_routeDrawn[screen].untimedStale = false;
-    m_routeLast.untimedIds = comp.untimedIds;
-    // in serial order, so a Released erases only the entries below it (r2 N3)
-    auto at = m_routeDrawn.begin();
-    while (at != m_routeDrawn.end() && at->serial <= comp.serial)
-      ++at;
-    m_routeDrawn.insert(at, std::move(comp));
-    return false;
+    // the unit below re-draws the ahead entries; the frame on screen's entry is done
+    screen = -1;
   }
   // (d): the entries C holds above the frame on screen, re-drawn with the new state under their
   // own serials and handed over together, or none of them: C never holds the newer state at a

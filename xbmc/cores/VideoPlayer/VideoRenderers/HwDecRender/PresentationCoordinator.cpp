@@ -1869,8 +1869,8 @@ void CPresentationCoordinator::NotePickedU(const UiBuffer& chosen)
               chosen.u, m_gtPickedU);
   }
   m_gtPickedU = std::max(m_gtPickedU, chosen.u);
-  if (GRAPHICSTICK::NewestOff())
-    GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
+  // gnewest_off's publication (item 5 (j)); G also reads it while C does not advance (R3-3)
+  GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
 }
 
 void CPresentationCoordinator::SelectTimedLate(int64_t now)
