@@ -17,9 +17,12 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
+#include <type_traits>
 
 namespace DISPLAYSTATE
 {
@@ -60,6 +63,66 @@ struct SPeakShadow
 
 std::mutex s_mutex;
 GraphicsRegime s_pub;
+
+//! RC24 follow-up: a published cell its readers copy with no lock (G reads the regime per
+//! composition; a std::mutex holder descheduled on main/W stalled G the way atomic<shared_ptr>'s
+//! lock stalled C in RC23). Two slots, each with a sequence: the writer (under its own lock)
+//! fills the slot readers are not pointed at, then points them at it, so a reader retries only
+//! when two publishes complete during its copy, never on a writer descheduled mid-write
+template<typename T>
+class CRtCell
+{
+  static_assert(std::is_trivially_copyable_v<T>);
+  static constexpr size_t WORDS = (sizeof(T) + 7) / 8;
+
+public:
+  //! writers only, serialised by their own lock
+  void Publish(const T& value)
+  {
+    const int next = 1 - m_index.load(std::memory_order_relaxed);
+    Slot& slot = m_slots[next];
+    std::array<uint64_t, WORDS> words{};
+    std::memcpy(words.data(), &value, sizeof(T));
+    const uint32_t seq = slot.seq.load(std::memory_order_relaxed);
+    slot.seq.store(seq + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    for (size_t i = 0; i < WORDS; i++)
+      slot.words[i].store(words[i], std::memory_order_relaxed);
+    slot.seq.store(seq + 2, std::memory_order_release);
+    m_index.store(next, std::memory_order_release);
+  }
+  //! any thread, no lock
+  T Read() const
+  {
+    for (;;)
+    {
+      const Slot& slot = m_slots[m_index.load(std::memory_order_acquire)];
+      const uint32_t before = slot.seq.load(std::memory_order_acquire);
+      if (before & 1)
+        continue;
+      std::array<uint64_t, WORDS> words;
+      for (size_t i = 0; i < WORDS; i++)
+        words[i] = slot.words[i].load(std::memory_order_relaxed);
+      std::atomic_thread_fence(std::memory_order_acquire);
+      if (slot.seq.load(std::memory_order_relaxed) != before)
+        continue;
+      T value;
+      std::memcpy(&value, words.data(), sizeof(T));
+      return value;
+    }
+  }
+
+private:
+  struct Slot
+  {
+    std::atomic<uint32_t> seq{0};
+    std::array<std::atomic<uint64_t>, WORDS> words{};
+  };
+  std::array<Slot, 2> m_slots{};
+  std::atomic<int> m_index{0};
+};
+
+CRtCell<GraphicsRegime> s_pubCell; //!< s_pub as published, for GetRegime
 SStream s_stream;
 // main's requests to W (M7, stop) posted, and the newest W has published
 uint64_t s_requested = 0;
@@ -92,6 +155,7 @@ void PublishLocked(GraphicsRegime next, const char* by, std::string& line)
                        next.compositeAvailable != s_pub.compositeAvailable;
   next.epoch = s_pub.epoch + (changed ? 1 : 0);
   s_pub = next;
+  s_pubCell.Publish(s_pub);
   if (changed)
     line = StringUtils::Format(
         "GREGIME publish epoch={} class={} limited={} peak={:.4f} composite={} by={} dv={} "
@@ -202,8 +266,8 @@ bool RegimeOn()
 
 GraphicsRegime GetRegime()
 {
-  std::unique_lock lock(s_mutex);
-  return s_pub;
+  // no lock (G per composition): the cell PublishLocked fills under s_mutex
+  return s_pubCell.Read();
 }
 
 void RegimeInit(bool compositeAvailable, bool limited, float peak)
@@ -361,6 +425,7 @@ namespace
 {
 std::mutex s_appliedMutex;
 MainApplied s_applied;
+CRtCell<MainApplied> s_appliedCell; //!< s_applied as published, for GetMainApplied
 } // namespace
 
 void PublishMainApplied(GuiEncoding encoding, bool limited)
@@ -371,12 +436,13 @@ void PublishMainApplied(GuiEncoding encoding, bool limited)
   s_applied.epoch++;
   s_applied.encoding = encoding;
   s_applied.limited = limited;
+  s_appliedCell.Publish(s_applied);
 }
 
 MainApplied GetMainApplied()
 {
-  std::unique_lock lock(s_appliedMutex);
-  return s_applied;
+  // no lock (G per composition): the cell PublishMainApplied fills under s_appliedMutex
+  return s_appliedCell.Read();
 }
 
 void ShadowMainRegime(const char* site,
