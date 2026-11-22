@@ -1018,6 +1018,11 @@ void CPresentationCoordinator::Process()
     {
       m_seenEpoch = epoch;
       m_seenEpochNs = MonotonicNs();
+      // a display epoch change can reset the vblank counter: a stale hold ends with it (a mode
+      // set's plane-off also drops the buffer, ReclaimPlane)
+      std::unique_lock lock(m_uiMutex);
+      m_planes[PLANE_GRAPHICS].ready.staleDeferred = false;
+      m_gtFlipSeqValid = false;
     }
     if (held)
     {
@@ -1357,10 +1362,24 @@ void CPresentationCoordinator::CommitUi()
       // GUI commit's flip at every vblank (a closing seek bar) kept the newest flip ahead of the
       // last tick, and a still page (nothing newer to replace it) was held again at each wake.
       // Once that slot has run, the buffer is committed at the next chance, never held again
+      // Review fixes: the frame has left the screen only when a newer frame was released early
+      // enough to be on VD1 at the landing vblank (2+ vblanks per frame: 25p@50, 29.97@59.94:
+      // its own frame is still up at target + 1); the hold needs video ticking and lasts at
+      // most one period after the flip (a detach or a counter reset never keeps it). The flip
+      // event's sequence and tick.seq are one counter: the timeline's TL_KERNEL_SEQ is the
+      // Timekeeper's drmCrtcQueueSequence sequence on the same CRTC (used only when the
+      // coordinator's CRTC is the timekeeper's, AttachVideo), the own-vblank path's is the
+      // vblank event's, and page_flip_handler2's is that CRTC's vblank count (low 32 bits)
+      const int64_t holdPeriodNs = m_diagPeriodNs > 0 ? m_diagPeriodNs : 20000000;
       if (plane == PLANE_GRAPHICS && ready.req && ready.timed && !ready.clear && !ready.bridge &&
-          !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq)
+          !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq &&
+          m_videoAttached && MonotonicNs() - m_gtFlipNs < holdPeriodNs)
       {
-        if (!ready.staleDeferred &&
+        const SReleasedFrame& newest = m_gtReleased[0];
+        const bool frameGone =
+            newest.valid && newest.qbuf != ready.qbuf &&
+            static_cast<int32_t>(m_gtFlipSeq + 1 - (static_cast<uint32_t>(newest.tick) + 2)) >= 0;
+        if (!ready.staleDeferred && frameGone &&
             static_cast<int32_t>(m_gtFlipSeq + 1 - static_cast<uint32_t>(ready.target)) > 0 &&
             static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
         {
