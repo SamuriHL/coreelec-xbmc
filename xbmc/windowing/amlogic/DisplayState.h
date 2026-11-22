@@ -125,6 +125,18 @@ struct DisplayState
 
 //! null before the seed and under displaystate_off
 std::shared_ptr<const DisplayState> Get();
+//! GT-5 (RC23): the real-time readers' Get, lock-free (hazard pointer, one slot per reader):
+//! std::atomic<std::shared_ptr>'s load takes a spin lock in the object (libstdc++'s lock bit),
+//! and a reader holding it while descheduled kept C in DISPLAYSTATE::Get for 63.5 ms
+enum RtReader
+{
+  RT_C, //!< the presentation coordinator
+  RT_G, //!< the graphics plane thread
+  RT_COUNT
+};
+//! the last published state, or null; valid until this reader's next GetRT (the publisher frees a
+//! retired state only once no reader's slot holds it, on its own thread)
+const DisplayState* GetRT(RtReader reader);
 //! 5.B3-4: the DRM-object readers' source under hotplugworker: the last published state
 //! (immutable, never freed while held), whatever a caps reader's skip cause. Null without
 //! hotplugworker (latched at W's start) or before the first publish: the reader keeps HEAD's

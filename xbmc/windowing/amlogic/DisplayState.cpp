@@ -39,6 +39,12 @@ namespace DISPLAYSTATE
 namespace
 {
 std::atomic<std::shared_ptr<const DisplayState>> s_state;
+// GetRT (RC23): the published state as a plain pointer, each real-time reader's hazard slot, and
+// the publisher's own references (the current one and those retired while a slot held them)
+std::atomic<const DisplayState*> s_rtState{nullptr};
+std::atomic<const DisplayState*> s_rtHazard[RT_COUNT] = {};
+std::shared_ptr<const DisplayState> s_rtOwned; // publishers only (never concurrent)
+std::vector<std::shared_ptr<const DisplayState>> s_rtRetired; // publishers only
 uint64_t s_epoch = 0; // publishers are never concurrent
 uint64_t s_capsEpoch = 0;
 
@@ -263,7 +269,22 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> h
 void Store(DisplayState& s, const char* kind)
 {
   s.epoch = ++s_epoch;
-  s_state.store(std::make_shared<const DisplayState>(s));
+  auto next = std::make_shared<const DisplayState>(s);
+  s_state.store(next);
+  // GetRT: publish the pointer, then free each retired state no reader's slot holds (seq_cst
+  // on both sides: a reader whose slot was set before this store re-checks and moves on)
+  if (s_rtOwned)
+    s_rtRetired.push_back(std::move(s_rtOwned));
+  s_rtOwned = std::move(next);
+  s_rtState.store(s_rtOwned.get());
+  std::erase_if(s_rtRetired,
+                [](const std::shared_ptr<const DisplayState>& retired)
+                {
+                  for (const auto& hazard : s_rtHazard)
+                    if (hazard.load() == retired.get())
+                      return false;
+                  return true;
+                });
   uint32_t fpsBits = 0;
   std::memcpy(&fpsBits, &s.fps, sizeof(fpsBits));
   const uint64_t height = static_cast<uint64_t>(std::clamp(s.screenHeight, 0, 0xffff));
@@ -420,6 +441,20 @@ bool PickBool(const char* field, bool today, bool DisplayState::*member)
 std::shared_ptr<const DisplayState> Get()
 {
   return s_state.load();
+}
+
+const DisplayState* GetRT(RtReader reader)
+{
+  // lock-free: it retries only across a publish made between its two loads
+  const DisplayState* state = s_rtState.load();
+  for (;;)
+  {
+    s_rtHazard[reader].store(state);
+    const DisplayState* again = s_rtState.load();
+    if (again == state)
+      return state;
+    state = again;
+  }
 }
 
 std::shared_ptr<const DisplayState> LinkState()

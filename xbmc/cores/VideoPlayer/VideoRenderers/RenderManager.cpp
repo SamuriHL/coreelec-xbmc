@@ -6687,9 +6687,10 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
     composed = true;
     SCoordinatorTiming now;
     const STimingFacts facts = ReadTimingFacts();
-    const auto state = DISPLAYSTATE::Get();
+    // C's tick (RC23): lock-free, valid until C's next GetRT
+    const DISPLAYSTATE::DisplayState* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_C);
     now.toAudio = m_tweakToAudio;
-    now.timing = ComposeTiming(state.get(), facts.hdrType, facts.vblanks, now.toAudio);
+    now.timing = ComposeTiming(state, facts.hdrType, facts.vblanks, now.toAudio);
     now.stateEpoch = state ? state->epoch : 0;
     now.factsGen = facts.gen;
     m_timingFps = now.timing.fps;

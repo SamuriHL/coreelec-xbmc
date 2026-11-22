@@ -1092,7 +1092,8 @@ void GuiSize(float& width, float& height)
 {
   width = 0.0f;
   height = 0.0f;
-  if (const auto state = DISPLAYSTATE::Get())
+  // G (RC23): lock-free, valid until G's next GetRT
+  if (const auto* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_G))
   {
     width = static_cast<float>(state->wRow.width);
     height = static_cast<float>(state->wRow.height);

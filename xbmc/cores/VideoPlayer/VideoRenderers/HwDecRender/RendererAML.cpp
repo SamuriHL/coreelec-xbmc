@@ -809,7 +809,8 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
   if (GUISNAPSHOT::Read(read))
     m_c.snap = read;
   m_cStamps.snapshot = CStampNs();
-  const auto state = DISPLAYSTATE::Get();
+  // C only (the tick and wake tails): lock-free, valid until C's next GetRT
+  const DISPLAYSTATE::DisplayState* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_C);
   m_cStamps.state = CStampNs();
   // nothing is applied from a not-connected, zero-size or uncommitted link (plan §1.1)
   if (!m_c.snap.valid || !state || !state->connected || state->linkUncommitted ||
