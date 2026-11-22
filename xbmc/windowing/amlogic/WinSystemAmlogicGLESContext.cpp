@@ -9,8 +9,6 @@
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
-#include "guilib/GUIComponent.h"
-#include "guilib/GUIWindowManager.h"
 #include "platform/linux/SysfsPath.h"
 #include "ServiceBroker.h"
 #include "settings/Settings.h"
@@ -242,10 +240,6 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     DestroyWindow();
     return false;
   }
-
-  CGUIComponent* gui = CServiceBroker::GetGUI();
-  if (gui)
-    gui->GetWindowManager().MarkDirty();
 
   if (!m_delayDispReset)
   {
