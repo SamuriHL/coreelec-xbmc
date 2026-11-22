@@ -1231,6 +1231,8 @@ void CPresentationCoordinator::Process()
   }
 
   m_planeOffOpen = false;
+  // a stopped C pins no display state (GetRT's slot)
+  DISPLAYSTATE::ReleaseRT(DISPLAYSTATE::RT_C);
   if (OUTPUT::PlaneOffOnC())
   {
     {

@@ -44,6 +44,7 @@ std::atomic<std::shared_ptr<const DisplayState>> s_state;
 std::atomic<const DisplayState*> s_rtState{nullptr};
 std::atomic<const DisplayState*> s_rtHazard[RT_COUNT] = {};
 std::shared_ptr<const DisplayState> s_rtOwned; // publishers only (never concurrent)
+std::atomic<uint64_t> s_publishedEpoch{0}; //!< the published state's epoch (0: none), lock-free
 std::vector<std::shared_ptr<const DisplayState>> s_rtRetired; // publishers only
 uint64_t s_epoch = 0; // publishers are never concurrent
 uint64_t s_capsEpoch = 0;
@@ -266,8 +267,14 @@ void FillCaps(DisplayState& s, const CAMLDisplay& display, std::optional<bool> h
   }
 }
 
+std::mutex s_storeMutex; //!< publishers only (readers never take it)
+
 void Store(DisplayState& s, const char* kind)
 {
+  // review of 6fa45004ca: publishers are not always serial (COutputWorker::Stop: W drains a
+  // PublishMode while its Run executes inline on another thread), and s_rtOwned/s_rtRetired
+  // would then be freed twice
+  std::unique_lock storeLock(s_storeMutex);
   s.epoch = ++s_epoch;
   auto next = std::make_shared<const DisplayState>(s);
   s_state.store(next);
@@ -277,6 +284,7 @@ void Store(DisplayState& s, const char* kind)
     s_rtRetired.push_back(std::move(s_rtOwned));
   s_rtOwned = std::move(next);
   s_rtState.store(s_rtOwned.get());
+  s_publishedEpoch.store(s.epoch);
   std::erase_if(s_rtRetired,
                 [](const std::shared_ptr<const DisplayState>& retired)
                 {
@@ -294,6 +302,7 @@ void Store(DisplayState& s, const char* kind)
                      (mode ? TIMING_MODE : 0) | (s.fracHeld ? TIMING_FRAC_HELD : 0) |
                      (s.windowed ? 1ull << 48 : 0) | height << 32 | fpsBits,
                  std::memory_order_release);
+  storeLock.unlock();
   CLog::Log(LOGINFO, "DISPLAYSTATE publish {} {}{} connected {} fd {} crtc {}", kind, Describe(s),
             s.fracHeld ? " frac-held" : "", s.connected, s.drmFd, s.crtcId);
 }
@@ -407,8 +416,9 @@ void Fallback(const char* field, Cause cause)
   static constexpr const char* causes[CAUSES] = {"before W's first publish", "not connected",
                                                  "main writing the caps", "caps read failed"};
   static std::array<std::atomic<uint64_t>, CAUSES> logged{};
-  const auto state = s_state.load();
-  const uint64_t key = (state ? state->epoch : 0) + 1;
+  // the published epoch, not s_state's load (RC23: that load takes the object's spin lock); a
+  // field-less accessor (C's tick: CommittedTiming(committed)) never comes here
+  const uint64_t key = s_publishedEpoch.load() + 1;
   if (logged[cause].exchange(key) != key)
     CLog::Log(LOGINFO, "DISPLAYSTATE {} reads today's value: {}", field, causes[cause]);
 }
@@ -441,6 +451,11 @@ bool PickBool(const char* field, bool today, bool DisplayState::*member)
 std::shared_ptr<const DisplayState> Get()
 {
   return s_state.load();
+}
+
+void ReleaseRT(RtReader reader)
+{
+  s_rtHazard[reader].store(nullptr);
 }
 
 const DisplayState* GetRT(RtReader reader)

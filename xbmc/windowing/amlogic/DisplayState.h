@@ -137,6 +137,8 @@ enum RtReader
 //! the last published state, or null; valid until this reader's next GetRT (the publisher frees a
 //! retired state only once no reader's slot holds it, on its own thread)
 const DisplayState* GetRT(RtReader reader);
+//! the reader stops: its slot no longer pins a state (C's and G's thread exits)
+void ReleaseRT(RtReader reader);
 //! 5.B3-4: the DRM-object readers' source under hotplugworker: the last published state
 //! (immutable, never freed while held), whatever a caps reader's skip cause. Null without
 //! hotplugworker (latched at W's start) or before the first publish: the reader keeps HEAD's

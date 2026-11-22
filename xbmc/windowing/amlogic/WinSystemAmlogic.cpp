@@ -2970,7 +2970,8 @@ float CWinSystemAmlogic::GetFrameLatencyAdjustment()
   // it from the display latency so a frame-phase sample is referenced to the
   // vblank, not to whenever the render loop reached it.
   int fd = GetDRMDeviceFd();
-  // 5.B3-4 (C's tick, V): under hotplugworker the live id comes from its lock-free mirror, not
+  // 5.B3-4 (main's FrameMove, V; C's tick passes its vblank time and never calls this): under
+  // hotplugworker the live id comes from its lock-free mirror, not
   // m_crtc, which main's re-init frees; DrmIds then picks as HEAD does (the published ids when
   // connected and no caps write is pending, else the live one: a reconnect's re-init gives the
   // new CRTC before its caps publish, as HEAD's live read does)

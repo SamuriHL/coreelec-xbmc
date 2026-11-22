@@ -2420,6 +2420,11 @@ void CGraphicsPlaneAML::ReleaseUnsubmitted(CPresentationCoordinator::STimedBuffe
 void CGraphicsPlaneAML::Process()
 {
   OUTPUT::SetThreadRole("G");
+  // a stopped G pins no display state (GetRT's slot), whichever way it returns
+  struct SReleaseRT
+  {
+    ~SReleaseRT() { DISPLAYSTATE::ReleaseRT(DISPLAYSTATE::RT_G); }
+  } releaseRT;
   if (!InitGL() || (!m_testPattern && !InitProgram()))
   {
     // never ready, so CanShow() keeps the HDR graphics on main's route B
