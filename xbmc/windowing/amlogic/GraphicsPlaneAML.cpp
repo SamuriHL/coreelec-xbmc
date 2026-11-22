@@ -390,6 +390,8 @@ bool CGraphicsPlaneAML::InitRing()
       reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
   auto targetTexture = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
       eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+  auto targetRenderbuffer = reinterpret_cast<PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC>(
+      eglGetProcAddress("glEGLImageTargetRenderbufferStorageOES"));
   const char* why = nullptr;
   if (!createImage || !targetTexture ||
       !CEGLUtils::HasExtension(m_display, "EGL_EXT_image_dma_buf_import"))
@@ -435,19 +437,62 @@ bool CGraphicsPlaneAML::InitRing()
       why = "EGL image";
       break;
     }
+    while (glGetError() != GL_NO_ERROR)
+    {
+    }
+    // a texture target first; Mali may import a dma-buf as sampled only, so a renderbuffer
+    // (GL_OES_EGL_image's render target) next (RC7 S6: GRING off (framebuffer))
     glGenTextures(1, &buffer.texture);
     glBindTexture(GL_TEXTURE_2D, buffer.texture);
     targetTexture(GL_TEXTURE_2D, buffer.image);
+    const GLenum texError = glGetError();
     glBindTexture(GL_TEXTURE_2D, 0);
     glGenFramebuffers(1, &buffer.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, buffer.fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buffer.texture,
                            0);
-    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    const GLenum texStatus = status;
+    GLenum rbError = GL_NO_ERROR;
+    if (status != GL_FRAMEBUFFER_COMPLETE && targetRenderbuffer)
+    {
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+      glDeleteTextures(1, &buffer.texture);
+      buffer.texture = 0;
+      glGenRenderbuffers(1, &buffer.renderbuffer);
+      glBindRenderbuffer(GL_RENDERBUFFER, buffer.renderbuffer);
+      targetRenderbuffer(GL_RENDERBUFFER, buffer.image);
+      rbError = glGetError();
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                                buffer.renderbuffer);
+      status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     m_ring.push_back(buffer);
-    if (status != GL_FRAMEBUFFER_COMPLETE || !FbFromBo(buffer.bo))
-      why = "framebuffer";
+    const uint64_t boModifier = gbm_bo_get_modifier(buffer.bo);
+    if (status != GL_FRAMEBUFFER_COMPLETE)
+    {
+      CLog::Log(LOGWARNING,
+                "GRING buffer {}: FBO incomplete: texture {:#x} (target error {:#x}), "
+                "renderbuffer {:#x} (target error {:#x}{}); format {:.4s} modifier {:#x} stride {}",
+                i, texStatus, texError, status, rbError,
+                targetRenderbuffer ? "" : ", no glEGLImageTargetRenderbufferStorageOES",
+                reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
+      why = "FBO incomplete";
+    }
+    else if (!FbFromBo(buffer.bo))
+    {
+      // FbFromBo logged AddFB2's errno; its flags: DRM_MODE_FB_MODIFIERS only for a modifier
+      // other than 0 (LINEAR) or INVALID, as for the surface's buffers
+      CLog::Log(LOGWARNING, "GRING buffer {}: no fb; format {:.4s} modifier {:#x} stride {}", i,
+                reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
+      why = "addfb";
+    }
+    else if (i == 0)
+      CLog::Log(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}",
+                buffer.renderbuffer ? "renderbuffer" : "texture",
+                reinterpret_cast<const char*>(&m_format), boModifier, gbm_bo_get_stride(buffer.bo));
   }
   if (why)
   {
@@ -473,6 +518,8 @@ void CGraphicsPlaneAML::DeinitRing()
       glDeleteFramebuffers(1, &buffer.fbo);
     if (buffer.texture)
       glDeleteTextures(1, &buffer.texture);
+    if (buffer.renderbuffer)
+      glDeleteRenderbuffers(1, &buffer.renderbuffer);
     if (buffer.image != EGL_NO_IMAGE_KHR && destroyImage)
       destroyImage(m_display, buffer.image);
     // its fb goes with it (DestroyPlaneFb, the bo's user data)

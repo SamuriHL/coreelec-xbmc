@@ -197,6 +197,7 @@ private:
     gbm_bo* bo = nullptr;
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     GLuint texture = 0;
+    GLuint renderbuffer = 0; //!< when the driver cannot render to the image as a texture
     GLuint fbo = 0;
     bool free = true;
   };
