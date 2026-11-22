@@ -52,6 +52,8 @@ constexpr int64_t FLIP_LOST_NS = 500000000;
 // GT-5 (GT-D15): a timed buffer picked after its slot still lands on the next vblank only if
 // committed this long before it (the commit worker's ioctl and the driver's latch)
 constexpr int64_t LATE_PICK_MARGIN_NS = 3000000;
+// GT-D15 / MC-29: how long after a flip a GUI frame waits for that vblank's tick (slot)
+constexpr int64_t UI_SLOT_HOLD_NS = 3000000;
 // GUNTIMED (m8's untimed metric): post_vbl/post_seq is the vblank interval the post fell in,
 // counted back from the flip's vblank; flip/flipseq the DRM sequence of the flip that showed it
 // (-1: none, the post was lost); by= the state that showed it
@@ -1056,7 +1058,20 @@ void CPresentationCoordinator::Process()
       fds[2].fd = timeline ? m_tickFd.load() : m_vblankFd;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
-    const int timeout = held ? 20 : (video || inFlight ? 50 : -1);
+    int timeout = held ? 20 : (video || inFlight ? 50 : -1);
+    {
+      // a GUI frame held for the slot is committed within its bound even with no tick
+      std::unique_lock lock(m_uiMutex);
+      // the held frame went another way (replaced, dropped at a reclaim): nothing to wait for
+      if (m_uiHoldUntilNs && !m_planes[PLANE_UI].ready.req)
+        m_uiHoldStartNs = m_uiHoldUntilNs = 0;
+      if (m_uiHoldUntilNs)
+      {
+        const int64_t left = m_uiHoldUntilNs - MonotonicNs();
+        const int ms = left <= 0 ? 0 : static_cast<int>((left + 999999) / 1000000);
+        timeout = timeout < 0 ? ms : std::min(timeout, ms);
+      }
+    }
     {
       // GT-D15 measurement: a late tick is C busy (a long body) or C not run (it waited in
       // poll from before the vblank)
@@ -1358,6 +1373,32 @@ void CPresentationCoordinator::CommitUi()
       }
       if (!ready.req || ready.fence >= 0)
         continue;
+      // GT-D15 / MC-29 ("C issues all OSD commits in the post-tick slot while video is
+      // attached"): a GUI frame ready at a flip's wake whose tick is imminent (the flip one
+      // vblank past the last tick handled) waits for that slot, so GUI and graphics go in one
+      // commit; committed alone it took the slot and the timed pick landed a vblank late behind
+      // its flight (RC14 FP n5994 while the seek bar closed). Bounded at 3 ms after the flip: a
+      // missing tick never holds the GUI. The route only, video ticking
+      if (plane == PLANE_UI && !ready.cOwned && m_videoAttached && m_gtFlipSeqValid &&
+          m_diagVblankSeq &&
+          static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) == 1 &&
+          MonotonicNs() - m_gtFlipNs < UI_SLOT_HOLD_NS && GRAPHICSTICK::RouteOn())
+      {
+        if (!m_uiHoldStartNs)
+        {
+          m_uiHoldStartNs = MonotonicNs();
+          m_report.uiHeldForSlot++;
+        }
+        m_uiHoldUntilNs = m_gtFlipNs + UI_SLOT_HOLD_NS;
+        continue;
+      }
+      if (plane == PLANE_UI && m_uiHoldStartNs)
+      {
+        m_report.uiHeldMaxUs =
+            std::max(m_report.uiHeldMaxUs, (MonotonicNs() - m_uiHoldStartNs) / 1000);
+        m_uiHoldStartNs = 0;
+        m_uiHoldUntilNs = 0;
+      }
       if (plane == PLANE_GRAPHICS)
       {
         // a plane the driver refused would take every GUI frame down with it
@@ -2141,6 +2182,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   // the newest vblank C has seen (its flip can come before that vblank's tick)
   m_gtFlipSeq = sequence;
   m_gtFlipSeqValid = true;
+  m_gtFlipNs = MonotonicNs();
   std::vector<SUntimedPost> untimed;
   if (s_untimedLog && flipNs > 0)
   {
@@ -2657,9 +2699,9 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={} "
-              "latePickBack={} stalePickReplaced={}",
+              "latePickBack={} stalePickReplaced={} uiHeldForSlot={} uiHeldMax_us={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick,
-              r.gfxLatePickBack, r.stalePickReplaced);
+              r.gfxLatePickBack, r.stalePickReplaced, r.uiHeldForSlot, r.uiHeldMaxUs);
   // GT-D15: C's loop body (bounded: no I/O on it) and the log writer that took C's lines
   if (GRAPHICSTICK::Requested())
   {

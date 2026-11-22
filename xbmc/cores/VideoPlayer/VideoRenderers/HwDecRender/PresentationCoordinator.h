@@ -402,6 +402,9 @@ private:
   //! under m_uiMutex: the newest vblank a flip of C's commits reported
   uint32_t m_gtFlipSeq = 0;
   bool m_gtFlipSeqValid = false;
+  int64_t m_gtFlipNs = 0; //!< when C handled that flip
+  int64_t m_uiHoldStartNs = 0; //!< a GUI frame waits for the slot since (0: none)
+  int64_t m_uiHoldUntilNs = 0; //!< its bound
   int64_t m_gtStaleWindowNs = 0; //!< GTICK stalePickReplaced: lines in the current second
   int m_gtStaleLines = 0;
   int64_t m_gtNoPickWindowNs = 0; //!< GTICK no pick: lines in the current second
@@ -575,6 +578,9 @@ private:
     int gfxLatePickBack = 0;
     //! GT-D15 re-sync: picks whose own frame had left the screen, replaced at the slot
     int stalePickReplaced = 0;
+    //! GT-D15 / MC-29: GUI frames held at a flip's wake for the imminent slot, and the longest
+    int uiHeldForSlot = 0;
+    int64_t uiHeldMaxUs = 0;
     //! GT-D15: C's loop bodies [<1 ms, <5, <10, <20, >=20 ms] and the longest, us
     int bodyHist[5] = {};
     int64_t bodyMaxUs = 0;
