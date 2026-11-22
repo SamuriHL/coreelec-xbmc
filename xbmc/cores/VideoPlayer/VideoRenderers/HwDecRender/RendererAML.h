@@ -188,6 +188,18 @@ public:
   bool GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>& codec, bool shown);
   //! GeometryOnC's compute and frame-locked writes (C)
   bool ApplyGeometryOnC(CAMLCodec& codec);
+  //! RC22 measurement (C only): steady-clock stamps of the last GeometryOnC's steps
+  struct SCStamps
+  {
+    int64_t enter = 0; //!< GeometryOnC entered
+    int64_t apply = 0; //!< ApplyGeometryOnC entered (decoder resolved)
+    int64_t snapshot = 0; //!< GUI snapshot read
+    int64_t state = 0; //!< display state read
+    int64_t rects = 0; //!< the rects published (m_rectMutex)
+    int64_t end = 0;
+  };
+  const SCStamps& CStamps() const { return m_cStamps; }
+  SCStamps m_cStamps;
   //! main: C's view mode result for request gen (D5)
   bool ViewModeFromC(uint64_t gen, VIDEOGEOMETRY::SViewModeOut& out) const;
   //! main and RM: C's published render area (D7)

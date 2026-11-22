@@ -2511,6 +2511,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     const int64_t tailNs = MonotonicNs() - tailStart;
     m_phaseTailUs = tailNs / 1000; // GT-D15 measurement: GTLAT C body tail=
     m_report.tails++;
+    m_lastTailNs = MonotonicNs();
     m_report.tailWrites += wrote;
     m_report.tailMaxNs = std::max(m_report.tailMaxNs, tailNs);
     if (m_tickPeriodNs && tailNs > m_tickPeriodNs)
@@ -2612,14 +2613,63 @@ void CPresentationCoordinator::RunWakeTail()
   // off the path: nothing, no lock
   if (!m_geometryOnC)
     return;
+  // RC22 coreelec-br K1 (3 of 6 runs): wake tails of 83-124 ms mid-playback ("wake max
+  // 123640 us", the GTLAT notick= phase; tail=/wake= there are the tick's), each pushing the
+  // next placements 4-6 vblanks late. While video ticks, the tick tail runs the same geometry
+  // at every vblank (the frame-locked moment): a wake tail between two of them only runs it up
+  // to a period earlier, so C does not run it then. Paused, held or detached (no tick tail for
+  // two periods) it runs as before
+  if (m_tickPeriodNs > 0 && m_lastTailNs && MonotonicNs() - m_lastTailNs < 2 * m_tickPeriodNs)
+  {
+    m_report.wakeTicking++;
+    return;
+  }
   std::unique_lock lock(m_videoMutex);
   if (!m_video)
     return;
   const int64_t start = MonotonicNs();
   const char* busy = nullptr;
   SRMLockOwner owner;
-  const bool wrote = m_video->GeometryWakeOnC(busy, owner);
+  SGeomWakeSteps steps;
+  const bool wrote = m_video->GeometryWakeOnC(busy, owner, steps);
   const int64_t ns = MonotonicNs() - start;
+  // measurement (log only, at most 5 lines a second): where a wake tail over 3 ms went, step by
+  // step (steady clock = CLOCK_MONOTONIC); 0: not reached
+  if (ns > 3000000)
+  {
+    const int64_t now = MonotonicNs();
+    if (now - m_wakeSlowWindowNs >= 1000000000)
+    {
+      m_wakeSlowWindowNs = now;
+      m_wakeSlowLines = 0;
+    }
+    if (++m_wakeSlowLines <= 5)
+    {
+      int64_t last = steps.start;
+      const auto step = [&last](int64_t t) -> int64_t
+      {
+        if (!t)
+          return 0;
+        const int64_t us = (t - last) / 1000;
+        last = t;
+        return us;
+      };
+      const int64_t held = step(steps.held);
+      const int64_t statelock = step(steps.statelock);
+      const int64_t enter = step(steps.enter);
+      const int64_t apply = step(steps.apply);
+      const int64_t snapshot = step(steps.snapshot);
+      const int64_t state = step(steps.state);
+      const int64_t rects = step(steps.rects);
+      const int64_t applied = step(steps.applied);
+      const int64_t end = step(steps.end);
+      GRAPHICSTICK::GTLogF(LOGINFO,
+                           "GEOMWAKE slow us={} held={} statelock={} enter={} decoder={} "
+                           "snapshot={} state={} rects={} applied={} handover={} busy={}",
+                           ns / 1000, held, statelock, enter, apply, snapshot, state, rects,
+                           applied, end, busy ? busy : "-");
+    }
+  }
   if (busy)
   {
     // measurement (log only, at most 5 lines a second): the lock a frame's tick would wait for
@@ -2864,12 +2914,12 @@ void CPresentationCoordinator::LogReport()
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG release after vblank, 10 us bin:ticks{} over={}", bins,
               r.releaseOver);
   }
-  if (r.tails || r.wakeTails || r.wakeBusy)
+  if (r.tails || r.wakeTails || r.wakeBusy || r.wakeTicking)
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GEOMDIAG C tails: tick {} (wrote {}, max {} us, over a vblank {}), wake {} "
-              "(wrote {}, max {} us, busy {})",
+              "(wrote {}, max {} us, busy {}, not run while ticking {})",
               r.tails, r.tailWrites, r.tailMaxNs / 1000, r.tailsOverVblank, r.wakeTails,
-              r.wakeWrites, r.wakeMaxNs / 1000, r.wakeBusy);
+              r.wakeWrites, r.wakeMaxNs / 1000, r.wakeBusy, r.wakeTicking);
   if (r.shadowN)
   {
     const double mean = r.shadowSum / r.shadowN;

@@ -622,9 +622,13 @@ private:
     int wakeWrites = 0;
     int64_t wakeMaxNs = 0;
     int wakeBusy = 0; //!< wake tails skipped on a lock another thread held
+    int wakeTicking = 0; //!< wake tails not run: the tick tail ran within two periods
     //! MC-29: a held GUI frame's commit after the wake that ended its hold (C's own body), us
     int64_t uiHoldEndToCommitMaxUs = 0;
   } m_report;
+  int64_t m_lastTailNs = 0; //!< the tick tail last ran (C)
+  int64_t m_wakeSlowWindowNs = 0; //!< GEOMWAKE slow: lines in the current second
+  int m_wakeSlowLines = 0;
   int64_t m_wakeBusyWindowNs = 0; //!< GEOMWAKE busy: lines in the current second
   int m_wakeBusyLines = 0;
   //! 5.V3-1 (under m_uiMutex): when CommitUi could last start a commit again (the flip in flight

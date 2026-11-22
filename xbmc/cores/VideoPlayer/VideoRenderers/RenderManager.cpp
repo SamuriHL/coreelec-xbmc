@@ -712,6 +712,11 @@ void CRMTrackedSection::Note(const void* site)
   m_site.store(site, std::memory_order_relaxed);
 #if defined(HAS_LIBAMCODEC)
   m_role.store(OUTPUT::ThreadRole(), std::memory_order_relaxed);
+  // the accessor just before this take names it, when it names this lock
+  const OUTPUT::SCouplingSite* named = OUTPUT::t_couplingSite;
+  OUTPUT::t_couplingSite = nullptr;
+  m_named.store(named && std::strcmp(named->what, m_what) == 0 ? named : nullptr,
+                std::memory_order_relaxed);
 #endif
   m_tid.store(static_cast<int>(gettid()), std::memory_order_relaxed);
 }
@@ -722,6 +727,7 @@ void CRMTrackedSection::ResumeOwner(const SRMLockOwner& owner)
     return;
   m_sinceNs.store(SteadyNs(), std::memory_order_relaxed);
   m_site.store(owner.site, std::memory_order_relaxed);
+  m_named.store(owner.named, std::memory_order_relaxed);
   m_role.store(owner.role, std::memory_order_relaxed);
   m_tid.store(owner.tid, std::memory_order_relaxed);
 }
@@ -736,12 +742,20 @@ std::string CRenderManager::LockOwnerText(const SRMLockOwner& owner, int64_t atN
 #endif
   Dl_info info = {};
   std::string site;
+#if defined(HAS_LIBAMCODEC)
+  if (owner.named)
+  {
+    const auto* named = static_cast<const OUTPUT::SCouplingSite*>(owner.named);
+    const char* file = std::strrchr(named->file, '/');
+    site = StringUtils::Format("{}:{} ", file ? file + 1 : named->file, named->line);
+  }
+#endif
   if (owner.site && dladdr(owner.site, &info) && info.dli_fname)
-    site = StringUtils::Format("{}+{:#x}", info.dli_fname,
+    site += StringUtils::Format("{}+{:#x}", info.dli_fname,
                                reinterpret_cast<uintptr_t>(owner.site) -
                                    reinterpret_cast<uintptr_t>(info.dli_fbase));
   else
-    site = StringUtils::Format("{}", owner.site);
+    site += StringUtils::Format("{}", owner.site);
   return StringUtils::Format("owner role={} tid={} site={} held_us={}", role, owner.tid, site,
                              owner.sinceNs ? (atNs - owner.sinceNs) / 1000 : -1);
 }
@@ -788,10 +802,13 @@ void CRenderManager::WakeWorkerOnC()
   NotifyWorker();
 }
 
-bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner)
+bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner,
+                                     SGeomWakeSteps& steps)
 {
   busy = nullptr;
   owner = SRMLockOwner();
+  steps = SGeomWakeSteps();
+  steps.start = SteadyNs();
 #if defined(HAS_LIBAMCODEC)
   // RC21 coreelec-br K1 n5994: C waited 116 ms here mid-playback ("GEOMDIAG C tails ... wake
   // max 116262 us", the GTLAT body's no-tick phase), six ticks missed and the frames dropped.
@@ -809,6 +826,7 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner)
     }
     m_codecReleased.push_back(std::move(m_wakeCodecHeld));
   }
+  steps.held = SteadyNs();
   std::shared_ptr<CBaseRenderer> renderer;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -823,11 +841,19 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner)
       return false;
     renderer = m_cRenderer;
   }
+  steps.statelock = SteadyNs();
   auto* aml = dynamic_cast<CRendererAML*>(renderer.get());
   if (!aml)
     return false;
   std::shared_ptr<CAMLCodec> codec;
   const bool wrote = aml->GeometryOnC(nullptr, codec, false);
+  const CRendererAML::SCStamps& stamps = aml->CStamps();
+  steps.enter = stamps.enter;
+  steps.apply = stamps.apply;
+  steps.snapshot = stamps.snapshot;
+  steps.state = stamps.state;
+  steps.rects = stamps.rects;
+  steps.applied = stamps.end;
   if (codec)
   {
     std::unique_lock lock(m_presentlock, std::try_to_lock);
@@ -840,6 +866,7 @@ bool CRenderManager::GeometryWakeOnC(const char*& busy, SRMLockOwner& owner)
       owner = m_presentlock.Owner();
     }
   }
+  steps.end = SteadyNs();
   return wrote;
 #else
   return false;

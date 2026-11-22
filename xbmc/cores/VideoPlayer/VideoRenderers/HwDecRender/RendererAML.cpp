@@ -30,6 +30,7 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
 
+#include <chrono>
 #include <iterator>
 
 CRendererAML::CRendererAML()
@@ -734,9 +735,21 @@ void CRendererAML::PresentFrameOnC(int index,
   m_prevVPts = pts;
 }
 
+namespace
+{
+int64_t CStampNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+} // namespace
+
 bool CRendererAML::GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>& codec, bool shown)
 {
   using namespace VIDEOGEOMETRY;
+  m_cStamps = SCStamps();
+  m_cStamps.enter = CStampNs();
   if (in)
   {
     if (!m_cIn)
@@ -776,7 +789,9 @@ bool CRendererAML::GeometryOnC(const SGeometryIn* in, std::shared_ptr<CAMLCodec>
     if (shown)
       m_c.shownOnce = true;
   }
+  m_cStamps.apply = CStampNs();
   const bool wrote = ApplyGeometryOnC(*codec);
+  m_cStamps.end = CStampNs();
   // the shown frame's layer-on, FEL step and kept clear, as SetVideoRect's tail, whatever the
   // geometry's state
   if (qbuf && shown)
@@ -793,7 +808,9 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
   GUISNAPSHOT::SSnapshot read;
   if (GUISNAPSHOT::Read(read))
     m_c.snap = read;
+  m_cStamps.snapshot = CStampNs();
   const auto state = DISPLAYSTATE::Get();
+  m_cStamps.state = CStampNs();
   // nothing is applied from a not-connected, zero-size or uncommitted link (plan §1.1)
   if (!m_c.snap.valid || !state || !state->connected || state->linkUncommitted ||
       state->screenWidth <= 0 || state->screenHeight <= 0)
@@ -854,6 +871,7 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
     m_cView = onC.viewRect;
     m_cRgen = facts.rgen;
   }
+  m_cStamps.rects = CStampNs();
 
   if (!m_c.shownOnce)
     return false;

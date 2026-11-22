@@ -49,8 +49,13 @@ struct SCouplingSite
 
 void LogMainCoupling(const SCouplingSite& site, int role, const void* caller);
 
+//! the last MAINCOUPLING site this thread passed: RM's tracked locks name their take by it
+//! (RC22: the binary is stripped and LTO-built, so a return address does not resolve)
+inline thread_local const SCouplingSite* t_couplingSite = nullptr;
+
 inline void NoteMainCoupling(SCouplingSite& site, const void* caller)
 {
+  t_couplingSite = &site;
   const int role = ThreadRole();
   if (role == ROLE_MAIN)
     return;
