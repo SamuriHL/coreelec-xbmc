@@ -1679,7 +1679,10 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     // GT-5 item 5 (f): a segment's first page, once picked, is committed at its slot or the next
     // flip; nothing replaces it meanwhile (later entries wait for the next slot)
     const UiBuffer& waiting = m_planes[PLANE_GRAPHICS].ready;
-    const bool pageWaits = waiting.req && waiting.timed && waiting.firstPage;
+    // only while it waits for the flight or its fence, which end: a page CommitUi cannot place
+    // (no GUI plane up) never holds the later entries back
+    const bool pageWaits = waiting.req && waiting.timed && waiting.firstPage &&
+                           (m_inFlight || waiting.fence >= 0);
     if (pageWaits)
       m_gtSlotMissed = false;
     // the newest buffer of a picture at or before the frame on screen next; a clear goes at
