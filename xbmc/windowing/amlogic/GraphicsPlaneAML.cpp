@@ -368,9 +368,13 @@ uint32_t CGraphicsPlaneAML::FbFromBo(gbm_bo* bo)
       modifier && modifier != DRM_FORMAT_MOD_INVALID ? DRM_MODE_FB_MODIFIERS : 0;
   auto* fb = new PlaneFb;
   fb->fd = m_drmFd;
+  // the modifiers only with DRM_MODE_FB_MODIFIERS: libdrm copies a passed array into the
+  // request whatever the flags, and the kernel's framebuffer check refuses a non-zero modifier
+  // without the flag (RC28: an imported bo reports DRM_FORMAT_MOD_INVALID, "no framebuffer:
+  // Invalid argument" on both SoCs; meson_fb.c meson_framebuffer_check)
   if (drmModeAddFB2WithModifiers(m_drmFd, gbm_bo_get_width(bo), gbm_bo_get_height(bo),
-                                 gbm_bo_get_format(bo), handles, strides, offsets, modifiers,
-                                 &fb->id, flags) != 0)
+                                 gbm_bo_get_format(bo), handles, strides, offsets,
+                                 flags ? modifiers : nullptr, &fb->id, flags) != 0)
   {
     GRAPHICSTICK::GTLogF(LOGERROR, "CGraphicsPlaneAML - no framebuffer: {}", strerror(errno));
     delete fb;
