@@ -103,7 +103,6 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   std::vector<CVariant> indexList = CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(CSettings::SETTING_VIDEOSCREEN_WHITELIST);
 
   bool noWhiteList = indexList.empty();
-  const bool allowMultiples = CServiceBroker::GetWinSystem()->AllowsRefreshRateMultiples();
 
   CLog::Log(LOGINFO,
             "[WHITELIST] Searching the whitelist for: width: {}, height: {}, fps: {:0.3f}, 3D: {}:(0x{:x}), stereo mode: {:d}",
@@ -157,8 +156,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   bool found = false;
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE) &&
-      allowMultiples)
+          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE))
   {
     CLog::Log(LOGDEBUG,
               "[WHITELIST] Searching for an exact resolution with double the refresh rate");
@@ -195,8 +193,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   }
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          SETTING_VIDEOSCREEN_WHITELIST_WHOLENUMBER) &&
-      allowMultiples)
+          SETTING_VIDEOSCREEN_WHITELIST_WHOLENUMBER))
   {
     CLog::Log(
         LOGDEBUG,
@@ -334,8 +331,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
     return;
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE) &&
-      allowMultiples)
+          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE))
   {
     CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a closest resolution with double refresh rate");
 
@@ -388,8 +384,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   CLog::Log(LOGDEBUG, "[WHITELIST] No match for a desktop resolution with an exact refresh rate");
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE) &&
-      allowMultiples)
+          SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE))
   {
     CLog::Log(LOGDEBUG,
               "[WHITELIST] Searching for a desktop resolution with double the refresh rate");
@@ -445,8 +440,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
   }
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          SETTING_VIDEOSCREEN_WHITELIST_WHOLENUMBER) &&
-      allowMultiples)
+          SETTING_VIDEOSCREEN_WHITELIST_WHOLENUMBER))
   {
     CLog::Log(
         LOGDEBUG,
