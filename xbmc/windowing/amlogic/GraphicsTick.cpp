@@ -554,7 +554,13 @@ namespace
 constexpr size_t GTLOG_CAP = 4096;
 std::mutex s_logMutex;
 std::condition_variable s_logCond;
-std::deque<std::pair<int, std::string>> s_logQueue;
+struct SLogLine
+{
+  int level;
+  uint32_t component; //!< 0: CLog's general component
+  std::string line;
+};
+std::deque<SLogLine> s_logQueue;
 bool s_logWriting = false; //!< the writer holds a batch it took
 bool s_logStop = false;
 //! never destroyed: a process that ends without C's stop must not terminate in its destructor
@@ -572,16 +578,19 @@ void LogWriter()
     s_logCond.wait(lock, [] { return s_logStop || !s_logQueue.empty(); });
     if (s_logQueue.empty() && s_logStop)
       break;
-    std::deque<std::pair<int, std::string>> batch;
+    std::deque<SLogLine> batch;
     batch.swap(s_logQueue);
     s_logWriting = true;
     lock.unlock();
     int64_t slow = 0;
     int64_t maxUs = 0;
-    for (const auto& [level, line] : batch)
+    for (const SLogLine& entry : batch)
     {
       const auto start = std::chrono::steady_clock::now();
-      CLog::Log(level, "{}", line);
+      if (entry.component)
+        CLog::Log(entry.level, entry.component, "{}", entry.line);
+      else
+        CLog::Log(entry.level, "{}", entry.line);
       const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - start)
                              .count();
@@ -604,11 +613,29 @@ bool GTLogLevelOn(int level)
   return CServiceBroker::GetLogging().IsLogLevelLogged(level);
 }
 
+bool GTLogComponentOn(int level, uint32_t component)
+{
+  return CServiceBroker::GetLogging().IsLogLevelLogged(level) &&
+         CServiceBroker::GetLogging().CanLogComponent(component);
+}
+
 void GTLog(int level, std::string line)
 {
+  GTLog(level, 0, std::move(line));
+}
+
+void GTLog(int level, uint32_t component, std::string line)
+{
+  const auto direct = [&]
+  {
+    if (component)
+      CLog::Log(level, component, "{}", line);
+    else
+      CLog::Log(level, "{}", line);
+  };
   if (!Requested())
   {
-    CLog::Log(level, "{}", line);
+    direct();
     return;
   }
   {
@@ -617,7 +644,7 @@ void GTLog(int level, std::string line)
     {
       // after C's stop (teardown): at once, nothing is queued any more
       lock.unlock();
-      CLog::Log(level, "{}", line);
+      direct();
       return;
     }
     if (!s_logThread)
@@ -627,7 +654,7 @@ void GTLog(int level, std::string line)
       s_logDropped++;
       return;
     }
-    s_logQueue.emplace_back(level, std::move(line));
+    s_logQueue.push_back({level, component, std::move(line)});
   }
   s_logCond.notify_all();
 }

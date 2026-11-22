@@ -5896,11 +5896,19 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
       m_startGate = false;
   }
 
+#if defined(HAS_LIBAMCODEC)
+  GTLOG_FC(LOGDEBUG, LOGAVTIMING,
+           "frameOnScreen: {:.3f} renderPts: {:.3f} nextFramePts: {:.3f} -> diff: {:.3f}  render: {:d} "
+           "forceNext: {:d}",
+           frameOnScreen / DVD_TIME_BASE, renderPts / DVD_TIME_BASE, nextFramePts / DVD_TIME_BASE,
+           (renderPts - nextFramePts) / DVD_TIME_BASE, renderPts >= nextFramePts, m_forceNext);
+#else
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:.3f} renderPts: {:.3f} nextFramePts: {:.3f} -> diff: {:.3f}  render: {:d} "
               "forceNext: {:d}",
               frameOnScreen / DVD_TIME_BASE, renderPts / DVD_TIME_BASE, nextFramePts / DVD_TIME_BASE,
               (renderPts - nextFramePts) / DVD_TIME_BASE, renderPts >= nextFramePts, m_forceNext);
+#endif
 
   bool combined = false;
   if (m_presentsourcePast >= 0)

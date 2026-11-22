@@ -8,6 +8,7 @@
 
 
 #include "AMLCodec.h"
+#include "windowing/amlogic/GraphicsTick.h"
 
 #include "cores/VideoPlayer/BDStageTrace.h"
 #include "DynamicDll.h"
@@ -3632,7 +3633,9 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop, uint32_t sessionGen
     return 0;
   }
 
-  CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
+  // GT-D15: on C's thread per frame, through the route's log queue (no I/O on C)
+  GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index,
+                        static_cast<int>(drop));
 
   if (!m_releaseInOrder)
   {
@@ -4535,8 +4538,8 @@ void CAMLCodec::ApplyFrameLockedOnC(const VIDEOGEOMETRY::SAmlAxisOut& axis,
     Set3dMode(in.stereoMode);
   char video_axis[256] = {};
   sprintf(video_axis, "%d %d %d %d", axis.axis[0], axis.axis[1], axis.axis[2], axis.axis[3]);
-  CLog::Log(LOGDEBUG, "CAMLCodec::ApplyFrameLockedOnC: axis {} screen_mode {}", video_axis,
-            in.nonLinear ? 4 : 1);
+  GRAPHICSTICK::GTLogF(LOGDEBUG, "CAMLCodec::ApplyFrameLockedOnC: axis {} screen_mode {}",
+                       video_axis, in.nonLinear ? 4 : 1);
   CSysfsPath("/sys/class/video/axis", video_axis);
   CSysfsPath("/sys/class/video/screen_mode", in.nonLinear ? 4 : 1);
 }

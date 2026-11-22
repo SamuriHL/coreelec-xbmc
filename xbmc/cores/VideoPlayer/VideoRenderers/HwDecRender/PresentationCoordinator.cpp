@@ -2481,7 +2481,7 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
   if (result.newFrame)
   {
     r.frames++;
-    CLog::LogFC(LOGDEBUG, LOGAVTIMING,
+    GTLOG_FC(LOGDEBUG, LOGAVTIMING,
                 "CPresentationCoordinator - released pts:{:.3f} seq:{} wake:{:.0f}us shadow:{}",
                 result.pts / 1000000.0, tick.seq,
                 tick.vblankNs ? static_cast<double>(tick.wokeNs - tick.vblankNs) / 1000.0 : -1.0,

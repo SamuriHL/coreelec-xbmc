@@ -12,6 +12,7 @@
 #include "utils/Geometry.h"
 
 #include <cstdint>
+#include <source_location>
 #include <utility>
 
 #include <fmt/format.h>
@@ -52,6 +53,19 @@ void GTLogF(int level, fmt::format_string<Args...> format, Args&&... args)
   if (GTLogLevelOn(level))
     GTLog(level, fmt::format(format, std::forward<Args>(args)...));
 }
+//! a component's line: CLog's component gating and its tag in the log, kept
+void GTLog(int level, uint32_t component, std::string line);
+bool GTLogComponentOn(int level, uint32_t component);
+template<typename... Args>
+void GTLogFC(int level, uint32_t component, fmt::format_string<Args...> format, Args&&... args)
+{
+  if (GTLogComponentOn(level, component))
+    GTLog(level, component, fmt::format(format, std::forward<Args>(args)...));
+}
+//! CLog::LogFC through the queue, with the same "<function>: " prefix (log.h's non-Windows form)
+#define GTLOG_FC(level, component, format, ...) \
+  GRAPHICSTICK::GTLogFC((level), (component), ("{}: " format), \
+                        std::source_location::current().function_name(), ##__VA_ARGS__)
 //! waits (up to timeoutMs) until every queued line is written: at a route end and at C's stop,
 //! so a gate's grep after a stop sees every line. Never called on main
 void GTLogFlush(int timeoutMs);
