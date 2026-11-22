@@ -45,7 +45,6 @@ public:
     m_enableTextAlign = false;
     m_overlayContainerFlushable = true;
     m_setForcedMargins = false;
-    m_discMenu = false;
     m_stereoView = DVDOverlayStereoView::BOTH;
   }
 
@@ -61,7 +60,6 @@ public:
     m_enableTextAlign = src.m_enableTextAlign;
     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
     m_setForcedMargins = src.m_setForcedMargins;
-    m_discMenu = src.m_discMenu;
     m_stereoView = src.m_stereoView;
   }
 
@@ -117,16 +115,6 @@ public:
    */
   bool IsForcedMargins() const { return m_setForcedMargins; }
 
-  /*
-   * \brief Mark the overlay as a disc menu drawn by the input stream rather than a subtitle.
-   */
-  void SetDiscMenu(bool discMenu) { m_discMenu = discMenu; }
-
-  /*
-   * \brief Return true if the overlay is a disc menu drawn by the input stream.
-   */
-  bool IsDiscMenu() const { return m_discMenu; }
-
   double iPTSStartTime;
   double iPTSStopTime;
   bool bForced; // display, no matter what
@@ -140,7 +128,6 @@ protected:
   bool m_enableTextAlign;
   bool m_overlayContainerFlushable;
   bool m_setForcedMargins;
-  bool m_discMenu;
 };
 
 using VecOverlays = std::vector<std::shared_ptr<CDVDOverlay>>;
