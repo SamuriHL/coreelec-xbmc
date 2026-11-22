@@ -437,6 +437,11 @@ gbm_bo* CGraphicsPlaneAML::RingBoFromDumb(uint32_t& dumb, int& fd, uint32_t& str
     {
       GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: no fb: {}", strerror(errno));
       delete fb;
+      // GBM's import of it on the same DRM fd may hold the dumb's own GEM handle: its destroy
+      // closes that handle, and DESTROY_DUMB on the number after it could delete a handle
+      // another thread got meanwhile (the lowest free number is reused at once)
+      if (gbm_bo_get_handle(bo).u32 == dumb)
+        dumb = 0;
       gbm_bo_destroy(bo);
       bo = nullptr;
     }
@@ -448,8 +453,11 @@ gbm_bo* CGraphicsPlaneAML::RingBoFromDumb(uint32_t& dumb, int& fd, uint32_t& str
     if (fd >= 0)
       close(fd);
     fd = -1;
-    struct drm_mode_destroy_dumb destroy = {dumb};
-    drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    if (dumb)
+    {
+      struct drm_mode_destroy_dumb destroy = {dumb};
+      drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    }
     dumb = 0;
   }
   return bo;
@@ -616,7 +624,10 @@ bool CGraphicsPlaneAML::InitRing()
       GRAPHICSTICK::GTLogF(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}, {}",
                 buffer.renderbuffer ? "renderbuffer" : "texture",
                 reinterpret_cast<const char*>(&m_format), boModifier, stride,
-                buffer.dumb ? "DRM dumb (heap-fb first)" : "GBM (heap-gfx)");
+                !buffer.dumb ? "GBM (heap-gfx)"
+                : gbm_bo_get_handle(buffer.bo).u32 == buffer.dumb
+                    ? "DRM dumb (heap-fb first), GEM handle shared with GBM's import (GBM closes it)"
+                    : "DRM dumb (heap-fb first), GBM's import on its own GEM handle");
   }
   if (why)
   {
@@ -648,13 +659,17 @@ void CGraphicsPlaneAML::DeinitRing()
       glDeleteRenderbuffers(1, &buffer.renderbuffer);
     if (buffer.image != EGL_NO_IMAGE_KHR && destroyImage)
       destroyImage(m_display, buffer.image);
+    // GBM's import on the same DRM fd may hold the dumb's own GEM handle: then its destroy
+    // closes it, and DESTROY_DUMB after it could delete a handle another thread (main's front
+    // buffers, the video layer's prime handles) got meanwhile under the reused number
+    if (buffer.bo && buffer.dumb && gbm_bo_get_handle(buffer.bo).u32 == buffer.dumb)
+      buffer.dumb = 0;
     // its fb goes with it (DestroyPlaneFb, the bo's user data)
     if (buffer.bo)
       gbm_bo_destroy(buffer.bo);
     if (buffer.dmabuf >= 0)
       close(buffer.dmabuf);
-    // then its dumb buffer (an import of the same GEM object may have closed the handle: an
-    // EINVAL here is that)
+    // then its dumb buffer, when GBM's import holds a handle of its own
     if (buffer.dumb)
     {
       struct drm_mode_destroy_dumb destroy = {buffer.dumb};
