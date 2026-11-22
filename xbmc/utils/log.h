@@ -30,6 +30,7 @@
 #include "utils/IPlatformLog.h"
 #include "utils/logtypes.h"
 
+#include <chrono>
 #include <source_location>
 #include <string>
 #include <vector>
@@ -125,6 +126,20 @@ public:
     GetInstance().FormatAndLogInternal(level, component, format, fmt::make_format_args(args...));
 #endif
   }
+
+  /*!
+   * \brief A line formatted earlier, logged as if at time on thread threadId (spdlog's
+   * details::os::thread_id() of the producer): the same pattern, time stamp and T: as a direct
+   * Log there and then. For a log writer thread that takes the I/O off its producers (5.G2
+   * GT-5, the Amlogic video path's GTLOG). Level and component gating as Log.
+   */
+  static void LogFormattedAt(int level,
+                             uint32_t component,
+                             std::string message,
+                             std::chrono::system_clock::time_point time,
+                             size_t threadId);
+  //! spdlog's id of the calling thread, as the pattern's T: prints it
+  static size_t ThreadIdForLog();
 
   template<typename... Args>
   static void Log(const std::string& loggerName,

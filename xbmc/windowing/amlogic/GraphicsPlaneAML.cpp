@@ -1495,8 +1495,6 @@ void CGraphicsPlaneAML::RouteEnd()
     m_uExpiredPage = SUntimedPage();
     GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED G off: the untimed graphics are main's again");
   }
-  // a gate greps the log right after a stop: every queued line is written by then (G's thread)
-  GRAPHICSTICK::GTLogFlush(500);
 }
 
 bool CGraphicsPlaneAML::RouteStep()

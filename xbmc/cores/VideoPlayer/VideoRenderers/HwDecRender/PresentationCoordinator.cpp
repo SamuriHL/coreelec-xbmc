@@ -193,6 +193,8 @@ bool CPresentationCoordinator::Start()
   m_commitThread = std::thread(&CPresentationCoordinator::CommitWorker, this);
   Create();
   s_instance = this;
+  // GT-D15: the video path's log writer runs while the coordinator does
+  GRAPHICSTICK::GTLogStart();
   GRAPHICSTICK::GTLogF(LOGINFO, "CPresentationCoordinator - started, commits the GUI plane (crtc {})", m_crtc.load());
   // the gate tooling (gx2d_summ_soc.py) keys its bound cell on this exact form,
   // never on a box's name
@@ -2531,8 +2533,9 @@ void CPresentationCoordinator::LogReport()
                          "GTICK C body [<1ms {} <5ms {} <10ms {} <20ms {} >=20ms {}] max_us={}",
                          r.bodyHist[0], r.bodyHist[1], r.bodyHist[2], r.bodyHist[3],
                          r.bodyHist[4], r.bodyMaxUs);
-    GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
   }
+  // the video path's log writer, in each report (its drops are lost lines)
+  GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
   // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
   // (G's counters are taken and reset with C's)
   if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff())

@@ -66,10 +66,12 @@ void GTLogFC(int level, uint32_t component, fmt::format_string<Args...> format, 
 #define GTLOG_FC(level, component, format, ...) \
   GRAPHICSTICK::GTLogFC((level), (component), ("{}: " format), \
                         std::source_location::current().function_name(), ##__VA_ARGS__)
-//! waits (up to timeoutMs) until every queued line is written: at a route end and at C's stop,
-//! so a gate's grep after a stop sees every line. Never called on main
+//! waits (up to timeoutMs) until the lines queued before the call are written. Never on main,
+//! never on a thread that a wait would delay mid-playback
 void GTLogFlush(int timeoutMs);
-//! C's stop: flushes and ends the writer
+//! C's start: the writer starts; until then (and with no coordinator) lines are written at once
+void GTLogStart();
+//! C's stop: new lines are written at once, the writer drains the queue and is joined
 void GTLogStop();
 //! lines, drops, writes over 5 ms and the slowest write since the last call with reset
 std::string GTLogStatsLine(bool reset);

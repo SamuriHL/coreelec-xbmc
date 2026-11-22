@@ -363,6 +363,42 @@ void CLog::FormatAndLogInternal(spdlog::level::level_enum level,
   GetLoggerById(component)->log(level, message);
 }
 
+void CLog::LogFormattedAt(int level,
+                          uint32_t component,
+                          std::string message,
+                          std::chrono::system_clock::time_point time,
+                          size_t threadId)
+{
+  CLog& log = GetInstance();
+  if (!log.CanLogComponent(component))
+    return;
+  const spdlog::level::level_enum spdLevel = MapLogLevel(level);
+  if (spdLevel < log.m_defaultLogger->level())
+    return;
+  log.FormatLineBreaks(message);
+  const Logger logger = log.GetLoggerById(component);
+  // as spdlog::logger::log would, with the producer's time and thread
+  spdlog::details::log_msg msg(time, spdlog::source_loc{}, logger->name(), spdLevel, message);
+  msg.thread_id = threadId;
+  try
+  {
+    for (const auto& sink : logger->sinks())
+      if (sink->should_log(spdLevel))
+        sink->log(msg);
+    if (spdLevel >= logger->flush_level())
+      logger->flush();
+  }
+  catch (...)
+  {
+    // as spdlog's own sink_it_: a failing sink never takes the writer down
+  }
+}
+
+size_t CLog::ThreadIdForLog()
+{
+  return spdlog::details::os::thread_id();
+}
+
 void CLog::FormatAndLogInternal(const std::string& loggerName,
                                 spdlog::level::level_enum level,
                                 fmt::string_view format,

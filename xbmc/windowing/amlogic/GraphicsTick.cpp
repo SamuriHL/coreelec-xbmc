@@ -155,7 +155,7 @@ void SetRoute(bool on, const char* why)
     }
   }
   if (!line.empty())
-    CLog::Log(on ? LOGINFO : LOGWARNING, "{}", line);
+    GTLogF(on ? LOGINFO : LOGWARNING, "{}", line);
   Wake();
 }
 
@@ -211,7 +211,7 @@ void EndRoute(const char* why)
     }
   }
   if (log)
-    CLog::Log(LOGWARNING, "GTICK off ({})", why);
+    GTLogF(LOGWARNING, "GTICK off ({})", why);
   // impl note §6 item 14: the class at the stereo hand-back, whichever thread ends the route
   if (handBack)
     DISPLAYSTATE::RequestRegimeRepublish("stereo hand-back");
@@ -246,7 +246,7 @@ void PostQueued(SQueued&& queued)
   }
   // GT-D15: only on a drop; 0 % 100 logged a WARNING at every post, a log write per picture on V
   if (dropped > 0 && (dropped == 1 || dropped % 100 == 0))
-    CLog::Log(LOGWARNING, "GTICK inbox full: {} pictures dropped unread (G stalled)", dropped);
+    GTLogF(LOGWARNING, "GTICK inbox full: {} pictures dropped unread (G stalled)", dropped);
   Wake();
 }
 
@@ -260,7 +260,7 @@ void PostFloor(uint64_t floor, const char* why)
     s_floor.floor = std::max(s_floor.floor, floor);
     s_floor.gen++;
   }
-  CLog::Log(LOGINFO, "GTICK floor {} ({})", floor, why);
+  GTLogF(LOGINFO, "GTICK floor {} ({})", floor, why);
   Wake();
 }
 
@@ -398,7 +398,7 @@ void PostUntimed(SUntimedState&& state)
       {
         s_queue.pop_front();
         if (s_counts[static_cast<int>(UntimedCount::NEWEST_OVERFLOW)]++ == 0)
-          CLog::Log(LOGWARNING, "GUNTIMED gnewest_off queue full ({}): oldest states dropped",
+          GTLogF(LOGWARNING, "GUNTIMED gnewest_off queue full ({}): oldest states dropped",
                     NEWEST_QUEUE_CAP);
       }
       s_queue.push_back(std::move(state));
@@ -565,6 +565,10 @@ struct SLogLine
   int level;
   uint32_t component; //!< 0: CLog's general component
   std::string line;
+  //! the producer's time and thread, so the written line is the one a direct Log would have
+  //! been (the pattern's time stamp and T:)
+  std::chrono::system_clock::time_point time;
+  size_t threadId;
   SLogLine* next = nullptr;
 };
 std::atomic<SLogLine*> s_logHead{nullptr};
@@ -572,9 +576,14 @@ std::atomic<int64_t> s_logQueued{0};
 std::atomic<int64_t> s_logDropped{0};
 std::atomic<bool> s_logStop{false};
 std::atomic<bool> s_logWriting{false};
-std::once_flag s_logStart;
-//! never destroyed: a process that ends without C's stop must not terminate in its destructor
-std::thread* s_logThread = nullptr;
+//! made at the coordinator's start and joined at its stop (on that path, never at exit: without
+//! a coordinator every line is written at once)
+std::atomic<std::thread*> s_logThread{nullptr};
+std::atomic<bool> s_logOn{false};
+std::atomic<uint64_t> s_logPushed{0}; //!< lines queued so far, and written so far
+std::atomic<uint64_t> s_logWritten{0};
+int64_t s_logDroppedMarked = 0; //!< writer only: the drop total its last marker line reached
+int64_t s_logDroppedReported = 0; //!< under s_logMutex: the drop total the last report reached
 // the writer's own (producers never take it): its idle wait, and flushers waiting for it
 std::mutex s_logMutex;
 std::condition_variable s_logCond;
@@ -582,18 +591,19 @@ int64_t s_logLines = 0; //!< under s_logMutex
 int64_t s_logSlow = 0;
 int64_t s_logMaxUs = 0;
 
-void WriteLine(const SLogLine& entry)
+void WriteLine(SLogLine& entry)
 {
-  if (entry.component)
-    CLog::Log(entry.level, entry.component, "{}", entry.line);
-  else
-    CLog::Log(entry.level, "{}", entry.line);
+  CLog::LogFormattedAt(entry.level, entry.component, std::move(entry.line), entry.time,
+                       entry.threadId);
 }
 
 void LogWriter()
 {
   // the user's ruling (2026-11-22): logging runs below every video-path thread
   pthread_setname_np(pthread_self(), "GTLOG");
+  // SCHED_OTHER whatever its creator ran at (never an inherited FIFO), then the lowest nice
+  struct sched_param param = {};
+  pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
   setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19);
   while (true)
   {
@@ -635,6 +645,15 @@ void LogWriter()
       count++;
     }
     s_logQueued.fetch_sub(count);
+    s_logWritten.fetch_add(static_cast<uint64_t>(count));
+    // a gap marked where it happened: lines dropped since the last marker (the writer's line)
+    const int64_t dropped = s_logDropped.load();
+    if (dropped > s_logDroppedMarked)
+    {
+      CLog::Log(LOGWARNING, "GTLOG dropped={} (queue full: lines lost before this one)",
+                dropped - s_logDroppedMarked);
+      s_logDroppedMarked = dropped;
+    }
     s_logWriting = false;
     std::unique_lock lock(s_logMutex);
     s_logLines += count;
@@ -663,20 +682,22 @@ void GTLog(int level, std::string line)
 
 void GTLog(int level, uint32_t component, std::string line)
 {
-  // after the coordinator's stop (teardown): at once
-  if (s_logStop.load(std::memory_order_relaxed))
+  const auto now = std::chrono::system_clock::now();
+  // no writer (no coordinator, or after its stop): at once
+  if (!s_logOn.load(std::memory_order_acquire))
   {
-    WriteLine({level, component, std::move(line)});
+    SLogLine entry{level, component, std::move(line), now, CLog::ThreadIdForLog()};
+    WriteLine(entry);
     return;
   }
-  std::call_once(s_logStart, [] { s_logThread = new std::thread(LogWriter); });
   if (s_logQueued.fetch_add(1) >= GTLOG_CAP)
   {
     s_logQueued.fetch_sub(1);
     s_logDropped++;
     return;
   }
-  auto* entry = new SLogLine{level, component, std::move(line)};
+  auto* entry = new SLogLine{level, component, std::move(line), now, CLog::ThreadIdForLog()};
+  s_logPushed.fetch_add(1);
   SLogLine* head = s_logHead.load(std::memory_order_relaxed);
   do
     entry->next = head;
@@ -686,25 +707,53 @@ void GTLog(int level, uint32_t component, std::string line)
   s_logCond.notify_one();
 }
 
+void GTLogStart()
+{
+  if (s_logThread.load())
+    return;
+  s_logStop = false;
+  s_logThread = new std::thread(LogWriter);
+  s_logOn.store(true, std::memory_order_release);
+}
+
 void GTLogFlush(int timeoutMs)
 {
-  if (!s_logThread)
+  if (!s_logThread.load())
     return;
+  // the lines queued before this call, not an empty queue (the writer may never see one)
+  const uint64_t target = s_logPushed.load();
   std::unique_lock lock(s_logMutex);
   s_logCond.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                     [] { return s_logQueued.load() == 0 && !s_logWriting.load(); });
+                     [target] { return s_logWritten.load() >= target; });
 }
 
 void GTLogStop()
 {
+  // new lines go out at once from here; the writer drains what is queued, then ends
+  s_logOn.store(false, std::memory_order_release);
   s_logStop = true;
   s_logCond.notify_all();
-  // the writer drains the stack before it ends
-  if (s_logThread)
+  if (std::thread* writer = s_logThread.exchange(nullptr))
   {
-    s_logThread->join();
-    delete s_logThread;
-    s_logThread = nullptr;
+    writer->join();
+    delete writer;
+  }
+  // a producer that saw the writer on just before the stop: its line is written here, in order
+  SLogLine* list = s_logHead.exchange(nullptr);
+  SLogLine* ordered = nullptr;
+  while (list)
+  {
+    SLogLine* next = list->next;
+    list->next = ordered;
+    ordered = list;
+    list = next;
+  }
+  while (ordered)
+  {
+    SLogLine* entry = ordered;
+    ordered = entry->next;
+    WriteLine(*entry);
+    delete entry;
   }
 }
 
@@ -713,11 +762,14 @@ std::string GTLogStatsLine(bool reset)
   std::unique_lock lock(s_logMutex);
   const std::string line =
       StringUtils::Format("GTLOG lines={} dropped={} slow={} max_us={} queued={}", s_logLines,
-                          s_logDropped.load(), s_logSlow, s_logMaxUs, s_logQueued.load());
+                          s_logDropped.load() - s_logDroppedReported, s_logSlow, s_logMaxUs,
+                          s_logQueued.load());
   if (reset)
   {
     s_logLines = s_logSlow = s_logMaxUs = 0;
-    s_logDropped = 0;
+    // the drop total is never reset (the writer's markers count from it); a window reports its
+    // own part
+    s_logDroppedReported = s_logDropped.load();
   }
   return line;
 }
