@@ -263,6 +263,11 @@ private:
   //! the state the last untimed-only entry drawn while C did not advance carries
   std::vector<const CDVDOverlay*> m_uFramelessIds;
   bool m_uFramelessShown = false;
+  //! an untimed change not yet in an entry at or below the frame on screen
+  bool m_uScreenOwed = false;
+  //! the pictures G took (drawn or Same), newest last: the frame on screen's composition when
+  //! it has no entry of its own
+  std::deque<SComposition> m_routeHistory;
   SComposition m_uSegFirst; //!< the newest segment's first picture, drawn or not
   unsigned int m_uPageGenSeen = 0; //!< the newest segment a page was seen for
   uint64_t m_uLostSeen = 0; //!< GRAPHICSTICK::GraphicsLost, as last seen

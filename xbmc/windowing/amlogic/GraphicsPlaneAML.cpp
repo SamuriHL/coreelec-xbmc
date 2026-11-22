@@ -1454,6 +1454,8 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uTakenU = 0;
   m_uAdvancing = true;
   m_uFramelessShown = false;
+  m_uScreenOwed = false;
+  m_routeHistory.clear();
   m_uSegFirst = SComposition();
   m_uPageGenSeen = 0;
   m_uLostSeen = GRAPHICSTICK::GraphicsLost();
@@ -1564,6 +1566,10 @@ bool CGraphicsPlaneAML::RouteStep()
     const bool hidden = m_routeLast.hidden;
     m_routeLast = SComposition();
     m_routeLast.hidden = hidden;
+    // pictures at or below a floor are gone
+    m_routeHistory.erase(std::remove_if(m_routeHistory.begin(), m_routeHistory.end(),
+                                        [floor](const SComposition& c) { return c.serial <= floor; }),
+                         m_routeHistory.end());
     m_routeClearOwed = true;
     m_routeClearSerial = floor;
     m_routeClearAtFloor = true;
@@ -1760,6 +1766,15 @@ bool CGraphicsPlaneAML::RouteStep()
       // page of that segment arriving later still goes on it
       if (m_untimedOnG && comp.segmentGen > m_uSegFirst.segmentGen)
         m_uSegFirst = comp;
+      // every picture taken, drawn or Same: the frame C picks for next may have no entry, and a
+      // menu change needs one at or below it (RC13 B1_m3gan: GTICK no pick, every held entry
+      // 10-11 frames ahead of the target)
+      if (m_untimedOnG)
+      {
+        m_routeHistory.push_back(comp);
+        if (m_routeHistory.size() > ROUTE_DRAWN_CAP)
+          m_routeHistory.pop_front();
+      }
       if (Same(comp, m_routeLast))
       {
         // the bridge's serial: the newest picture, never one under a later floor
@@ -1845,6 +1860,9 @@ void CGraphicsPlaneAML::MarkUntimedStale()
   for (SComposition& comp : m_routeDrawn)
     if (PageFor(comp).ids != comp.untimedIds)
       comp.untimedStale = true;
+  // the change must reach C at or below the frame it picks for next, not only in entries for
+  // frames still in the video queue
+  m_uScreenOwed = true;
 }
 
 void CGraphicsPlaneAML::TakeUntimedStates()
@@ -2064,6 +2082,28 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     m_routeDrawn.push_back(std::move(comp));
   }
   const uint64_t onScreen = m_routeHaveReleased ? m_routeReleased.serial : 0;
+  // an untimed change with no entry at or below the frame on screen (every frame since the last
+  // one drawn was Same, and the entries drawn since are for frames still queued): the frame on
+  // screen's composition from G's history becomes that entry, so the change reaches C's next
+  // slot (picked for a frame at or above it) instead of riding the queue to its own frame
+  if (m_uScreenOwed && m_routeHaveReleased && m_uAdvancing &&
+      std::none_of(m_routeDrawn.begin(), m_routeDrawn.end(), [onScreen](const SComposition& c)
+                   { return c.bridge || c.serial <= onScreen; }))
+  {
+    const auto it = std::find_if(m_routeHistory.rbegin(), m_routeHistory.rend(),
+                                 [onScreen](const SComposition& c) { return c.serial <= onScreen; });
+    if (it != m_routeHistory.rend())
+    {
+      SComposition comp = *it;
+      comp.redraw = false;
+      comp.bridge = false;
+      comp.untimedStale = true;
+      auto at = m_routeDrawn.begin();
+      while (at != m_routeDrawn.end() && !at->bridge && at->serial < comp.serial)
+        ++at;
+      m_routeDrawn.insert(at, std::move(comp));
+    }
+  }
   std::vector<size_t> ahead;
   int screen = -1;
   for (size_t i = 0; i < m_routeDrawn.size(); i++)
@@ -2074,6 +2114,8 @@ bool CGraphicsPlaneAML::RedrawUntimed()
     else if (comp.untimedStale)
       ahead.push_back(i);
   }
+  if (screen >= 0 && !m_routeDrawn[screen].untimedStale)
+    m_uScreenOwed = false;
   // measurement (log only, once per state): a new state that cannot reach C's next slot, and
   // why (the RC4 B1 untimed stalls: 13 vblanks with no graphics flip)
   const auto noteWait = [&](const char* why)
@@ -2244,6 +2286,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       RenderLibass(comp);
     if (!DrawTimed(comp))
       return true;
+    m_uScreenOwed = false;
     if (comp.bridge)
       m_routeLast.untimedIds = comp.untimedIds;
   }
