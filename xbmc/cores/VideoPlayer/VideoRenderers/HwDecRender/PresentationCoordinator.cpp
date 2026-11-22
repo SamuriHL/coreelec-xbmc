@@ -1010,6 +1010,7 @@ void CPresentationCoordinator::Process()
     unsigned int epoch = 0;
     // a hold is acknowledged only once the flip in flight has landed
     const bool held = aml_presenter_check_hold(epoch, !UiInFlight());
+    StampPhase(PHASE_HOLD);
     if (epoch != m_seenEpoch)
     {
       m_seenEpoch = epoch;
@@ -1028,6 +1029,7 @@ void CPresentationCoordinator::Process()
     }
     else
       CommitUi();
+    StampPhase(PHASE_COMMIT);
 
     const bool video = m_videoAttached;
     const bool timeline = video && m_useTimeline;
@@ -1061,6 +1063,7 @@ void CPresentationCoordinator::Process()
       if (m_pollReturnNs)
       {
         m_lastBodyNs = enter - m_pollReturnNs;
+        LogSlowBody(enter);
         const int64_t us = m_lastBodyNs / 1000;
         m_report.bodyHist[us < 1000 ? 0 : us < 5000 ? 1 : us < 10000 ? 2 : us < 20000 ? 3 : 4]++;
         m_report.bodyMaxUs = std::max(m_report.bodyMaxUs, us);
@@ -1070,6 +1073,7 @@ void CPresentationCoordinator::Process()
     if (poll(fds, 3 + PLANE_COUNT, timeout) < 0 && errno != EINTR)
       GRAPHICSTICK::GTLogF(LOGERROR, "CPresentationCoordinator - poll failed: {}", strerror(errno));
     m_pollReturnNs = MonotonicNs();
+    std::fill(std::begin(m_phaseNs), std::end(m_phaseNs), 0);
     if (m_bStop)
       break;
 
@@ -1105,6 +1109,7 @@ void CPresentationCoordinator::Process()
       ReadTimelineTick(tick, gotTick, epoch);
     else if (fds[2].revents & POLLIN)
       HandleEvents(m_vblankFd, tick, gotTick, epoch);
+    StampPhase(PHASE_EVENTS);
 
     const int64_t now = MonotonicNs();
 
@@ -1156,13 +1161,16 @@ void CPresentationCoordinator::Process()
       m_report.synthetic++;
     }
     const bool tickHeld = RunVideoTick(tick);
+    StampPhase(PHASE_TICK);
     if (!tickHeld)
       SelectTimed(true);
+    StampPhase(PHASE_SELECT);
     // the tick first (plan §3 V3-4)
     if (wakePending)
       RunWakeTail();
     if (planeOffOnC)
       RunPlaneOffs(tickHeld);
+    StampPhase(PHASE_END);
   }
 
   m_planeOffOpen = false;
@@ -1942,6 +1950,36 @@ void CPresentationCoordinator::NotePickedU(const UiBuffer& chosen)
   GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
 }
 
+void CPresentationCoordinator::StampPhase(int phase)
+{
+  m_phaseNs[phase] = MonotonicNs();
+}
+
+void CPresentationCoordinator::LogSlowBody(int64_t enter)
+{
+  // GT-D15 measurement (log only, graphicstick_on): where a body over 3 ms went, phase by phase
+  // from the poll's return (RC6 coreelec-br: bodies of 4.9-5.3 ms at INFO as at debug, the next
+  // tick late by as much). 0: the phase did not run in that body
+  if (m_lastBodyNs < 3000000 || !GRAPHICSTICK::Requested())
+    return;
+  static constexpr const char* names[PHASE_COUNT] = {"events", "present", "tick",  "select",
+                                                     "end",    "hold",    "commit"};
+  std::string parts;
+  int64_t last = m_pollReturnNs;
+  for (int i = 0; i < PHASE_COUNT; i++)
+  {
+    if (!m_phaseNs[i])
+    {
+      parts += StringUtils::Format(" {}=0", names[i]);
+      continue;
+    }
+    parts += StringUtils::Format(" {}={}", names[i], (m_phaseNs[i] - last) / 1000);
+    last = m_phaseNs[i];
+  }
+  GRAPHICSTICK::GTLogF(LOGINFO, "GTLAT C body us={}{} rest={}", m_lastBodyNs / 1000, parts,
+                       (enter - last) / 1000);
+}
+
 void CPresentationCoordinator::SelectTimedLate(int64_t now)
 {
   if (!m_gtSlotMissed || !GRAPHICSTICK::Requested())
@@ -2258,6 +2296,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   tick.periodNs = m_diagPeriodNs;
   const int64_t start = MonotonicNs();
   m_video->PresentTick(tick, result);
+  StampPhase(PHASE_PRESENT);
   const int64_t work = MonotonicNs() - start;
   m_lastTickNs = tick.wokeNs;
   // 5.V3-4: C's geometry tail, the RM locks released (outside work: the release is the QBUF's)

@@ -405,6 +405,23 @@ private:
   int64_t m_pollReturnNs = 0;
   int64_t m_lastBodyNs = 0;
   int64_t m_inFlightCommitNs = 0; //!< the commit time of the commit in flight
+  //! GT-D15 measurement: the loop body's phases, in the order they run (the last three at the
+  //! top of the next iteration, before its poll), stamped since the poll's return
+  enum
+  {
+    PHASE_EVENTS,
+    PHASE_PRESENT,
+    PHASE_TICK,
+    PHASE_SELECT,
+    PHASE_END,
+    PHASE_HOLD,
+    PHASE_COMMIT,
+    PHASE_COUNT
+  };
+  int64_t m_phaseNs[PHASE_COUNT] = {};
+  void StampPhase(int phase);
+  //! "GTLAT C body" for a body over 3 ms (graphicstick_on), at the next poll's entry
+  void LogSlowBody(int64_t enter);
   //! review rB m-1: the newest picture serial picked this route session; nothing older goes up
   uint64_t m_gtPickedSerial = 0;
   uint64_t m_gtSession = 0;
