@@ -527,13 +527,13 @@ std::string UntimedCountsLine(bool reset, bool& any)
   return StringUtils::Format(
       "states={} untimedSkipped={} gUnitDeferred={} gWaitBuffer={} gWaitBufferMax_ms={} "
       "pagesAhead={} pageLatePosted={} pageFallback={} keepAliveExpired={} gnewestDepth={} "
-      "gnewestOverflow={} waitSuppressed={}",
+      "gnewestOverflow={} waitSuppressed={} screenBridge={}",
       at(UntimedCount::STATES), at(UntimedCount::SKIPPED), at(UntimedCount::UNIT_DEFERRED),
       at(UntimedCount::WAIT_BUFFER), at(UntimedCount::WAIT_BUFFER_MAX_MS),
       at(UntimedCount::FIRST_PAGES), at(UntimedCount::PAGE_LATE_POSTED),
       at(UntimedCount::PAGE_FALLBACK), at(UntimedCount::KEEPALIVE_EXPIRED),
       at(UntimedCount::NEWEST_DEPTH_MAX), at(UntimedCount::NEWEST_OVERFLOW),
-      at(UntimedCount::WAIT_SUPPRESSED));
+      at(UntimedCount::WAIT_SUPPRESSED), at(UntimedCount::SCREEN_BRIDGE));
 }
 
 void NoteGraphicsLost()

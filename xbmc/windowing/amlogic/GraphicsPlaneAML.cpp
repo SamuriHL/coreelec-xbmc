@@ -56,6 +56,9 @@ constexpr int LOCK_CAP = 4; // R5
 // GT-5: the compositions G keeps to redraw: the frame on screen's and those ahead of it, one
 // per queued frame at most (the video queue held up to 14 in RC8)
 constexpr size_t ROUTE_DRAWN_CAP = 32;
+// GT-5: the pictures G took, kept from the newest at or below the frame on screen (a safety
+// bound only: Released trims it)
+constexpr size_t ROUTE_HISTORY_CAP = 512;
 
 int64_t MonotonicNs()
 {
@@ -1583,6 +1586,15 @@ bool CGraphicsPlaneAML::RouteStep()
                        was.source != now.source || was.dest != now.dest || was.view != now.view;
     m_routeReleased = in.last;
     m_routeHaveReleased = true;
+    // the history keeps the newest picture at or below the frame on screen and all after it
+    {
+      size_t keep = 0;
+      for (size_t i = 0; i < m_routeHistory.size(); i++)
+        if (m_routeHistory[i].serial <= in.last.serial)
+          keep = i;
+      m_routeHistory.erase(m_routeHistory.begin(),
+                           m_routeHistory.begin() + static_cast<long>(keep));
+    }
     // compositions before the frame on screen are no longer anyone's
     size_t current = 0;
     for (size_t i = 0; i < m_routeDrawn.size(); i++)
@@ -1771,8 +1783,12 @@ bool CGraphicsPlaneAML::RouteStep()
       // 10-11 frames ahead of the target)
       if (m_untimedOnG)
       {
+        // bounded by Released (only the newest picture at or below the frame on screen is
+        // kept), not by a count: V can take several pictures per frame released and run 14
+        // frames ahead (RC15 B2_m3gan: the 32 newest were all queued frames, none at or below
+        // the frame on screen, so no entry could be made there)
         m_routeHistory.push_back(comp);
-        if (m_routeHistory.size() > ROUTE_DRAWN_CAP)
+        if (m_routeHistory.size() > ROUTE_HISTORY_CAP)
           m_routeHistory.pop_front();
       }
       if (Same(comp, m_routeLast))
@@ -2102,6 +2118,22 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       while (at != m_routeDrawn.end() && !at->bridge && at->serial < comp.serial)
         ++at;
       m_routeDrawn.insert(at, std::move(comp));
+    }
+    else
+    {
+      // nothing taken at or below it (a floor, a route start): the state alone as an
+      // untimed-only entry at the frame on screen's serial, which C takes at its next slot
+      // and which sorts below the entries ahead (they stay C's)
+      SComposition comp;
+      comp.serial = onScreen;
+      comp.hidden = m_routeHidden;
+      comp.bridge = true;
+      comp.untimedStale = true;
+      auto at = m_routeDrawn.begin();
+      while (at != m_routeDrawn.end() && !at->bridge && at->serial <= comp.serial)
+        ++at;
+      m_routeDrawn.insert(at, std::move(comp));
+      GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::SCREEN_BRIDGE);
     }
   }
   std::vector<size_t> ahead;

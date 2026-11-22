@@ -263,6 +263,7 @@ enum class UntimedCount
   PAGE_LATE_POSTED, //!< review rB m8: a segment's page posted after its first frame's release
   PAGE_FALLBACK, //!< a waiting page released by the P-side 3 s fallback, not by its picture
   WAIT_SUPPRESSED, //!< GUNTIMED wait lines over the rate cap, not logged
+  SCREEN_BRIDGE, //!< a menu change put on an untimed-only entry: no picture at the frame on screen
   COUNT
 };
 void Count(UntimedCount what, int n = 1);
