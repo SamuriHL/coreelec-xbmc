@@ -464,6 +464,9 @@ protected:
   void ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket, double menuCorrection = 0.0);
   void ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket, double menuCorrection);
+  //! EL packets that arrive before their clip's video stream is open (13.u3)
+  void SendPendingElPackets(const DemuxPacket* firstBl);
+  void ClearPendingElPackets();
   void ProcessSubData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessTeletextData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessRadioRDSData(CDemuxStream* pStream, DemuxPacket* pPacket);
@@ -845,5 +848,6 @@ protected:
     uint32_t bdjReleaseSeq = 0;
   };
   std::deque<SDiscTimelineEvent> m_discTimelineEvents;
+  std::deque<DemuxPacket*> m_pendingElPackets;
   void ApplyDiscTimelineEvents(bool flushAll);
 };
