@@ -748,13 +748,18 @@ void GTLogStop()
     ordered = list;
     list = next;
   }
+  int64_t drained = 0;
   while (ordered)
   {
     SLogLine* entry = ordered;
     ordered = entry->next;
     WriteLine(*entry);
     delete entry;
+    drained++;
   }
+  // the same books as the writer's: a later start begins with an empty queue
+  s_logQueued.fetch_sub(drained);
+  s_logWritten.fetch_add(static_cast<uint64_t>(drained));
 }
 
 std::string GTLogStatsLine(bool reset)

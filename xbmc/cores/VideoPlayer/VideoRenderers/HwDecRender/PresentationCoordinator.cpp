@@ -1807,7 +1807,14 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     // measurement (log only, at most 5 lines a second): a ticked slot that holds entries but
     // picks none, with what it holds (the RC8 Superman BD-J menu: 12 vblanks with no graphics
     // commit while a state was posted every vblank)
-    if (pick < 0 && ticked && on && !m_timed.empty())
+    // only an unexpected one: not while a first page waits for its commit, nor with no frame
+    // to pick for or the start's withhold (before T0), where nothing is due; and only when C holds
+    // a newer untimed state than the plane's (entries drawn ahead for frames still to come, with
+    // nothing new for this one, are the normal case)
+    const bool newerUntimed = std::any_of(m_timed.begin(), m_timed.end(),
+                                          [this](const UiBuffer& b) { return b.u > m_gtPickedU; });
+    if (pick < 0 && ticked && on && !m_timed.empty() && !pageWaits && target.valid &&
+        !m_gtWithheld && newerUntimed)
     {
       const int64_t now = MonotonicNs();
       if (now - m_gtNoPickWindowNs >= 1000000000)
