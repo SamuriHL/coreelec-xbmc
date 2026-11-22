@@ -32,6 +32,9 @@ public:
   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
   virtual bool SupportsMultiPassRendering()override { return false; };
   virtual bool Flush(bool saveBuffers) override;
+  // Player Information view (Alt+O / "PlayerDebugVideo"): cached source and
+  // processing lines from aml_player_info_get() - no sysfs on this thread.
+  DEBUG_INFO_VIDEO GetDebugInfo(int idx) override;
 
   // Player functions
   virtual bool IsGuiLayer() override { return false; };

@@ -50,6 +50,8 @@ public:
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
   float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
+  // Player Information view: output lines (cached, see aml_player_info_get).
+  DEBUG_INFO_RENDER GetDebugInfo() override;
 
   virtual void Register(IDispResource *resource);
   virtual void Unregister(IDispResource *resource);

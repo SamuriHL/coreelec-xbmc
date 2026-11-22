@@ -267,6 +267,18 @@ bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned in
   return true;
 }
 
+DEBUG_INFO_VIDEO CRendererAML::GetDebugInfo(int idx)
+{
+  const AMLPlayerInfoLines lines = aml_player_info_get();
+  DEBUG_INFO_VIDEO info;
+  info.videoSource = lines.source;
+  info.metaPrim = lines.hdr;
+  info.metaLight = lines.mastering;
+  info.shader = lines.processing;
+  info.render = lines.dvMeta;
+  return info;
+}
+
 CRenderInfo CRendererAML::GetRenderInfo()
 {
   CRenderInfo info;

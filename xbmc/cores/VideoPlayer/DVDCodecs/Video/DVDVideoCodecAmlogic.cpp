@@ -611,6 +611,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_lastMeta = m_streamMeta;
   m_metadataToken = CAMLFrameMetadataStore::GetInstance().Register();
   CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_streamMeta);
+  // Player Information view: the stream as demuxed (hints, not m_hints).
+  m_playerInfoToken = aml_player_info_open(hints, m_pFormatName, m_playerInfoCmv40);
 
   CLog::Log(LOGINFO, "{}: Opened Amlogic Codec", __MODULE_NAME__);
   return true;
@@ -628,6 +630,10 @@ void CDVDVideoCodecAmlogic::Close(void)
     KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
     m_packages.pop_front();
   }
+
+  aml_player_info_close(m_playerInfoToken);
+  m_playerInfoToken = 0;
+  m_playerInfoCmv40 = -1;
 
   // a successor codec may already own the store, so Unregister only clears our own values
   if (m_metadataToken)
@@ -748,6 +754,8 @@ void CDVDVideoCodecAmlogic::ApplyCmv40Settings()
         settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
   }
   m_bitstream->SetAppendCMv40(static_cast<DOVICMv40Mode>(cmv40));
+  m_playerInfoCmv40 = cmv40;
+  aml_player_info_set_cmv40(m_playerInfoToken, cmv40);
 }
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
@@ -1087,6 +1095,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       if (doviIsFEL != m_felIdrPaddingPushed)
       {
         m_felIdrPaddingPushed = doviIsFEL;
+        aml_player_info_set_fel(m_playerInfoToken, doviIsFEL);
         if (m_Codec)
           m_Codec->SetFelIdrPadding(doviIsFEL);
         CLog::Log(LOGINFO,
@@ -1143,6 +1152,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // (BL-compatible) so it consumes the RPU the converter injects; if not (plain
       // HDR10), disable the converter and open as HDR10 - a safe fallback with no
       // false DV declaration.
+      const bool hdr10plusToDv = m_hdr10plusToDvCandidate && IsHdr10Plus;
       if (m_hdr10plusToDvCandidate)
       {
         if (IsHdr10Plus)
@@ -1186,6 +1196,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
       if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL, packet.isDualStream))
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
+      aml_player_info_started(m_playerInfoToken, doviIsFEL, IsHdr10Plus, hdr10plusToDv,
+                              packet.isDualStream, m_hints.dovi.dv_profile);
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
 

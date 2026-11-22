@@ -35,18 +35,23 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "filesystem/File.h"
+#include "cores/VideoPlayer/DVDStreamInfo.h"
+#include "jobs/JobManager.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <thread>
+#include <vector>
 
 extern "C"
 {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/mem.h>
 }
 
@@ -2302,4 +2307,417 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
     CSysfsPath("/sys/module/aml_media/parameters/g_framepacking_support", framepacking_support ? 1 : 0);
     CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Player Information view (idea from CroqueMr's CB1 Player Information). See
+// AMLUtils.h. Strictly read-only: every sysfs access below is a read, and the
+// only caller of the reads is a job-manager job, rate-limited to one per second
+// and only issued while the video debug overlay is on screen.
+// ---------------------------------------------------------------------------
+namespace
+{
+struct AMLPlayerInfoStream
+{
+  uint32_t token{0};
+  bool open{false};
+  bool started{false};
+  std::string decoder;
+  std::string codec;
+  int width{0};
+  int height{0};
+  double fps{0.0};
+  int bitDepth{0};
+  StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
+  AVColorTransferCharacteristic trc{AVCOL_TRC_UNSPECIFIED};
+  int dvProfile{0};
+  int dvLevel{0};
+  int dvCompat{0};
+  bool dvBl{false};
+  bool dvEl{false};
+  bool dvRpu{false};
+  std::string mastering;
+  bool fel{false};
+  bool hdr10plus{false};
+  bool hdr10plusToDv{false};
+  bool dualStream{false};
+  int openedProfile{0};
+  int cmv40{-1};
+};
+
+std::mutex s_piStreamLock;
+AMLPlayerInfoStream s_piStream;
+uint32_t s_piNextToken{0};
+std::mutex s_piLinesLock;
+AMLPlayerInfoLines s_piLines;
+std::atomic<bool> s_piRefreshQueued{false};
+std::atomic<int64_t> s_piLastRefreshMs{0};
+
+const char* PiPrimariesName(const AVMasteringDisplayMetadata& m)
+{
+  // Classify by the green primary x (FFmpeg order R, G, B).
+  const double gx = av_q2d(m.display_primaries[1][0]);
+  if (gx > 0.16 && gx < 0.18)
+    return "BT.2020";
+  if (gx > 0.255 && gx < 0.275)
+    return "P3";
+  if (gx > 0.29 && gx < 0.31)
+    return "BT.709";
+  return "custom";
+}
+
+const char* PiVs10ModeName(unsigned int mode)
+{
+  switch (mode)
+  {
+    case DOLBY_VISION_OUTPUT_MODE_IPT:
+      return "Dolby Vision (IPT)";
+    case DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL:
+      return "Dolby Vision (tunnel)";
+    case DOLBY_VISION_OUTPUT_MODE_HDR10:
+      return "HDR10";
+    case DOLBY_VISION_OUTPUT_MODE_SDR10:
+      return "SDR 10-bit";
+    case DOLBY_VISION_OUTPUT_MODE_SDR8:
+      return "SDR 8-bit";
+    default:
+      return "bypass";
+  }
+}
+
+const char* PiCmv40Name(int mode)
+{
+  switch (mode)
+  {
+    case 0:
+      return "off";
+    case 1:
+      return "append if no L2";
+    case 2:
+      return "append";
+    case 3:
+      return "Smart (per frame)";
+    case 4:
+      return "Auto (per title)";
+    case 5:
+      return "strip to CMv2.9";
+    default:
+      return "n/a";
+  }
+}
+
+std::string PiSourceFormat(const AMLPlayerInfoStream& s)
+{
+  if (s.dvProfile > 0)
+  {
+    std::string f = StringUtils::Format("Dolby Vision P{}", s.dvProfile);
+    if (s.dvProfile == 8 || s.dvCompat > 0)
+      f += StringUtils::Format(".{}", s.dvCompat);
+    if (s.dvLevel > 0)
+      f += StringUtils::Format(" L{}", s.dvLevel);
+    if (s.dvEl)
+      f += s.started ? (s.fel ? " BL+EL FEL" : " BL+EL MEL") : " BL+EL";
+    else if (s.dvBl)
+      f += " BL+RPU";
+    else
+      f += " RPU";
+    if (s.dualStream)
+      f += " (dual stream)";
+    if (s.openedProfile > 0 && s.openedProfile != s.dvProfile)
+      f += StringUtils::Format(", decoded as P{}", s.openedProfile);
+    if (s.hdr10plus)
+      f += " + HDR10+";
+    return f;
+  }
+  if (s.trc == AVCOL_TRC_SMPTE2084)
+    return (s.hdr10plus || s.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) ? "HDR10+" : "HDR10";
+  if (s.trc == AVCOL_TRC_ARIB_STD_B67)
+    return "HLG";
+  return "SDR";
+}
+
+std::map<std::string, std::string> PiReadHdmitxConfig()
+{
+  // "VIC: 93 3840x2160p24hz\nColour depth: 12-bit\nColourspace: YUV422\n..."
+  std::map<std::string, std::string> out;
+  CSysfsPath config{"/sys/class/amhdmitx/amhdmitx0/config"};
+  if (!config.Exists())
+    return out;
+  for (const std::string& line : StringUtils::Split(config.Get<std::string>().value_or(""), "\n"))
+  {
+    const size_t colon = line.find(':');
+    if (colon == std::string::npos)
+      continue;
+    std::string key = line.substr(0, colon);
+    std::string value = line.substr(colon + 1);
+    StringUtils::Trim(key);
+    StringUtils::Trim(value);
+    out[key] = value;
+  }
+  return out;
+}
+
+void PiBuildLines()
+{
+  AMLPlayerInfoStream s;
+  {
+    std::lock_guard<std::mutex> lock(s_piStreamLock);
+    s = s_piStream;
+  }
+
+  AMLPlayerInfoLines l;
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+
+  if (!s.open)
+  {
+    l.source = "Source: no Amlogic video stream open";
+  }
+  else
+  {
+    l.source = StringUtils::Format("Source: {} ({}) {}x{} {:.3f} fps {}-bit", s.codec, s.decoder,
+                                   s.width, s.height, s.fps, s.bitDepth);
+    l.hdr = "HDR: " + PiSourceFormat(s);
+    l.mastering = s.mastering.empty() ? "Mastering: none signalled" : "Mastering: " + s.mastering;
+
+    // Processing route, from the output mode CAMLCodec::OpenDecoder resolved.
+    const unsigned int outMode = aml_dv_get_output_mode();
+    const bool dvOut = outMode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                       outMode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+    const std::string src = PiSourceFormat(s);
+    std::string route;
+    if (s.hdr10plusToDv)
+      route = "HDR10+ -> Dolby Vision 8.1 (RPU built from HDR10+)";
+    else if (s.dvProfile > 0)
+    {
+      if (dvOut)
+        route = "Dolby Vision via DV core";
+      else if (outMode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+        route = "DV core off, base layer only";
+      else
+        route = StringUtils::Format("VS10 Dolby Vision -> {}", PiVs10ModeName(outMode));
+    }
+    else if (outMode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      route = "native, VS10 off";
+    else
+      route = StringUtils::Format("VS10 {} -> {}", src, PiVs10ModeName(outMode));
+    if ((dvOut || s.hdr10plusToDv) && settings)
+      route += settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED
+                   ? " | player-led (LLDV) requested"
+                   : " | TV-led requested";
+    if (aml_dv_disc_session())
+      route += " | disc DV session";
+    l.processing = "Processing: " + route;
+
+    // DV metadata processing: only meaningful with a real RPU in the stream.
+    std::vector<std::string> meta;
+    const bool rpu = s.hdr10plusToDv || s.dvProfile == 5 || s.dvProfile == 7 || s.dvProfile == 8;
+    if (rpu)
+    {
+      meta.push_back(StringUtils::Format("CMv4.0 {}", PiCmv40Name(s.cmv40)));
+      if (settings)
+      {
+        const int l5 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_MODE);
+        if (l5 == 1)
+          meta.emplace_back("L5 zeroed");
+        else if (l5 == 2)
+        {
+          uint16_t t = 0, b = 0, lf = 0, r = 0;
+          const bool ok = aml_dv_detect_active_area_get(t, b, lf, r);
+          switch (aml_dv_detect_active_area_state())
+          {
+            case DV_DETECT_OK:
+              meta.push_back(StringUtils::Format("L5 auto T{} B{} L{} R{}", t, b, lf, r));
+              break;
+            case DV_DETECT_RUNNING:
+              meta.emplace_back("L5 auto (detecting)");
+              break;
+            case DV_DETECT_SKIP_NON16X9:
+            case DV_DETECT_SKIP_IMAX:
+            case DV_DETECT_SKIPPED:
+              meta.emplace_back("L5 auto (skipped, source L5 kept)");
+              break;
+            default:
+              meta.emplace_back(ok ? "L5 auto" : "L5 auto (no result)");
+              break;
+          }
+        }
+        else
+          meta.emplace_back("L5 from source");
+      }
+    }
+    // The VSVDB the DV core is working from right now (dv_cap holds the injected
+    // block while an override is live, the panel's otherwise).
+    int vb[16];
+    const size_t vn = aml_read_display_vsvdb(vb, 16);
+    if (vn >= 8)
+    {
+      const int ver = (vb[5] >> 5) & 0x07;
+      std::string v = ver == 2 ? StringUtils::Format("VSVDB v2 {} nits",
+                                                     vsvdb_v2_max_lum_lut[(vb[7] >> 3) & 0x1F])
+                               : StringUtils::Format("VSVDB v{}", ver);
+      if (settings &&
+          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAXLUM_OVERRIDE))
+        v += " (override on)";
+      meta.push_back(v);
+    }
+    l.dvMeta = meta.empty() ? "DV metadata: none (no Dolby Vision RPU)"
+                            : "DV metadata: " + StringUtils::Join(meta, " | ");
+  }
+
+  // Output: what hdmitx reports on the link.
+  auto cfg = PiReadHdmitxConfig();
+  if (cfg.empty())
+    l.output = "HDMI: not available";
+  else
+  {
+    std::string vic = cfg["VIC"];
+    const size_t sp = vic.find(' ');
+    if (sp != std::string::npos)
+      vic = vic.substr(sp + 1);
+    l.output = StringUtils::Format("HDMI {} | {} {} | EOTF {} | {}", vic, cfg["Colourspace"],
+                                   cfg["Colour depth"], cfg["EOTF"], cfg["Colourimetry"]);
+  }
+
+  std::string wire;
+  const std::string eotf = cfg["EOTF"];
+  if (eotf == "DV-Std")
+    wire = "Dolby Vision, TV-led (standard VSIF, RGB tunnel)";
+  else if (eotf == "DV-LL")
+    wire = "Dolby Vision low-latency, player-led";
+  else if (eotf == "HDR10+")
+    wire = "HDR10+";
+  else if (eotf == "HDR10")
+    wire = "HDR10 (PQ)";
+  else if (eotf == "HLG")
+    wire = "HLG";
+  else if (eotf == "SDR")
+    wire = "SDR";
+  else
+    wire = eotf.empty() ? "unknown" : eotf;
+  std::string core = "off";
+  if (aml_dv_core_enabled())
+  {
+    core = StringUtils::Format("on, mode {}", PiVs10ModeName(aml_dv_dolby_vision_mode()));
+    CSysfsPath ll{"/sys/module/aml_media/parameters/dolby_vision_ll_policy"};
+    if (ll.Exists())
+      core += StringUtils::Format(", ll_policy {}", ll.Get<int>().value_or(-1));
+  }
+  l.outputDv = StringUtils::Format("Signal: {} | DV core {}", wire, core);
+
+  std::lock_guard<std::mutex> lock(s_piLinesLock);
+  s_piLines = std::move(l);
+}
+} // namespace
+
+uint32_t aml_player_info_open(const CDVDStreamInfo& hints, const char* decoderName, int cmv40)
+{
+  AMLPlayerInfoStream s;
+  s.open = true;
+  s.cmv40 = cmv40;
+  s.decoder = decoderName ? decoderName : "";
+  s.codec = avcodec_get_name(hints.codec);
+  s.width = hints.width;
+  s.height = hints.height;
+  s.fps = (hints.fpsrate > 0 && hints.fpsscale > 0)
+              ? static_cast<double>(hints.fpsrate) / hints.fpsscale
+              : 0.0;
+  s.bitDepth = hints.bitdepth;
+  s.hdrType = hints.hdrType;
+  s.trc = hints.colorTransferCharacteristic;
+  s.dvProfile = hints.dovi.dv_profile;
+  s.dvLevel = hints.dovi.dv_level;
+  s.dvCompat = hints.dovi.dv_bl_signal_compatibility_id;
+  s.dvBl = hints.dovi.bl_present_flag;
+  s.dvEl = hints.dovi.el_present_flag;
+  s.dvRpu = hints.dovi.rpu_present_flag;
+  std::vector<std::string> m;
+  if (hints.masteringMetadata)
+  {
+    const AVMasteringDisplayMetadata& md = *hints.masteringMetadata;
+    if (md.has_luminance)
+      m.push_back(StringUtils::Format("{:.0f}/{:.4f} nits", av_q2d(md.max_luminance),
+                                      av_q2d(md.min_luminance)));
+    if (md.has_primaries)
+      m.emplace_back(PiPrimariesName(md));
+  }
+  if (hints.contentLightMetadata)
+    m.push_back(StringUtils::Format("MaxCLL {} MaxFALL {}", hints.contentLightMetadata->MaxCLL,
+                                    hints.contentLightMetadata->MaxFALL));
+  s.mastering = StringUtils::Join(m, " | ");
+
+  std::lock_guard<std::mutex> lock(s_piStreamLock);
+  s.token = ++s_piNextToken;
+  if (s.token == 0)
+    s.token = ++s_piNextToken;
+  s_piStream = std::move(s);
+  return s_piStream.token;
+}
+
+void aml_player_info_started(uint32_t token, bool fel, bool hdr10plus, bool hdr10plusToDv,
+                             bool dualStream, int openedProfile)
+{
+  std::lock_guard<std::mutex> lock(s_piStreamLock);
+  if (token == 0 || token != s_piStream.token)
+    return;
+  s_piStream.started = true;
+  s_piStream.fel = fel;
+  s_piStream.hdr10plus = hdr10plus;
+  s_piStream.hdr10plusToDv = hdr10plusToDv;
+  s_piStream.dualStream = dualStream;
+  s_piStream.openedProfile = openedProfile;
+}
+
+void aml_player_info_set_fel(uint32_t token, bool fel)
+{
+  std::lock_guard<std::mutex> lock(s_piStreamLock);
+  if (token == 0 || token != s_piStream.token)
+    return;
+  s_piStream.fel = fel;
+}
+
+void aml_player_info_set_cmv40(uint32_t token, int effectiveMode)
+{
+  std::lock_guard<std::mutex> lock(s_piStreamLock);
+  if (token == 0 || token != s_piStream.token)
+    return;
+  s_piStream.cmv40 = effectiveMode;
+}
+
+void aml_player_info_close(uint32_t token)
+{
+  std::lock_guard<std::mutex> lock(s_piStreamLock);
+  if (token == 0 || token != s_piStream.token)
+    return;
+  s_piStream = AMLPlayerInfoStream{};
+}
+
+AMLPlayerInfoLines aml_player_info_get()
+{
+  // Render thread: copy the cached lines; refresh them off-thread at most 1/s.
+  const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+  if (nowMs - s_piLastRefreshMs.load() >= 1000 && !s_piRefreshQueued.exchange(true))
+  {
+    s_piLastRefreshMs = nowMs;
+    if (auto jobs = CServiceBroker::GetJobManager())
+      jobs->Submit(
+          []
+          {
+            PiBuildLines();
+            s_piRefreshQueued = false;
+          });
+    else
+      s_piRefreshQueued = false;
+  }
+
+  std::lock_guard<std::mutex> lock(s_piLinesLock);
+  if (s_piLines.source.empty())
+  {
+    AMLPlayerInfoLines pending;
+    pending.source = "Player information: reading...";
+    return pending;
+  }
+  return s_piLines;
 }

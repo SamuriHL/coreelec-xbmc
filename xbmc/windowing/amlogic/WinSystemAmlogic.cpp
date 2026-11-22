@@ -827,3 +827,16 @@ void CWinSystemAmlogic::Unregister(IDispResource *resource)
   if (i != m_resources.end())
     m_resources.erase(i);
 }
+
+DEBUG_INFO_RENDER CWinSystemAmlogic::GetDebugInfo()
+{
+  // Render thread while the video debug overlay is on: cached strings only.
+  const AMLPlayerInfoLines lines = aml_player_info_get();
+  DEBUG_INFO_RENDER info;
+  if (!lines.output.empty())
+    info.renderFlags =
+        StringUtils::Format("Output: {}x{} @ {:.3f} Hz | {}", m_nWidth, m_nHeight,
+                            m_fRefreshRate, lines.output);
+  info.videoOutput = lines.outputDv;
+  return info;
+}

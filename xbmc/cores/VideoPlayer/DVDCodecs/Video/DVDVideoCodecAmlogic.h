@@ -166,6 +166,10 @@ private:
   std::list<DLDemuxPacket> m_packages;
 
   uint32_t m_metadataToken{0};
+  // Player Information view (aml_player_info_*): this stream's token and the
+  // CMv4.0 mode last handed to the converter (-1 = not configured).
+  uint32_t m_playerInfoToken{0};
+  int m_playerInfoCmv40{-1};
   bool m_metaLeadLogged{false};
   bool m_stripHdr10Plus{false};
   bool m_dualLayer{false};

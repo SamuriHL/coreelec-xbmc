@@ -236,3 +236,41 @@ bool aml_dv_l5_overlay_visible();
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
+
+// Player Information view (Alt+O / action "PlayerDebugVideo", the stock video
+// debug OSD - idea from CroqueMr's CB1 Player Information). Read-only: nothing
+// here writes sysfs or settings or changes playback.
+//  - The codec thread publishes what it already knows about the open stream:
+//    aml_player_info_open() at decoder open (the hints as demuxed, before any
+//    P7 -> 8.1 rewrite), aml_player_info_started() once the bitstream has been
+//    parsed and the hardware decoder opened, aml_player_info_set_fel() when the
+//    converter changes its FEL/MEL verdict, aml_player_info_set_cmv40() with
+//    the CMv4.0 mode actually handed to the converter, and
+//    aml_player_info_close() at decoder close. Each is a struct copy under a
+//    mutex, once per event - never per frame.
+//  - aml_player_info_get() is what the renderer and window system call while
+//    the overlay is shown (render thread). It only copies cached strings; at
+//    most once a second it hands a refresh to the job manager, which reads the
+//    live state (hdmitx config, dv_cap VSVDB, amdv params, L5 detector,
+//    settings) off the render thread. Nothing runs while the overlay is off.
+class CDVDStreamInfo;
+struct AMLPlayerInfoLines
+{
+  std::string source;     // codec, resolution, rate, bit depth
+  std::string hdr;        // HDR format incl. DV profile + layers, HDR10+
+  std::string mastering;  // static mastering / content light metadata
+  std::string processing; // VS10 / DV core route
+  std::string dvMeta;     // CMv4.0, L5, VSVDB
+  std::string output;     // HDMI mode, colour format/depth, signalled EOTF
+  std::string outputDv;   // DV core state on the wire
+};
+// open() returns a token; the other publishers take it and are ignored once a
+// newer stream has opened (a successor codec can open before its predecessor
+// closes). cmv40 = the effective CMv4.0 mode already resolved, -1 = none.
+uint32_t aml_player_info_open(const CDVDStreamInfo& hints, const char* decoderName, int cmv40);
+void aml_player_info_started(uint32_t token, bool fel, bool hdr10plus, bool hdr10plusToDv,
+                             bool dualStream, int openedProfile);
+void aml_player_info_set_fel(uint32_t token, bool fel);
+void aml_player_info_set_cmv40(uint32_t token, int effectiveMode);
+void aml_player_info_close(uint32_t token);
+AMLPlayerInfoLines aml_player_info_get();
