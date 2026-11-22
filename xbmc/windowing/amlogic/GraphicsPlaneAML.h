@@ -200,17 +200,16 @@ private:
     GLuint renderbuffer = 0; //!< when the driver cannot render to the image as a texture
     GLuint fbo = 0;
     bool free = true;
-    uint32_t dumb = 0; //!< its DRM dumb buffer (heap-fb first), 0: GBM allocated it (heap-gfx)
-    int dmabuf = -1; //!< the dumb buffer's dma-buf, kept while GBM's import of it lives
+    int dmabuf = -1; //!< its heap-fb dma-buf, kept while GBM's import of it lives; -1: GBM's own
   };
   std::vector<SRingBuffer> m_ring;
   bool m_ringTried = false;
   //! the ring, made once at G's start (graphicstick_on); false: G's route draws on the surface
   //! (LOCK_CAP)
   bool InitRing();
-  //! one ring buffer from a DRM dumb buffer (meson's GEM: heap-fb, then heap-gfx, codec-mm),
-  //! imported into GBM; nullptr when the dumb path fails (GBM's own then: heap-gfx only)
-  gbm_bo* RingBoFromDumb(uint32_t& dumb, int& fd, uint32_t& stride);
+  //! one ring buffer from /dev/dma_heap/heap-fb, imported into GBM (and by it into DRM); nullptr
+  //! when that fails (GBM's own then: heap-gfx only)
+  gbm_bo* RingBoFromHeap(int& fd, uint32_t& stride);
   void LogHeapState(const char* why) const;
   void DeinitRing();
   bool RingOn() const { return !m_ring.empty(); }

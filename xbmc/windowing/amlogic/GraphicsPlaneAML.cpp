@@ -47,7 +47,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <drm_fourcc.h>
-#include <xf86drm.h>
+#include <fcntl.h>
+#include <linux/dma-heap.h>
+#include <sys/ioctl.h>
 #include <xf86drmMode.h>
 
 using namespace std::chrono_literals;
@@ -392,73 +394,44 @@ void CGraphicsPlaneAML::ReleaseReturned()
   m_returned.clear();
 }
 
-gbm_bo* CGraphicsPlaneAML::RingBoFromDumb(uint32_t& dumb, int& fd, uint32_t& stride)
+gbm_bo* CGraphicsPlaneAML::RingBoFromHeap(int& fd, uint32_t& stride)
 {
-  dumb = 0;
+  // RC27 panic (both SoCs, ring teardown at Kodi stop: dma_direct_unmap_sg <-
+  // meson_cma_heap_unmap_dma_buf <- meson_gem_object_free <- drm_gem_dmabuf_release): a meson
+  // GEM object (a dumb buffer) exported to another device is unsafe. meson_gem_prime_get_sg_table
+  // hands an importer the object's own sg table (meson_gem_obj->sg, its heap attachment's), and
+  // drm_gem_unmap_dma_buf frees what it was given (sg_free_table + kfree) when Mali's EGL/GBM
+  // import detaches; meson_gem_object_free then unmaps the freed table. So no meson export: the
+  // buffer comes from the dma-buf heap itself, as Mali's own bos do from heap-gfx (its heap
+  // gives each attachment its own table), and meson imports it for the fb like those
   fd = -1;
-  struct drm_mode_create_dumb create = {};
-  create.width = WIDTH;
-  create.height = HEIGHT;
-  create.bpp = 32;
-  // flags 0: meson's am_meson_gem_alloc_ion_buff takes heap-fb first, then heap-gfx, then
-  // heap-codecmm (Mali's gbm_bo_create allocates from /dev/dma_heap/heap-gfx only)
-  if (drmIoctl(m_drmFd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0)
+  stride = (WIDTH * 4 + 63) & ~63u;
+  const int heap = open("/dev/dma_heap/heap-fb", O_RDWR | O_CLOEXEC);
+  if (heap < 0)
   {
-    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: {}", strerror(errno));
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING heap-fb: open: {}", strerror(errno));
     return nullptr;
   }
-  dumb = create.handle;
-  stride = create.pitch;
-  if (drmPrimeHandleToFD(m_drmFd, dumb, DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
+  struct dma_heap_allocation_data alloc = {};
+  alloc.len = (static_cast<uint64_t>(stride) * HEIGHT + 4095) & ~4095ull;
+  alloc.fd_flags = O_RDWR | O_CLOEXEC;
+  const int ret = ioctl(heap, DMA_HEAP_IOCTL_ALLOC, &alloc);
+  const int allocErrno = errno;
+  close(heap);
+  if (ret != 0)
   {
-    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer export: {}", strerror(errno));
-    fd = -1;
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING heap-fb: alloc: {}", strerror(allocErrno));
+    return nullptr;
   }
-  gbm_bo* bo = nullptr;
-  if (fd >= 0)
-  {
-    struct gbm_import_fd_data data = {fd, WIDTH, HEIGHT, stride, m_format};
-    bo = gbm_bo_import(m_device, GBM_BO_IMPORT_FD, &data,
-                       GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
-    if (!bo)
-      GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: gbm_bo_import failed");
-  }
-  if (bo)
-  {
-    // its fb from the dumb handle on G's DRM fd (FbFromBo then finds it), whatever handle GBM's
-    // import holds
-    const uint32_t handles[4] = {dumb};
-    const uint32_t strides[4] = {stride};
-    const uint32_t offsets[4] = {};
-    auto* fb = new PlaneFb;
-    fb->fd = m_drmFd;
-    if (drmModeAddFB2(m_drmFd, WIDTH, HEIGHT, m_format, handles, strides, offsets, &fb->id, 0) !=
-        0)
-    {
-      GRAPHICSTICK::GTLogF(LOGWARNING, "GRING dumb buffer: no fb: {}", strerror(errno));
-      delete fb;
-      // GBM's import of it on the same DRM fd may hold the dumb's own GEM handle: its destroy
-      // closes that handle, and DESTROY_DUMB on the number after it could delete a handle
-      // another thread got meanwhile (the lowest free number is reused at once)
-      if (gbm_bo_get_handle(bo).u32 == dumb)
-        dumb = 0;
-      gbm_bo_destroy(bo);
-      bo = nullptr;
-    }
-    else
-      gbm_bo_set_user_data(bo, fb, DestroyPlaneFb);
-  }
+  fd = static_cast<int>(alloc.fd);
+  struct gbm_import_fd_data data = {fd, WIDTH, HEIGHT, stride, m_format};
+  gbm_bo* bo = gbm_bo_import(m_device, GBM_BO_IMPORT_FD, &data,
+                             GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
   if (!bo)
   {
-    if (fd >= 0)
-      close(fd);
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING heap-fb: gbm_bo_import failed");
+    close(fd);
     fd = -1;
-    if (dumb)
-    {
-      struct drm_mode_destroy_dumb destroy = {dumb};
-      drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-    }
-    dumb = 0;
   }
   return bo;
 }
@@ -520,11 +493,10 @@ bool CGraphicsPlaneAML::InitRing()
     SRingBuffer buffer;
     // RC22 am9pro M3GAN DV: "GRING off (gbm_bo_create)" at buffer 1 with heap-fb 148 MB free and
     // heap-gfx exhausted: Mali's GBM (libMali dmaheap) allocates from /dev/dma_heap/heap-gfx
-    // only. A DRM dumb buffer is meson's GEM, which takes heap-fb first (meson_gem.c
-    // am_meson_gem_alloc_ion_buff, flags 0): linear, the plane's format, imported into GBM
+    // only. heap-fb first, from its dma-buf heap (RingBoFromHeap: never a meson GEM export)
     int fd = -1;
     uint32_t stride = 0;
-    buffer.bo = RingBoFromDumb(buffer.dumb, fd, stride);
+    buffer.bo = RingBoFromHeap(fd, stride);
     if (buffer.bo)
       buffer.dmabuf = fd;
     else
@@ -537,7 +509,7 @@ bool CGraphicsPlaneAML::InitRing()
                                   GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
       if (!buffer.bo)
       {
-        why = "no buffer (dumb and gbm_bo_create)";
+        why = "no buffer (heap-fb and gbm_bo_create)";
         break;
       }
       fd = gbm_bo_get_fd(buffer.bo);
@@ -563,7 +535,7 @@ bool CGraphicsPlaneAML::InitRing()
       close(fd); // the image holds its own reference
     if (buffer.image == EGL_NO_IMAGE_KHR)
     {
-      // into the ring, so DeinitRing frees its bo and dumb buffer with the others
+      // into the ring, so DeinitRing frees its bo and dma-buf with the others
       m_ring.push_back(buffer);
       why = "EGL image";
       break;
@@ -624,10 +596,7 @@ bool CGraphicsPlaneAML::InitRing()
       GRAPHICSTICK::GTLogF(LOGINFO, "GRING buffer 0: {} target, format {:.4s} modifier {:#x} stride {}, {}",
                 buffer.renderbuffer ? "renderbuffer" : "texture",
                 reinterpret_cast<const char*>(&m_format), boModifier, stride,
-                !buffer.dumb ? "GBM (heap-gfx)"
-                : gbm_bo_get_handle(buffer.bo).u32 == buffer.dumb
-                    ? "DRM dumb (heap-fb first), GEM handle shared with GBM's import (GBM closes it)"
-                    : "DRM dumb (heap-fb first), GBM's import on its own GEM handle");
+                buffer.dmabuf >= 0 ? "dma-buf heap-fb" : "GBM (heap-gfx)");
   }
   if (why)
   {
@@ -659,22 +628,11 @@ void CGraphicsPlaneAML::DeinitRing()
       glDeleteRenderbuffers(1, &buffer.renderbuffer);
     if (buffer.image != EGL_NO_IMAGE_KHR && destroyImage)
       destroyImage(m_display, buffer.image);
-    // GBM's import on the same DRM fd may hold the dumb's own GEM handle: then its destroy
-    // closes it, and DESTROY_DUMB after it could delete a handle another thread (main's front
-    // buffers, the video layer's prime handles) got meanwhile under the reused number
-    if (buffer.bo && buffer.dumb && gbm_bo_get_handle(buffer.bo).u32 == buffer.dumb)
-      buffer.dumb = 0;
-    // its fb goes with it (DestroyPlaneFb, the bo's user data)
+    // its fb goes with it (DestroyPlaneFb, the bo's user data), then the heap buffer's fd
     if (buffer.bo)
       gbm_bo_destroy(buffer.bo);
     if (buffer.dmabuf >= 0)
       close(buffer.dmabuf);
-    // then its dumb buffer, when GBM's import holds a handle of its own
-    if (buffer.dumb)
-    {
-      struct drm_mode_destroy_dumb destroy = {buffer.dumb};
-      drmIoctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-    }
   }
   m_ring.clear();
 }
