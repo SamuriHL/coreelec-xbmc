@@ -1337,13 +1337,24 @@ void CPresentationCoordinator::CommitUi()
       // coreelec-br K1 n50: 37 frames). It waits for the slot, which replaces it with the
       // current frame's pick, or commits it there when nothing newer exists (a still frame).
       // Timed frame entries only: no clear, bridge or first page
+      // Held for one slot only (RC14 coreelec-br FP n5994: serial 680 committed 184 ms, 11
+      // vblanks, after its slot): the vblank whose slot decides is fixed at the first hold. A
+      // GUI commit's flip at every vblank (a closing seek bar) kept the newest flip ahead of the
+      // last tick, and a still page (nothing newer to replace it) was held again at each wake.
+      // Once that slot has run, the buffer is committed at the next chance, never held again
       if (plane == PLANE_GRAPHICS && ready.req && ready.timed && !ready.clear && !ready.bridge &&
-          !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq &&
-          static_cast<int32_t>(m_gtFlipSeq + 1 - static_cast<uint32_t>(ready.target)) > 0 &&
-          static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
+          !ready.firstPage && ready.target && m_gtFlipSeqValid && m_diagVblankSeq)
       {
-        ready.staleDeferred = true;
-        continue;
+        if (!ready.staleDeferred &&
+            static_cast<int32_t>(m_gtFlipSeq + 1 - static_cast<uint32_t>(ready.target)) > 0 &&
+            static_cast<int32_t>(m_gtFlipSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
+        {
+          ready.staleDeferred = true;
+          ready.staleSlotSeq = m_gtFlipSeq;
+        }
+        if (ready.staleDeferred &&
+            static_cast<int32_t>(ready.staleSlotSeq - static_cast<uint32_t>(m_diagVblankSeq)) > 0)
+          continue;
       }
       if (!ready.req || ready.fence >= 0)
         continue;

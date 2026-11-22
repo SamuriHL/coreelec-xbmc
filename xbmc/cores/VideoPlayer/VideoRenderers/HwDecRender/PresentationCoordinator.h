@@ -256,6 +256,7 @@ private:
     //! released, and held as a still, before T0, so delta counts the hold
     bool afterHold = false;
     bool staleDeferred = false; //!< held back at a flip's wake: its own frame had left the screen
+    uint32_t staleSlotSeq = 0; //!< the vblank whose slot replaces or commits it (held only until)
     // GT-D15 measurement (log only)
     int64_t assUs = -1;
     int64_t drawUs = -1;
