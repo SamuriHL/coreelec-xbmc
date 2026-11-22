@@ -50,6 +50,30 @@ constexpr int64_t FLIP_LOST_NS = 500000000;
 // GT-5 (GT-D15): a timed buffer picked after its slot still lands on the next vblank only if
 // committed this long before it (the commit worker's ioctl and the driver's latch)
 constexpr int64_t LATE_PICK_MARGIN_NS = 3000000;
+// GUNTIMED (m8's untimed metric): post_vbl/post_seq is the vblank interval the post fell in,
+// counted back from the flip's vblank; flip/flipseq the DRM sequence of the flip that showed it
+// (-1: none, the post was lost); by= the state that showed it
+void LogUntimed(const SUntimedPost& post,
+                const std::string& by,
+                const char* what,
+                int64_t sequence,
+                int64_t flipNs,
+                int64_t periodNs)
+{
+  int64_t vbl = -1;
+  int64_t postSeq = -1;
+  if (periodNs > 0 && sequence >= 0 && flipNs > 0)
+  {
+    vbl = (std::max<int64_t>(0, flipNs - post.postNs) + periodNs - 1) / periodNs;
+    postSeq = sequence - vbl;
+  }
+  CLog::Log(LOGINFO,
+            "GUNTIMED u={} route={} post_seq={} post_vbl={} post_ns={} flip={} flipseq={} "
+            "flip_ns={} period_us={} vbl={} upd_us={} by={} what={}",
+            post.u, post.route, postSeq, postSeq, post.postNs, sequence, sequence, flipNs,
+            periodNs > 0 ? periodNs / 1000 : -1, vbl, post.updUs, by, what);
+}
+
 // 5.B2-7: a plane off C has not started by then runs inline (today's hold bound)
 constexpr auto PLANE_OFF_BOUND = std::chrono::seconds(2);
 
@@ -869,6 +893,12 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
   m_inFlight = false;
   m_inCommitTag = 0;
   m_diagUnblockedNs = MonotonicNs();
+  // GT-1 r1 N1: no flip names what it showed
+  if (s_untimedLog)
+    LogUntimedLost(m_untimedInFlight, "flip lost");
+  if (m_inFlightTimed.u)
+    m_gtCarriedU = std::max(m_gtCarriedU, m_inFlightTimed.u);
+  m_inFlightTimed = UiBuffer();
   for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
     PlaneState& state = m_planes[plane];
@@ -1254,6 +1284,11 @@ void CPresentationCoordinator::CommitUi()
         // a plane the driver refused would take every GUI frame down with it
         if (m_graphicsRejected || (m_gfxSuspect && !m_gfxRetryArmed))
         {
+          // GT-1 r1 N1: its posts are never shown
+          if (s_untimedLog)
+            LogUntimedLost(ready.untimed, "graphics plane refused");
+          if (ready.u)
+            m_gtCarriedU = std::max(m_gtCarriedU, ready.u);
           Drop(plane, ready);
           continue;
         }
@@ -1295,6 +1330,8 @@ void CPresentationCoordinator::CommitUi()
         timedTags.qbuf = ready.qbuf;
         timedTags.target = ready.target;
         timedTags.fb = ready.fb;
+        timedTags.u = ready.u;
+        timedTags.firstPage = ready.firstPage;
       }
       ready = UiBuffer();
     }
@@ -1428,6 +1465,14 @@ void CPresentationCoordinator::CommitWorker()
       m_inFlight = false;
       m_inCommitTag = 0;
       m_diagUnblockedNs = MonotonicNs();
+      // GT-1 r1 N1: a failed commit is never shown; its route-C posts are lost, GT-5's states
+      // stay in m_gtPosts and are logged "carried" at the flip that shows them
+      if (s_untimedLog)
+        LogUntimedLost(m_untimedInFlight, "commit failed");
+      if (m_inFlightTimed.u)
+        m_gtCarriedU = std::max(m_gtCarriedU, m_inFlightTimed.u);
+      m_inFlightTimed = UiBuffer();
+      m_inFlightGfxPts = DVD_NOPTS_VALUE;
       for (int plane = 0; plane < PLANE_COUNT; plane++)
       {
         PlaneState& state = m_planes[plane];
@@ -1501,6 +1546,22 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
                              });
       if (it != m_timed.end())
       {
+        // GT-5 item 5 (h): an old-regime redraw never replaces a new-regime entry
+        if (in.regimeEpoch && it->regimeEpoch > in.regimeEpoch)
+        {
+          UiBuffer refused;
+          refused.bo = in.bo;
+          refused.req = std::exchange(in.req, nullptr);
+          refused.fence = std::exchange(in.fence, -1);
+          Drop(PLANE_GRAPHICS, refused);
+          m_report.gfxEpochDrop++;
+          CLog::Log(LOGINFO, "GUNTIMED gfxEpochDrop serial={} epoch={} under={}", in.serial,
+                    in.regimeEpoch, it->regimeEpoch);
+          continue;
+        }
+        // item 5 (b) (ii): a waiting entry handed over again with a newer untimed state
+        if (in.u > it->u && it->u)
+          m_report.untimedReplaced++;
         Drop(PLANE_GRAPHICS, *it);
         m_timed.erase(it);
         m_report.gfxTimedReplaced++;
@@ -1519,6 +1580,10 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
       buffer.bridge = in.bridge;
       buffer.visible = in.visible;
       buffer.session = in.session;
+      buffer.u = in.u;
+      buffer.firstPage = in.firstPage;
+      buffer.regimeEpoch = in.regimeEpoch;
+      buffer.untimedRoute = in.untimedRoute;
       const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), in.serial,
                                        [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
       m_timed.insert(at, std::move(buffer));
@@ -1564,6 +1629,14 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     {
       m_gtSession = session;
       m_gtPickedSerial = 0;
+      m_gtPickedU = 0;
+      // GT-5: a route session's states never show in the next one
+      if (!m_gtPosts.empty())
+      {
+        std::vector<SUntimedPost> lost(m_gtPosts.begin(), m_gtPosts.end());
+        m_gtPosts.clear();
+        LogUntimedLost(lost, "route session ended");
+      }
     }
     if (ticked)
       m_gtSlotMissed = false;
@@ -1592,6 +1665,9 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
                                         it->serial < m_gtPickedSerial));
       if (!it->clear && stale)
       {
+        // item 5 (j): a state dropped whole is published as done, so G draws the next
+        if (it->u && GRAPHICSTICK::NewestOff())
+          GRAPHICSTICK::NoteUntimedCommitted(it->u);
         Drop(PLANE_GRAPHICS, *it);
         it = m_timed.erase(it);
         m_report.gfxTimedReplaced++;
@@ -1600,22 +1676,35 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       else
         ++it;
     }
+    // GT-5 item 5 (f): a segment's first page, once picked, is committed at its slot or the next
+    // flip; nothing replaces it meanwhile (later entries wait for the next slot)
+    const UiBuffer& waiting = m_planes[PLANE_GRAPHICS].ready;
+    const bool pageWaits = waiting.req && waiting.timed && waiting.firstPage;
+    if (pageWaits)
+      m_gtSlotMissed = false;
     // the newest buffer of a picture at or before the frame on screen next; a clear goes at
     // the first slot, before the start's T0 too (it only takes graphics away)
     const SReleasedFrame& target = m_gtTarget;
     int pick = -1;
-    for (int i = 0; i < static_cast<int>(m_timed.size()); i++)
+    for (int i = 0; i < static_cast<int>(m_timed.size()) && !pageWaits; i++)
     {
       const UiBuffer& b = m_timed[i];
-      if (b.clear || (b.bridge && on) ||
+      // GT-5: an untimed-only buffer waits for the start's hold too (with video: C's withhold,
+      // judged at its slot; with none: RM's start hold, cleared at E1's point)
+      const bool bridgeHeld =
+          b.untimedRoute && (ticked ? m_gtWithheld : GRAPHICSTICK::UntimedHeld());
+      if (b.clear || (b.bridge && on && !bridgeHeld) ||
           (ticked && on && !m_gtWithheld && target.valid && b.serial <= target.serial))
         pick = i;
     }
     if (pick < 0)
     {
-      if (ticked && on && !m_gtWithheld && target.valid && target.serial > GRAPHICSTICK::Processed())
+      // with a first page waiting in the queue this slot picks nothing (not a miss)
+      if (!pageWaits && ticked && on && !m_gtWithheld && target.valid &&
+          target.serial > GRAPHICSTICK::Processed())
         m_report.gfxMissing++;
-      m_gtSlotMissed = due;
+      if (!pageWaits)
+        m_gtSlotMissed = due;
     }
     else
     {
@@ -1631,6 +1720,20 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
       chosen.target = target.tick + 2;
       if (!chosen.clear && !chosen.bridge)
         m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
+      // item 5 (d): no commit carries an older untimed state than the plane's (impossible by
+      // G's re-draw unit; gated at 0)
+      if (chosen.u)
+      {
+        if (chosen.u < m_gtPickedU)
+        {
+          m_report.untimedRegress++;
+          CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
+                    chosen.u, m_gtPickedU);
+        }
+        m_gtPickedU = std::max(m_gtPickedU, chosen.u);
+        if (GRAPHICSTICK::NewestOff())
+          GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
+      }
       UiBuffer& ready = m_planes[PLANE_GRAPHICS].ready;
       // review rA m1: route C's frame after a hand-back is newer than the route's end clear; the
       // start clear must still replace route C's last frame (review r2 N6)
@@ -1704,6 +1807,18 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
     chosen.qbuf = target.qbuf;
     chosen.target = target.tick + 2;
     m_gtPickedSerial = std::max(m_gtPickedSerial, chosen.serial);
+    if (chosen.u)
+    {
+      if (chosen.u < m_gtPickedU)
+      {
+        m_report.untimedRegress++;
+        CLog::Log(LOGERROR, "GUNTIMED untimedRegress serial={} u={} under={}", chosen.serial,
+                  chosen.u, m_gtPickedU);
+      }
+      m_gtPickedU = std::max(m_gtPickedU, chosen.u);
+      if (GRAPHICSTICK::NewestOff())
+        GRAPHICSTICK::NoteUntimedCommitted(chosen.u);
+    }
     ready = std::move(chosen);
     m_gtSlotMissed = false;
     m_report.gfxLatePick++;
@@ -1713,6 +1828,34 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
     CLog::Log(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+}
+
+void CPresentationCoordinator::NoteUntimedRoute(std::vector<SUntimedPost> posts)
+{
+  std::unique_lock lock(m_uiMutex);
+  for (SUntimedPost& post : posts)
+  {
+    // a state a flip already passed (G took it after a newer one showed) is judged at once
+    // by the next flip, as a replaced one
+    auto at = std::upper_bound(m_gtPosts.begin(), m_gtPosts.end(), post.u,
+                               [](uint64_t u, const SUntimedPost& p) { return u < p.u; });
+    m_gtPosts.insert(at, std::move(post));
+  }
+  // bounded: a route with no flips (the plane off) never shows them
+  while (m_gtPosts.size() > 256)
+    m_gtPosts.pop_front();
+}
+
+bool CPresentationCoordinator::PublishedPaused()
+{
+  return s_publishedState.load() == static_cast<int>(State::PAUSED);
+}
+
+void CPresentationCoordinator::LogUntimedLost(std::vector<SUntimedPost>& posts, const char* why)
+{
+  for (const SUntimedPost& post : posts)
+    LogUntimed(post, why, "lost", -1, 0, 0);
+  posts.clear();
 }
 
 bool CPresentationCoordinator::UntimedLog()
@@ -1754,6 +1897,25 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     m_report.gfxTimed++;
     if (delta > 0)
       m_report.gfxLate++;
+    // item 5 (f): pageLate when a first page missed its frame's vblank
+    if (timed.firstPage)
+    {
+      m_report.firstPages++;
+      if (delta > 0)
+        m_report.pageLate++;
+    }
+  }
+  // GT-5: the states this flip shows: its own and every older one not shown yet (item 5 (i))
+  std::vector<SUntimedPost> routeShown;
+  const uint64_t carriedU = m_gtCarriedU;
+  if (timed.timed && timed.u > m_gtShownU)
+  {
+    m_gtShownU = timed.u;
+    while (!m_gtPosts.empty() && m_gtPosts.front().u <= timed.u)
+    {
+      routeShown.push_back(std::move(m_gtPosts.front()));
+      m_gtPosts.pop_front();
+    }
   }
   if (m_inFlightGfxPts != DVD_NOPTS_VALUE)
     CountPlacement(m_inFlightGfxPts, sequence);
@@ -1820,35 +1982,39 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   const uint64_t epoch = m_cbufEpoch;
   lock.unlock();
-  // post_seq: the vblank interval the post fell in, counted back from this flip's vblank;
   // a post replaced before its commit is judged on this flip and names what showed (by=)
   for (const SUntimedPost& post : untimed)
   {
     const SUntimedPost& shown = untimed.back();
     const bool replaced = &post != &shown;
-    int64_t vbl = -1;
-    int64_t postSeq = -1;
-    if (untimedPeriodNs > 0)
-    {
-      vbl = (std::max<int64_t>(0, flipNs - post.postNs) + untimedPeriodNs - 1) / untimedPeriodNs;
-      postSeq = static_cast<int64_t>(sequence) - vbl;
-    }
-    CLog::Log(LOGINFO,
-              "GUNTIMED u={} route={} post_seq={} post_ns={} flip={} flip_ns={} period_us={} "
-              "vbl={} upd_us={} by={} what={}",
-              post.u, post.route, postSeq, post.postNs, sequence, flipNs,
-              untimedPeriodNs > 0 ? untimedPeriodNs / 1000 : -1, vbl, post.updUs,
-              replaced ? std::to_string(shown.u) : std::string("self"),
-              replaced ? "replaced" : post.cleared ? "cleared" : "shown");
+    LogUntimed(post, replaced ? std::to_string(shown.u) : std::string("self"),
+               post.carried ? "carried"
+               : replaced   ? "replaced"
+               : post.cleared ? "cleared"
+                              : "shown",
+               sequence, flipNs, untimedPeriodNs);
+  }
+  for (const SUntimedPost& post : routeShown)
+  {
+    const bool self = post.u == timed.u;
+    const char* what = post.u <= carriedU ? "carried"
+                       : !self            ? (post.skipped ? "skipped" : "replaced")
+                       : post.firstPage   ? "first-page"
+                       : post.cleared     ? "cleared"
+                                          : "shown";
+    LogUntimed(post, self ? std::string("self") : std::to_string(timed.u), what, sequence,
+               flipNs, untimedPeriodNs);
   }
   // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
   if (timed.timed && timed.clear)
     CLog::Log(LOGINFO, "GCLEAR serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
   else if (timed.timed && timed.bridge)
-    CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={}", timed.serial, sequence, timed.fb);
+    CLog::Log(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
+              timed.u);
   else if (timed.timed)
-    CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={}",
-              timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb);
+    CLog::Log(LOGINFO, "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={}",
+              timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
+              timed.firstPage ? 1 : 0);
   // the buffer this one replaced is G's again
   if (timed.timed)
     GRAPHICSTICK::Kick();
@@ -2191,6 +2357,13 @@ void CPresentationCoordinator::LogReport()
   if (r.gfxTimed || r.gfxTimedReplaced || r.gfxMissing)
     CLog::Log(LOGINFO, "GTICK report timed={} gfxLate={} gfxMissing={} gfxReplaced={} latePick={}",
               r.gfxTimed, r.gfxLate, r.gfxMissing, r.gfxTimedReplaced, r.gfxLatePick);
+  if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff() &&
+      (r.untimedReplaced || r.untimedRegress || r.gfxEpochDrop || r.firstPages))
+    CLog::Log(LOGINFO,
+              "GUNTIMED report untimedReplaced={} untimedRegress={} gfxEpochDrop={} firstPages={} "
+              "pageLate={} {}",
+              r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
+              GRAPHICSTICK::UntimedCountsLine());
   if (r.uiTimed)
     CLog::Log(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);

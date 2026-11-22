@@ -25,6 +25,12 @@ struct SUntimedPost
   char route = 'B'; //!< 'C': on the graphics plane by G; 'B': in main's GUI buffer
   bool cleared = false; //!< the untimed images went away
   int64_t updUs = -1; //!< route C: G's UpdateTextures for the draw that carried it
+  // 5.G2 GT-5 (route 'G': G took it from the container, C logs it by state)
+  bool firstPage = false; //!< a segment's page, drawn with the segment's frames
+  bool skipped = false; //!< replaced before G took it (judged on its successor)
+  //! its first commit failed or lost its flip, or the plane was cleared under it (GT-1 r1 N1/N2):
+  //! shown by a later commit
+  bool carried = false;
 };
 
 //! The HDR disc graphics of one GUI frame, for a platform plane that shows

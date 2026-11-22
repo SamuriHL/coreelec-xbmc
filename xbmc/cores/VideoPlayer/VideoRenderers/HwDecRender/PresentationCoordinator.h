@@ -187,6 +187,12 @@ public:
     //! under no floor
     bool bridge = false;
     uint64_t session = 0; //!< G's route session it was drawn for (GT-D12)
+    // GT-5 (design §10.2 item 5): the untimed state it carries, tagged {serial, u, regimeEpoch}
+    uint64_t u = 0; //!< 0: none (GT-4's bridge, or nothing untimed drawn with it)
+    bool firstPage = false; //!< a segment's first page with its frame: never dropped once picked
+    uint64_t regimeEpoch = 0; //!< item 5 (h): G's regime when it drew it
+    //! drawn on GT-5's untimed route: an untimed-only buffer waits for the start's hold
+    bool untimedRoute = false;
   };
   /*!
    * \brief 5.G2 GT-4 (G): drawn timed compositions. C holds each (a newer one of the same
@@ -197,6 +203,11 @@ public:
   void SubmitTimed(std::vector<STimedBuffer>& buffers);
   //! G: timed buffers C holds and has not committed
   int TimedHeld();
+  //! 5.G2 GT-5 (G, with guntimed_log): untimed states G took, logged as GUNTIMED by state at the
+  //! first flip of a buffer carrying them or a newer one
+  void NoteUntimedRoute(std::vector<SUntimedPost> posts);
+  //! 5.G2 GT-5: C's state is PAUSED (G's keep-alive TTL reads it, not IsPausedPlayback)
+  static bool PublishedPaused();
 
 protected:
   void Process() override;
@@ -230,6 +241,10 @@ private:
     bool bridge = false; //!< the untimed images alone
     bool visible = false;
     uint64_t session = 0; //!< G's route session (GT-D12)
+    uint64_t u = 0; //!< GT-5: the untimed state it carries
+    bool firstPage = false;
+    uint64_t regimeEpoch = 0;
+    bool untimedRoute = false;
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
   };
@@ -341,6 +356,14 @@ private:
   //! and G has handed its buffer in since; picked if its commit can still land on that vblank
   void SelectTimedLate(int64_t now);
   bool m_gtSlotMissed = false; //!< C's thread: this interval's slot found no buffer for its frame
+  // GT-5, under m_uiMutex: G's posts not shown yet; the newest state a flip showed, picked, and
+  // whose first commit failed (its posts are logged "carried")
+  std::deque<SUntimedPost> m_gtPosts;
+  uint64_t m_gtShownU = 0;
+  uint64_t m_gtPickedU = 0;
+  uint64_t m_gtCarriedU = 0;
+  //! under m_uiMutex: GT-1 r1 N1, the posts of a commit that failed or lost its flip
+  void LogUntimedLost(std::vector<SUntimedPost>& posts, const char* why);
   //! GT-4: a released frame, for the pick at the next tick
   struct SReleasedFrame
   {
@@ -491,6 +514,9 @@ private:
     int gfxLate = 0, gfxMissing = 0, gfxTimedReplaced = 0, gfxTimed = 0;
     //! GT-5 (GT-D15): missed at the slot, picked when G handed it in before the next vblank
     int gfxLatePick = 0;
+    //! GT-5: item 5 (b) (ii) replaces, untimedRegress (must stay 0), item 5 (h) refusals,
+    //! first pages flipped and those after their frame's vblank
+    int untimedReplaced = 0, untimedRegress = 0, gfxEpochDrop = 0, firstPages = 0, pageLate = 0;
     //! Phase 4 shadow, ms: audio's reference minus the presentation reference
     int shadowN = 0;
     int shadowFolds = 0; //!< samples more than half a frame apart
