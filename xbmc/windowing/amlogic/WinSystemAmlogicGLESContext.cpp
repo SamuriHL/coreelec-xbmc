@@ -3395,7 +3395,8 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
 
   aml_note_present(rendered);
   SetVSync(true);
-  // a frame without a video pass (or without the graphics) takes them off
+  // a frame without a video pass (or without the graphics) takes them off. Route C only: on the
+  // GT route main's sets are empty, so m_hdrGraphicsShown is false there
   if (rendered && !m_hdrGraphicsThisFrame && m_hdrGraphicsShown)
   {
     PresentHdrGraphics(SHdrGraphics());
@@ -4081,6 +4082,7 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite(bool guiWillRender)
 
 bool CWinSystemAmlogicGLESContext::BeginHdrOverlayRender()
 {
+  // route B: m_hdrFbo is made here only, never on the GT route or route C (the plane shows them)
   if (!m_guiCompositing)
     return false;
 

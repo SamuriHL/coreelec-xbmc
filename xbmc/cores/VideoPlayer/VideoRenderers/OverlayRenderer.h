@@ -191,6 +191,9 @@ namespace OVERLAY {
     //! reader skips the buffers' and the frame's lists, and PrepareOverlays keeps only the
     //! untimed composition and the subtitle layout G reads
     void SetTimedOnPlane(bool onPlane);
+    //! 5.G2 GT-7 (main): G draws both the timed and the untimed graphics, so every list main
+    //! draws from is empty and nothing of them is on the GUI plane (each switch repainted it)
+    bool AllOnPlane() const;
     //! test (vconfigure_mainstall overlay): the next PrepareOverlays sleeps ms inside m_section
     void ArmTestStall(int ms) { m_testStallMs = ms; }
     bool TestStallArmed() const { return m_testStallMs.load(std::memory_order_relaxed) > 0; }

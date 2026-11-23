@@ -1644,7 +1644,9 @@ void CRenderManager::FrameMove()
   const bool withheld = GraphicsWithheld();
   if (m_graphicsWithheld && !withheld)
   {
-    OVERLAY::MarkDirty();
+    // GT-7: on the route G holds and releases its own graphics; main's GUI has none to repaint
+    if (!m_overlays.AllOnPlane())
+      OVERLAY::MarkDirty();
     // E2-9b D6 row 7: the release instant on the schedule's clock base (CLOCK_MONOTONIC ns)
     CLog::Log(LOGINFO, "RM graphics released at {} ns",
               std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2099,12 +2101,14 @@ void CRenderManager::UnInit()
       [this](std::shared_ptr<CBaseRenderer>& renderer,
              std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit>& captureBlit)
   {
+    // GT-7: on the route the GUI plane carries no graphics (G's stop submit clears its plane)
+    const bool allOnPlane = m_overlays.AllOnPlane();
     m_overlays.UnInit();
     // UnInit empties the overlay render buffers but, unlike Flush(), does not
     // repaint - so a subtitle/menu on screen at stop lingers on the cached Amlogic
     // OSD front buffer until an unrelated redraw. Force one repaint (process thread
     // only, like Flush()) so the emptied overlay plane is re-composited at stop.
-    if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    if (!allOnPlane && CServiceBroker::GetAppMessenger()->IsProcessThread())
       OVERLAY::MarkDirty();
     m_debugRenderer.Dispose();
     m_debugRendererTried = false;
@@ -2219,6 +2223,8 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
     // the GL part (texture caches)
     const auto flushOverlays = [this]
     {
+      // GT-7: on the route the flush reaches G and C as a floor; the GUI plane has no graphics
+      const bool allOnPlane = m_overlays.AllOnPlane();
       m_overlays.Flush();
       m_debugRenderer.Flush();
       // Flushing the overlay buffers removes the composited subtitle/menu
@@ -2229,7 +2235,8 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers, bool overlaysOnly)
       // overlay plane is re-composited and swapped. Safe: this branch runs on
       // the render/process thread (IsProcessThread guard above), the only
       // thread allowed to touch the dirty-region tracker.
-      OVERLAY::MarkDirty();
+      if (!allOnPlane)
+        OVERLAY::MarkDirty();
     };
 
     // 5.V2-8: the presenter's queue and start picture are V's (V cancels its own start force in
@@ -2548,10 +2555,11 @@ void CRenderManager::RenderWithoutPicture(bool gui, bool configured)
     return;
   }
 
-  if (GraphicsWithheld())
+  // GT-7: on the route the untimed composition is G's; main has nothing to draw
+  if (GraphicsWithheld() || m_overlays.AllOnPlane())
     return;
   m_overlays.SetVideoRect(view, view, view);
-  // no picture: the untimed composition only, which main keeps on the GT-4 route too
+  // no picture: the untimed composition only
   m_overlays.Render(-1);
 }
 
@@ -2823,15 +2831,18 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     CRect src, dst, view;
     RendererVideoRect(*renderer, src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
+    // GT-7: on the route main draws no graphics and its L5 half reads false (C sets the
+    // plane's half at the commit)
+    const bool allOnPlane = m_overlays.AllOnPlane();
     const bool withheld = GraphicsWithheld();
-    if (!withheld)
+    if (!withheld && !allOnPlane)
       m_overlays.Render(source);
 
     // DV L5 "osdst": report whether a subtitle/overlay is actually painted this
     // frame - per-frame accurate (forced subs + in-window regular subs only, NOT
     // mere track enablement), so the DV L5 path un-masks the letterbox bars only
     // while text is really on screen. See CBitstreamConverter::processDoviRpu.
-    const bool visible = !withheld && m_overlays.HasVisibleOverlay(source);
+    const bool visible = !withheld && !allOnPlane && m_overlays.HasVisibleOverlay(source);
     aml_dv_set_subtitles_visible(visible);
     // each change, at the drawn picture's pts
     if (visible != m_overlayVisible)

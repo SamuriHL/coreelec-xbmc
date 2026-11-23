@@ -778,6 +778,13 @@ void CRenderer::SetTimedOnPlane(bool onPlane)
   MarkDirty();
 }
 
+bool CRenderer::AllOnPlane() const
+{
+  MAINCOUPLING_ACCESSOR("overlay m_section");
+  std::unique_lock lock(m_section);
+  return m_timedOnPlane && m_untimedOnPlane;
+}
+
 void CRenderer::PrepareOverlays(int idx,
                                 unsigned int segmentGen,
                                 const FrameOverlays* frame,

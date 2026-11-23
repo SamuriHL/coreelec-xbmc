@@ -2667,6 +2667,7 @@ void CGraphicsPlaneAML::Process()
       {
         m_shadowOwed = m_raster && m_selfTest;
         const int64_t start = m_untimed.empty() ? 0 : MonotonicNs();
+        // route C's CPU textures: off the GT route only (graphicstick_off, a hand-back)
         UpdateTextures();
         if (start)
         {
