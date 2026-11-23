@@ -732,6 +732,10 @@ private:
         knobGfxLate = 0, knobDropUi = 0, knobDropGfx = 0, osdHolds = 0, knobOldCommits = 0,
         knobWriteFail = 0, knobRewrites = 0;
     int64_t knobWriteMaxUs = 0;
+    //! GT-D25: the once-a-second read back of the kernel's knobs, its slowest, and the reads
+    //! that found the kernel unlike the record of the last write
+    int knobReads = 0, knobReadMismatch = 0;
+    int64_t knobReadMaxUs = 0;
   } m_report;
   int64_t m_lastTailNs = 0; //!< the tick tail last ran (C)
   int64_t m_wakeSlowWindowNs = 0; //!< GEOMWAKE slow: lines in the current second

@@ -87,6 +87,20 @@ bool WriteKnobFile(const char* path, const char* value)
   close(fd);
   return ok;
 }
+// GT-D25: one knob read back, plain POSIX as the write; empty when the file cannot be read
+std::string ReadKnobFile(const char* path)
+{
+  const int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return {};
+  char buf[32];
+  const ssize_t n = read(fd, buf, sizeof(buf) - 1);
+  close(fd);
+  if (n <= 0)
+    return {};
+  return std::string(buf, buf + n);
+}
+
 // GUNTIMED (m8's untimed metric): post_vbl/post_seq is the vblank interval the post fell in,
 // counted back from the flip's vblank; flip/flipseq the DRM sequence of the flip that showed it
 // (-1: none, the post was lost); by= the state that showed it
@@ -1395,14 +1409,49 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
       GRAPHICSTICK::GTLogF(LOGINFO, "REGIME clears not re-armed (W not running)");
   }
   // review: a write of main's that landed after C's (main past its owner check as the knobs
-  // came here) leaves other knobs on the kernel than the presented ones: written again
+  // came here) leaves other knobs on the kernel than the presented ones: written again.
+  // GT-D25: once a second the kernel's values, read back, not only the record of the last
+  // write (a main write interleaving with C's store leaves the record wrong). The reads are
+  // cheap: graphic_fmt's show is a lock-free sprintf; the aml_media parameter's takes the
+  // module's kernel_param mutex only for its sprintf (the same mutex C's write takes)
   if (!k.changing && k.presented && now - k.rewriteNs > 1000000000)
   {
+    k.rewriteNs = now;
     DISPLAYSTATE::SKnobs on;
     const DISPLAYSTATE::SKnobs presented = DISPLAYSTATE::TagKnobs(k.presented);
-    if (DISPLAYSTATE::KnobsWritten(on) && on != presented)
+    bool known = DISPLAYSTATE::KnobsWritten(on);
+    const int64_t readStart = MonotonicNs();
+    const std::string gfmt = ReadKnobFile("/sys/class/amdolby_vision/graphic_fmt");
+    const std::string osdPq = CRendererAML::OsdPqPassthroughAvailable()
+                                  ? ReadKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH)
+                                  : std::string();
+    const int64_t readUs = (MonotonicNs() - readStart) / 1000;
+    m_report.knobReads++;
+    m_report.knobReadMaxUs = std::max(m_report.knobReadMaxUs, readUs);
+    DISPLAYSTATE::SKnobs kernel = on;
+    bool read = false;
+    // graphic_fmt shows signal_format_str[fmt + 1]: 2 is FORMAT_SDR, 9 FORMAT_HDR8
+    if (gfmt.rfind("FORMAT_HDR8", 0) == 0 || gfmt.rfind("FORMAT_SDR\n", 0) == 0)
     {
-      k.rewriteNs = now;
+      kernel.hdr8 = gfmt.rfind("FORMAT_HDR8", 0) == 0;
+      read = true;
+    }
+    if (!osdPq.empty() && (osdPq[0] == '0' || osdPq[0] == '1'))
+    {
+      kernel.osdPq = osdPq[0] == '1';
+      read = true;
+    }
+    if (read && (!known || kernel != on))
+    {
+      // the record follows the kernel, so the rewrite below stores what differs
+      if (known)
+        m_report.knobReadMismatch++;
+      DISPLAYSTATE::NoteKnobsWritten(kernel);
+      on = kernel;
+      known = true;
+    }
+    if (known && on != presented)
+    {
       bool forced = false;
       int64_t us = 0;
       const bool ok = KnobWrite(presented, false, forced, us);
@@ -3682,6 +3731,9 @@ void CPresentationCoordinator::LogReport()
                          r.knobGuiLate, r.knobGfxLate, r.knobDropUi, r.knobDropGfx, r.osdHolds,
                          r.knobOldCommits, predicts, predictMiss, r.knobWriteFail,
                          r.knobRewrites);
+  if (r.knobReads)
+    GRAPHICSTICK::GTLogF(LOGINFO, "REGIME knob readback reads={} read_max_us={} mismatch={}",
+                         r.knobReads, r.knobReadMaxUs, r.knobReadMismatch);
   if (r.uiTimed)
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);
