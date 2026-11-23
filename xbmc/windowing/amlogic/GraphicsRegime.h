@@ -160,10 +160,43 @@ bool KnobsWritten(SKnobs& knobs);
 //! aml_dv_set_vs10_mode_now(mode) (its own refusals included); the current one when it cannot
 //! change
 uint8_t PredictVs10Tag(unsigned int mode);
+//! W, before a decoder open's DV writes (DvApply): the tag W's publish will carry for the new
+//! stream's facts and the mode the pure resolver (aml_dv_resolve_output) predicts
+uint8_t PredictStreamTag(StreamHdrType hdrType,
+                         AVColorTransferCharacteristic transfer,
+                         unsigned int mode);
 //! W: today's unparked VS10 write. On a route session with the knobs on C, a write that changes
 //! the regime runs under C's OSD hold (design §4.2): the OSD blank from before the DV writes to
 //! the new regime's first slot, instead of old-encoding OSD under the new core output
 void RunVs10Write(unsigned int mode);
+
+/*!
+ * \brief W, around a no-op job's DV writes (a VS10 write, a decoder open's DvApply): on a route
+ * session with the knobs on C, C's OSD hold while the predicted tag differs from the published
+ * one (waits at most bound for C's cleared buffers to flip). At the end the prediction is checked
+ * against what W published: a miss is logged ("REGIME predict miss") and counted. The hold only
+ * blanks: C orders the knobs from the published regime alone, so a miss costs one blank too many
+ * or one missing, never the order.
+ */
+class COsdHoldScope
+{
+public:
+  COsdHoldScope(uint8_t predicted, const char* why, unsigned int mode, int boundMs);
+  ~COsdHoldScope();
+  COsdHoldScope(const COsdHoldScope&) = delete;
+  COsdHoldScope& operator=(const COsdHoldScope&) = delete;
+
+private:
+  bool m_route = false;
+  bool m_held = false;
+  uint8_t m_from = 0;
+  uint8_t m_predicted = 0;
+  const char* m_why = "";
+  unsigned int m_mode = 0;
+  int64_t m_beginNs = 0;
+};
+//! C's report: predictions checked and missed since the last call (reset)
+void TakePredictCounts(uint64_t& checked, uint64_t& missed);
 
 //! main, at the end of each ApplyGuiEncoding and at EndRenderSession's stop knobs
 void PublishMainApplied(GuiEncoding encoding, bool limited, SKnobs knobs);

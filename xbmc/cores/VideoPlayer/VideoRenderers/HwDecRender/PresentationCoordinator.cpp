@@ -1398,6 +1398,15 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
   }
   if (k.changing && now - k.startNs > KNOB_TICK_BOUND_NS)
     KnobTick(0, "timeout");
+  {
+    // the OSD hold W ended goes once the change of its writes (if any) is under way above
+    std::unique_lock lock(m_uiMutex);
+    if (m_osdHold.active && m_osdHold.releaseEpoch && regime.epoch >= m_osdHold.releaseEpoch)
+    {
+      m_osdHold = SOsdHold();
+      m_uiCond.notify_all();
+    }
+  }
 
   // the route ended: the knobs go back to main once nothing is owed
   if (k.changing || GRAPHICSTICK::RouteOn())
@@ -1423,6 +1432,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
   {
     std::unique_lock lock(m_uiMutex);
     m_knobOnMirror = false;
+    m_osdHold = SOsdHold();
     for (PlaneState& plane : m_planes)
       plane.firstOwed = false;
   }
@@ -1748,11 +1758,12 @@ bool CPresentationCoordinator::OsdHoldBegin(std::chrono::milliseconds bound)
   return m_osdHold.flipped;
 }
 
-void CPresentationCoordinator::OsdHoldEnd()
+void CPresentationCoordinator::OsdHoldEnd(uint64_t epoch)
 {
   {
     std::unique_lock lock(m_uiMutex);
-    m_osdHold = SOsdHold();
+    if (m_osdHold.active)
+      m_osdHold.releaseEpoch = std::max<uint64_t>(epoch, 1);
   }
   const uint64_t one = 1;
   if (write(m_wakeFd, &one, sizeof(one)) < 0)
@@ -3488,14 +3499,17 @@ void CPresentationCoordinator::LogReport()
                 r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
                 counts);
   }
-  if (r.knobWrites || r.knobChanges || r.osdHolds || r.knobOldCommits)
+  uint64_t predicts = 0;
+  uint64_t predictMiss = 0;
+  DISPLAYSTATE::TakePredictCounts(predicts, predictMiss);
+  if (r.knobWrites || r.knobChanges || r.osdHolds || r.knobOldCommits || predicts)
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "REGIME report changes={} writes={} write_max_us={} write_over_1ms={} "
                          "noToggle={} guiLate={} gfxLate={} dropUi={} dropGfx={} osdHolds={} "
-                         "oldCommits={}",
+                         "oldCommits={} predicts={} predictMiss={}",
                          r.knobChanges, r.knobWrites, r.knobWriteMaxUs, r.knobSlow, r.knobNoToggle,
                          r.knobGuiLate, r.knobGfxLate, r.knobDropUi, r.knobDropGfx, r.osdHolds,
-                         r.knobOldCommits);
+                         r.knobOldCommits, predicts, predictMiss);
   if (r.uiTimed)
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);

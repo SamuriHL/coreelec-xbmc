@@ -233,7 +233,8 @@ public:
    * commit's flip. False: not flipped in time (the writes go ahead, logged by the caller).
    */
   bool OsdHoldBegin(std::chrono::milliseconds bound);
-  void OsdHoldEnd();
+  //! after the DV writes: C ends the hold once it has read W's regime of epoch (or a newer one)
+  void OsdHoldEnd(uint64_t epoch);
 
 protected:
   void Process() override;
@@ -416,6 +417,7 @@ private:
     uint64_t commitTag = 0;
     unsigned int flipSeq = 0;
     int64_t beginNs = 0;
+    uint64_t releaseEpoch = 0; //!< W ended it: C lets go once it has read this epoch
   } m_osdHold;
 
   void QueueVblank(unsigned int epoch);

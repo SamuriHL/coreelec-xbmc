@@ -2459,6 +2459,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
       OUTPUT::Lane::DECODER, "dv apply",
       [&]
       {
+        // 5.G2 GT-6 (user ruling 2026-11-22, "VS10 + disc segments"): a decoder open in a
+        // route session (a disc's segment change DV <-> non-DV) whose output changes the regime
+        // takes C's OSD hold over these writes; bounded under V's 1 s wait for this job
+        DISPLAYSTATE::COsdHoldScope hold(
+            DISPLAYSTATE::PredictStreamTag(hints.hdrType, hints.colorTransferCharacteristic,
+                                           dvShadow.outputMode),
+            "dv apply", dvShadow.outputMode, 500);
         unsigned int dv_output_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
         if (dv_enable)
         {

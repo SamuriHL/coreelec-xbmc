@@ -719,42 +719,92 @@ uint8_t PredictVs10Tag(unsigned int mode)
 
 void RunVs10Write(unsigned int mode)
 {
-  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
-  const bool route = coordinator && KnobOwnerC() && GRAPHICSTICK::RouteOn() &&
-                     OUTPUT::COutputWorker::Get().OnWorker();
-  const uint8_t from = route ? RegimeTag(GetRegime()) : 0;
-  const uint8_t to = route ? PredictVs10Tag(mode) : 0;
-  if (!route || from == to)
-  {
-    aml_dv_set_vs10_mode_now(mode);
-    return;
-  }
-  constexpr auto BOUND = std::chrono::seconds(2);
-  const auto begin = std::chrono::steady_clock::now();
-  coordinator->ArmKnobClears();
-  const bool flipped = coordinator->OsdHoldBegin(BOUND);
-  const auto waited = std::chrono::steady_clock::now() - begin;
-  const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
-  if (flipped)
-    CLog::Log(LOGINFO, "REGIME osd hold begin mode={} from={} to={} flip_wait_ms={}", mode,
-              TagName(from), TagName(to), waitedMs);
-  else if (waited >= BOUND)
-    CLog::Log(LOGERROR, "REGIME osd hold: C's cleared buffers not flipped in {} ms, the DV "
-                        "writes go ahead (mode={})", waitedMs, mode);
-  else
-    CLog::Log(LOGWARNING, "REGIME osd hold not taken (no cleared buffer or C not writing the "
-                          "knobs), mode={}", mode);
-  const auto writes = std::chrono::steady_clock::now();
+  COsdHoldScope hold(PredictVs10Tag(mode), "vs10", mode, 2000);
   aml_dv_set_vs10_mode_now(mode);
-  const auto writesUs = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - writes)
-                            .count();
-  coordinator->OsdHoldEnd();
-  CLog::Log(LOGINFO, "REGIME osd hold release mode={} published={} dv_writes_us={} held_ms={}", mode,
-            TagName(RegimeTag(GetRegime())), writesUs,
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - begin)
-                .count());
+}
+
+uint8_t PredictStreamTag(StreamHdrType hdrType,
+                         AVColorTransferCharacteristic transfer,
+                         unsigned int mode)
+{
+  GraphicsRegime next;
+  {
+    std::unique_lock lock(s_mutex);
+    next = s_pub;
+  }
+  next.encoding =
+      CRendererAML::ResolveGuiEncoding(hdrType, transfer, mode, PublishedHdrDisplay());
+  next.dvOutputMode = mode;
+  return RegimeTag(next);
+}
+
+namespace
+{
+std::atomic<uint64_t> s_predictChecked{0};
+std::atomic<uint64_t> s_predictMissed{0};
+} // namespace
+
+void TakePredictCounts(uint64_t& checked, uint64_t& missed)
+{
+  checked = s_predictChecked.exchange(0);
+  missed = s_predictMissed.exchange(0);
+}
+
+COsdHoldScope::COsdHoldScope(uint8_t predicted, const char* why, unsigned int mode, int boundMs)
+  : m_predicted(predicted), m_why(why), m_mode(mode)
+{
+  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
+  m_route = coordinator && KnobOwnerC() && GRAPHICSTICK::RouteOn() &&
+            OUTPUT::COutputWorker::Get().OnWorker();
+  if (!m_route)
+    return;
+  m_from = RegimeTag(GetRegime());
+  if (m_from == m_predicted)
+    return;
+  m_held = true;
+  m_beginNs = SteadyNowNs();
+  coordinator->ArmKnobClears();
+  const bool flipped = coordinator->OsdHoldBegin(std::chrono::milliseconds(boundMs));
+  const int64_t waitedMs = (SteadyNowNs() - m_beginNs) / 1000000;
+  if (flipped)
+    CLog::Log(LOGINFO, "REGIME osd hold begin why={} mode={} from={} to={} flip_wait_ms={}", why,
+              mode, TagName(m_from), TagName(m_predicted), waitedMs);
+  else if (waitedMs >= boundMs)
+    CLog::Log(LOGERROR,
+              "REGIME osd hold: C's cleared buffers not flipped in {} ms, the DV writes go ahead "
+              "(why={} mode={})",
+              waitedMs, why, mode);
+  else
+    CLog::Log(LOGWARNING,
+              "REGIME osd hold not taken (no cleared buffer or C not writing the knobs), why={} "
+              "mode={}",
+              why, mode);
+}
+
+COsdHoldScope::~COsdHoldScope()
+{
+  if (!m_route)
+    return;
+  const GraphicsRegime published = GetRegime();
+  const uint8_t actual = RegimeTag(published);
+  s_predictChecked.fetch_add(1);
+  if (actual != m_predicted)
+  {
+    s_predictMissed.fetch_add(1);
+    GRAPHICSTICK::GTLogF(LOGWARNING,
+                         "REGIME predict miss why={} mode={} from={} predicted={} actual={} "
+                         "epoch={} held={}",
+                         m_why, m_mode, TagName(m_from), TagName(m_predicted), TagName(actual),
+                         published.epoch, m_held ? 1 : 0);
+  }
+  if (!m_held)
+    return;
+  // C ends the hold once it has read this epoch, so the change is under way before any drawn
+  // buffer goes up again
+  if (CPresentationCoordinator* coordinator = CPresentationCoordinator::Get())
+    coordinator->OsdHoldEnd(published.epoch);
+  CLog::Log(LOGINFO, "REGIME osd hold release why={} mode={} published={} held_ms={}", m_why,
+            m_mode, TagName(actual), (SteadyNowNs() - m_beginNs) / 1000000);
 }
 
 } // namespace DISPLAYSTATE
