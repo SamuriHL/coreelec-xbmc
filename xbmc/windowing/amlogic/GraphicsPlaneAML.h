@@ -244,6 +244,7 @@ private:
   uint64_t m_routeAppliedEpoch = 0;
   float m_routePeak = -1.0f;
   uint64_t m_routeRegimeEpoch = 0; //!< the raster's cache key, one per (applied epoch, peak)
+  uint8_t m_routeKnobTag = 0; //!< GT-6: the tag of the regime drawn in (0: main's, untagged)
   bool m_routeHidden = false;
   std::atomic<bool> m_rasterReady{false};
   // GT-5, this thread only

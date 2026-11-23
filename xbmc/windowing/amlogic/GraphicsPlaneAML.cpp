@@ -1219,6 +1219,33 @@ bool IsLibass(const CDVDOverlay& o)
 
 CGraphicsRasterAML::SRegime CGraphicsPlaneAML::RouteRegime()
 {
+  // GT-6 (M3): W's published regime, drawn ahead of C's knob write for it; each buffer carries
+  // its tag, and C commits it only under that regime's knobs
+  const DISPLAYSTATE::GraphicsRegime published = DISPLAYSTATE::GetRegime();
+  if (DISPLAYSTATE::KnobsAllowed() && published.epoch)
+  {
+    const uint8_t tag = DISPLAYSTATE::RegimeTag(published);
+    if (published.epoch != m_routeAppliedEpoch || published.peak != m_routePeak)
+    {
+      m_routeAppliedEpoch = published.epoch;
+      m_routePeak = published.peak;
+      m_routeRegimeEpoch++;
+      for (SComposition& comp : m_routeDrawn)
+        comp.redraw = true;
+      GRAPHICSTICK::GTLogF(LOGINFO,
+                           "GREGIME G draws in W's published epoch={} tag={} limited={} peak={:.4f}",
+                           published.epoch, DISPLAYSTATE::TagName(tag), published.limited ? 1 : 0,
+                           published.peak);
+    }
+    m_routeKnobTag = tag;
+    CGraphicsRasterAML::SRegime regime;
+    regime.epoch = m_routeRegimeEpoch;
+    regime.encoding = DISPLAYSTATE::TagEncoding(tag);
+    regime.limited = published.limited;
+    regime.peak = published.peak;
+    return regime;
+  }
+  m_routeKnobTag = 0;
   const DISPLAYSTATE::MainApplied applied = DISPLAYSTATE::GetMainApplied();
   // main's GUI reads the peak live from the mirror (GetGuiSdrPeakLuminance's rule)
   const float peak = DISPLAYSTATE::GuiPeakCode(OUTPUT::CSettingsMirror::Get().GetInt(
@@ -1482,6 +1509,7 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
   out.u = comp.u;
   out.firstPage = comp.firstPage;
   out.regimeEpoch = regime.epoch;
+  out.knobTag = m_routeKnobTag;
   out.untimedRoute = m_untimedOnG;
   out.assUs = comp.assUs;
   out.submitNs = MonotonicNs();
