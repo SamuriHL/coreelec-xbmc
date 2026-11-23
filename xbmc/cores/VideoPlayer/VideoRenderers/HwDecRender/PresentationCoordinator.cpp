@@ -1603,11 +1603,24 @@ void CPresentationCoordinator::KnobPresent(uint64_t seq, const char* why)
   k.clearSlot = true;
   k.mismatchLogged = false;
   k.mismatchSinceNs = 0;
+  // the catch-up repaint is judged on the pair (main's applied, presented): main may have applied
+  // this regime before C presented it
+  k.appliedSeen = 0;
+  bool clearedUi;
+  bool clearedGfx;
   {
     std::unique_lock lock(m_uiMutex);
     for (PlaneState& plane : m_planes)
       plane.firstOwed = true;
+    clearedUi = m_kUi.fb && m_planes[PLANE_UI].onScreenFb == m_kUi.fb;
+    clearedGfx = m_kGfx.fb && m_planes[PLANE_GRAPHICS].onScreenFb == m_kGfx.fb;
   }
+  // a clear up from a hold or an earlier change: its producers draw for the presented regime now
+  // (their buffers of the old one were dropped)
+  if (clearedUi)
+    DISPLAYSTATE::RequestGuiRepaint();
+  if (clearedGfx)
+    GRAPHICSTICK::NotePlaneCleared();
   GRAPHICSTICK::GTLogF(LOGINFO, "REGIME present epoch={} tag={} tick={} knob_tick={} why={}", k.epoch,
                        DISPLAYSTATE::TagName(k.presented), seq, k.writeSeq, why);
 }
