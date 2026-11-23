@@ -1442,17 +1442,9 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
       if (o.overlay && o.overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
         visible |= place(o.overlay, area);
     // GT-5: the state comp carries, over the frame's timed overlays, in every regime (item 6)
-    if (m_untimedOnG)
-    {
-      for (const std::shared_ptr<CDVDOverlay>& image : comp.untimed)
-        if (image->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
-          visible |= place(image, area);
-    }
-    // the untimed bridge (guntimed_off): main's present-latest images, over the frame's, in
-    // Composite only (in Srgb and Scalar main draws them on the GUI plane)
-    else if (regime.encoding == DISPLAYSTATE::GuiEncoding::Composite)
-      for (const std::shared_ptr<CDVDOverlay>& image : m_shown.images)
-        place(image, m_shown);
+    for (const std::shared_ptr<CDVDOverlay>& image : comp.untimed)
+      if (image->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+        visible |= place(image, area);
     const float toPlaneX = WIDTH / area.width;
     const float toPlaneY = HEIGHT / area.height;
     for (const std::shared_ptr<const OVERLAY::SQuads>& quads : comp.glyphs)
@@ -1581,7 +1573,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_routeClearAtFloor = false;
   GRAPHICSTICK::NoteGSide(m_routeSession, true);
   GRAPHICSTICK::GTLogF(LOGINFO, "GTICK G on: the timed graphics are drawn here, C picks them per tick");
-  // GT-5: the untimed graphics too, unless guntimed_off keeps GT-4's bridge
+  // GT-5: the untimed graphics too
   m_uCur = SUntimedPage();
   m_uWait = SUntimedPage();
   m_uReleasedSegment = 0;
@@ -1601,16 +1593,13 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uLostSeen = GRAPHICSTICK::GraphicsLost();
   m_clearedSeen = GRAPHICSTICK::PlaneCleared();
   m_uFramelessIds.clear();
-  m_untimedOnG = !GRAPHICSTICK::UntimedOff();
-  if (m_untimedOnG)
-  {
-    GRAPHICSTICK::SetUntimedHook(true);
-    // what the container shows now (main stops selecting it at its next pass)
-    GRAPHICSTICK::WithContainer([](CDVDOverlayContainer& container)
-                                { container.PostUntimedSnapshot(); });
-    GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED G on: the untimed graphics are taken here, newest first{}",
-              GRAPHICSTICK::NewestOff() ? " (gnewest_off: every state, in post order)" : "");
-  }
+  m_untimedOnG = true;
+  GRAPHICSTICK::SetUntimedHook(true);
+  // what the container shows now (main stops selecting it at its next pass)
+  GRAPHICSTICK::WithContainer([](CDVDOverlayContainer& container)
+                              { container.PostUntimedSnapshot(); });
+  GRAPHICSTICK::GTLogF(LOGINFO, "GUNTIMED G on: the untimed graphics are taken here, newest first{}",
+            GRAPHICSTICK::NewestOff() ? " (gnewest_off: every state, in post order)" : "");
 }
 
 void CGraphicsPlaneAML::RouteEnd()
@@ -1842,31 +1831,9 @@ bool CGraphicsPlaneAML::RouteStep()
   RouteRegime();
   // GT-5: main hands nothing untimed over (its sets are empty while G holds the hook)
   // (on the route m_redraw and m_untimed are route C's, unused: GT-4 forwards no GUNTIMED post)
-  if (m_untimedOnG)
-  {
-    TakeShown();
-    m_untimed.clear();
-    m_redraw = false;
-  }
-  // the untimed bridge (guntimed_off): main's composition changed
-  else if (!TakeShown())
-    m_redraw = false;
-  else
-  {
-    m_redraw = false;
-    m_untimed.clear();
-    for (SComposition& comp : m_routeDrawn)
-      comp.redraw = true;
-    if (m_routeDrawn.empty() && !m_routeHasPending && m_routeQueue.empty())
-    {
-      // nothing timed drawn since the start or a floor: the untimed images alone, at C's next
-      // slot and under no floor (review rA M2)
-      SComposition comp = m_routeLast;
-      comp.bridge = true;
-      comp.redraw = true;
-      m_routeDrawn.push_back(std::move(comp));
-    }
-  }
+  TakeShown();
+  m_untimed.clear();
+  m_redraw = false;
 
   if (m_routeClearOwed)
   {

@@ -197,7 +197,7 @@ public:
     int64_t drawUs = -1;
     int64_t submitNs = 0; //!< CLOCK_MONOTONIC
     // GT-5 (design §10.2 item 5): the untimed state it carries, tagged {serial, u, regimeEpoch}
-    uint64_t u = 0; //!< 0: none (GT-4's bridge, or nothing untimed drawn with it)
+    uint64_t u = 0; //!< 0: none (nothing untimed drawn with it)
     bool firstPage = false; //!< a segment's first page with its frame: never dropped once picked
     uint64_t regimeEpoch = 0; //!< item 5 (h): G's regime when it drew it
     //! drawn on GT-5's untimed route: an untimed-only buffer waits for the start's hold

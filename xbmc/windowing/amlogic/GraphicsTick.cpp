@@ -138,6 +138,8 @@ bool Requested()
                 plane < 0 ? "default" : "advancedsettings");
     if (Exists("graphicstick_on"))
       CLog::Log(LOGWARNING, "GTICK graphicstick_on does nothing: on by default (GT-7)");
+    if (Exists("guntimed_off"))
+      CLog::Log(LOGWARNING, "GTICK guntimed_off does nothing: GT-4's untimed bridge is gone (GT-7)");
     return !off;
   }();
   return on;
@@ -372,12 +374,6 @@ void NoteProcessed(uint64_t serial)
 uint64_t Processed()
 {
   return s_processed.load(std::memory_order_relaxed);
-}
-
-bool UntimedOff()
-{
-  static const bool off = Requested() && Exists("guntimed_off");
-  return off;
 }
 
 bool NewestOff()

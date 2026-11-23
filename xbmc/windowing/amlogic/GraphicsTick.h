@@ -187,11 +187,8 @@ uint64_t Processed();
 // overlay container posts each change of its present-latest set here (its wake hook, under the
 // container lock); G takes the newest posted state (skip-to-newest), draws it over the frames'
 // timed overlays, and calls the container's NotePresentedSegment at C's Released. Only while
-// G has the hook on: without Requested(), or with guntimed_off, nothing is posted.
+// G has the hook on: without Requested(), nothing is posted.
 
-//! special://profile/guntimed_off (with the route): untimed content keeps GT-4's bridge
-//! (main selects it and hands it over), not today's route. Retires at GT-7
-bool UntimedOff();
 //! special://profile/gnewest_off (with the route): item 5 (j), no superseded state is
 //! dropped; G draws every posted state in post order
 bool NewestOff();

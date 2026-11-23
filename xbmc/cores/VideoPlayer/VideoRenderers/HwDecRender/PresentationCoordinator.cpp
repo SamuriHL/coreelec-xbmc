@@ -3621,7 +3621,7 @@ void CPresentationCoordinator::LogReport()
   GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
   // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
   // (G's counters are taken and reset with C's)
-  if (GRAPHICSTICK::Requested() && !GRAPHICSTICK::UntimedOff())
+  if (GRAPHICSTICK::Requested())
   {
     bool any = false;
     const std::string counts = GRAPHICSTICK::UntimedCountsLine(true, any);
