@@ -11,6 +11,7 @@
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 extern "C"
@@ -145,9 +146,10 @@ void KnobStopOwed();
 //! main (ApplyGuiEncoding, EndRenderSession), every apply: what it would write. true: main
 //! writes them now (C does not own them); then it calls NoteKnobsWritten
 bool MainWritesKnobs(SKnobs knobs);
-//! C: the knobs go back to main. true with main's latest wanted set (C writes it when it is not
-//! on the kernel already, so an apply main skipped while C owned them is not lost)
-bool KnobHandBack(SKnobs& wanted);
+//! C: the knobs go back to main; false when a route came on meanwhile (they stay C's). haveWanted
+//! with main's latest wanted (C writes it when it is not on the kernel already, so an apply main
+//! skipped while C owned them is not lost)
+bool KnobHandBack(SKnobs& wanted, bool& haveWanted);
 //! the stop C owes, for the hand-back: owed since (0: none) and whether W published the stop
 //! regime since
 int64_t KnobStopOwedNs();
@@ -156,6 +158,10 @@ bool KnobStopPublished();
 void NoteKnobsWritten(SKnobs knobs);
 //! the knobs as last written; false before the first write
 bool KnobsWritten(SKnobs& knobs);
+//! C: main's GUI is to be drawn again (C's cleared buffer is up, or main caught up with the
+//! presented regime); main's PresentRender reads the count and repaints a few frames
+void RequestGuiRepaint();
+uint64_t GuiRepaints();
 //! W, before a no-op job's DV writes: the tag W's publish will carry after
 //! aml_dv_set_vs10_mode_now(mode) (its own refusals included); the current one when it cannot
 //! change
@@ -181,7 +187,11 @@ void RunVs10Write(unsigned int mode);
 class COsdHoldScope
 {
 public:
-  COsdHoldScope(uint8_t predicted, const char* why, unsigned int mode, int boundMs);
+  //! predict runs only on a route session with the knobs on C (off it, nothing is read)
+  COsdHoldScope(const std::function<uint8_t()>& predict,
+                const char* why,
+                unsigned int mode,
+                int boundMs);
   ~COsdHoldScope();
   COsdHoldScope(const COsdHoldScope&) = delete;
   COsdHoldScope& operator=(const COsdHoldScope&) = delete;

@@ -135,6 +135,7 @@ private:
   // GUI frames still to repaint after CreateNewWindow replaced the GBM surface. More than one,
   // because FlipPage cannot report a failed commit and swaps can fail around a mode switch.
   int m_guiRepaintFrames{0};
+  uint64_t m_guiRepaintsSeen{0}; //!< GT-6: DISPLAYSTATE::GuiRepaints, as last seen
   // Transfer function the LUTs were built for, and the GUI reference white
   // (PQ-normalized) baked into them - kept so a live guipeakluminance change can
   // rebuild the PQ LUT without waiting for the next stream start.

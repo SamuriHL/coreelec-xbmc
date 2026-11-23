@@ -287,6 +287,7 @@ private:
   SComposition m_uSegFirst; //!< the newest segment's first picture, drawn or not
   unsigned int m_uPageGenSeen = 0; //!< the newest segment a page was seen for
   uint64_t m_uLostSeen = 0; //!< GRAPHICSTICK::GraphicsLost, as last seen
+  uint64_t m_clearedSeen = 0; //!< GT-6: GRAPHICSTICK::PlaneCleared, as last seen
   uint64_t m_uExpiredPosts = 0; //!< GRAPHICSTICK::UntimedPosts at the keep-alive expiry
 
   static constexpr int WIDTH = 1920;

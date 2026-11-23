@@ -1599,6 +1599,7 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
   m_uSegFirst = SComposition();
   m_uPageGenSeen = 0;
   m_uLostSeen = GRAPHICSTICK::GraphicsLost();
+  m_clearedSeen = GRAPHICSTICK::PlaneCleared();
   m_uFramelessIds.clear();
   m_untimedOnG = !GRAPHICSTICK::UntimedOff();
   if (m_untimedOnG)
@@ -1786,6 +1787,21 @@ bool CGraphicsPlaneAML::RouteStep()
     }
   }
 
+  // GT-6: C's cleared buffer took the plane (a regime change's first slot, the OSD hold): what is
+  // up is drawn again, so a static subtitle or menu comes back at C's next slot
+  const uint64_t cleared = GRAPHICSTICK::PlaneCleared();
+  if (cleared != m_clearedSeen)
+  {
+    m_clearedSeen = cleared;
+    for (SComposition& comp : m_routeDrawn)
+      comp.redraw = true;
+    if (m_untimedOnG)
+    {
+      m_uFramelessShown = false;
+      if (UntimedUp())
+        MarkScreenStale();
+    }
+  }
   const uint64_t layoutGen = OVERLAY::PublishedSubtitleLayout().gen;
   if (layoutGen != m_routeLayoutGen)
   {

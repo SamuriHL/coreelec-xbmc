@@ -1652,7 +1652,8 @@ bool CAMLDRMUtils::HasOverlayPlane()
 drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
                                                       int src_w,
                                                       int src_h,
-                                                      bool refused)
+                                                      bool refused,
+                                                      bool activate)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   if (!aml_get_drmDevice_connected() || !m_plane || !m_overlayPlane || !m_crtc || !fb_id)
@@ -1663,7 +1664,8 @@ drmModeAtomicReqPtr CAMLDRMUtils::BuildOverlayRequest(uint32_t fb_id,
     return nullptr;
 
   // GUI flips order the planes from here on
-  m_overlayActive = true;
+  if (activate)
+    m_overlayActive = true;
   const uint32_t id = m_overlayPlane->plane_id;
   set_drmProp(id, "FB_ID", DRM_MODE_OBJECT_PLANE, refused ? 0 : fb_id, req);
   set_drmProp(id, "CRTC_ID", DRM_MODE_OBJECT_PLANE, m_crtc->crtc_id, req);

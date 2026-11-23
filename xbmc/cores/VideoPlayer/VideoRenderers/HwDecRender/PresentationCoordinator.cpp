@@ -71,8 +71,9 @@ constexpr int GFX_HEIGHT = 1080;
 bool WriteKnobFile(const char* path, const char* value)
 {
   const int fd = open(path, O_WRONLY | O_CLOEXEC);
+  // a kernel without the knob (CSysfsPath's Exists() rule): nothing to write
   if (fd < 0)
-    return false;
+    return errno == ENOENT;
   const size_t len = std::strlen(value);
   const bool ok = write(fd, value, len) == static_cast<ssize_t>(len);
   close(fd);
@@ -1086,7 +1087,7 @@ void CPresentationCoordinator::Process()
       std::unique_lock lock(m_uiMutex);
       m_planes[PLANE_GRAPHICS].ready.staleDeferred = false;
       m_gtFlipSeqValid = false;
-      // GT-6: the cleared buffers' requests were built for the old mode
+      // GT-6: the cleared buffers' requests were built for the old mode; W builds them again
       m_kArmGen++;
       if (m_kUiReq)
         drmModeAtomicFree(m_kUiReq);
@@ -1094,6 +1095,7 @@ void CPresentationCoordinator::Process()
         drmModeAtomicFree(m_kGfxReq);
       m_kUiReq = m_kGfxReq = nullptr;
       m_kArmed = false;
+      m_knob.rearmOwed = m_knob.on;
     }
     if (held)
     {
@@ -1353,6 +1355,51 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
                          DISPLAYSTATE::TagName(k.presented));
   }
 
+  // review: a mode set dropped the cleared buffers' requests; W builds them for the new mode
+  if (k.rearmOwed)
+  {
+    k.rearmOwed = false;
+    if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::DECODER, "knob clears",
+                                                    [this] { ArmKnobClears(); }))
+      GRAPHICSTICK::GTLogF(LOGINFO, "REGIME clears not re-armed (W not running)");
+  }
+  // review: a write of main's that landed after C's (main past its owner check as the knobs
+  // came here) leaves other knobs on the kernel than the presented ones: written again
+  if (!k.changing && k.presented && now - k.rewriteNs > 1000000000)
+  {
+    DISPLAYSTATE::SKnobs on;
+    const DISPLAYSTATE::SKnobs presented = DISPLAYSTATE::TagKnobs(k.presented);
+    if (DISPLAYSTATE::KnobsWritten(on) && on != presented)
+    {
+      k.rewriteNs = now;
+      bool forced = false;
+      int64_t us = 0;
+      const bool ok = KnobWrite(presented, false, forced, us);
+      m_report.knobRewrites++;
+      GRAPHICSTICK::GTLogF(LOGWARNING,
+                           "REGIME knobs on the kernel osd_pq={} gfmt={} are not the presented "
+                           "{}: written again ok={} force={} write_us={}",
+                           on.osdPq ? 1 : 0, on.hdr8 ? 9 : 2, DISPLAYSTATE::TagName(k.presented),
+                           ok ? 1 : 0, forced ? 1 : 0, us);
+    }
+  }
+  // main caught up with the presented regime while C's cleared buffer stands in for its GUI:
+  // its next frames are drawn now, not at its next unrelated change
+  {
+    const uint8_t applied = DISPLAYSTATE::GetMainApplied().tag;
+    if (applied != k.appliedSeen)
+    {
+      k.appliedSeen = applied;
+      bool cleared;
+      {
+        std::unique_lock lock(m_uiMutex);
+        cleared = m_kUi.fb && m_planes[PLANE_UI].onScreenFb == m_kUi.fb;
+      }
+      if (cleared && applied == k.presented)
+        DISPLAYSTATE::RequestGuiRepaint();
+    }
+  }
+
   const DISPLAYSTATE::GraphicsRegime regime = DISPLAYSTATE::GetRegime();
   const uint8_t want = regime.epoch ? DISPLAYSTATE::RegimeTag(regime) : k.presented;
   if (!k.changing && want != k.presented)
@@ -1400,11 +1447,22 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     KnobTick(0, "timeout");
   {
     // the OSD hold W ended goes once the change of its writes (if any) is under way above
-    std::unique_lock lock(m_uiMutex);
-    if (m_osdHold.active && m_osdHold.releaseEpoch && regime.epoch >= m_osdHold.releaseEpoch)
+    bool released = false;
     {
-      m_osdHold = SOsdHold();
-      m_uiCond.notify_all();
+      std::unique_lock lock(m_uiMutex);
+      if (m_osdHold.active && m_osdHold.releaseEpoch && regime.epoch >= m_osdHold.releaseEpoch)
+      {
+        m_osdHold = SOsdHold();
+        m_uiCond.notify_all();
+        released = true;
+      }
+    }
+    // what the hold blanked is drawn again (asked at its clear's flip too; again here for the
+    // producers that drew before that flip)
+    if (released)
+    {
+      DISPLAYSTATE::RequestGuiRepaint();
+      GRAPHICSTICK::NotePlaneCleared();
     }
   }
 
@@ -1418,15 +1476,21 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
   DISPLAYSTATE::SKnobs wanted;
   bool wrote = false;
   int64_t us = 0;
-  if (DISPLAYSTATE::KnobHandBack(wanted))
+  bool haveWanted = false;
+  if (!DISPLAYSTATE::KnobHandBack(wanted, haveWanted))
+  {
+    // a route came on while C let go: the knobs stay C's
+    GRAPHICSTICK::GTLogF(LOGINFO, "REGIME hand-back withdrawn: a route came on");
+    return;
+  }
+  if (haveWanted)
   {
     // an apply main skipped while C owned them (an off-route session that began meanwhile)
     DISPLAYSTATE::SKnobs on;
     if (!DISPLAYSTATE::KnobsWritten(on) || on != wanted)
     {
       bool forced = false;
-      KnobWrite(wanted, false, forced, us);
-      wrote = true;
+      wrote = KnobWrite(wanted, false, forced, us);
     }
   }
   {
@@ -1442,7 +1506,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
                        wanted.osdPq ? 1 : 0, wanted.hdr8 ? 9 : 2, us);
 }
 
-void CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
+bool CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
                                          bool toggling,
                                          bool& forced,
                                          int64_t& us)
@@ -1450,20 +1514,29 @@ void CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
   DISPLAYSTATE::SKnobs from;
   const bool known = DISPLAYSTATE::KnobsWritten(from);
   const int64_t start = MonotonicNs();
+  bool ok = true;
   if (CRendererAML::OsdPqPassthroughAvailable())
-    WriteKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH, knobs.osdPq ? "1" : "0");
-  WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
+    ok &= WriteKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH, knobs.osdPq ? "1" : "0");
+  ok &= WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
   // graphic_fmt is read only by the DV parse, which runs only with a new frame (O7c): with
   // nothing toggling the DV driver's force_toggle_once runs it at the next vsync
   forced = !toggling && (!known || from.hdr8 != knobs.hdr8);
   if (forced)
-    WriteKnobFile("/sys/class/amdolby_vision/debug", "force_toggle_once");
+    ok &= WriteKnobFile("/sys/class/amdolby_vision/debug", "force_toggle_once");
   us = (MonotonicNs() - start) / 1000;
-  DISPLAYSTATE::NoteKnobsWritten(knobs);
   m_report.knobWrites++;
   m_report.knobWriteMaxUs = std::max(m_report.knobWriteMaxUs, us);
   if (us > 1000)
     m_report.knobSlow++;
+  if (!ok)
+  {
+    m_report.knobWriteFail++;
+    GRAPHICSTICK::GTLogF(LOGWARNING, "REGIME knob write failed osd_pq={} gfmt={}: {}",
+                         knobs.osdPq ? 1 : 0, knobs.hdr8 ? 9 : 2, strerror(errno));
+    return false;
+  }
+  DISPLAYSTATE::NoteKnobsWritten(knobs);
+  return true;
 }
 
 void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
@@ -1488,7 +1561,11 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
     const DISPLAYSTATE::SKnobs to = DISPLAYSTATE::TagKnobs(k.target);
     bool forced = false;
     int64_t us = 0;
-    KnobWrite(to, toggling, forced, us);
+    const bool timeout = std::strcmp(how, "timeout") == 0;
+    // a failed write is retried at the next tick; past the change's bound it is presented
+    // anyway (logged), so nothing stays held for good
+    if (!KnobWrite(to, toggling, forced, us) && !timeout)
+      return;
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "REGIME knob write epoch={} tick={} how={} osd_pq={} gfmt={} force={} "
                          "write_us={}",
@@ -1498,7 +1575,6 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
     const DISPLAYSTATE::DisplayState* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_C);
     const bool forceProcess = state && state->knobForceProcess;
     const bool osdChanged = !known || from.osdPq != to.osdPq;
-    const bool timeout = std::strcmp(how, "timeout") == 0;
     if (timeout || (!toggling && osdChanged && !forceProcess))
     {
       m_report.knobNoToggle++;
@@ -1695,8 +1771,7 @@ bool CPresentationCoordinator::ArmKnobClears()
     uiReq = nullptr;
   }
   drmModeAtomicReqPtr gfxReq =
-      gfx.fb ? display->BuildOverlayRequest(gfx.fb, GFX_WIDTH,
-                                            GFX_HEIGHT)
+      gfx.fb ? display->BuildOverlayRequest(gfx.fb, GFX_WIDTH, GFX_HEIGHT, false, false)
              : nullptr;
   bool stale;
   std::vector<DumbBuffer> extra;
@@ -2891,6 +2966,8 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     CountPlacement(m_inFlightGfxPts, sequence);
   bool cbufUp = false;
   int64_t replacedMs = -1;
+  bool clearedUi = false;
+  bool clearedGfx = false;
   for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
     PlaneState& state = m_planes[plane];
@@ -2908,6 +2985,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
       m_knobLines.push_back(StringUtils::Format("REGIME clear plane={} fb={} flip={}",
                                                 plane == PLANE_UI ? "ui" : "graphics",
                                                 state.committedFb, sequence));
+      (plane == PLANE_UI ? clearedUi : clearedGfx) = true;
     }
     if (m_knob.on && state.firstOwed && state.committedTag &&
         state.committedTag == m_knob.presented)
@@ -2985,6 +3063,12 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   const uint64_t epoch = m_cbufEpoch;
   lock.unlock();
+  // GT-6: a clear is never left standing: main and G draw what is up again, and their buffers go
+  // at the first slot that takes their tag
+  if (clearedUi)
+    DISPLAYSTATE::RequestGuiRepaint();
+  if (clearedGfx)
+    GRAPHICSTICK::NotePlaneCleared();
   // a post replaced before its commit is judged on this flip and names what showed (by=)
   for (const SUntimedPost& post : untimed)
   {
@@ -3502,14 +3586,16 @@ void CPresentationCoordinator::LogReport()
   uint64_t predicts = 0;
   uint64_t predictMiss = 0;
   DISPLAYSTATE::TakePredictCounts(predicts, predictMiss);
-  if (r.knobWrites || r.knobChanges || r.osdHolds || r.knobOldCommits || predicts)
+  if (r.knobWrites || r.knobChanges || r.osdHolds || r.knobOldCommits || predicts ||
+      r.knobWriteFail || r.knobRewrites)
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "REGIME report changes={} writes={} write_max_us={} write_over_1ms={} "
                          "noToggle={} guiLate={} gfxLate={} dropUi={} dropGfx={} osdHolds={} "
-                         "oldCommits={} predicts={} predictMiss={}",
+                         "oldCommits={} predicts={} predictMiss={} knobWriteFail={} rewrites={}",
                          r.knobChanges, r.knobWrites, r.knobWriteMaxUs, r.knobSlow, r.knobNoToggle,
                          r.knobGuiLate, r.knobGfxLate, r.knobDropUi, r.knobDropGfx, r.osdHolds,
-                         r.knobOldCommits, predicts, predictMiss);
+                         r.knobOldCommits, predicts, predictMiss, r.knobWriteFail,
+                         r.knobRewrites);
   if (r.uiTimed)
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);

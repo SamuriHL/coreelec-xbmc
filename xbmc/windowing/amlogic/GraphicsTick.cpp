@@ -72,6 +72,7 @@ std::atomic<int64_t> s_keepAlive{0};
 std::atomic<bool> s_untimedHeld{false};
 std::atomic<bool> s_cAdvancing{true};
 std::atomic<uint64_t> s_graphicsLost{0};
+std::atomic<uint64_t> s_planeCleared{0};
 std::atomic<uint64_t> s_posts{0};
 // gnewest_off: each queued state holds its post's image references; BD-J posts every ~11 ms
 constexpr size_t NEWEST_QUEUE_CAP = 256;
@@ -563,6 +564,19 @@ void NoteGraphicsLost()
 uint64_t GraphicsLost()
 {
   return s_graphicsLost.load(std::memory_order_relaxed);
+}
+
+void NotePlaneCleared()
+{
+  if (!Requested())
+    return;
+  s_planeCleared.fetch_add(1, std::memory_order_relaxed);
+  Wake();
+}
+
+uint64_t PlaneCleared()
+{
+  return s_planeCleared.load(std::memory_order_relaxed);
 }
 
 uint64_t UntimedPosts()

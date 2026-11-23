@@ -280,6 +280,10 @@ std::string UntimedCountsLine(bool reset, bool& any);
 //! on a refused plane; G draws what is up again
 void NoteGraphicsLost();
 uint64_t GraphicsLost();
+//! C (GT-6): its cleared buffer of a regime change or the OSD hold took the graphics plane; G
+//! draws what is up again (nothing else would post a static subtitle or menu once more)
+void NotePlaneCleared();
+uint64_t PlaneCleared();
 //! moves at every post, a repost of the same images included (review rB m4 (a))
 uint64_t UntimedPosts();
 

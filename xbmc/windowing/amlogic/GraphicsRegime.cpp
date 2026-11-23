@@ -500,10 +500,13 @@ void PublishMainApplied(GuiEncoding encoding, bool limited, SKnobs knobs)
 {
   const uint8_t tag = KnobTag(encoding, knobs);
   std::unique_lock lock(s_appliedMutex);
-  if (s_applied.epoch != 0 && s_applied.encoding == encoding && s_applied.limited == limited &&
-      s_applied.tag == tag)
+  const bool same =
+      s_applied.epoch != 0 && s_applied.encoding == encoding && s_applied.limited == limited;
+  if (same && s_applied.tag == tag)
     return;
-  s_applied.epoch++;
+  // the epoch is G's redraw key under gknob_off (GT-5): a knob-only change draws nothing new
+  if (!same)
+    s_applied.epoch++;
   s_applied.encoding = encoding;
   s_applied.limited = limited;
   s_applied.tag = tag;
@@ -647,14 +650,25 @@ bool MainWritesKnobs(SKnobs knobs)
   return !s_knobOwnerC.load();
 }
 
-bool KnobHandBack(SKnobs& wanted)
+bool KnobHandBack(SKnobs& wanted, bool& haveWanted)
 {
-  s_knobOwnerC.store(false);
+  haveWanted = false;
+  bool owned = true;
+  if (!s_knobOwnerC.compare_exchange_strong(owned, false))
+    return true;
+  // KnobRouteOn runs after the route's SetRoute: a route on now took the knobs back before or
+  // after this exchange; either way they are C's
+  if (GRAPHICSTICK::RouteOn())
+  {
+    s_knobOwnerC.store(true);
+    return false;
+  }
   s_stopOwedNs = 0;
   const uint64_t latest = s_mainWanted.load();
   if (!latest)
-    return false;
+    return true;
   wanted = UnpackKnobs(static_cast<uint32_t>(latest & 0xff));
+  haveWanted = true;
   return true;
 }
 
@@ -671,6 +685,21 @@ bool KnobStopPublished()
 void NoteKnobsWritten(SKnobs knobs)
 {
   s_knobsWritten = PackKnobs(knobs);
+}
+
+namespace
+{
+std::atomic<uint64_t> s_guiRepaints{0};
+} // namespace
+
+void RequestGuiRepaint()
+{
+  s_guiRepaints.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t GuiRepaints()
+{
+  return s_guiRepaints.load(std::memory_order_relaxed);
 }
 
 bool KnobsWritten(SKnobs& knobs)
@@ -719,7 +748,7 @@ uint8_t PredictVs10Tag(unsigned int mode)
 
 void RunVs10Write(unsigned int mode)
 {
-  COsdHoldScope hold(PredictVs10Tag(mode), "vs10", mode, 2000);
+  COsdHoldScope hold([mode] { return PredictVs10Tag(mode); }, "vs10", mode, 2000);
   aml_dv_set_vs10_mode_now(mode);
 }
 
@@ -750,14 +779,18 @@ void TakePredictCounts(uint64_t& checked, uint64_t& missed)
   missed = s_predictMissed.exchange(0);
 }
 
-COsdHoldScope::COsdHoldScope(uint8_t predicted, const char* why, unsigned int mode, int boundMs)
-  : m_predicted(predicted), m_why(why), m_mode(mode)
+COsdHoldScope::COsdHoldScope(const std::function<uint8_t()>& predict,
+                             const char* why,
+                             unsigned int mode,
+                             int boundMs)
+  : m_why(why), m_mode(mode)
 {
   CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
   m_route = coordinator && KnobOwnerC() && GRAPHICSTICK::RouteOn() &&
             OUTPUT::COutputWorker::Get().OnWorker();
   if (!m_route)
     return;
+  m_predicted = predict();
   m_from = RegimeTag(GetRegime());
   if (m_from == m_predicted)
     return;

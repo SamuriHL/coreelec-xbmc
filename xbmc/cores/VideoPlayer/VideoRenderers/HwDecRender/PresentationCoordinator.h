@@ -380,6 +380,9 @@ private:
     int64_t startNs = 0;
     bool clearSlot = false; //!< the first slot under presented: clear what is old on screen
     int64_t mismatchSinceNs = 0; //!< main's GUI drawn under another tag since
+    uint8_t appliedSeen = 0; //!< main's applied tag at the last poll (its catch-up repaint)
+    bool rearmOwed = false; //!< a display epoch dropped the cleared buffers' requests
+    int64_t rewriteNs = 0; //!< the last rewrite of knobs found not presented
     bool mismatchLogged = false;
   } m_knob;
   //! loop top, not held: ownership, a new regime, the hand-back
@@ -387,7 +390,8 @@ private:
   //! a tick: the knob write (qbuf: this tick QBUF'd a frame; still: nothing toggles) or, one
   //! tick after it, the new regime's first slot
   void KnobTick(uint64_t seq, const char* how);
-  void KnobWrite(DISPLAYSTATE::SKnobs knobs, bool toggling, bool& forced, int64_t& us);
+  //! false: a write failed; nothing is recorded as written (retried by the caller)
+  bool KnobWrite(DISPLAYSTATE::SKnobs knobs, bool toggling, bool& forced, int64_t& us);
   void KnobPresent(uint64_t seq, const char* why);
   //! C needs ticks for a change with no video attached (queued vblank events)
   bool KnobWantsTicks() const { return m_knob.on && m_knob.changing; }
@@ -715,7 +719,8 @@ private:
     //! graphics buffer (gui-late, gfx-late); old-encoding buffers dropped; OSD holds; commits
     //! of a buffer under another tag (gated 0)
     int knobWrites = 0, knobSlow = 0, knobChanges = 0, knobNoToggle = 0, knobGuiLate = 0,
-        knobGfxLate = 0, knobDropUi = 0, knobDropGfx = 0, osdHolds = 0, knobOldCommits = 0;
+        knobGfxLate = 0, knobDropUi = 0, knobDropGfx = 0, osdHolds = 0, knobOldCommits = 0,
+        knobWriteFail = 0, knobRewrites = 0;
     int64_t knobWriteMaxUs = 0;
   } m_report;
   int64_t m_lastTailNs = 0; //!< the tick tail last ran (C)

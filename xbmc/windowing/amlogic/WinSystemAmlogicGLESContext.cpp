@@ -3382,6 +3382,12 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
     m_renderGate.curSubmit = m_coordinator ? "-" : "legacy";
   }
 
+  // GT-6: C cleared the GUI plane (or main caught up with the presented regime): draw it again
+  if (const uint64_t repaints = DISPLAYSTATE::GuiRepaints(); repaints != m_guiRepaintsSeen)
+  {
+    m_guiRepaintsSeen = repaints;
+    m_guiRepaintFrames = std::max(m_guiRepaintFrames, 3);
+  }
   if (m_guiRepaintFrames > 0)
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 
