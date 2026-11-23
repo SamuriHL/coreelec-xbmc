@@ -2378,6 +2378,7 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
       OUTPUT::HpdNoRestoreWriteOn();
       OUTPUT::VideoRecordOnActOn();
       OUTPUT::TestGraphicsRefuseAt();
+      OUTPUT::TestGraphicsOffFailAt();
     }
     catch (const std::exception& e)
     {

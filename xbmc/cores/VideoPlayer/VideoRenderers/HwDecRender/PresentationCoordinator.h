@@ -460,6 +460,7 @@ private:
   //! GT-D18: after a failed off, only what is not on the plane goes back (under m_uiMutex)
   void ReclaimUnshownGraphics();
   bool m_offFailLogged = false; //!< under m_uiMutex
+  int m_offCommits = 0; //!< hotplugworker_offfail's count, under m_planeOffMutex
   //! posts ops to C and waits until deadline; false: not all ran (each op's state says which;
   //! a QUEUED one is no longer C's)
   bool RunByC(const std::vector<std::shared_ptr<PlaneOffOp>>& ops,

@@ -790,7 +790,16 @@ bool CPresentationCoordinator::GraphicsPlaneOff(
   {
     if (drmModeAtomicReqPtr req = build(primaryFb))
     {
-      done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
+      const int failAt = OUTPUT::TestGraphicsOffFailAt();
+      if (failAt > 0 && ++m_offCommits == failAt)
+      {
+        GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - test: graphics plane off {} "
+                                         "not made (hotplugworker_offfail, who={})",
+                             failAt, who);
+        errno = EINVAL;
+      }
+      else
+        done = drmModeAtomicCommit(m_masterFd, req, 0, nullptr) == 0;
       if (!done)
         GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - graphics plane off failed: {}",
                   strerror(errno));

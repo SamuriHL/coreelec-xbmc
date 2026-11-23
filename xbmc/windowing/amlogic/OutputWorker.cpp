@@ -2656,6 +2656,18 @@ int TestGraphicsRefuseAt()
   return n;
 }
 
+int TestGraphicsOffFailAt()
+{
+  static const int n = []
+  {
+    const int value = std::max(0, HotplugTestValue("hotplugworker_offfail", 0));
+    if (value > 0)
+      CLog::Log(LOGWARNING, "HOTPLUGWORKER: test failed graphics plane off at off {}", value);
+    return value;
+  }();
+  return n;
+}
+
 bool TestHotplugHoldHpd()
 {
   static const bool on = []

@@ -632,6 +632,9 @@ int TestHotplugHoldMs();
 //! hotplugworker_gfxrefuse "<n>": G's graphics submits from its nth on (counted from G's start,
 //! its boot submit included) carry FB_ID 0, which the kernel refuses on a lit CRTC; 0 = off
 int TestGraphicsRefuseAt();
+//! hotplugworker_offfail "<n>" (GT-D18 test): the n-th graphics plane off commit (counted from
+//! C's start) is not made and reads as failed, the plane left on with its buffer; 0 = off
+int TestGraphicsOffFailAt();
 //! hotplugworker_holdhpd: a hotplug job that starts while hpd_state reads 0 spins (1 ms, at most
 //! 30 s) until it reads 1, so the plug-out's read lands in the plug-in's hpd-to-callback window
 bool TestHotplugHoldHpd();
