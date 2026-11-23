@@ -2421,11 +2421,19 @@ void CPresentationCoordinator::CommitWorker()
                     "commits)",
                     strerror(err), m_gfxRetriesRefused);
         }
-        else if (m_gfxSuspectLogs++ < 3)
-          GRAPHICSTICK::GTLogF(LOGWARNING,
-                    "CPresentationCoordinator - the graphics plane was refused ({}): suspect, "
-                    "held until a GUI-only commit succeeds (retries refused {})",
-                    strerror(err), m_gfxRetriesRefused);
+        else
+        {
+          if (m_gfxSuspectLogs++ < 3)
+            GRAPHICSTICK::GTLogF(LOGWARNING,
+                      "CPresentationCoordinator - the graphics plane was refused ({}): suspect, "
+                      "held until a GUI-only commit succeeds (retries refused {})",
+                      strerror(err), m_gfxRetriesRefused);
+          // GT-7: on the route an idle GUI never commits during playback (the subtitles are
+          // not main's), so the hold would keep the graphics off to the stop; main draws one
+          // GUI frame for the GUI-only commit the retry waits for
+          if (GRAPHICSTICK::RouteOn())
+            DISPLAYSTATE::RequestGuiRepaint();
+        }
       }
       else if (commit.has[PLANE_GRAPHICS] && !m_graphicsRejected)
       {
