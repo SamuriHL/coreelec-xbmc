@@ -204,8 +204,10 @@ private:
   };
   std::vector<SRingBuffer> m_ring;
   bool m_ringTried = false;
-  //! the ring, made once at G's start (the route requested); false: G's route draws on the surface
-  //! (LOCK_CAP)
+  int m_ringRetries = 0; //!< GT-D22: one per route start while the ring is off
+  int m_ringAttempts = 0; //!< for the test file gring_fail
+  //! the ring, made at G's start (the route requested), retried at a route start while off;
+  //! false: G's route draws on the surface (LOCK_CAP)
   bool InitRing();
   //! one ring buffer from /dev/dma_heap/heap-fb, imported into GBM (and by it into DRM); nullptr
   //! when that fails (GBM's own then: heap-gfx only)

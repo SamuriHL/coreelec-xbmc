@@ -103,6 +103,24 @@ int TestHoldMs()
   return ms;
 }
 
+// test (GT-D22 gate): special://profile/gring_fail holds "<n>"; the first n ring attempts fail
+int TestRingFails()
+{
+  static const int n = []
+  {
+    XFILE::CFile file;
+    std::vector<uint8_t> buf;
+    if (!XFILE::CFile::Exists("special://profile/gring_fail") ||
+        file.LoadFile("special://profile/gring_fail", buf) <= 0)
+      return 0;
+    const int value = std::atoi(std::string(buf.begin(), buf.end()).c_str());
+    GRAPHICSTICK::GTLogF(LOGWARNING, "GRING test: the first {} ring attempts fail (gring_fail)",
+                         value);
+    return value;
+  }();
+  return n;
+}
+
 bool SameGraphics(const SHdrGraphics& a, const SHdrGraphics& b)
 {
   if (a.images.empty() && b.images.empty())
@@ -442,7 +460,7 @@ gbm_bo* CGraphicsPlaneAML::RingBoFromHeap(int& fd, uint32_t& stride)
 
 void CGraphicsPlaneAML::LogHeapState(const char* why) const
 {
-  // once, at a ring that could not be made (G's thread, at its start): where the CMA heaps stand
+  // at a ring that could not be made and before each retry (G's thread): where the CMA heaps stand
   const auto read = [](const char* path)
   {
     std::string value;
@@ -492,6 +510,8 @@ bool CGraphicsPlaneAML::InitRing()
   if (!createImage || !targetTexture ||
       !CEGLUtils::HasExtension(m_display, "EGL_EXT_image_dma_buf_import"))
     why = "no dma-buf EGL image import";
+  else if (m_ringAttempts++ < TestRingFails())
+    why = "test (gring_fail)";
   for (int i = 0; i < RING_SIZE && !why; i++)
   {
     SRingBuffer buffer;
@@ -1547,11 +1567,22 @@ bool CGraphicsPlaneAML::SubmitClear(uint64_t serial)
 
 void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
 {
-  // made at G's start (Process); here only if that did not run (a late opt-in)
+  // made at G's start (Process); here only if that did not run
   if (!m_ringTried)
   {
     m_ringTried = true;
     InitRing();
+  }
+  // GT-D22: a ring that could not be made is tried again, once per route start
+  else if (!RingOn())
+  {
+    m_ringRetries++;
+    const std::string why = "retry " + std::to_string(m_ringRetries) + " at a route start";
+    LogHeapState(why.c_str());
+    const int64_t start = MonotonicNs();
+    const bool on = InitRing();
+    GRAPHICSTICK::GTLogF(on ? LOGINFO : LOGWARNING, "GRING {}: {} in {} ms", why,
+                         on ? "on" : "off", (MonotonicNs() - start) / 1000000);
   }
   m_routeOn = true;
   m_routeQueue.clear();
@@ -2552,7 +2583,7 @@ void CGraphicsPlaneAML::Process()
   if (!m_testPattern)
     InitRaster();
   // GT-5 (RC22 am9pro): the ring once, at G's start, while the heaps are not yet under a 4K DV
-  // playback's pressure; kept for the session (DeinitGL frees it)
+  // playback's pressure; kept for the session (DeinitGL frees it), retried by RouteStart
   if (!m_testPattern && m_raster && GRAPHICSTICK::Requested() && !m_ringTried)
   {
     m_ringTried = true;
