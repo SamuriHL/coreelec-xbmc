@@ -1481,9 +1481,15 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
   if (k.changing || GRAPHICSTICK::RouteOn())
     return;
   const int64_t owed = DISPLAYSTATE::KnobStopOwedNs();
-  if (owed && !DISPLAYSTATE::KnobStopPublished() && now - owed < KNOB_STOP_BOUND_NS)
+  // the stop regime already presented and written (an SDR film): nothing left to wait for
+  const uint8_t stopTag =
+      DISPLAYSTATE::KnobTag(DISPLAYSTATE::GuiEncoding::Srgb, DISPLAYSTATE::SKnobs());
+  DISPLAYSTATE::SKnobs onKernel;
+  const bool stopUp = k.presented == stopTag && DISPLAYSTATE::KnobsWritten(onKernel) &&
+                      onKernel == DISPLAYSTATE::SKnobs();
+  if (owed && !stopUp && !DISPLAYSTATE::KnobStopPublished() && now - owed < KNOB_STOP_BOUND_NS)
     return;
-  const bool stopMissed = owed && !DISPLAYSTATE::KnobStopPublished();
+  const bool stopMissed = owed && !stopUp && !DISPLAYSTATE::KnobStopPublished();
   DISPLAYSTATE::SKnobs wanted;
   bool wrote = false;
   int64_t us = 0;
@@ -1525,11 +1531,14 @@ bool CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
   DISPLAYSTATE::SKnobs from;
   const bool known = DISPLAYSTATE::KnobsWritten(from);
   const int64_t start = MonotonicNs();
+  // only a knob that changes is stored (RC3 am9pro: the aml_media parameter store, under the
+  // module's kernel_param mutex, took up to 1 ms)
   bool ok = true;
-  if (CRendererAML::OsdPqPassthroughAvailable())
+  if (CRendererAML::OsdPqPassthroughAvailable() && (!known || from.osdPq != knobs.osdPq))
     ok &= WriteKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH, knobs.osdPq ? "1" : "0");
   const int64_t osdDone = MonotonicNs();
-  ok &= WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
+  if (!known || from.hdr8 != knobs.hdr8)
+    ok &= WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
   const int64_t gfmtDone = MonotonicNs();
   // graphic_fmt is read only by the DV parse, which runs only with a new frame (O7c): with
   // nothing toggling the DV driver's force_toggle_once runs it at the next vsync

@@ -633,7 +633,9 @@ void KnobRouteOn()
 
 void KnobStopOwed()
 {
-  if (!KnobOwnerC())
+  // RC3: CloseFile runs RM's UnInit twice; the second (route already off, no renderer, no stop
+  // publish) must not owe a stop
+  if (!KnobOwnerC() || !GRAPHICSTICK::RouteOn())
     return;
   s_stopPublishesAtOwed = s_stopPublishes.load();
   s_stopOwedNs = SteadyNowNs();
