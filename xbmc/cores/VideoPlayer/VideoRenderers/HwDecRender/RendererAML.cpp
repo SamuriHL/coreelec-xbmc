@@ -90,10 +90,18 @@ void CRendererAML::EndRenderSession()
   // the regime it needs; a change of regime is written there.
   CServiceBroker::GetWinSystem()->SetGuiCompositing(0);
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(false);
-  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
-  CSysfsPath(OSD_PQ_PASSTHROUGH, 0);
+  // GT-6: on a route session C writes the stop regime's knobs on its own tick
+  const DISPLAYSTATE::SKnobs knobs;
+  if (DISPLAYSTATE::MainWritesKnobs(knobs))
+  {
+    CSysfsPath("/sys/class/amdolby_vision/graphic_fmt", 2 /* FORMAT_SDR */);
+    CSysfsPath(OSD_PQ_PASSTHROUGH, 0);
+    DISPLAYSTATE::NoteKnobsWritten(knobs);
+  }
+  else
+    CLog::Log(LOGINFO, "REGIME main skips the knobs at stop (C writes them)");
   DISPLAYSTATE::PublishMainApplied(GuiEncoding::Srgb,
-                                   CServiceBroker::GetWinSystem()->UseLimitedColor());
+                                   CServiceBroker::GetWinSystem()->UseLimitedColor(), knobs);
   DISPLAYSTATE::RegimeStop();
 }
 
@@ -329,7 +337,12 @@ void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
   // the VPP OSD stage is not programmed at all, and a failed composite falls
   // back to the scalar trim, which needs the VPP's own encode.
   const bool osd_pq_passthrough(composite && native_output);
-  CSysfsPath(OSD_PQ_PASSTHROUGH, osd_pq_passthrough ? 1 : 0);
+  // GT-6: on a route session C writes both knobs, one tick before the first OSD buffer drawn
+  // for them
+  const DISPLAYSTATE::SKnobs knobs{osd_pq_passthrough, gui_is_pq};
+  const bool mainWrites = DISPLAYSTATE::MainWritesKnobs(knobs);
+  if (mainWrites)
+    CSysfsPath(OSD_PQ_PASSTHROUGH, osd_pq_passthrough ? 1 : 0);
 
   // Per-primitive m_sdrPeak encode: the intended path for native BYPASS output
   // (scalar trim only, the VPP does the transform), and the fallback when a DV
@@ -371,14 +384,21 @@ void CRendererAML::ApplyGuiEncoding(const VideoPicture& picture,
   // sRGB EOTF to that same 0.58, i.e. 0.58^2.4-ish = ~29% white - exactly the
   // dim, desaturated OSD that commit 27bb0c4791 fixed and had confirmed on-box
   // against a UB820. So the scalar path is only ever safe under FORMAT_HDR8.
-  CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
-             gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
+  if (mainWrites)
+  {
+    CSysfsPath("/sys/class/amdolby_vision/graphic_fmt",
+               gui_is_pq ? 9 /* FORMAT_HDR8 */ : 2 /* FORMAT_SDR */);
+    DISPLAYSTATE::NoteKnobsWritten(knobs);
+  }
+  else
+    CLog::Log(LOGINFO, "REGIME main skips the knobs at {} osd_pq={} gfmt={} (C writes them)", site,
+              osd_pq_passthrough ? 1 : 0, gui_is_pq ? 9 : 2);
 
   // GT-4 (M3): what G draws in, the encoding these knobs were just written for
   DISPLAYSTATE::PublishMainApplied(composite      ? GuiEncoding::Composite
                                    : gui_is_pq    ? GuiEncoding::Scalar
                                                   : GuiEncoding::Srgb,
-                                   winSystem->UseLimitedColor());
+                                   winSystem->UseLimitedColor(), knobs);
   DISPLAYSTATE::ShadowMainRegime(site, encoding, composite, winSystem->UseLimitedColor(),
                                  dv_output_mode, isHdrDisplay);
 }

@@ -9,7 +9,9 @@
 #include "GraphicsRegime.h"
 
 #include "DisplayState.h"
+#include "GraphicsTick.h"
 #include "OutputWorker.h"
+#include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
@@ -19,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -30,6 +33,33 @@ namespace
 {
 std::atomic_bool s_latched{false};
 std::atomic_bool s_on{false};
+// GT-6
+std::atomic_bool s_knobsAllowed{false};
+std::atomic_bool s_knobOwnerC{false};
+//! main's latest wanted knobs: seq << 8 | PackKnobs (0: none yet)
+std::atomic<uint64_t> s_mainWanted{0};
+//! the knobs as last written: PackKnobs (0: unknown)
+std::atomic<uint32_t> s_knobsWritten{0};
+std::atomic<int64_t> s_stopOwedNs{0};
+std::atomic<uint64_t> s_stopPublishes{0};
+std::atomic<uint64_t> s_stopPublishesAtOwed{0};
+
+uint32_t PackKnobs(SKnobs knobs)
+{
+  return 1u | (knobs.osdPq ? 2u : 0u) | (knobs.hdr8 ? 4u : 0u);
+}
+
+SKnobs UnpackKnobs(uint32_t packed)
+{
+  return SKnobs{(packed & 2u) != 0, (packed & 4u) != 0};
+}
+
+int64_t SteadyNowNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 struct SStream
 {
@@ -206,20 +236,34 @@ void Log(const std::string& line)
     CLog::Log(LOGINFO, "{}", line);
 }
 
+//! GT-6, on W after a publish: a change of the tag gets C's cleared buffers made for this mode,
+//! so C can clear an old-encoding buffer at the new regime's first slot without waiting
+void ArmClears(uint8_t before, uint8_t after)
+{
+  if (before == after || !KnobOwnerC() || !OUTPUT::COutputWorker::Get().OnWorker())
+    return;
+  if (CPresentationCoordinator* coordinator = CPresentationCoordinator::Get())
+    coordinator->ArmKnobClears();
+}
+
 void RepublishOnW(uint64_t n, const char* why)
 {
   const unsigned int mode = aml_dv_get_output_mode();
   const bool isHdrDisplay = PublishedHdrDisplay();
   std::string publish;
   std::string shadow;
+  uint8_t before;
+  uint8_t after;
   {
     std::unique_lock lock(s_mutex);
+    before = RegimeTag(s_pub);
     GraphicsRegime next = s_pub;
     next.encoding = CRendererAML::ResolveGuiEncoding(s_stream.hdrType, s_stream.transfer, mode,
                                                      isHdrDisplay);
     next.dvOutputMode = mode;
     next.isHdrDisplay = isHdrDisplay;
     PublishLocked(next, why, publish);
+    after = RegimeTag(s_pub);
     if (publish.empty())
       publish = StringUtils::Format("GREGIME republish {} request={}: unchanged epoch={}", why, n,
                                     s_pub.epoch);
@@ -227,6 +271,7 @@ void RepublishOnW(uint64_t n, const char* why)
   }
   Log(publish);
   Log(shadow);
+  ArmClears(before, after);
 }
 
 //! posts fn(n) to W; when W does not run, n is served at once (nothing will publish it)
@@ -286,6 +331,16 @@ void RegimeInit(bool compositeAvailable, bool limited, float peak)
     else if (XFILE::CFile::Exists("special://profile/gregime_off"))
       off = "gregime_off";
     s_on = !off;
+    // GT-6: the knobs move to C only on graphicstick route sessions
+    if (GRAPHICSTICK::Requested())
+    {
+      const bool gknobOff = XFILE::CFile::Exists("special://profile/gknob_off");
+      s_knobsAllowed = !off && !gknobOff;
+      CLog::Log(LOGINFO, "REGIME knobs: {}",
+                s_knobsAllowed ? "C writes them on a route session"
+                : gknobOff     ? "main writes them (gknob_off)"
+                               : "main writes them (no regime)");
+    }
     s_latched.store(true, std::memory_order_release);
     if (off)
       CLog::Log(LOGINFO, "GREGIME off ({})", off);
@@ -362,16 +417,21 @@ void PublishRegimeDvMode(unsigned int mode, DvWriter writer)
   }
   const bool isHdrDisplay = PublishedHdrDisplay();
   std::string line;
+  uint8_t before;
+  uint8_t after;
   {
     std::unique_lock lock(s_mutex);
+    before = RegimeTag(s_pub);
     GraphicsRegime next = s_pub;
     next.encoding = CRendererAML::ResolveGuiEncoding(s_stream.hdrType, s_stream.transfer, mode,
                                                      isHdrDisplay);
     next.dvOutputMode = mode;
     next.isHdrDisplay = isHdrDisplay;
     PublishLocked(next, WriterName(writer), line);
+    after = RegimeTag(s_pub);
   }
   Log(line);
+  ArmClears(before, after);
 }
 
 void RequestRegimeRepublish(const char* why)
@@ -407,17 +467,23 @@ void RegimeStop()
               {
                 std::string publish;
                 std::string shadow;
+                uint8_t before;
+                uint8_t after;
                 {
                   std::unique_lock lock(s_mutex);
+                  before = RegimeTag(s_pub);
                   s_stream = {};
                   GraphicsRegime next = s_pub;
                   next.encoding = GuiEncoding::Srgb;
                   next.dvOutputMode = aml_dv_get_output_mode();
                   PublishLocked(next, "stop", publish);
+                  after = RegimeTag(s_pub);
                   ServeLocked(request, shadow);
                 }
+                s_stopPublishes.fetch_add(1);
                 Log(publish);
                 Log(shadow);
+                ArmClears(before, after);
               });
 }
 
@@ -428,14 +494,17 @@ MainApplied s_applied;
 CRtCell<MainApplied> s_appliedCell; //!< s_applied as published, for GetMainApplied
 } // namespace
 
-void PublishMainApplied(GuiEncoding encoding, bool limited)
+void PublishMainApplied(GuiEncoding encoding, bool limited, SKnobs knobs)
 {
+  const uint8_t tag = KnobTag(encoding, knobs);
   std::unique_lock lock(s_appliedMutex);
-  if (s_applied.epoch != 0 && s_applied.encoding == encoding && s_applied.limited == limited)
+  if (s_applied.epoch != 0 && s_applied.encoding == encoding && s_applied.limited == limited &&
+      s_applied.tag == tag)
     return;
   s_applied.epoch++;
   s_applied.encoding = encoding;
   s_applied.limited = limited;
+  s_applied.tag = tag;
   s_appliedCell.Publish(s_applied);
 }
 
@@ -496,6 +565,119 @@ void ShadowMainPeak(float peak)
                                s_pub.epoch, peak == pub ? "agree" : "DISAGREE(peak)");
   }
   Log(line);
+}
+
+uint8_t KnobTag(GuiEncoding effective, SKnobs knobs)
+{
+  return static_cast<uint8_t>(1u | (static_cast<unsigned int>(effective) << 1) |
+                              (knobs.osdPq ? 8u : 0u) | (knobs.hdr8 ? 16u : 0u));
+}
+
+SKnobs TagKnobs(uint8_t tag)
+{
+  return SKnobs{(tag & 8u) != 0, (tag & 16u) != 0};
+}
+
+GuiEncoding TagEncoding(uint8_t tag)
+{
+  return static_cast<GuiEncoding>((tag >> 1) & 3u);
+}
+
+uint8_t RegimeTag(const GraphicsRegime& regime)
+{
+  // CRendererAML::ApplyGuiEncoding's rules: a failed composite falls back to the scalar trim,
+  // osd_pq_passthrough only for a composite on native output, graphic_fmt from the class
+  const GuiEncoding effective =
+      regime.encoding == GuiEncoding::Composite && !regime.compositeAvailable
+          ? GuiEncoding::Scalar
+          : regime.encoding;
+  SKnobs knobs;
+  knobs.osdPq = effective == GuiEncoding::Composite &&
+                regime.dvOutputMode == DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  knobs.hdr8 = regime.encoding != GuiEncoding::Srgb;
+  return KnobTag(effective, knobs);
+}
+
+std::string TagName(uint8_t tag)
+{
+  if (!tag)
+    return "none";
+  const SKnobs knobs = TagKnobs(tag);
+  return StringUtils::Format("{}/{}/{}", GuiEncodingName(TagEncoding(tag)), knobs.osdPq ? 1 : 0,
+                             knobs.hdr8 ? 9 : 2);
+}
+
+bool KnobsAllowed()
+{
+  return s_latched.load(std::memory_order_acquire) && s_knobsAllowed.load();
+}
+
+bool KnobOwnerC()
+{
+  return s_knobOwnerC.load();
+}
+
+void KnobRouteOn()
+{
+  if (!KnobsAllowed())
+    return;
+  s_stopOwedNs = 0;
+  if (!s_knobOwnerC.exchange(true))
+    CLog::Log(LOGINFO, "REGIME knobs to C (route on)");
+}
+
+void KnobStopOwed()
+{
+  if (!KnobOwnerC())
+    return;
+  s_stopPublishesAtOwed = s_stopPublishes.load();
+  s_stopOwedNs = SteadyNowNs();
+}
+
+bool MainWritesKnobs(SKnobs knobs)
+{
+  uint64_t old = s_mainWanted.load();
+  uint64_t next;
+  do
+    next = (((old >> 8) + 1) << 8) | PackKnobs(knobs);
+  while (!s_mainWanted.compare_exchange_weak(old, next));
+  // after the store: C's hand-back reads the wanted after its own store (one of the two writes)
+  return !s_knobOwnerC.load();
+}
+
+bool KnobHandBack(SKnobs& wanted)
+{
+  s_knobOwnerC.store(false);
+  s_stopOwedNs = 0;
+  const uint64_t latest = s_mainWanted.load();
+  if (!latest)
+    return false;
+  wanted = UnpackKnobs(static_cast<uint32_t>(latest & 0xff));
+  return true;
+}
+
+int64_t KnobStopOwedNs()
+{
+  return s_stopOwedNs.load();
+}
+
+bool KnobStopPublished()
+{
+  return s_stopPublishes.load() > s_stopPublishesAtOwed.load();
+}
+
+void NoteKnobsWritten(SKnobs knobs)
+{
+  s_knobsWritten = PackKnobs(knobs);
+}
+
+bool KnobsWritten(SKnobs& knobs)
+{
+  const uint32_t packed = s_knobsWritten.load();
+  if (!packed)
+    return false;
+  knobs = UnpackKnobs(packed);
+  return true;
 }
 
 } // namespace DISPLAYSTATE

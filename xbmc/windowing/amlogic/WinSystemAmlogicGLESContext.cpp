@@ -3575,7 +3575,13 @@ bool CWinSystemAmlogicGLESContext::SubmitGuiFrame()
   }
 
   m_guiLocked++;
-  const uint64_t seq = m_coordinator->SubmitUi(bo, fbId, req, fence, m_surfaceEpoch);
+  // GT-6: the encoding this frame was drawn in, for C's knob order (sRGB before main's first
+  // apply)
+  const uint8_t applied = DISPLAYSTATE::GetMainApplied().tag;
+  const uint64_t seq = m_coordinator->SubmitUi(
+      bo, fbId, req, fence, m_surfaceEpoch,
+      applied ? applied
+              : DISPLAYSTATE::KnobTag(DISPLAYSTATE::GuiEncoding::Srgb, DISPLAYSTATE::SKnobs()));
   if (!seq)
   {
     // 5.B2-4 (SM4): refused, a buffer of a surface C no longer takes

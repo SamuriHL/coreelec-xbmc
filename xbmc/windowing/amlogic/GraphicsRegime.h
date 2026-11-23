@@ -11,6 +11,7 @@
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
 
 #include <cstdint>
+#include <string>
 
 extern "C"
 {
@@ -105,9 +106,59 @@ struct MainApplied
   uint64_t epoch = 0; //!< 0: main has applied nothing yet
   GuiEncoding encoding = GuiEncoding::Srgb; //!< in effect: Scalar when the composite failed
   bool limited = false;
+  uint8_t tag = 0; //!< GT-6: KnobTag of what main draws in now (0 before its first apply)
 };
+
+// 5.G2 GT-6 (design §10.2 item 9, D-G2-3 second half; plan "GT-6"): on a graphicstick route
+// session C writes the two plane-encoding knobs (osd_pq_passthrough, graphic_fmt) for W's
+// published regime, one tick before the first OSD buffer drawn in it is committed; main applies
+// only its GL side and tags its GUI buffers. special://profile/gknob_off: main writes the knobs
+// and G follows main's applied encoding (GT-5).
+
+//! the knob values of a regime
+struct SKnobs
+{
+  bool osdPq = false; //!< osd_pq_passthrough 1
+  bool hdr8 = false; //!< graphic_fmt 9 (FORMAT_HDR8), else 2 (FORMAT_SDR)
+  bool operator==(const SKnobs& o) const { return osdPq == o.osdPq && hdr8 == o.hdr8; }
+  bool operator!=(const SKnobs& o) const { return !(*this == o); }
+};
+//! what an OSD buffer is drawn for: the class in effect and the knobs it is right under. C
+//! commits a tagged buffer only under its own tag; 0 is knob-neutral (a cleared buffer)
+uint8_t KnobTag(GuiEncoding effective, SKnobs knobs);
+SKnobs TagKnobs(uint8_t tag);
+GuiEncoding TagEncoding(uint8_t tag);
+//! W's published regime as a tag (the composite's availability decides the class in effect)
+uint8_t RegimeTag(const GraphicsRegime& regime);
+//! "<class>/<osd_pq>/<graphic_fmt>", for the logs
+std::string TagName(uint8_t tag);
+
+//! latched at RegimeInit: the regime is on, graphicstick_on, no gknob_off
+bool KnobsAllowed();
+//! C writes the knobs now (main does not)
+bool KnobOwnerC();
+//! RM, when a route session starts: the knobs go to C
+void KnobRouteOn();
+//! RM, at the stop of a route session (before the route ends): C keeps the knobs until it has
+//! written the stop regime (bounded)
+void KnobStopOwed();
+//! main (ApplyGuiEncoding, EndRenderSession), every apply: what it would write. true: main
+//! writes them now (C does not own them); then it calls NoteKnobsWritten
+bool MainWritesKnobs(SKnobs knobs);
+//! C: the knobs go back to main. true with main's latest wanted set (C writes it when it is not
+//! on the kernel already, so an apply main skipped while C owned them is not lost)
+bool KnobHandBack(SKnobs& wanted);
+//! the stop C owes, for the hand-back: owed since (0: none) and whether W published the stop
+//! regime since
+int64_t KnobStopOwedNs();
+bool KnobStopPublished();
+//! any writer, after its write
+void NoteKnobsWritten(SKnobs knobs);
+//! the knobs as last written; false before the first write
+bool KnobsWritten(SKnobs& knobs);
+
 //! main, at the end of each ApplyGuiEncoding and at EndRenderSession's stop knobs
-void PublishMainApplied(GuiEncoding encoding, bool limited);
+void PublishMainApplied(GuiEncoding encoding, bool limited, SKnobs knobs);
 //! any thread
 MainApplied GetMainApplied();
 

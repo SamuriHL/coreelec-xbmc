@@ -927,6 +927,8 @@ void CRenderManager::UpdateGraphicsRoute()
   {
     m_gtickOnFile = file;
     GRAPHICSTICK::SetRoute(true, "configure");
+    // GT-6: C writes the knobs for the session
+    DISPLAYSTATE::KnobRouteOn();
   }
   // a route that ends mid-file stays ended for the file, today's routes take over
   else if (m_gtickOnFile == file && GRAPHICSTICK::RouteOn())
@@ -2062,6 +2064,8 @@ void CRenderManager::UnInit()
   // no renderer, no phase: audio must not wait for one
   m_dvdClock.ClearVsyncAdjust(true);
 #if defined(HAS_LIBAMCODEC)
+  // GT-6: C keeps the knobs until it has written the stop regime
+  DISPLAYSTATE::KnobStopOwed();
   // GT-4: G clears what it shows (item 11), with C still running
   GRAPHICSTICK::SetRoute(false, "stop");
 #endif

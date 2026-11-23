@@ -54,6 +54,30 @@ constexpr int64_t FLIP_LOST_NS = 500000000;
 constexpr int64_t LATE_PICK_MARGIN_NS = 3000000;
 // GT-D15 / MC-29: how long after a flip a GUI frame waits for that vblank's tick (slot)
 constexpr int64_t UI_SLOT_HOLD_NS = 3000000;
+// GT-6: playing ticks with no QBUF before the knobs go the nothing-toggling way (a stalled
+// decoder), and how long a change waits for any tick (no video and no vblank event)
+constexpr int KNOB_QBUF_WAIT_TICKS = 6;
+constexpr int64_t KNOB_TICK_BOUND_NS = 500000000;
+// how long main's GUI may stay under another tag than W's before C commits it anyway (main and
+// W disagree: the GUI is never left cleared for good)
+constexpr int64_t KNOB_MAIN_MISMATCH_NS = 1000000000;
+// the hand-back waits this long for W's stop publish
+constexpr int64_t KNOB_STOP_BOUND_NS = 2000000000;
+// the graphics plane's buffer size (CGraphicsPlaneAML's), for C's cleared graphics buffer
+constexpr int GFX_WIDTH = 1920;
+constexpr int GFX_HEIGHT = 1080;
+
+// GT-6: one knob write, plain POSIX (never CLog or the writer accounting on C), measured
+bool WriteKnobFile(const char* path, const char* value)
+{
+  const int fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0)
+    return false;
+  const size_t len = std::strlen(value);
+  const bool ok = write(fd, value, len) == static_cast<ssize_t>(len);
+  close(fd);
+  return ok;
+}
 // GUNTIMED (m8's untimed metric): post_vbl/post_seq is the vblank interval the post fell in,
 // counted back from the flip's vblank; flip/flipseq the DRM sequence of the flip that showed it
 // (-1: none, the post was lost); by= the state that showed it
@@ -249,6 +273,18 @@ void CPresentationCoordinator::Stop()
     for (const Retired& retired : m_cbufRetired)
       dumbs.push_back(retired.buffer);
     m_cbufRetired.clear();
+    if (m_kUiReq)
+      drmModeAtomicFree(m_kUiReq);
+    if (m_kGfxReq)
+      drmModeAtomicFree(m_kGfxReq);
+    m_kUiReq = m_kGfxReq = nullptr;
+    m_kArmed = false;
+    for (DumbBuffer* knob : {&m_kUi, &m_kGfx})
+    {
+      if (knob->fb)
+        dumbs.push_back(*knob);
+      *knob = DumbBuffer();
+    }
   }
   for (DumbBuffer& dumb : dumbs)
     FreeDumb(dumb);
@@ -317,7 +353,8 @@ uint64_t CPresentationCoordinator::Submit(int plane,
                                           drmModeAtomicReqPtr req,
                                           int fence,
                                           double pts,
-                                          uint64_t epoch)
+                                          uint64_t epoch,
+                                          uint8_t knobTag)
 {
   uint64_t seq;
   bool replacedCbuf = false;
@@ -362,6 +399,7 @@ uint64_t CPresentationCoordinator::Submit(int plane,
     ready.fence = fence;
     ready.pts = pts;
     ready.epoch = epoch;
+    ready.knobTag = knobTag;
     ready.cOwned = false;
     ready.readyNs = fence < 0 ? MonotonicNs() : 0;
     ready.seq = seq = ++m_submitSeq;
@@ -929,6 +967,7 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
       state.onScreen = state.committedBo;
       state.onScreenFb = state.committedFb;
       state.onScreenEpoch = state.committedEpoch;
+      state.onScreenTag = state.committedTag;
       state.committedBo = nullptr;
     }
     else if (plane != detached && state.committedCOwned)
@@ -937,9 +976,11 @@ void CPresentationCoordinator::AbandonLostCommit(int detached)
         state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
       state.onScreen = nullptr;
       state.onScreenFb = state.committedFb;
-      m_cbufUp = true;
+      state.onScreenTag = 0;
+      m_cbufUp = plane == PLANE_UI && state.committedFb != m_kUi.fb;
     }
     state.committedCOwned = false;
+    state.committedTag = 0;
     state.inCommit = false;
   }
 }
@@ -966,9 +1007,11 @@ void CPresentationCoordinator::ReclaimPlane(int plane)
   state.committedFb = 0;
   state.committedEpoch = 0;
   state.committedCOwned = false;
+  state.committedTag = 0;
   state.onScreen = nullptr;
   state.onScreenFb = 0;
   state.onScreenEpoch = 0;
+  state.onScreenTag = 0;
   // R4-M4: C's own flag, cleared with the books
   if (plane == PLANE_UI)
     m_cbufUp = false;
@@ -1043,6 +1086,14 @@ void CPresentationCoordinator::Process()
       std::unique_lock lock(m_uiMutex);
       m_planes[PLANE_GRAPHICS].ready.staleDeferred = false;
       m_gtFlipSeqValid = false;
+      // GT-6: the cleared buffers' requests were built for the old mode
+      m_kArmGen++;
+      if (m_kUiReq)
+        drmModeAtomicFree(m_kUiReq);
+      if (m_kGfxReq)
+        drmModeAtomicFree(m_kGfxReq);
+      m_kUiReq = m_kGfxReq = nullptr;
+      m_kArmed = false;
     }
     if (held)
     {
@@ -1056,12 +1107,18 @@ void CPresentationCoordinator::Process()
         RunPlaneOffs(true);
     }
     else
+    {
+      KnobPoll(MonotonicNs());
       CommitUi();
+      FlushKnobLines();
+    }
     StampPhase(PHASE_COMMIT);
 
     const bool video = m_videoAttached;
     const bool timeline = video && m_useTimeline;
-    if (video && !timeline)
+    // GT-6: a knob change with no video attached ticks on queued vblank events
+    const bool knobTicks = !video && !held && KnobWantsTicks();
+    if ((video && !timeline) || knobTicks)
       QueueVblank(epoch);
 
     int fence[PLANE_COUNT];
@@ -1081,9 +1138,14 @@ void CPresentationCoordinator::Process()
         {m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0}};
     if (video)
       fds[2].fd = timeline ? m_tickFd.load() : m_vblankFd;
+    else if (knobTicks)
+      fds[2].fd = m_vblankFd;
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       fds[3 + plane] = {fence[plane], POLLIN, 0};
-    const int timeoutMs = held ? 20 : (video || inFlight ? 50 : -1);
+    int timeoutMs = held ? 20 : (video || inFlight ? 50 : -1);
+    // GT-6: a change's bound and the hand-back after a route run with no video too
+    if (m_knob.on && (m_knob.changing || !GRAPHICSTICK::RouteOn()))
+      timeoutMs = timeoutMs < 0 ? 20 : std::min(timeoutMs, 20);
     int64_t timeoutNs = timeoutMs < 0 ? -1 : static_cast<int64_t>(timeoutMs) * 1000000;
     {
       // a GUI frame held for the slot is committed within its bound even with no tick
@@ -1180,6 +1242,9 @@ void CPresentationCoordinator::Process()
       if (!held)
       {
         SetState(State::IDLE, epoch);
+        // GT-6: the knob ticks of a slot without video
+        if (gotTick && m_knob.on)
+          KnobTick(tick.seq, "vblank");
         if (planeOffOnC)
           RunPlaneOffs(false);
         // GT-4: the route's end clear, with no ticks to pick it
@@ -1244,6 +1309,454 @@ void CPresentationCoordinator::Process()
     m_uiCond.notify_all();
   }
   aml_presenter_set_running(false);
+}
+
+void CPresentationCoordinator::FlushKnobLines()
+{
+  std::vector<std::string> lines;
+  {
+    std::unique_lock lock(m_uiMutex);
+    if (m_knobLines.empty())
+      return;
+    lines.swap(m_knobLines);
+  }
+  for (std::string& line : lines)
+    GRAPHICSTICK::GTLog(LOGINFO, std::move(line));
+}
+
+void CPresentationCoordinator::KnobPoll(int64_t now)
+{
+  if (!DISPLAYSTATE::KnobsAllowed())
+    return;
+  SKnobState& k = m_knob;
+  if (!k.on)
+  {
+    if (!DISPLAYSTATE::KnobOwnerC())
+      return;
+    k = SKnobState();
+    k.on = true;
+    // what main drew last is up under the knobs on the kernel only if main wrote them for it (an
+    // apply main skipped as the knobs came here leaves them unwritten): else nothing is, and the
+    // first poll writes W's
+    const DISPLAYSTATE::MainApplied applied = DISPLAYSTATE::GetMainApplied();
+    const uint8_t drawn =
+        applied.tag ? applied.tag
+                    : DISPLAYSTATE::KnobTag(DISPLAYSTATE::GuiEncoding::Srgb, DISPLAYSTATE::SKnobs());
+    DISPLAYSTATE::SKnobs on;
+    k.presented =
+        DISPLAYSTATE::KnobsWritten(on) && on == DISPLAYSTATE::TagKnobs(drawn) ? drawn : 0;
+    {
+      std::unique_lock lock(m_uiMutex);
+      m_knobOnMirror = true;
+    }
+    GRAPHICSTICK::GTLogF(LOGINFO, "REGIME C owns the knobs presented={}",
+                         DISPLAYSTATE::TagName(k.presented));
+  }
+
+  const DISPLAYSTATE::GraphicsRegime regime = DISPLAYSTATE::GetRegime();
+  const uint8_t want = regime.epoch ? DISPLAYSTATE::RegimeTag(regime) : k.presented;
+  if (!k.changing && want != k.presented)
+  {
+    DISPLAYSTATE::SKnobs on;
+    const bool known = DISPLAYSTATE::KnobsWritten(on);
+    const DISPLAYSTATE::SKnobs to = DISPLAYSTATE::TagKnobs(want);
+    const uint8_t from = k.presented;
+    m_report.knobChanges++;
+    k.target = want;
+    k.epoch = regime.epoch;
+    if (known && on == to)
+    {
+      // the class changed, the knobs did not: the new encoding's buffers go at the next slot
+      GRAPHICSTICK::GTLogF(LOGINFO, "REGIME class epoch={} from={} to={} (no knob change)",
+                           regime.epoch, DISPLAYSTATE::TagName(from), DISPLAYSTATE::TagName(want));
+      k.writeSeq = 0;
+      KnobPresent(0, "class");
+    }
+    else
+    {
+      k.changing = true;
+      k.written = false;
+      k.waitTicks = 0;
+      k.startNs = now;
+      GRAPHICSTICK::GTLogF(LOGINFO,
+                           "REGIME change epoch={} from={} to={} osd_pq={}->{} gfmt={}->{}",
+                           regime.epoch, DISPLAYSTATE::TagName(from), DISPLAYSTATE::TagName(want),
+                           known ? (on.osdPq ? "1" : "0") : "?", to.osdPq ? 1 : 0,
+                           known ? (on.hdr8 ? "9" : "2") : "?", to.hdr8 ? 9 : 2);
+    }
+  }
+  else if (k.changing && !k.written && want != k.target)
+  {
+    // a newer publish before the write: the write goes for the newest
+    GRAPHICSTICK::GTLogF(LOGINFO, "REGIME change epoch={} to={} replaced by epoch={} to={}", k.epoch,
+                         DISPLAYSTATE::TagName(k.target), regime.epoch,
+                         DISPLAYSTATE::TagName(want));
+    k.target = want;
+    k.epoch = regime.epoch;
+    if (want == k.presented)
+      k.changing = false;
+  }
+  if (k.changing && now - k.startNs > KNOB_TICK_BOUND_NS)
+    KnobTick(0, "timeout");
+
+  // the route ended: the knobs go back to main once nothing is owed
+  if (k.changing || GRAPHICSTICK::RouteOn())
+    return;
+  const int64_t owed = DISPLAYSTATE::KnobStopOwedNs();
+  if (owed && !DISPLAYSTATE::KnobStopPublished() && now - owed < KNOB_STOP_BOUND_NS)
+    return;
+  const bool stopMissed = owed && !DISPLAYSTATE::KnobStopPublished();
+  DISPLAYSTATE::SKnobs wanted;
+  bool wrote = false;
+  int64_t us = 0;
+  if (DISPLAYSTATE::KnobHandBack(wanted))
+  {
+    // an apply main skipped while C owned them (an off-route session that began meanwhile)
+    DISPLAYSTATE::SKnobs on;
+    if (!DISPLAYSTATE::KnobsWritten(on) || on != wanted)
+    {
+      bool forced = false;
+      KnobWrite(wanted, false, forced, us);
+      wrote = true;
+    }
+  }
+  {
+    std::unique_lock lock(m_uiMutex);
+    m_knobOnMirror = false;
+    for (PlaneState& plane : m_planes)
+      plane.firstOwed = false;
+  }
+  k = SKnobState();
+  GRAPHICSTICK::GTLogF(LOGINFO, "REGIME knobs back to main{} wrote={} osd_pq={} gfmt={} write_us={}",
+                       stopMissed ? " (no stop publish in 2 s)" : "", wrote ? 1 : 0,
+                       wanted.osdPq ? 1 : 0, wanted.hdr8 ? 9 : 2, us);
+}
+
+void CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
+                                         bool toggling,
+                                         bool& forced,
+                                         int64_t& us)
+{
+  DISPLAYSTATE::SKnobs from;
+  const bool known = DISPLAYSTATE::KnobsWritten(from);
+  const int64_t start = MonotonicNs();
+  if (CRendererAML::OsdPqPassthroughAvailable())
+    WriteKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH, knobs.osdPq ? "1" : "0");
+  WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
+  // graphic_fmt is read only by the DV parse, which runs only with a new frame (O7c): with
+  // nothing toggling the DV driver's force_toggle_once runs it at the next vsync
+  forced = !toggling && (!known || from.hdr8 != knobs.hdr8);
+  if (forced)
+    WriteKnobFile("/sys/class/amdolby_vision/debug", "force_toggle_once");
+  us = (MonotonicNs() - start) / 1000;
+  DISPLAYSTATE::NoteKnobsWritten(knobs);
+  m_report.knobWrites++;
+  m_report.knobWriteMaxUs = std::max(m_report.knobWriteMaxUs, us);
+  if (us > 1000)
+    m_report.knobSlow++;
+}
+
+void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
+{
+  SKnobState& k = m_knob;
+  if (!k.on)
+    return;
+  k.ticks++;
+  if (!k.changing)
+    return;
+  if (!k.written)
+  {
+    if (!how)
+    {
+      if (++k.waitTicks < KNOB_QBUF_WAIT_TICKS)
+        return;
+      how = "still";
+    }
+    const bool toggling = std::strcmp(how, "qbuf") == 0;
+    DISPLAYSTATE::SKnobs from;
+    const bool known = DISPLAYSTATE::KnobsWritten(from);
+    const DISPLAYSTATE::SKnobs to = DISPLAYSTATE::TagKnobs(k.target);
+    bool forced = false;
+    int64_t us = 0;
+    KnobWrite(to, toggling, forced, us);
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "REGIME knob write epoch={} tick={} how={} osd_pq={} gfmt={} force={} "
+                         "write_us={}",
+                         k.epoch, seq, how, to.osdPq ? 1 : 0, to.hdr8 ? 9 : 2, forced ? 1 : 0, us);
+    // osd_pq_passthrough lands with nothing toggling only on the patched kernel (5.K); without
+    // it (or knobforce_off) the change lands with the next new frame: today's lag, no hold
+    const DISPLAYSTATE::DisplayState* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_C);
+    const bool forceProcess = state && state->knobForceProcess;
+    const bool osdChanged = !known || from.osdPq != to.osdPq;
+    const bool timeout = std::strcmp(how, "timeout") == 0;
+    if (timeout || (!toggling && osdChanged && !forceProcess))
+    {
+      m_report.knobNoToggle++;
+      GRAPHICSTICK::GTLogF(LOGINFO, "REGIME no-toggle epoch={} tick={} how={} knobForceProcess={}",
+                           k.epoch, seq, how, forceProcess ? 1 : 0);
+      k.writeSeq = seq;
+      KnobPresent(seq, "no-toggle");
+      return;
+    }
+    k.written = true;
+    k.writeTick = k.ticks;
+    k.writeSeq = seq;
+    return;
+  }
+  // the slot one tick after the write
+  if (k.ticks > k.writeTick)
+    KnobPresent(seq, how ? how : "tick");
+}
+
+void CPresentationCoordinator::KnobPresent(uint64_t seq, const char* why)
+{
+  SKnobState& k = m_knob;
+  k.presented = k.target;
+  k.changing = false;
+  k.written = false;
+  k.clearSlot = true;
+  k.mismatchLogged = false;
+  k.mismatchSinceNs = 0;
+  {
+    std::unique_lock lock(m_uiMutex);
+    for (PlaneState& plane : m_planes)
+      plane.firstOwed = true;
+  }
+  GRAPHICSTICK::GTLogF(LOGINFO, "REGIME present epoch={} tag={} tick={} knob_tick={} why={}", k.epoch,
+                       DISPLAYSTATE::TagName(k.presented), seq, k.writeSeq, why);
+}
+
+void CPresentationCoordinator::KnobPrepareCommit(bool& holdTagged, bool& holdPlaced)
+{
+  holdTagged = false;
+  holdPlaced = false;
+  SKnobState& k = m_knob;
+  if (!k.on)
+    return;
+  holdTagged = k.changing || m_osdHold.active;
+  const int64_t now = MonotonicNs();
+  // an old-encoding buffer never goes up again
+  if (!holdTagged)
+  {
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+    {
+      UiBuffer& ready = m_planes[plane].ready;
+      if (plane == PLANE_UI && ready.req && ready.knobTag == k.presented)
+        k.mismatchSinceNs = 0;
+      if (!ready.req || ready.cOwned || !ready.knobTag || ready.knobTag == k.presented)
+        continue;
+      if (plane == PLANE_UI && !k.mismatchSinceNs)
+        k.mismatchSinceNs = now;
+      if (plane == PLANE_UI && now - k.mismatchSinceNs > KNOB_MAIN_MISMATCH_NS)
+      {
+        if (!k.mismatchLogged)
+          m_knobLines.push_back(StringUtils::Format(
+              "REGIME main's GUI is drawn as {} under {} for 1 s: committed (main and W disagree)",
+              DISPLAYSTATE::TagName(ready.knobTag), DISPLAYSTATE::TagName(k.presented)));
+        k.mismatchLogged = true;
+        continue;
+      }
+      if (plane == PLANE_UI)
+        m_report.knobDropUi++;
+      else
+        m_report.knobDropGfx++;
+      Drop(plane, ready);
+    }
+  }
+  if (m_osdHold.active && !m_osdHold.placed)
+  {
+    m_osdHold.placed = true;
+    bool any = false;
+    bool missing = false;
+    for (int plane = 0; plane < PLANE_COUNT; plane++)
+    {
+      const PlaneState& state = m_planes[plane];
+      const uint32_t own = plane == PLANE_UI ? m_kUi.fb : m_kGfx.fb;
+      if (!state.onScreenFb || (own && state.onScreenFb == own))
+        continue;
+      if (PlaceKnobClear(plane))
+        any = true;
+      else
+        missing = true;
+    }
+    if (any)
+      holdPlaced = true;
+    else
+    {
+      // nothing drawn is up, or nothing to clear it with
+      m_osdHold.flipped = !missing;
+      m_osdHold.failed = missing;
+      m_uiCond.notify_all();
+    }
+    m_report.osdHolds++;
+    return;
+  }
+  if (!k.clearSlot || holdTagged)
+    return;
+  // the first slot under the presented knobs: what is old on screen goes, C's cleared buffer in
+  // its place until the producer's new one (decided here, never waited for)
+  k.clearSlot = false;
+  for (int plane = 0; plane < PLANE_COUNT; plane++)
+  {
+    const PlaneState& state = m_planes[plane];
+    const bool old = state.onScreenTag && state.onScreenTag != k.presented;
+    const bool replaced =
+        state.ready.req && (state.ready.cOwned || state.ready.knobTag == k.presented);
+    if (!old || replaced)
+      continue;
+    const bool placed = PlaceKnobClear(plane);
+    if (placed && plane == PLANE_UI)
+      m_report.knobGuiLate++;
+    else if (placed)
+      m_report.knobGfxLate++;
+    m_knobLines.push_back(StringUtils::Format(
+        "REGIME {} epoch={} on screen={} presented={}{}", plane == PLANE_UI ? "gui-late" : "gfx-late",
+        k.epoch, DISPLAYSTATE::TagName(state.onScreenTag), DISPLAYSTATE::TagName(k.presented),
+        placed ? "" : " (no cleared buffer armed: the old one stays)"));
+  }
+}
+
+bool CPresentationCoordinator::PlaceKnobClear(int plane)
+{
+  drmModeAtomicReqPtr const templ = plane == PLANE_UI ? m_kUiReq : m_kGfxReq;
+  if (!m_kArmed || !templ || (plane == PLANE_GRAPHICS && m_graphicsRejected))
+    return false;
+  drmModeAtomicReqPtr req = drmModeAtomicDuplicate(templ);
+  if (!req)
+    return false;
+  UiBuffer& ready = m_planes[plane].ready;
+  if (ready.req)
+    Drop(plane, ready);
+  ready.fb = plane == PLANE_UI ? m_kUi.fb : m_kGfx.fb;
+  ready.req = req;
+  ready.fence = -1;
+  ready.seq = ++m_submitSeq;
+  ready.epoch = plane == PLANE_UI ? m_uiEpoch : 0;
+  ready.cOwned = true;
+  ready.knobClear = true;
+  ready.readyNs = MonotonicNs();
+  return true;
+}
+
+bool CPresentationCoordinator::ArmKnobClears()
+{
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  CAMLDisplay* display = winSystem ? winSystem->GetAmlDisplay() : nullptr;
+  if (!display)
+    return false;
+  const int64_t start = MonotonicNs();
+  uint32_t planeId = 0;
+  int width = 0;
+  int height = 0;
+  int screenWidth = 0;
+  int screenHeight = 0;
+  bool overlayActive = false;
+  display->aml_get_display_ui_plane(planeId, width, height, screenWidth, screenHeight,
+                                      overlayActive);
+  if (!planeId || width <= 0 || height <= 0 || width > 8192 || height > 8192)
+    return false;
+  uint64_t gen;
+  uint32_t format;
+  DumbBuffer ui;
+  DumbBuffer gfx;
+  {
+    std::unique_lock lock(m_uiMutex);
+    gen = m_kArmGen;
+    format = m_uiFormat ? m_uiFormat : DRM_FORMAT_ARGB8888;
+    if (m_kUi.fb && m_kUi.width == width && m_kUi.height == height)
+      ui = m_kUi;
+    gfx = m_kGfx;
+  }
+  // off C's thread and lock: the allocation and the requests (the display's lock)
+  DumbBuffer freshUi;
+  DumbBuffer freshGfx;
+  if (!ui.fb && CreateDumb(width, height, format, freshUi))
+    ui = freshUi;
+  if (!gfx.fb &&
+      CreateDumb(GFX_WIDTH, GFX_HEIGHT, DRM_FORMAT_ARGB8888, freshGfx))
+    gfx = freshGfx;
+  int srcWidth = 0;
+  int srcHeight = 0;
+  drmModeAtomicReqPtr uiReq = ui.fb ? display->BuildFlipRequestLocked(ui.fb, srcWidth, srcHeight)
+                                    : nullptr;
+  if (uiReq && (srcWidth != width || srcHeight != height))
+  {
+    drmModeAtomicFree(uiReq);
+    uiReq = nullptr;
+  }
+  drmModeAtomicReqPtr gfxReq =
+      gfx.fb ? display->BuildOverlayRequest(gfx.fb, GFX_WIDTH,
+                                            GFX_HEIGHT)
+             : nullptr;
+  bool stale;
+  std::vector<DumbBuffer> extra;
+  {
+    std::unique_lock lock(m_uiMutex);
+    if (freshUi.fb)
+    {
+      if (m_kUi.fb)
+        m_cbufRetired.push_back({m_kUi, m_uiFlips});
+      m_kUi = freshUi;
+    }
+    if (freshGfx.fb)
+    {
+      if (m_kGfx.fb)
+        extra.push_back(freshGfx); // another arm made one first
+      else
+        m_kGfx = freshGfx;
+    }
+    stale = gen != m_kArmGen || (gfxReq && m_kGfx.fb != gfx.fb);
+    if (m_kUiReq)
+      drmModeAtomicFree(m_kUiReq);
+    if (m_kGfxReq)
+      drmModeAtomicFree(m_kGfxReq);
+    m_kUiReq = m_kGfxReq = nullptr;
+    if (stale)
+    {
+      if (uiReq)
+        drmModeAtomicFree(uiReq);
+      if (gfxReq)
+        drmModeAtomicFree(gfxReq);
+      uiReq = gfxReq = nullptr;
+    }
+    m_kUiReq = uiReq;
+    m_kGfxReq = gfxReq;
+    m_kArmed = uiReq || gfxReq;
+  }
+  for (DumbBuffer& dumb : extra)
+    FreeDumb(dumb);
+  GRAPHICSTICK::GTLogF(LOGINFO, "REGIME clears armed ui_fb={} {}x{} gfx_fb={} ui={} gfx={}{} us={}",
+                       ui.fb, width, height, gfx.fb, uiReq ? 1 : 0, gfxReq ? 1 : 0,
+                       stale ? " (stale: a mode set since)" : "",
+                       (MonotonicNs() - start) / 1000);
+  return uiReq || gfxReq;
+}
+
+bool CPresentationCoordinator::OsdHoldBegin(std::chrono::milliseconds bound)
+{
+  std::unique_lock lock(m_uiMutex);
+  if (!m_knobOnMirror)
+    return false;
+  m_osdHold = SOsdHold();
+  m_osdHold.active = true;
+  m_osdHold.beginNs = MonotonicNs();
+  const uint64_t one = 1;
+  if (write(m_wakeFd, &one, sizeof(one)) < 0)
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
+  m_uiCond.wait_for(lock, bound,
+                    [this] { return m_osdHold.flipped || m_osdHold.failed || !m_osdHold.active; });
+  return m_osdHold.flipped;
+}
+
+void CPresentationCoordinator::OsdHoldEnd()
+{
+  {
+    std::unique_lock lock(m_uiMutex);
+    m_osdHold = SOsdHold();
+  }
+  const uint64_t one = 1;
+  if (write(m_wakeFd, &one, sizeof(one)) < 0)
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "CPresentationCoordinator - wake failed: {}", strerror(errno));
 }
 
 void CPresentationCoordinator::QueueVblank(unsigned int epoch)
@@ -1383,6 +1896,11 @@ void CPresentationCoordinator::CommitUi()
     }
     if (m_cbufReq)
       PlaceClearedUi();
+    // GT-6: the knob order (drawn buffers only under the knobs on the kernel)
+    bool knobHold = false;
+    bool holdPlaced = false;
+    KnobPrepareCommit(knobHold, holdPlaced);
+    bool holdInCommit = false;
     // every plane with a submit whose GPU work is done goes in the one commit;
     // a plane left out keeps what it shows (R3)
     // F2 (RC20 FP n5994 serial 677, delta 2 behind a closing seek bar's GUI commit at every
@@ -1463,6 +1981,9 @@ void CPresentationCoordinator::CommitUi()
         ReapFence(ready);
       if (!ready.req || ready.fence >= 0)
         continue;
+      // GT-6: a change or the OSD hold in progress: no drawn buffer goes up until its slot
+      if (knobHold && ready.knobTag && !ready.cOwned)
+        continue;
       // GT-D15 / MC-29 ("C issues all OSD commits in the post-tick slot while video is
       // attached"): a GUI frame ready at a flip's wake whose tick is imminent (the flip one
       // vblank past the last tick handled) waits for that slot, so GUI and graphics go in one
@@ -1518,6 +2039,11 @@ void CPresentationCoordinator::CommitUi()
       }
       if (plane == PLANE_UI && !ready.cOwned)
         TimeUiCommit(std::max(ready.readyNs, m_diagUnblockedNs));
+      // GT-6 (gated 0): a drawn buffer under another regime's knobs
+      if (m_knob.on && ready.knobTag && ready.knobTag != m_knob.presented)
+        m_report.knobOldCommits++;
+      holdInCommit |= ready.knobClear && m_osdHold.active;
+      m_planes[plane].committedTag = ready.knobTag;
       commit.has[plane] = true;
       commit.bo[plane] = ready.bo;
       commit.generation[plane] = m_planes[plane].generation;
@@ -1528,7 +2054,7 @@ void CPresentationCoordinator::CommitUi()
           ready.bo || ready.cOwned ? ready.fb : m_planes[plane].onScreenFb;
       m_planes[plane].committedEpoch = ready.epoch;
       m_planes[plane].committedCOwned = ready.cOwned;
-      commit.cOwned |= ready.cOwned;
+      commit.cOwned |= ready.cOwned && !ready.knobClear;
       if (s_untimedLog)
         untimed.insert(untimed.end(), ready.untimed.begin(), ready.untimed.end());
       if (plane == PLANE_GRAPHICS && ready.timed)
@@ -1549,6 +2075,7 @@ void CPresentationCoordinator::CommitUi()
         timedTags.submitNs = ready.submitNs;
         timedTags.pickVblankNs = ready.pickVblankNs;
         timedTags.fenceAtPick = ready.fenceAtPick;
+        timedTags.knobTag = ready.knobTag;
       }
       ready = UiBuffer();
     }
@@ -1580,6 +2107,8 @@ void CPresentationCoordinator::CommitUi()
     m_committing = commit;
     m_inFlight = true;
     m_inCommitTag = ++m_commitTagSeq;
+    if (holdInCommit)
+      m_osdHold.commitTag = m_inCommitTag;
     if (s_untimedLog)
       m_untimedInFlight = std::move(untimed);
     m_inFlightGfxPts = commit.has[PLANE_GRAPHICS] ? commit.pts[PLANE_GRAPHICS] : DVD_NOPTS_VALUE;
@@ -1724,6 +2253,13 @@ void CPresentationCoordinator::CommitWorker()
         state.committedBo = nullptr;
         state.committedFb = 0;
         state.committedCOwned = false;
+        state.committedTag = 0;
+      }
+      // GT-6: the OSD hold's clears go again at C's next slot
+      if (m_osdHold.active && m_osdHold.commitTag == tag)
+      {
+        m_osdHold.placed = false;
+        m_osdHold.commitTag = 0;
       }
       if (m_report.uiFailed++ < 3)
         GRAPHICSTICK::GTLogF(LOGWARNING, "CPresentationCoordinator - plane commit failed: {}",
@@ -1854,6 +2390,7 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
       buffer.submitNs = in.submitNs ? in.submitNs : MonotonicNs();
       buffer.regimeEpoch = in.regimeEpoch;
       buffer.untimedRoute = in.untimedRoute;
+      buffer.knobTag = in.knobTag;
       const auto at = std::upper_bound(m_timed.begin(), m_timed.end(), in.serial,
                                        [](uint64_t s, const UiBuffer& b) { return s < b.serial; });
       m_timed.insert(at, std::move(buffer));
@@ -2348,10 +2885,32 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     PlaneState& state = m_planes[plane];
     if (!state.inCommit)
       continue;
+    // GT-6: C's cleared buffer of a regime change or the OSD hold took the plane
+    const bool knobClear = state.committedCOwned &&
+                           state.committedFb == (plane == PLANE_UI ? m_kUi.fb : m_kGfx.fb);
+    if (knobClear)
+    {
+      if (state.onScreen)
+        state.returned.push_back({state.onScreen, state.onScreenFb, state.onScreenEpoch});
+      state.onScreen = nullptr;
+      state.onScreenEpoch = 0;
+      m_knobLines.push_back(StringUtils::Format("REGIME clear plane={} fb={} flip={}",
+                                                plane == PLANE_UI ? "ui" : "graphics",
+                                                state.committedFb, sequence));
+    }
+    if (m_knob.on && state.firstOwed && state.committedTag &&
+        state.committedTag == m_knob.presented)
+    {
+      state.firstOwed = false;
+      m_knobLines.push_back(StringUtils::Format(
+          "REGIME first commit plane={} tag={} epoch={} flip={} knob_tick={}",
+          plane == PLANE_UI ? "ui" : "graphics", DISPLAYSTATE::TagName(state.committedTag),
+          m_knob.epoch, sequence, m_knob.writeSeq));
+    }
     if (plane == PLANE_UI)
     {
       m_uiFlips++;
-      if (state.committedCOwned)
+      if (state.committedCOwned && !knobClear)
       {
         // the GUI buffer it replaced is off screen
         if (state.onScreen)
@@ -2375,11 +2934,22 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
       state.onScreen = state.committedBo;
       state.onScreenEpoch = state.committedEpoch;
     }
+    if (state.committedBo || state.committedCOwned)
+      state.onScreenTag = state.committedTag;
     state.onScreenFb = state.committedFb;
     state.inCommit = false;
     state.committedBo = nullptr;
     state.committedFb = 0;
     state.committedCOwned = false;
+    state.committedTag = 0;
+  }
+  if (m_osdHold.active && m_osdHold.commitTag == tag)
+  {
+    m_osdHold.flipped = true;
+    m_osdHold.flipSeq = sequence;
+    m_knobLines.push_back(StringUtils::Format("REGIME osd hold flipped flip={} wait_ms={}", sequence,
+                                              (MonotonicNs() - m_osdHold.beginNs) / 1000000));
+    m_uiCond.notify_all();
   }
   m_inFlight = false;
   m_inCommitTag = 0;
@@ -2432,8 +3002,8 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     GRAPHICSTICK::GTLogF(LOGINFO, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed && timed.bridge)
-    GRAPHICSTICK::GTLogF(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
-              timed.u);
+    GRAPHICSTICK::GTLogF(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={} rtag={}", timed.serial,
+                         sequence, timed.fb, timed.u, timed.knobTag);
   else if (timed.timed)
   {
     // GT-D15 measurement: G's libass and draw times, its hand-in against the picking slot's
@@ -2441,11 +3011,11 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
     const int64_t slot = timed.pickVblankNs;
     GRAPHICSTICK::GTLogF(LOGINFO,
               "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={} "
-              "ass_us={} draw_us={} submit_us={} fence={} commit_us={}",
+              "ass_us={} draw_us={} submit_us={} fence={} commit_us={} rtag={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
               timed.firstPage ? 1 : 0, timed.afterHold ? 1 : 0, timed.assUs, timed.drawUs,
               slot && timed.submitNs ? (timed.submitNs - slot) / 1000 : 0, timed.fenceAtPick,
-              slot && commitNs ? (commitNs - slot) / 1000 : 0);
+              slot && commitNs ? (commitNs - slot) / 1000 : 0, timed.knobTag);
   }
   // the buffer this one replaced is G's again
   if (timed.timed)
@@ -2571,6 +3141,12 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     m_gtReleased[0] = m_gtReleased[1] = m_gtTarget = SReleasedFrame();
     m_gtWithheld = false;
   }
+  // GT-6: the knob tick. A tick that QBUF'd a frame toggles; paused, a still or no picture
+  // configured toggles nothing (the forced process); playing with no QBUF this tick waits
+  if (m_knob.on)
+    KnobTick(tick.seq, result.newFrame && result.qbufShown        ? "qbuf"
+                       : !result.configured || !result.playing ? "still"
+                                                               : nullptr);
 
   if (tick.vblankNs && OUTPUT::PlaneOffOnC())
   {
@@ -2912,6 +3488,14 @@ void CPresentationCoordinator::LogReport()
                 r.untimedReplaced, r.untimedRegress, r.gfxEpochDrop, r.firstPages, r.pageLate,
                 counts);
   }
+  if (r.knobWrites || r.knobChanges || r.osdHolds || r.knobOldCommits)
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "REGIME report changes={} writes={} write_max_us={} write_over_1ms={} "
+                         "noToggle={} guiLate={} gfxLate={} dropUi={} dropGfx={} osdHolds={} "
+                         "oldCommits={}",
+                         r.knobChanges, r.knobWrites, r.knobWriteMaxUs, r.knobSlow, r.knobNoToggle,
+                         r.knobGuiLate, r.knobGfxLate, r.knobDropUi, r.knobDropGfx, r.osdHolds,
+                         r.knobOldCommits);
   if (r.uiTimed)
     GRAPHICSTICK::GTLogF(LOGINFO, "GEOMDIAG ui commits late={} of {} timed over {} ticks", r.uiLate,
               r.uiTimed, r.ticks);

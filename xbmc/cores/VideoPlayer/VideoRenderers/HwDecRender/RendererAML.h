@@ -29,6 +29,9 @@ public:
   CRendererAML();
   virtual ~CRendererAML();
   void EndRenderSession() override;
+  //! the knob (main, and C from 5.G2 GT-6) and whether the kernel has it (patch 0016)
+  static const char* const OSD_PQ_PASSTHROUGH;
+  static bool OsdPqPassthroughAvailable();
 
   // Registration
   static CBaseRenderer* Create(CVideoBuffer *buffer);
@@ -100,8 +103,6 @@ private:
   static GuiEncoding ResolveGuiEncoding(const VideoPicture& picture,
                                         unsigned int dvOutputMode,
                                         bool isHdrDisplay);
-  static const char* const OSD_PQ_PASSTHROUGH;
-  static bool OsdPqPassthroughAvailable();
 
   // Sink HDR capability, sampled in Configure. CWinSystemAmlogic::IsHDRDisplay()
   // is NOT a cached accessor - it stats and reads two amhdmitx sysfs nodes and

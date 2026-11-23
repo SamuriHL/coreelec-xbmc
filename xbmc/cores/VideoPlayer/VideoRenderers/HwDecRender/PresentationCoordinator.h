@@ -10,6 +10,7 @@
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/HdrGraphics.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "threads/Thread.h"
 
 #include <atomic>
@@ -20,6 +21,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -87,10 +89,13 @@ public:
                   drmModeAtomicReqPtr req,
                   int fence,
                   double pts = DVD_NOPTS_VALUE,
-                  uint64_t epoch = 0);
-  uint64_t SubmitUi(gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, uint64_t epoch)
+                  uint64_t epoch = 0,
+                  uint8_t knobTag = 0);
+  //! knobTag: DISPLAYSTATE::KnobTag of the encoding it was drawn in (GT-6)
+  uint64_t SubmitUi(
+      gbm_bo* bo, uint32_t fb, drmModeAtomicReqPtr req, int fence, uint64_t epoch, uint8_t knobTag)
   {
-    return Submit(PLANE_UI, bo, fb, req, fence, DVD_NOPTS_VALUE, epoch);
+    return Submit(PLANE_UI, bo, fb, req, fence, DVD_NOPTS_VALUE, epoch, knobTag);
   }
   //! Waits until that submit leaves the queue: committed, replaced or dropped.
   bool WaitTaken(uint64_t seq, std::chrono::milliseconds timeout);
@@ -197,6 +202,7 @@ public:
     uint64_t regimeEpoch = 0; //!< item 5 (h): G's regime when it drew it
     //! drawn on GT-5's untimed route: an untimed-only buffer waits for the start's hold
     bool untimedRoute = false;
+    uint8_t knobTag = 0; //!< GT-6: DISPLAYSTATE::KnobTag of its regime (0: a clear)
   };
   /*!
    * \brief 5.G2 GT-4 (G): drawn timed compositions. C holds each (a newer one of the same
@@ -212,6 +218,22 @@ public:
   void NoteUntimedRoute(std::vector<SUntimedPost> posts);
   //! 5.G2 GT-5: C's state is PAUSED (G's keep-alive TTL reads it, not IsPausedPlayback)
   static bool PublishedPaused();
+
+  /*!
+   * \brief 5.G2 GT-6, on W (its display lock free to take): C's cleared buffers for both OSD
+   * planes and their flip requests, kept as templates C copies when a regime change finds an
+   * old-encoding buffer on screen at its first slot, and for the OSD hold. Valid until the next
+   * display epoch. False: none could be made or built.
+   */
+  bool ArmKnobClears();
+  /*!
+   * \brief 5.G2 GT-6 OSD hold (design §4.2), on W in a no-op job whose DV writes change the
+   * regime: C commits its cleared buffers on both OSD planes at its next slot (QBUFs stay on
+   * their ticks) and holds every drawn OSD buffer until OsdHoldEnd; waits at most bound for that
+   * commit's flip. False: not flipped in time (the writes go ahead, logged by the caller).
+   */
+  bool OsdHoldBegin(std::chrono::milliseconds bound);
+  void OsdHoldEnd();
 
 protected:
   void Process() override;
@@ -265,6 +287,8 @@ private:
     int fenceAtPick = -1; //!< its GPU fence at the pick: 1 signalled, 0 pending, -1 none
     int64_t qbuf = -1; //!< of the frame it was picked for
     uint64_t target = 0; //!< that frame's first vblank on VD1
+    uint8_t knobTag = 0; //!< GT-6: the encoding it was drawn in (0: knob-neutral)
+    bool knobClear = false; //!< GT-6: C's cleared buffer of a regime change or the OSD hold
   };
 
   struct Returned
@@ -282,9 +306,13 @@ private:
     uint32_t committedFb = 0;
     uint64_t committedEpoch = 0;
     bool committedCOwned = false;
+    uint8_t committedTag = 0;
     gbm_bo* onScreen = nullptr;
     uint32_t onScreenFb = 0;
     uint64_t onScreenEpoch = 0;
+    uint8_t onScreenTag = 0; //!< GT-6
+    //! GT-6: the presented regime's first commit of this plane is still to be logged
+    bool firstOwed = false;
     std::vector<Returned> returned;
     uint64_t generation = 0; //!< surfaces detached so far
   };
@@ -334,6 +362,61 @@ private:
     uint64_t fromSeq = 0;
     double pts = 0.0;
   };
+
+  // 5.G2 GT-6: the knob writer (C's thread; read under m_uiMutex by CommitUi on C)
+  struct SKnobState
+  {
+    bool on = false; //!< C owns the knobs
+    uint8_t presented = 0; //!< the tag OSD commits go out under
+    uint8_t target = 0; //!< a change in progress to this tag
+    uint64_t epoch = 0; //!< W's regime epoch of target
+    bool changing = false;
+    bool written = false; //!< the knobs of target are written; presented at a later tick
+    uint64_t ticks = 0; //!< ticks seen (C's own count: a synthetic tick has seq 0)
+    uint64_t writeTick = 0;
+    uint64_t writeSeq = 0;
+    int waitTicks = 0; //!< playing ticks with no QBUF since the change began
+    int64_t startNs = 0;
+    bool clearSlot = false; //!< the first slot under presented: clear what is old on screen
+    int64_t mismatchSinceNs = 0; //!< main's GUI drawn under another tag since
+    bool mismatchLogged = false;
+  } m_knob;
+  //! loop top, not held: ownership, a new regime, the hand-back
+  void KnobPoll(int64_t now);
+  //! a tick: the knob write (qbuf: this tick QBUF'd a frame; still: nothing toggles) or, one
+  //! tick after it, the new regime's first slot
+  void KnobTick(uint64_t seq, const char* how);
+  void KnobWrite(DISPLAYSTATE::SKnobs knobs, bool toggling, bool& forced, int64_t& us);
+  void KnobPresent(uint64_t seq, const char* why);
+  //! C needs ticks for a change with no video attached (queued vblank events)
+  bool KnobWantsTicks() const { return m_knob.on && m_knob.changing; }
+  //! under m_uiMutex, before a commit is built: drops old-encoding buffers, holds drawn ones
+  //! during a change or the OSD hold, places C's cleared buffers. holdTagged: drawn buffers
+  //! stay out of this commit
+  void KnobPrepareCommit(bool& holdTagged, bool& holdPlaced);
+  //! under m_uiMutex: a copy of a cleared buffer's template into the plane's queue
+  bool PlaceKnobClear(int plane);
+  //! lines made under m_uiMutex (C's thread), logged after it
+  std::vector<std::string> m_knobLines;
+  void FlushKnobLines();
+  // under m_uiMutex: the cleared buffers (made on W) and their request templates
+  DumbBuffer m_kUi;
+  DumbBuffer m_kGfx;
+  drmModeAtomicReqPtr m_kUiReq = nullptr;
+  drmModeAtomicReqPtr m_kGfxReq = nullptr;
+  uint64_t m_kArmGen = 0; //!< moves at each display epoch: a template armed before is stale
+  bool m_kArmed = false;
+  bool m_knobOnMirror = false; //!< m_knob.on, for W's OSD hold
+  struct SOsdHold
+  {
+    bool active = false;
+    bool placed = false;
+    bool flipped = false;
+    bool failed = false; //!< nothing to commit it with
+    uint64_t commitTag = 0;
+    unsigned int flipSeq = 0;
+    int64_t beginNs = 0;
+  } m_osdHold;
 
   void QueueVblank(unsigned int epoch);
   void HandleEvents(int fd, SPresentTick& tick, bool& gotTick, unsigned int epoch);
@@ -625,6 +708,13 @@ private:
     int wakeTicking = 0; //!< wake tails not run: the tick tail ran within two periods
     //! MC-29: a held GUI frame's commit after the wake that ended its hold (C's own body), us
     int64_t uiHoldEndToCommitMaxUs = 0;
+    //! GT-6: knob writes, the slowest and those over 1 ms (C's sysfs writes, measured); changes
+    //! presented; no-toggle writes; first slots that put C's cleared buffer up for an old GUI /
+    //! graphics buffer (gui-late, gfx-late); old-encoding buffers dropped; OSD holds; commits
+    //! of a buffer under another tag (gated 0)
+    int knobWrites = 0, knobSlow = 0, knobChanges = 0, knobNoToggle = 0, knobGuiLate = 0,
+        knobGfxLate = 0, knobDropUi = 0, knobDropGfx = 0, osdHolds = 0, knobOldCommits = 0;
+    int64_t knobWriteMaxUs = 0;
   } m_report;
   int64_t m_lastTailNs = 0; //!< the tick tail last ran (C)
   int64_t m_wakeSlowWindowNs = 0; //!< GEOMWAKE slow: lines in the current second
