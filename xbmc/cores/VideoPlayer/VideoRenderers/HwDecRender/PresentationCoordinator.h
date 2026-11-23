@@ -393,6 +393,8 @@ private:
   //! false: a write failed; nothing is recorded as written (retried by the caller)
   bool KnobWrite(DISPLAYSTATE::SKnobs knobs, bool toggling, bool& forced, int64_t& us);
   void KnobPresent(uint64_t seq, const char* why);
+  //! an OSD hold is up (W in its DV writes): the knobs wait for its end
+  bool OsdHeld();
   //! C needs ticks for a change with no video attached (queued vblank events)
   bool KnobWantsTicks() const { return m_knob.on && m_knob.changing; }
   //! under m_uiMutex, before a commit is built: drops old-encoding buffers, holds drawn ones

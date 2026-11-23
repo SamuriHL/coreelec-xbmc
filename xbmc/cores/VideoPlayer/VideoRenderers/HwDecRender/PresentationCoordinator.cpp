@@ -1451,7 +1451,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     if (want == k.presented)
       k.changing = false;
   }
-  if (k.changing && now - k.startNs > KNOB_TICK_BOUND_NS)
+  if (k.changing && now - k.startNs > KNOB_TICK_BOUND_NS && !OsdHeld())
     KnobTick(0, "timeout");
   {
     // the OSD hold W ended goes once the change of its writes (if any) is under way above
@@ -1469,6 +1469,9 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     // producers that drew before that flip)
     if (released)
     {
+      // the change's tick bound counts from the hold's end: its knob tick is the next one
+      if (k.changing)
+        k.startNs = now;
       DISPLAYSTATE::RequestGuiRepaint();
       GRAPHICSTICK::NotePlaneCleared();
     }
@@ -1563,6 +1566,10 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
     return;
   if (!k.written)
   {
+    // design §4.2: under an OSD hold the knobs go at the first knob tick after W's writes end
+    // (RC2 K7: the publish comes mid-writes, the follow-source teardown runs 100 ms after it)
+    if (OsdHeld())
+      return;
     if (!how)
     {
       if (++k.waitTicks < KNOB_QBUF_WAIT_TICKS)
@@ -1607,6 +1614,12 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
   // the slot one tick after the write
   if (k.ticks > k.writeTick)
     KnobPresent(seq, how ? how : "tick");
+}
+
+bool CPresentationCoordinator::OsdHeld()
+{
+  std::unique_lock lock(m_uiMutex);
+  return m_osdHold.active;
 }
 
 void CPresentationCoordinator::KnobPresent(uint64_t seq, const char* why)
