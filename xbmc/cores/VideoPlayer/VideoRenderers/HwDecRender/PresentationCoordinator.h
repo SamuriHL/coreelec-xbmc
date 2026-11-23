@@ -145,9 +145,11 @@ public:
   /*!
    * \brief Switches the graphics plane off, in a blocking commit built by
    * build(fb of the GUI plane on screen) while the coordinator is parked, and
-   * takes its buffers back. False when there was nothing to carry it.
+   * takes its buffers back. False when there was nothing to carry it, or the off failed: then
+   * the buffers on the plane stay C's (still scanned out) unless who is "stop" (G frees them).
    */
-  bool DisableGraphicsPlane(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
+  bool DisableGraphicsPlane(const std::function<drmModeAtomicReqPtr(uint32_t)>& build,
+                            const char* who);
   /*!
    * \brief 5.B2-7 (OUTPUT::PlaneOffOnC): DisableGraphicsPlane's off without a hold, run by C
    * on its own thread (see RunPlaneOffs); who names the caller. Inline DisableGraphicsPlane
@@ -453,7 +455,11 @@ private:
   void FreeDumb(DumbBuffer& dumb);
   bool UiInFlight();
   //! the graphics plane off with its books, the caller parked or C itself (no hold)
-  bool GraphicsPlaneOff(const std::function<drmModeAtomicReqPtr(uint32_t)>& build);
+  bool GraphicsPlaneOff(const std::function<drmModeAtomicReqPtr(uint32_t)>& build,
+                        const char* who);
+  //! GT-D18: after a failed off, only what is not on the plane goes back (under m_uiMutex)
+  void ReclaimUnshownGraphics();
+  bool m_offFailLogged = false; //!< under m_uiMutex
   //! posts ops to C and waits until deadline; false: not all ran (each op's state says which;
   //! a QUEUED one is no longer C's)
   bool RunByC(const std::vector<std::shared_ptr<PlaneOffOp>>& ops,

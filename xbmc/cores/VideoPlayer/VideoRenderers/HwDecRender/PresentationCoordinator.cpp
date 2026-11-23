@@ -751,15 +751,15 @@ void CPresentationCoordinator::FreeDumb(DumbBuffer& dumb)
 }
 
 bool CPresentationCoordinator::DisableGraphicsPlane(
-    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build, const char* who)
 {
   // parked, and no flip in flight: this thread owns the commit
   CAmlPresenterHold hold("graphics plane off");
-  return GraphicsPlaneOff(build);
+  return GraphicsPlaneOff(build, who);
 }
 
 bool CPresentationCoordinator::GraphicsPlaneOff(
-    const std::function<drmModeAtomicReqPtr(uint32_t)>& build)
+    const std::function<drmModeAtomicReqPtr(uint32_t)>& build, const char* who)
 {
   // 5.B2-5b: never between a GUI plane reclaim's snapshot and its books (uncontended off)
   std::unique_lock planeOff(m_planeOffMutex);
@@ -786,15 +786,37 @@ bool CPresentationCoordinator::GraphicsPlaneOff(
   std::unique_lock lock(m_uiMutex);
   if (done)
     m_graphicsOn = false;
-  ReclaimPlane(PLANE_GRAPHICS);
+  // GT-D18: a failed off leaves the plane scanning its buffer out; handing it back would let G
+  // draw into it. At G's stop it goes back as before: G frees it, which takes it off the plane
+  if (on && !done && std::strcmp(who, "stop") != 0)
+  {
+    if (!std::exchange(m_offFailLogged, true))
+      GRAPHICSTICK::GTLogF(LOGWARNING,
+                           "CPresentationCoordinator - graphics plane off failed (who={}): the "
+                           "buffers on the plane stay in C's books until it is replaced",
+                           who);
+    ReclaimUnshownGraphics();
+  }
+  else
+    ReclaimPlane(PLANE_GRAPHICS);
   return done;
+}
+
+void CPresentationCoordinator::ReclaimUnshownGraphics()
+{
+  // no generation change: the commit on the plane (and one still flipping) keeps its books, so
+  // its flip and the next commit's return it as usual
+  Drop(PLANE_GRAPHICS, m_planes[PLANE_GRAPHICS].ready);
+  for (UiBuffer& buffer : m_timed)
+    Drop(PLANE_GRAPHICS, buffer);
+  m_timed.clear();
 }
 
 bool CPresentationCoordinator::SwitchGraphicsOff(
     const std::function<drmModeAtomicReqPtr(uint32_t)>& build, const char* who)
 {
   if (!OUTPUT::PlaneOffOnC())
-    return DisableGraphicsPlane(build);
+    return DisableGraphicsPlane(build, who);
   auto op = std::make_shared<PlaneOffOp>();
   op->who = who;
   op->graphicsOff = build;
@@ -803,7 +825,7 @@ bool CPresentationCoordinator::SwitchGraphicsOff(
   // C not running (stop, teardown): inline at once, as today
   if (op->state == PlaneOffOp::State::QUEUED)
     GRAPHICSTICK::GTLogF(LOGERROR, "graphics plane off: C did not answer in 2 s, inline (who={})", who);
-  return DisableGraphicsPlane(build);
+  return DisableGraphicsPlane(build, who);
 }
 
 bool CPresentationCoordinator::PlanesOffForModeSet(
@@ -845,7 +867,8 @@ bool CPresentationCoordinator::PlanesOffForModeSet(
     graphicsDone = graphics->result;
   // unparked: B2-5c's calls, its own hold first; W's acknowledged park needs no other
   else if (graphicsOff)
-    graphicsDone = graphics ? GraphicsPlaneOff(graphicsOff) : DisableGraphicsPlane(graphicsOff);
+    graphicsDone = graphics ? GraphicsPlaneOff(graphicsOff, "mode_set")
+                            : DisableGraphicsPlane(graphicsOff, "mode_set");
   if (graphicsOff && !graphicsDone)
     GRAPHICSTICK::GTLogF(LOGWARNING, "CGraphicsPlaneAML - plane left to go with its buffers");
 
@@ -920,7 +943,7 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
     uint64_t epoch = op->epoch;
     const bool result = op->ui ? ReclaimUiForModeSet(epoch, op->uiOff ? op->uiOff() : nullptr,
                                                      op->format)
-                               : GraphicsPlaneOff(op->graphicsOff);
+                               : GraphicsPlaneOff(op->graphicsOff, op->who);
     const int64_t end = MonotonicNs();
     // how far it ran past the vblank of C's next tick (-1: no video ticks)
     const bool ticking = !held && m_videoAttached && m_tickVblankNs && m_tickPeriodNs;
