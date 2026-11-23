@@ -9,6 +9,8 @@
 #include "GraphicsRegime.h"
 
 #include "DisplayState.h"
+#include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "GraphicsTick.h"
 #include "OutputWorker.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/PresentationCoordinator.h"
@@ -678,6 +680,81 @@ bool KnobsWritten(SKnobs& knobs)
     return false;
   knobs = UnpackKnobs(packed);
   return true;
+}
+
+uint8_t PredictVs10Tag(unsigned int mode)
+{
+  GraphicsRegime next;
+  SStream stream;
+  {
+    std::unique_lock lock(s_mutex);
+    next = s_pub;
+    stream = s_stream;
+  }
+  const uint8_t now = RegimeTag(next);
+  // aml_dv_set_vs10_mode_now's refusals write nothing
+  if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS && aml_dv_disc_engaged())
+    return now;
+  if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+      !CServiceBroker::GetDataCacheCore().IsVideoHwDecoder())
+    return now;
+  const unsigned int current = aml_dv_get_output_mode();
+  unsigned int after = mode;
+  if (mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+  {
+    if (current == DOLBY_VISION_OUTPUT_MODE_BYPASS)
+      return now;
+    // follow source: a DV source stays on the core in a PQ mode, any other returns to native
+    const bool pq = current == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                    current == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL ||
+                    current == DOLBY_VISION_OUTPUT_MODE_HDR10;
+    if (aml_dv_source_is_dv())
+      after = pq ? current : DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+  }
+  next.encoding = CRendererAML::ResolveGuiEncoding(stream.hdrType, stream.transfer, after,
+                                                   PublishedHdrDisplay());
+  next.dvOutputMode = after;
+  return RegimeTag(next);
+}
+
+void RunVs10Write(unsigned int mode)
+{
+  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
+  const bool route = coordinator && KnobOwnerC() && GRAPHICSTICK::RouteOn() &&
+                     OUTPUT::COutputWorker::Get().OnWorker();
+  const uint8_t from = route ? RegimeTag(GetRegime()) : 0;
+  const uint8_t to = route ? PredictVs10Tag(mode) : 0;
+  if (!route || from == to)
+  {
+    aml_dv_set_vs10_mode_now(mode);
+    return;
+  }
+  constexpr auto BOUND = std::chrono::seconds(2);
+  const auto begin = std::chrono::steady_clock::now();
+  coordinator->ArmKnobClears();
+  const bool flipped = coordinator->OsdHoldBegin(BOUND);
+  const auto waited = std::chrono::steady_clock::now() - begin;
+  const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+  if (flipped)
+    CLog::Log(LOGINFO, "REGIME osd hold begin mode={} from={} to={} flip_wait_ms={}", mode,
+              TagName(from), TagName(to), waitedMs);
+  else if (waited >= BOUND)
+    CLog::Log(LOGERROR, "REGIME osd hold: C's cleared buffers not flipped in {} ms, the DV "
+                        "writes go ahead (mode={})", waitedMs, mode);
+  else
+    CLog::Log(LOGWARNING, "REGIME osd hold not taken (no cleared buffer or C not writing the "
+                          "knobs), mode={}", mode);
+  const auto writes = std::chrono::steady_clock::now();
+  aml_dv_set_vs10_mode_now(mode);
+  const auto writesUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - writes)
+                            .count();
+  coordinator->OsdHoldEnd();
+  CLog::Log(LOGINFO, "REGIME osd hold release mode={} published={} dv_writes_us={} held_ms={}", mode,
+            TagName(RegimeTag(GetRegime())), writesUs,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - begin)
+                .count());
 }
 
 } // namespace DISPLAYSTATE

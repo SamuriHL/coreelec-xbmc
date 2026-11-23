@@ -156,6 +156,14 @@ bool KnobStopPublished();
 void NoteKnobsWritten(SKnobs knobs);
 //! the knobs as last written; false before the first write
 bool KnobsWritten(SKnobs& knobs);
+//! W, before a no-op job's DV writes: the tag W's publish will carry after
+//! aml_dv_set_vs10_mode_now(mode) (its own refusals included); the current one when it cannot
+//! change
+uint8_t PredictVs10Tag(unsigned int mode);
+//! W: today's unparked VS10 write. On a route session with the knobs on C, a write that changes
+//! the regime runs under C's OSD hold (design §4.2): the OSD blank from before the DV writes to
+//! the new regime's first slot, instead of old-encoding OSD under the new core output
+void RunVs10Write(unsigned int mode);
 
 //! main, at the end of each ApplyGuiEncoding and at EndRenderSession's stop knobs
 void PublishMainApplied(GuiEncoding encoding, bool limited, SKnobs knobs);

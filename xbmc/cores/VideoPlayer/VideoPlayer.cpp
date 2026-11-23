@@ -61,6 +61,7 @@
 #include "utils/MathUtils.h"
 #include "utils/PresentationTimeline.h"
 #include "windowing/amlogic/DisplayState.h"
+#include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -3892,7 +3893,7 @@ void CVideoPlayer::TxMidDecide(const char* why)
     CLog::Log(LOGINFO, "MIDPLAY vs10 request {} mode={}: today's write ({})", m_midTx.vs10Id,
               mode, why);
     OUTPUT::COutputWorker::Get().PostRequest(
-        OUTPUT::Lane::MIDPLAY, "vs10", [mode] { aml_dv_set_vs10_mode_now(mode); }, {});
+        OUTPUT::Lane::MIDPLAY, "vs10", [mode] { DISPLAYSTATE::RunVs10Write(mode); }, {});
   };
   if (r.exclusion)
   {
@@ -4253,7 +4254,7 @@ void CVideoPlayer::TxMidVs10Request(const DISPLAYSTATE::STxInboxEntry& e, uint32
     const unsigned int mode = e.vs10Mode;
     CLog::Log(LOGINFO, "MIDPLAY vs10 request {} mode={}: today's write (segment gap)", e.reqId,
               mode);
-    ow.PostRequest(OUTPUT::Lane::MIDPLAY, "vs10", [mode] { aml_dv_set_vs10_mode_now(mode); }, {});
+    ow.PostRequest(OUTPUT::Lane::MIDPLAY, "vs10", [mode] { DISPLAYSTATE::RunVs10Write(mode); }, {});
     return;
   }
   if (m_midTx.vs10 >= 0)

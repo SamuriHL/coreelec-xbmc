@@ -1472,7 +1472,7 @@ void aml_dv_set_vs10_mode_now(unsigned int mode)
 bool aml_dv_set_vs10_mode(unsigned int mode)
 {
   return OUTPUT::COutputWorker::Get().RunRequest(
-      OUTPUT::Lane::MIDPLAY, "vs10", [mode] { aml_dv_set_vs10_mode_now(mode); }, {});
+      OUTPUT::Lane::MIDPLAY, "vs10", [mode] { DISPLAYSTATE::RunVs10Write(mode); }, {});
 }
 
 void aml_dv_apply_graphics_from_sink()
