@@ -67,6 +67,14 @@ constexpr int64_t KNOB_STOP_BOUND_NS = 2000000000;
 constexpr int GFX_WIDTH = 1920;
 constexpr int GFX_HEIGHT = 1080;
 
+// GT-6: a drawn buffer's content depends on the class it was drawn in only (main's GL side, G's
+// encode); the knobs only order it. A buffer of the presented class is right under the presented
+// knobs (RC2 K2: a VS10 DV press on native HDR10 changes osd_pq alone, main draws on unchanged)
+bool SameClass(uint8_t a, uint8_t b)
+{
+  return a && b && DISPLAYSTATE::TagEncoding(a) == DISPLAYSTATE::TagEncoding(b);
+}
+
 // GT-6: one knob write, plain POSIX (never CLog or the writer accounting on C), measured
 bool WriteKnobFile(const char* path, const char* value)
 {
@@ -1395,7 +1403,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
         std::unique_lock lock(m_uiMutex);
         cleared = m_kUi.fb && m_planes[PLANE_UI].onScreenFb == m_kUi.fb;
       }
-      if (cleared && applied == k.presented)
+      if (cleared && SameClass(applied, k.presented))
         DISPLAYSTATE::RequestGuiRepaint();
     }
   }
@@ -1517,13 +1525,19 @@ bool CPresentationCoordinator::KnobWrite(DISPLAYSTATE::SKnobs knobs,
   bool ok = true;
   if (CRendererAML::OsdPqPassthroughAvailable())
     ok &= WriteKnobFile(CRendererAML::OSD_PQ_PASSTHROUGH, knobs.osdPq ? "1" : "0");
+  const int64_t osdDone = MonotonicNs();
   ok &= WriteKnobFile("/sys/class/amdolby_vision/graphic_fmt", knobs.hdr8 ? "9" : "2");
+  const int64_t gfmtDone = MonotonicNs();
   // graphic_fmt is read only by the DV parse, which runs only with a new frame (O7c): with
   // nothing toggling the DV driver's force_toggle_once runs it at the next vsync
   forced = !toggling && (!known || from.hdr8 != knobs.hdr8);
   if (forced)
     ok &= WriteKnobFile("/sys/class/amdolby_vision/debug", "force_toggle_once");
-  us = (MonotonicNs() - start) / 1000;
+  const int64_t end = MonotonicNs();
+  us = (end - start) / 1000;
+  m_knobSplitUs[0] = (osdDone - start) / 1000;
+  m_knobSplitUs[1] = (gfmtDone - osdDone) / 1000;
+  m_knobSplitUs[2] = forced ? (end - gfmtDone) / 1000 : 0;
   m_report.knobWrites++;
   m_report.knobWriteMaxUs = std::max(m_report.knobWriteMaxUs, us);
   if (us > 1000)
@@ -1568,8 +1582,9 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
       return;
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "REGIME knob write epoch={} tick={} how={} osd_pq={} gfmt={} force={} "
-                         "write_us={}",
-                         k.epoch, seq, how, to.osdPq ? 1 : 0, to.hdr8 ? 9 : 2, forced ? 1 : 0, us);
+                         "write_us={} osd_us={} gfmt_us={} force_us={}",
+                         k.epoch, seq, how, to.osdPq ? 1 : 0, to.hdr8 ? 9 : 2, forced ? 1 : 0, us,
+                         m_knobSplitUs[0], m_knobSplitUs[1], m_knobSplitUs[2]);
     // osd_pq_passthrough lands with nothing toggling only on the patched kernel (5.K); without
     // it (or knobforce_off) the change lands with the next new frame: today's lag, no hold
     const DISPLAYSTATE::DisplayState* state = DISPLAYSTATE::GetRT(DISPLAYSTATE::RT_C);
@@ -1640,9 +1655,9 @@ void CPresentationCoordinator::KnobPrepareCommit(bool& holdTagged, bool& holdPla
     for (int plane = 0; plane < PLANE_COUNT; plane++)
     {
       UiBuffer& ready = m_planes[plane].ready;
-      if (plane == PLANE_UI && ready.req && ready.knobTag == k.presented)
+      if (plane == PLANE_UI && ready.req && SameClass(ready.knobTag, k.presented))
         k.mismatchSinceNs = 0;
-      if (!ready.req || ready.cOwned || !ready.knobTag || ready.knobTag == k.presented)
+      if (!ready.req || ready.cOwned || !ready.knobTag || SameClass(ready.knobTag, k.presented))
         continue;
       if (plane == PLANE_UI && !k.mismatchSinceNs)
         k.mismatchSinceNs = now;
@@ -1698,9 +1713,9 @@ void CPresentationCoordinator::KnobPrepareCommit(bool& holdTagged, bool& holdPla
   for (int plane = 0; plane < PLANE_COUNT; plane++)
   {
     const PlaneState& state = m_planes[plane];
-    const bool old = state.onScreenTag && state.onScreenTag != k.presented;
+    const bool old = state.onScreenTag && !SameClass(state.onScreenTag, k.presented);
     const bool replaced =
-        state.ready.req && (state.ready.cOwned || state.ready.knobTag == k.presented);
+        state.ready.req && (state.ready.cOwned || SameClass(state.ready.knobTag, k.presented));
     if (!old || replaced)
       continue;
     const bool placed = PlaceKnobClear(plane);
@@ -2139,7 +2154,7 @@ void CPresentationCoordinator::CommitUi()
       if (plane == PLANE_UI && !ready.cOwned)
         TimeUiCommit(std::max(ready.readyNs, m_diagUnblockedNs));
       // GT-6 (gated 0): a drawn buffer under another regime's knobs
-      if (m_knob.on && ready.knobTag && ready.knobTag != m_knob.presented)
+      if (m_knob.on && ready.knobTag && !SameClass(ready.knobTag, m_knob.presented))
         m_report.knobOldCommits++;
       holdInCommit |= ready.knobClear && m_osdHold.active;
       m_planes[plane].committedTag = ready.knobTag;
@@ -3001,7 +3016,7 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
       (plane == PLANE_UI ? clearedUi : clearedGfx) = true;
     }
     if (m_knob.on && state.firstOwed && state.committedTag &&
-        state.committedTag == m_knob.presented)
+        SameClass(state.committedTag, m_knob.presented))
     {
       state.firstOwed = false;
       m_knobLines.push_back(StringUtils::Format(

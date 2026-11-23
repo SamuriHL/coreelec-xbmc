@@ -401,6 +401,8 @@ private:
   void KnobPrepareCommit(bool& holdTagged, bool& holdPlaced);
   //! under m_uiMutex: a copy of a cleared buffer's template into the plane's queue
   bool PlaceKnobClear(int plane);
+  //! the last knob write's osd_pq_passthrough, graphic_fmt and force_toggle_once times, us
+  int64_t m_knobSplitUs[3] = {};
   //! lines made under m_uiMutex (C's thread), logged after it
   std::vector<std::string> m_knobLines;
   void FlushKnobLines();
