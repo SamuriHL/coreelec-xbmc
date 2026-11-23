@@ -6569,7 +6569,7 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       { return std::chrono::duration_cast<std::chrono::microseconds>(to - from).count(); };
       const auto end = diagClock::now();
 #if defined(HAS_LIBAMCODEC)
-      // GT-D15 measurement: with graphicstick_on from 3 ms (RC6's ~5 ms C bodies sat just
+      // GT-D15 measurement: with the route requested from 3 ms (RC6's ~5 ms C bodies sat just
       // under 5), through the video path's log queue (C's thread)
       const int64_t threshold = GRAPHICSTICK::Requested() ? 3000 : 5000;
 #else

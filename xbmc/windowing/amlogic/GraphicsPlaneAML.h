@@ -109,7 +109,7 @@ private:
   bool SubmitGeometry();
   void ReleaseReturned();
   uint32_t FbFromBo(gbm_bo* bo);
-  //! 5.G2 GT-3: builds G's renderer when graphicstick_on or gselftest asks for it (M5)
+  //! 5.G2 GT-3: builds G's renderer when the route is requested or gselftest asks for it (M5)
   void InitRaster();
   //! gselftest: m_shown through G's renderer offscreen, timed; every Nth against the reference
   void ShadowDraw();
@@ -204,7 +204,7 @@ private:
   };
   std::vector<SRingBuffer> m_ring;
   bool m_ringTried = false;
-  //! the ring, made once at G's start (graphicstick_on); false: G's route draws on the surface
+  //! the ring, made once at G's start (the route requested); false: G's route draws on the surface
   //! (LOCK_CAP)
   bool InitRing();
   //! one ring buffer from /dev/dma_heap/heap-fb, imported into GBM (and by it into DRM); nullptr

@@ -12,6 +12,9 @@
 
 #include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "filesystem/File.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "windowing/amlogic/GraphicsRegime.h"
 #include "utils/log.h"
@@ -109,7 +112,34 @@ void Wake()
 
 bool Requested()
 {
-  static const bool on = Exists("graphicstick_on");
+  // GT-7 (plan Q1): on by default where G exists with the plane on, on the validated SoCs;
+  // graphicstick_off and graphicsplane 0 are the exits. Elsewhere nothing here is ever on
+  static const bool on = []
+  {
+    const char* off = nullptr;
+    const auto settings = CServiceBroker::GetSettingsComponent();
+    const auto advanced = settings ? settings->GetAdvancedSettings() : nullptr;
+    // the plane's own decision (WinSystemAmlogicGLESContext): unset is 1 on a validated SoC
+    const int plane = advanced ? advanced->m_videoGraphicsPlane : 0;
+    if (Exists("graphicstick_off"))
+      off = "graphicstick_off";
+    else if (!aml_presentation_validated())
+      off = "unvalidated SoC";
+    else if (!advanced || !advanced->m_videoPresentationCoordinator)
+      off = "no coordinator";
+    else if (plane == 0)
+      off = "graphicsplane 0";
+    else if (plane == 2)
+      off = "graphicsplane test pattern";
+    if (off)
+      CLog::Log(LOGINFO, "GTICK default off ({})", off);
+    else
+      CLog::Log(LOGINFO, "GTICK default on (graphicsplane {})",
+                plane < 0 ? "default" : "advancedsettings");
+    if (Exists("graphicstick_on"))
+      CLog::Log(LOGWARNING, "GTICK graphicstick_on does nothing: on by default (GT-7)");
+    return !off;
+  }();
   return on;
 }
 

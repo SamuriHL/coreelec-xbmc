@@ -33,15 +33,16 @@ class CDVDOverlayContainer;
 // This file is the route's shared state: the decision (RM, at every configure), V's posts, the
 // flush floors (M2) and C's Released posts to G. Nothing here waits.
 //
-// Opt-in: special://profile/graphicstick_on. Without it nothing in this file is ever on, posted
-// or logged, and every caller keeps GT-3's route.
+// On by default (GT-7) on the validated SoCs with the plane on; special://profile/graphicstick_off
+// or graphicsplane 0 is the exit. Without the route nothing in this file is ever on, posted or
+// logged, and every caller keeps today's route.
 namespace GRAPHICSTICK
 {
 // 5.G2 GT-5 (GT-D15): the log writer for C's and G's per-frame lines. RC6 coreelec-br: C's loop
 // body took 20-27 ms while the whole log was silent and V stalled with it, a log write blocking
-// (C logged under m_uiMutex too). With graphicstick_on, C and G hand lines to a bounded queue
+// (C logged under m_uiMutex too). With the route requested, C and G hand lines to a bounded queue
 // (a short lock, never held across I/O) that a normal-priority GTLOG thread writes, in push
-// order; a full queue drops and counts. Without graphicstick_on a line is logged at once, as
+// order; a full queue drops and counts. Without it a line is logged at once, as
 // before.
 //! queue one line (formatted already)
 void GTLog(int level, std::string line);
@@ -76,7 +77,8 @@ void GTLogStop();
 //! lines, drops, writes over 5 ms and the slowest write since the last call with reset
 std::string GTLogStatsLine(bool reset);
 
-//! special://profile/graphicstick_on, read once
+//! the route can run in this Kodi run (validated SoC, coordinator, plane 1, no graphicstick_off);
+//! read once, logged "GTICK default on|off (<why>)"
 bool Requested();
 //! test file special://profile/gt_delay1 (never a setting): C picks the buffer of the frame
 //! released one tick earlier than the rule says, so the scan-out probe must read +1 (its
@@ -125,7 +127,7 @@ struct SFloor
 
 // the route (RM decides; G and C follow)
 //! RM, at each configure and at a session's end: logs "GTICK on (<why>)" / "GTICK off (<why>)"
-//! on a change only. A no-op without graphicstick_on
+//! on a change only. A no-op without Requested()
 void SetRoute(bool on, const char* why);
 bool RouteOn();
 //! both under one lock
@@ -185,12 +187,12 @@ uint64_t Processed();
 // overlay container posts each change of its present-latest set here (its wake hook, under the
 // container lock); G takes the newest posted state (skip-to-newest), draws it over the frames'
 // timed overlays, and calls the container's NotePresentedSegment at C's Released. Only while
-// G has the hook on: without graphicstick_on, or with guntimed_off, nothing is posted.
+// G has the hook on: without Requested(), or with guntimed_off, nothing is posted.
 
-//! special://profile/guntimed_off (with graphicstick_on): untimed content keeps GT-4's bridge
+//! special://profile/guntimed_off (with the route): untimed content keeps GT-4's bridge
 //! (main selects it and hands it over), not today's route. Retires at GT-7
 bool UntimedOff();
-//! special://profile/gnewest_off (with graphicstick_on): item 5 (j), no superseded state is
+//! special://profile/gnewest_off (with the route): item 5 (j), no superseded state is
 //! dropped; G draws every posted state in post order
 bool NewestOff();
 

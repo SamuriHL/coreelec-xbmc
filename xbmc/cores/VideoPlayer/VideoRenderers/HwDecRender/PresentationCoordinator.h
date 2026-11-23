@@ -534,7 +534,7 @@ private:
   int64_t m_phaseTailUs = 0; //!< the tick phase's geometry tail and worker wake, us
   int64_t m_phaseWakeUs = 0;
   void StampPhase(int phase);
-  //! "GTLAT C body" for a body over 3 ms (graphicstick_on), at the next poll's entry
+  //! "GTLAT C body" for a body over 3 ms (the route requested), at the next poll's entry
   void LogSlowBody(int64_t enter);
   //! review rB m-1: the newest picture serial picked this route session; nothing older goes up
   uint64_t m_gtPickedSerial = 0;

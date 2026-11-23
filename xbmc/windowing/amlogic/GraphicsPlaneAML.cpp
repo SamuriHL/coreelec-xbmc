@@ -1072,9 +1072,9 @@ void CGraphicsPlaneAML::DrawGraphics()
 
 void CGraphicsPlaneAML::InitRaster()
 {
-  const bool tick = XFILE::CFile::Exists("special://profile/graphicstick_on");
+  const bool tick = GRAPHICSTICK::Requested();
   m_selfTest = XFILE::CFile::Exists("special://profile/gselftest");
-  // M5: without either file no new program is compiled and G is GT-2's
+  // M5: without the route or gselftest no new program is compiled and G is GT-2's
   if (!tick && !m_selfTest)
     return;
   const bool failCompile = XFILE::CFile::Exists("special://profile/gselftest_failcompile");

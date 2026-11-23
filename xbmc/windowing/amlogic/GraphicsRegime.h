@@ -134,7 +134,7 @@ uint8_t RegimeTag(const GraphicsRegime& regime);
 //! "<class>/<osd_pq>/<graphic_fmt>", for the logs
 std::string TagName(uint8_t tag);
 
-//! latched at RegimeInit: the regime is on, graphicstick_on, no gknob_off
+//! latched at RegimeInit: the regime is on, the route requested, no gknob_off
 bool KnobsAllowed();
 //! C writes the knobs now (main does not)
 bool KnobOwnerC();

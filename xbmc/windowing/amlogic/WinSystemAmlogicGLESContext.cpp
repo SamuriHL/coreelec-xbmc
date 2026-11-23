@@ -529,6 +529,8 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   if (graphicsPlane > 0 && !m_coordinator)
     // G commits through C; without it the HDR graphics stay on main's route B
     CLog::Log(LOGINFO, "GPLANE off (no coordinator)");
+  // GT-7: the route's default is latched (and logged) here, on main, from the same inputs
+  GRAPHICSTICK::Requested();
   if (m_coordinator && graphicsPlane > 0)
   {
     m_graphicsPlane = std::make_unique<CGraphicsPlaneAML>(

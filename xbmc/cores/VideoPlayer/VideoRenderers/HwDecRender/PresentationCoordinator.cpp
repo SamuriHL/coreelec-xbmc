@@ -2832,7 +2832,7 @@ void CPresentationCoordinator::StampPhase(int phase)
 
 void CPresentationCoordinator::LogSlowBody(int64_t enter)
 {
-  // GT-D15 measurement (log only, graphicstick_on): where a body over 3 ms went, phase by phase
+  // GT-D15 measurement (log only, the route requested): where a body over 3 ms went, phase by phase
   // from the poll's return (RC6 coreelec-br: bodies of 4.9-5.3 ms at INFO as at debug, the next
   // tick late by as much). 0: the phase did not run in that body
   if (m_lastBodyNs < 3000000 || !GRAPHICSTICK::Requested())
