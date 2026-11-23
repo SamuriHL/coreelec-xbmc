@@ -2837,6 +2837,11 @@ void CPresentationCoordinator::LogSlowBody(int64_t enter)
   // tick late by as much). 0: the phase did not run in that body
   if (m_lastBodyNs < 3000000 || !GRAPHICSTICK::Requested())
     return;
+  if (!GRAPHICSTICK::GTLogLevelOn(LOGDEBUG))
+  {
+    m_phaseTailUs = m_phaseWakeUs = 0;
+    return;
+  }
   static constexpr const char* names[PHASE_COUNT] = {"events", "present", "tick",   "select",
                                                      "end",    "notick",  "hold",   "commit"};
   std::string parts;

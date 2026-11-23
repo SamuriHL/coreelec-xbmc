@@ -77,9 +77,12 @@ void GTLogStop();
 //! lines, drops, writes over 5 ms and the slowest write since the last call with reset
 std::string GTLogStatsLine(bool reset);
 
-//! the route can run in this Kodi run (validated SoC, coordinator, plane 1, no graphicstick_off);
-//! read once, logged "GTICK default on|off (<why>)"
+//! the route can run in this Kodi run (validated SoC, C and G started with the plane at 1, no
+//! graphicstick_off); false until LatchRequested
 bool Requested();
+//! main, once, at the window system's init before G's thread starts; planeOff: why G will not
+//! run the route (nullptr: it starts with graphicsplane 1). Logs "GTICK default on|off (<why>)"
+void LatchRequested(const char* planeOff, bool planeFromFile);
 //! test file special://profile/gt_delay1 (never a setting): C picks the buffer of the frame
 //! released one tick earlier than the rule says, so the scan-out probe must read +1 (its
 //! self-test with a real delay in Kodi's commit)

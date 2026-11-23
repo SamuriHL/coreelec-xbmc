@@ -1428,8 +1428,8 @@ bool CGraphicsPlaneAML::DrawComposition(SComposition& comp,
   const CGraphicsRasterAML::SRegime regime = RouteRegime();
   m_raster->SetRegime(regime);
   GRAPHICSTICK::SRects rects = RouteRects(comp);
-  // GT-5: a menu-only screen has no video rects; main draws it over the whole GUI then
-  // (RenderWithoutPicture), and so does G
+  // GT-5: a menu-only screen has no video rects; G draws it over the whole GUI, as main's
+  // RenderWithoutPicture does off the route
   if (!rects.valid && comp.bridge && m_untimedOnG)
   {
     float width = 0.0f;

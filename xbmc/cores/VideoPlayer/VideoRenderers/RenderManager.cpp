@@ -889,6 +889,10 @@ void CRenderManager::SetDecoderSideOnV(bool on)
 #if defined(HAS_LIBAMCODEC)
 const char* CRenderManager::GraphicsTickRefusal()
 {
+  // GT-D1 (Q5, D6): known at the open, so a DVD never starts the route; its SPU's EndRoute
+  // (AddVideoPicture) stays as the fallback
+  if (m_dvdInput)
+    return "DVD";
   if (!aml_transaction_on())
     return "transaction_off";
   if (!aml_vconfigure_on())

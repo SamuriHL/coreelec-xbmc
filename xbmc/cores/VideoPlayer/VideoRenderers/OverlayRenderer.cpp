@@ -840,6 +840,10 @@ void CRenderer::PrepareOverlays(int idx,
     // the change test below repaints: main's copy leaves the GUI plane, or main draws it again
     m_presentLatestGroup.reset();
     Release(m_presentLatest);
+    // with both on the plane main's Render (which prunes the cache) no longer runs: menu pages
+    // converted before this pass would hold their textures for the route session
+    if (m_untimedOnPlane && m_timedOnPlane)
+      ReleaseCache();
     MarkDirty();
   }
   // GT-4: the timed lists are G's; main keeps the untimed composition and the layout

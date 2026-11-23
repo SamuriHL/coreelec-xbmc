@@ -12,8 +12,6 @@
 
 #include "cores/VideoPlayer/DVDOverlayContainer.h"
 #include "filesystem/File.h"
-#include "settings/AdvancedSettings.h"
-#include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "windowing/amlogic/GraphicsRegime.h"
@@ -43,6 +41,7 @@ namespace
 // G drains this every pass; more means G is stalled, and the oldest can no longer be shown
 constexpr size_t INBOX_CAP = 64;
 
+std::atomic<bool> s_requested{false};
 std::mutex s_mutex;
 bool s_on = false;
 uint64_t s_session = 0;
@@ -112,37 +111,35 @@ void Wake()
 
 bool Requested()
 {
-  // GT-7 (plan Q1): on by default where G exists with the plane on, on the validated SoCs;
+  return s_requested.load(std::memory_order_acquire);
+}
+
+void LatchRequested(const char* planeOff, bool planeFromFile)
+{
+  // GT-7 (plan Q1): on by default where G starts with the plane on, on the validated SoCs;
   // graphicstick_off and graphicsplane 0 are the exits. Elsewhere nothing here is ever on
-  static const bool on = []
-  {
-    const char* off = nullptr;
-    const auto settings = CServiceBroker::GetSettingsComponent();
-    const auto advanced = settings ? settings->GetAdvancedSettings() : nullptr;
-    // the plane's own decision (WinSystemAmlogicGLESContext): unset is 1 on a validated SoC
-    const int plane = advanced ? advanced->m_videoGraphicsPlane : 0;
-    if (Exists("graphicstick_off"))
-      off = "graphicstick_off";
-    else if (!aml_presentation_validated())
-      off = "unvalidated SoC";
-    else if (!advanced || !advanced->m_videoPresentationCoordinator)
-      off = "no coordinator";
-    else if (plane == 0)
-      off = "graphicsplane 0";
-    else if (plane == 2)
-      off = "graphicsplane test pattern";
-    if (off)
-      CLog::Log(LOGINFO, "GTICK default off ({})", off);
-    else
-      CLog::Log(LOGINFO, "GTICK default on (graphicsplane {})",
-                plane < 0 ? "default" : "advancedsettings");
-    if (Exists("graphicstick_on"))
-      CLog::Log(LOGWARNING, "GTICK graphicstick_on does nothing: on by default (GT-7)");
-    if (Exists("guntimed_off"))
-      CLog::Log(LOGWARNING, "GTICK guntimed_off does nothing: GT-4's untimed bridge is gone (GT-7)");
-    return !off;
-  }();
-  return on;
+  static std::once_flag once;
+  std::call_once(once,
+                 [planeOff, planeFromFile]
+                 {
+                   const char* off = planeOff;
+                   if (Exists("graphicstick_off"))
+                     off = "graphicstick_off";
+                   else if (!aml_presentation_validated())
+                     off = "unvalidated SoC";
+                   if (off)
+                     CLog::Log(LOGINFO, "GTICK default off ({})", off);
+                   else
+                     CLog::Log(LOGINFO, "GTICK default on (graphicsplane {})",
+                               planeFromFile ? "advancedsettings" : "default");
+                   if (Exists("graphicstick_on"))
+                     CLog::Log(LOGWARNING,
+                               "GTICK graphicstick_on does nothing: on by default (GT-7)");
+                   if (Exists("guntimed_off"))
+                     CLog::Log(LOGWARNING, "GTICK guntimed_off does nothing: GT-4's untimed "
+                                           "bridge is gone (GT-7)");
+                   s_requested.store(!off, std::memory_order_release);
+                 });
 }
 
 bool TestDelay1()

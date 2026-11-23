@@ -1373,6 +1373,7 @@ bool CVideoPlayer::OpenInputStream()
               CURL::GetRedacted(m_item.GetPath()));
     return false;
   }
+  m_renderManager.SetDvdInput(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD));
 
 #if defined(HAVE_LIBBLURAY)
   m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);

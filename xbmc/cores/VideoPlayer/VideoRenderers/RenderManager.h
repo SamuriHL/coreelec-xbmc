@@ -621,6 +621,8 @@ public:
   //! 5.V3-4: V applies the decoder side; a settings or view mode change then wakes V
   //! 5.G2 GT-4: and the timed-graphics route is decided for the configure it follows
   void SetDecoderSideOnV(bool on);
+  //! the player, at each input stream's open: a DVD keeps today's graphics route (D6, GT-D1)
+  void SetDvdInput(bool dvd) { m_dvdInput = dvd; }
   unsigned int DecoderSettingsGen() const
   {
     return m_decoderSettingsGen.load(std::memory_order_relaxed);
@@ -1257,6 +1259,7 @@ protected:
   void UpdateGraphicsRoute();
   //! the file the route was last on in
   unsigned int m_gtickOnFile = 0;
+  std::atomic_bool m_dvdInput{false};
   //! 5.V3-4: the view mode request C computes from (m_statelock)
   SViewModeRequest m_viewModeRequest;
   void RecordViewMode(int viewMode, const CVideoSettings& settings,
