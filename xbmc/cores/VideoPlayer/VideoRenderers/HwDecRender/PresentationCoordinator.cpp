@@ -104,7 +104,7 @@ void LogUntimed(const SUntimedPost& post,
     vbl = (std::max<int64_t>(0, flipNs - post.postNs) + periodNs - 1) / periodNs;
     postSeq = sequence - vbl;
   }
-  GRAPHICSTICK::GTLogF(LOGINFO,
+  GRAPHICSTICK::GTLogF(LOGDEBUG,
             "GUNTIMED u={} route={} post_seq={} post_vbl={} post_ns={} flip={} flipseq={} "
             "flip_ns={} period_us={} vbl={} upd_us={} by={} what={} page={}",
             post.u, post.route, postSeq, postSeq, post.postNs, sequence, sequence, flipNs,
@@ -2692,7 +2692,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
         for (const UiBuffer& b : m_timed)
           held += StringUtils::Format(" {}:u{}{}{}{}", b.serial, b.u, b.clear ? "c" : "",
                                       b.bridge ? "b" : "", b.session != session ? "o" : "");
-        GRAPHICSTICK::GTLogF(LOGINFO,
+        GRAPHICSTICK::GTLogF(LOGDEBUG,
                              "GTICK no pick target={} withheld={} picked={} pageWaits={} held:{}",
                              target.valid ? static_cast<int64_t>(target.serial) : -1,
                              m_gtWithheld ? 1 : 0, m_gtPickedSerial, pageWaits ? 1 : 0, held);
@@ -2851,7 +2851,7 @@ void CPresentationCoordinator::LogSlowBody(int64_t enter)
     parts += StringUtils::Format(" {}={}", names[i], (m_phaseNs[i] - last) / 1000);
     last = m_phaseNs[i];
   }
-  GRAPHICSTICK::GTLogF(LOGINFO, "GTLAT C body us={}{} rest={} held={} tail={} wake={}",
+  GRAPHICSTICK::GTLogF(LOGDEBUG, "GTLAT C body us={}{} rest={} held={} tail={} wake={}",
                        m_lastBodyNs / 1000, parts, (enter - last) / 1000, m_bodyHeld ? 1 : 0,
                        m_phaseTailUs, m_phaseWakeUs);
   m_phaseTailUs = m_phaseWakeUs = 0;
@@ -3144,17 +3144,17 @@ void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64
   }
   // the scan-out probe joins these on flip=: the OSD change latched at that vblank (§4)
   if (timed.timed && timed.clear)
-    GRAPHICSTICK::GTLogF(LOGINFO, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "GCLEAR serial={} flip={} fb={} u={}", timed.serial, sequence, timed.fb,
               timed.u);
   else if (timed.timed && timed.bridge)
-    GRAPHICSTICK::GTLogF(LOGINFO, "GBRIDGE serial={} flip={} fb={} u={} rtag={}", timed.serial,
+    GRAPHICSTICK::GTLogF(LOGDEBUG, "GBRIDGE serial={} flip={} fb={} u={} rtag={}", timed.serial,
                          sequence, timed.fb, timed.u, timed.knobTag);
   else if (timed.timed)
   {
     // GT-D15 measurement: G's libass and draw times, its hand-in against the picking slot's
     // vblank (negative: ahead), the fence at the pick, and the commit against that vblank
     const int64_t slot = timed.pickVblankNs;
-    GRAPHICSTICK::GTLogF(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGDEBUG,
               "GPLACE serial={} qbuf={} flip={} delta={} period_us={} fb={} u={} page={} hold={} "
               "ass_us={} draw_us={} submit_us={} fence={} commit_us={} rtag={}",
               timed.serial, timed.qbuf, sequence, delta, periodNs / 1000, timed.fb, timed.u,
@@ -3277,7 +3277,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
                                     released.rects.view, released.rects.rgen);
       GRAPHICSTICK::PostReleased(released);
       if (GRAPHICSTICK::ReleasedLog())
-        GRAPHICSTICK::GTLogF(LOGINFO, "GRELEASED serial={} gen={} qbuf={} tick={}", released.serial,
+        GRAPHICSTICK::GTLogF(LOGDEBUG, "GRELEASED serial={} gen={} qbuf={} tick={}", released.serial,
                   released.segmentGen, released.qbuf, released.tick);
     }
   }
@@ -3488,7 +3488,7 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
     // poll from before the vblank (not run: scheduling or the event late); body_us: the loop
     // body before that poll
     if (wake > 3000.0 && GRAPHICSTICK::Requested())
-      GRAPHICSTICK::GTLogF(LOGINFO,
+      GRAPHICSTICK::GTLogF(LOGDEBUG,
                 "GTLAT C tick seq={} wake_us={:.0f} poll_since_us={} poll_return_us={} body_us={}",
                 tick.seq, wake, (tick.vblankNs - m_pollEnterNs) / 1000,
                 (m_pollReturnNs - tick.vblankNs) / 1000, m_lastBodyNs / 1000);

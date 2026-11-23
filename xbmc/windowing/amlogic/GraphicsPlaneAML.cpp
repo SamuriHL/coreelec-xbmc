@@ -636,6 +636,24 @@ bool CGraphicsPlaneAML::InitRing()
   return true;
 }
 
+void CGraphicsPlaneAML::RetryRing()
+{
+  m_ringRetryAtNs = 0;
+  // never in front of a route start's first composition: a start pending now retries after it
+  if (m_rasterReady && GRAPHICSTICK::RouteSession() != m_routeSession)
+  {
+    GRAPHICSTICK::GTLogF(LOGINFO, "GRING retry deferred: a route start is pending");
+    return;
+  }
+  m_ringRetries++;
+  const std::string why = "retry " + std::to_string(m_ringRetries) + " after a route end";
+  LogHeapState(why.c_str());
+  const int64_t start = MonotonicNs();
+  const bool on = InitRing();
+  GRAPHICSTICK::GTLogF(on ? LOGINFO : LOGWARNING, "GRING {}: {} in {} ms", why, on ? "on" : "off",
+                       (MonotonicNs() - start) / 1000000);
+}
+
 void CGraphicsPlaneAML::DeinitRing()
 {
   if (m_ring.empty())
@@ -1573,17 +1591,6 @@ void CGraphicsPlaneAML::RouteStart(uint64_t floorGen)
     m_ringTried = true;
     InitRing();
   }
-  // GT-D22: a ring that could not be made is tried again, once per route start
-  else if (!RingOn())
-  {
-    m_ringRetries++;
-    const std::string why = "retry " + std::to_string(m_ringRetries) + " at a route start";
-    LogHeapState(why.c_str());
-    const int64_t start = MonotonicNs();
-    const bool on = InitRing();
-    GRAPHICSTICK::GTLogF(on ? LOGINFO : LOGWARNING, "GRING {}: {} in {} ms", why,
-                         on ? "on" : "off", (MonotonicNs() - start) / 1000000);
-  }
   m_routeOn = true;
   m_routeQueue.clear();
   m_routeHasPending = false;
@@ -1648,6 +1655,9 @@ void CGraphicsPlaneAML::RouteEnd()
   m_routeClearOwed = false;
   // item 11: the stop's clear is G's (VP's HasVisibleOverlay-gated clear reads empty here)
   m_routeEndClearOwed = true;
+  // GT-D22: a ring that could not be made is tried again once G is idle after this route
+  if (m_ringTried && !RingOn())
+    m_ringRetryAtNs = MonotonicNs() + RING_RETRY_DELAY_NS;
   // main renders the timed libass overlays again from here (review rA M1)
   GRAPHICSTICK::NoteGSide(m_routeSession, false);
   GRAPHICSTICK::GTLogF(LOGINFO, "GTICK G off: the timed graphics are main's again");
@@ -2389,7 +2399,7 @@ bool CGraphicsPlaneAML::RedrawUntimed()
       GRAPHICSTICK::Count(GRAPHICSTICK::UntimedCount::WAIT_SUPPRESSED);
       return;
     }
-    GRAPHICSTICK::GTLogF(LOGINFO,
+    GRAPHICSTICK::GTLogF(LOGDEBUG,
               "GUNTIMED wait u={} why={} free={} drawn={} ahead={} screen={} released={} "
               "advancing={}",
               m_uCur.u, why, RouteFree(), m_routeDrawn.size(), ahead.size(),
@@ -2583,7 +2593,7 @@ void CGraphicsPlaneAML::Process()
   if (!m_testPattern)
     InitRaster();
   // GT-5 (RC22 am9pro): the ring once, at G's start, while the heaps are not yet under a 4K DV
-  // playback's pressure; kept for the session (DeinitGL frees it), retried by RouteStart
+  // playback's pressure; kept for the session (DeinitGL frees it), retried after a route end
   if (!m_testPattern && m_raster && GRAPHICSTICK::Requested() && !m_ringTried)
   {
     m_ringTried = true;
@@ -2694,6 +2704,8 @@ void CGraphicsPlaneAML::Process()
       // GT-4: the route's end clear goes before route C's next frame
       if (m_routeEndClearOwed && SubmitClear(0))
         m_routeEndClearOwed = false;
+      if (m_ringRetryAtNs && !m_routeEndClearOwed && MonotonicNs() >= m_ringRetryAtNs)
+        RetryRing();
       if (TakeShown())
       {
         m_shadowOwed = m_raster && m_selfTest;

@@ -6601,7 +6601,8 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       if (us(t0, end) < threshold)
         return;
 #if defined(HAS_LIBAMCODEC)
-      GRAPHICSTICK::GTLogF(LOGINFO,
+      // 3-5 ms (the route's measurement band) at debug: INFO keeps today's 5 ms line
+      GRAPHICSTICK::GTLogF(us(t0, end) < 5000 ? LOGDEBUG : LOGINFO,
 #else
       CLog::Log(LOGINFO,
 #endif

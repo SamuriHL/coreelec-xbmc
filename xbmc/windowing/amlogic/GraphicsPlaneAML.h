@@ -204,9 +204,13 @@ private:
   };
   std::vector<SRingBuffer> m_ring;
   bool m_ringTried = false;
-  int m_ringRetries = 0; //!< GT-D22: one per route start while the ring is off
+  int m_ringRetries = 0; //!< GT-D22: one per route end while the ring is off
+  //! GT-D22: when G, idle after a route end, tries the ring again (0: none owed). The delay lets
+  //! the player release the decoder's buffers first, and keeps the CMA cost off any start
+  int64_t m_ringRetryAtNs = 0;
+  static constexpr int64_t RING_RETRY_DELAY_NS = 2000000000;
   int m_ringAttempts = 0; //!< for the test file gring_fail
-  //! the ring, made at G's start (the route requested), retried at a route start while off;
+  //! the ring, made at G's start (the route requested), retried after a route end while off;
   //! false: G's route draws on the surface (LOCK_CAP)
   bool InitRing();
   //! one ring buffer from /dev/dma_heap/heap-fb, imported into GBM (and by it into DRM); nullptr
@@ -214,6 +218,8 @@ private:
   gbm_bo* RingBoFromHeap(int& fd, uint32_t& stride);
   void LogHeapState(const char* why) const;
   void DeinitRing();
+  //! GT-D22: one more attempt, logged with the heaps before and the outcome and time after
+  void RetryRing();
   bool RingOn() const { return !m_ring.empty(); }
   //! the route's free buffers and its capacity (ring or surface)
   int RouteFree() const;
