@@ -245,8 +245,11 @@ bool CPresentationCoordinator::Start()
   if (s_untimedLog)
     GRAPHICSTICK::GTLogF(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
   s_geomWakeAlways = XFILE::CFile::Exists("special://profile/geomwake_always");
-  s_starveOff = XFILE::CFile::Exists("special://profile/starve_off");
-  if (s_starveOff)
+  // issue 27: the freeze acts on validated hardware only, and reads the audio pins board, which
+  // the sink writes only with the shadow on; elsewhere the starvation is measured
+  s_starveOff =
+      XFILE::CFile::Exists("special://profile/starve_off") || !aml_presentation_validated();
+  if (XFILE::CFile::Exists("special://profile/starve_off"))
     GRAPHICSTICK::GTLogF(LOGWARNING, "STARVE freeze off (starve_off): measured only");
   if (s_geomWakeAlways)
     GRAPHICSTICK::GTLogF(LOGWARNING,
@@ -3588,30 +3591,28 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
                          "read in progress {} ms, audio starved {})",
                          clockText(clockUs), (now - m_starve.lastFrameNs) / frameNs, readMs,
                          audioStarved ? 1 : 0);
-    // the freeze (design docs/iss27_design.md §2): only with both outputs dry, so nothing still
-    // playing runs ahead of a stopped clock. The clock stands where the next frame would have
-    // shown; the player makes it a pause there when its read returns. Dekker with P: the read's
-    // stamp is re-read after the freeze is set, P reads the freeze after clearing the stamp
     m_starve.frozen = false;
-    if (!s_starveOff && audioStarved && m_video)
-    {
-      const double freezeAt = m_starve.lastFramePts + (m_frameUs > 0.0 ? m_frameUs : 41708.3);
-      m_video->StarveFreeze(readStart, freezeAt);
-      if (reads.readStartNs.load() != readStart)
-      {
-        m_video->StarveWithdraw(readStart);
-        GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze withdrawn: the read returned first");
-      }
-      else
-      {
-        m_starve.frozen = true;
-        GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze at clock {:.3f} (the last frame {:.3f})",
-                             freezeAt / DVD_TIME_BASE, m_starve.lastFramePts / DVD_TIME_BASE);
-      }
-    }
+    m_starve.freezeDone = s_starveOff;
   }
   if (!m_starve.readAt)
     return;
+  // the freeze (design docs/iss27_design.md §2), judged at every tick of the read until it is
+  // taken or ruled out: both outputs dry (the audio usually outlasts the video by the mux's
+  // interleave), so nothing still playing runs ahead of a stopped clock. The clock stands where
+  // the next frame would have shown; the player makes it a pause there when its read returns
+  if (!m_starve.freezeDone && readStart == m_starve.readAt && !m_starve.returnNs &&
+      result.playing && reads.stallEligible.load(std::memory_order_relaxed) && m_video &&
+      ShadowActive())
+    TryStarveFreeze(readStart, clockUs, frameNs);
+  // a BD-J presentation wait inside the read moves its stamp (DVDInputStreamBluray): the clock
+  // must run for it, so a freeze taken before it is released, as today
+  if (m_starve.frozen && readStart && readStart != m_starve.readAt)
+  {
+    m_starve.frozen = false;
+    if (m_video->StarveWithdraw(m_starve.readAt))
+      GRAPHICSTICK::GTLogF(
+          LOGINFO, "STARVE freeze released: the read went on into a disc presentation wait");
+  }
   if (!m_starve.returnNs && readStart != m_starve.readAt)
   {
     m_starve.returnNs = now;
@@ -3635,6 +3636,57 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
                        m_starve.frozen ? " (frozen)" : "");
   m_starve.readAt = 0;
   m_starve.returnNs = 0;
+}
+
+void CPresentationCoordinator::TryStarveFreeze(int64_t readStart, int64_t clockUs, double frameNs)
+{
+  using namespace PRESENTATION;
+  const int64_t now = MonotonicNs();
+  int64_t aq[AQ_COUNT];
+  const bool audioRead = AudioPinsBoard().Read(aq) && aq[AQ_ON_PINS_NS];
+  // the audio still on the pins: the freeze waits for it to run dry too
+  if (audioRead && now - aq[AQ_ON_PINS_NS] <= 100000000)
+    return;
+  // a tick whose clock the board does not carry is judged at the next one
+  if (clockUs < 0)
+    return;
+  m_starve.freezeDone = true;
+  const double frameUs = frameNs / 1000.0;
+  const double freezeAt = m_starve.lastFramePts + frameUs;
+  // the clock stands where the outputs stopped, or the freeze is not taken (today's behaviour):
+  // the clock past the next frame's time by less than a few frames (a stale last frame from
+  // before a seek, a flush or another file is far from it), and the last sound within 100 ms of
+  // it (a resume then neither drops sound nor plays picture without it)
+  const char* why = nullptr;
+  if (static_cast<double>(clockUs) < freezeAt - 1000.0)
+    why = "the clock is not past the next frame";
+  else if (static_cast<double>(clockUs) - freezeAt > 6.0 * frameUs)
+    why = "the clock ran past the last frame by more than 6 frames";
+  else if (audioRead && std::abs(static_cast<double>(aq[AQ_PTS_US]) - freezeAt) > 100000.0)
+    why = "the last sound is more than 100 ms from the last frame";
+  if (why)
+  {
+    GRAPHICSTICK::GTLogF(
+        LOGINFO, "STARVE no freeze: {} (clock {}, next frame {:.3f}, last sound {})", why,
+        StringUtils::Format("{:.3f}", clockUs / 1e6), freezeAt / DVD_TIME_BASE,
+        audioRead ? StringUtils::Format("{:.3f}", aq[AQ_PTS_US] / 1e6) : std::string("none"));
+    return;
+  }
+  // Dekker with P: the read's stamp is re-read after the freeze is set; P reads the freeze after
+  // clearing the stamp
+  m_video->StarveFreeze(readStart, freezeAt);
+  if (PlayerReads().readStartNs.load() != readStart)
+  {
+    if (m_video->StarveWithdraw(readStart))
+      GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze withdrawn: the read returned first");
+    else
+      GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze taken over: P ended it first");
+    return;
+  }
+  m_starve.frozen = true;
+  GRAPHICSTICK::GTLogF(
+      LOGINFO, "STARVE freeze at clock {:.3f} (the last frame {:.3f}, the clock {:.3f})",
+      freezeAt / DVD_TIME_BASE, m_starve.lastFramePts / DVD_TIME_BASE, clockUs / 1e6);
 }
 
 void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,

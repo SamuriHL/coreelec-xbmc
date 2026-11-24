@@ -625,7 +625,7 @@ public:
   void SetDvdInput(bool dvd) { m_dvdInput = dvd; }
   //! issue 27, the coordinator (lock-free): the player's clock frozen at a starvation
   void StarveFreeze(int64_t token, double clock) { m_dvdClock.StarveFreeze(token, clock); }
-  void StarveWithdraw(int64_t token) { m_dvdClock.StarveWithdraw(token); }
+  bool StarveWithdraw(int64_t token) { return m_dvdClock.StarveWithdraw(token); }
   unsigned int DecoderSettingsGen() const
   {
     return m_decoderSettingsGen.load(std::memory_order_relaxed);

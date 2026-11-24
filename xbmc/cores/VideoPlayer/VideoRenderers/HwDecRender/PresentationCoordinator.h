@@ -551,12 +551,15 @@ private:
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
   //! issue 27 (measurement, log only): a P read in progress while the picture runs out
   void NoteStarve(const SPresentTick& tick, const SPresentResult& result);
+  //! C: the freeze once both outputs are dry, if the clock stands where they stopped
+  void TryStarveFreeze(int64_t readStart, int64_t clockUs, double frameNs);
   struct SStarve
   {
     int64_t lastFrameNs = 0; //!< the tick that released the last frame
     int64_t clockAtFrameUs = -1; //!< CDVDClock at that tick (-1: not read)
     double lastFramePts = 0.0; //!< the last frame's pts (DVD time)
     bool frozen = false; //!< this read's freeze was set
+    bool freezeDone = false; //!< this read's freeze was taken or ruled out
     int64_t readLogged = 0; //!< the read the 500 ms line was logged for
     int64_t readAt = 0; //!< the read a would-freeze was judged on (0: none)
     int64_t wouldNs = 0;

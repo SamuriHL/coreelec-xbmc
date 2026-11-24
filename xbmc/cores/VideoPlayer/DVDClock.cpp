@@ -79,9 +79,9 @@ void CDVDClock::StarveFreeze(int64_t token, double clock)
   m_starveToken.store(token);
 }
 
-void CDVDClock::StarveWithdraw(int64_t token)
+bool CDVDClock::StarveWithdraw(int64_t token)
 {
-  m_starveToken.compare_exchange_strong(token, 0);
+  return m_starveToken.compare_exchange_strong(token, 0);
 }
 
 bool CDVDClock::EndStarveFreeze(double& clock, double& ranOn)

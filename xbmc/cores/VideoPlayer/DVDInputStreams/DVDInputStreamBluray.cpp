@@ -33,6 +33,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/Geometry.h"
 #include "utils/LanguageTag.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/URIUtils.h"
@@ -2075,6 +2076,13 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
       if (result == 0 && (event == BD_EVENT_NONE || event == BD_EVENT_END_OF_TITLE ||
                           event == BD_EVENT_IDLE))
       {
+        // issue 27: a wait for the presentation is not a blocked read (it needs the clock to
+        // run): the player's read stamp starts again here, so only real I/O counts
+        PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+        if (reads.readStartNs.load())
+          reads.readStartNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count());
         WaitForBdjPresentation();
       }
 

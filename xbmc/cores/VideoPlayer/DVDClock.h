@@ -84,7 +84,8 @@ public:
   //! readers see it at `clock` and paused until the player ends the freeze
   void StarveFreeze(int64_t token, double clock);
   //! the coordinator: the read returned before the freeze took; withdrawn if still `token`'s
-  void StarveWithdraw(int64_t token);
+  //! true: withdrawn here (false: none, or the player ended it first)
+  bool StarveWithdraw(int64_t token);
   //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
   //! it ran). false: none
   bool EndStarveFreeze(double& clock, double& ranOn);
