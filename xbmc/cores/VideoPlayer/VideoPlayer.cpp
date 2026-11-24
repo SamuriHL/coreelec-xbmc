@@ -7096,22 +7096,42 @@ bool CVideoPlayer::ScheduleUserResume()
   // queued to the display ahead of the clock are already out: the resume starts at the sound's
   // next sample, and the picture on screen holds until the clock reaches its next frame, so no
   // sound is dropped and no picture is shown twice
-  if (std::exchange(m_starveResumeArmed, false) && m_starveAudioNext != DVD_NOPTS_VALUE)
+  if (std::exchange(m_starveResumeArmed, false))
   {
-    const double sound = m_starveAudioNext - m_clock.GetAudioOffset();
-    if (sound < pts && sound >= held - DVD_MSEC_TO_TIME(1))
-    {
+    if (m_CurrentAudio.id < 0)
+      CLog::Log(LOGINFO, "STARVE resume at the next frame {:.3f} (no audio stream)",
+                pts / DVD_TIME_BASE);
+    else if (m_starveAudioNext == DVD_NOPTS_VALUE)
       CLog::Log(LOGINFO,
-                "STARVE resume at the sound's next {:.3f} (the next frame {:.3f}: the picture "
-                "holds {:.0f} ms)",
-                sound / DVD_TIME_BASE, pts / DVD_TIME_BASE, (pts - sound) / 1000.0);
-      pts = sound;
-    }
+                "STARVE resume at the next frame {:.3f} (no sound sent on before the resume)",
+                pts / DVD_TIME_BASE);
     else
-      CLog::Log(LOGINFO,
-                "STARVE resume at the next frame {:.3f} (the sound's next {:.3f} is not between "
-                "the held clock {:.3f} and it)",
-                pts / DVD_TIME_BASE, sound / DVD_TIME_BASE, held / DVD_TIME_BASE);
+    {
+      const double sound = m_starveAudioNext - m_clock.GetAudioOffset();
+      // the held clock goes back when the sound ran dry before it (the freeze point is the
+      // picture's), so the resume never drops sound that was not played
+      bool atSound = sound < pts && sound >= held - DVD_MSEC_TO_TIME(1);
+      if (!atSound && sound < held - DVD_MSEC_TO_TIME(1) && held - sound < DVD_MSEC_TO_TIME(2000) &&
+          m_clock.MoveHeldClock(sound))
+      {
+        CLog::Log(LOGINFO, "STARVE held clock moved back {:.0f} ms to the sound's end {:.3f}",
+                  (held - sound) / 1000.0, sound / DVD_TIME_BASE);
+        atSound = true;
+      }
+      if (atSound)
+      {
+        CLog::Log(LOGINFO,
+                  "STARVE resume at the sound's next {:.3f} (the next frame {:.3f}: the picture "
+                  "holds {:.0f} ms)",
+                  sound / DVD_TIME_BASE, pts / DVD_TIME_BASE, (pts - sound) / 1000.0);
+        pts = sound;
+      }
+      else
+        CLog::Log(LOGINFO,
+                  "STARVE resume at the next frame {:.3f} (the sound's next {:.3f}, the held "
+                  "clock {:.3f})",
+                  pts / DVD_TIME_BASE, sound / DVD_TIME_BASE, held / DVD_TIME_BASE);
+    }
   }
   if (!m_clock.ScheduleResumeAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
   {
@@ -8705,11 +8725,6 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
     CLog::Log(LOGINFO, "CVideoPlayer::ProcessAudioData - first audio packet pts {:.3f}",
               pPacket->pts / DVD_TIME_BASE);
 
-  // issue 27: the first sound after a starvation freeze, where its resume starts
-  if (m_starveResumeArmed && m_starveAudioNext == DVD_NOPTS_VALUE &&
-      pPacket->pts != DVD_NOPTS_VALUE)
-    m_starveAudioNext = pPacket->pts;
-
   bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
   UpdateTimestamps(m_CurrentAudio, pPacket);
   // with no video, a BD-J mark converts with the audio (design 15.55)
@@ -8750,6 +8765,10 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
   CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayer::ProcessAudioData size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms, clock:{:.3f} drop:{:d} level:{:d}",
     pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0, m_clock.GetClock() / DVD_TIME_BASE, drop, m_VideoPlayerAudio->GetLevel());
 
+  // issue 27: the first sound sent on after a starvation freeze, where its resume starts: its
+  // time after the continuity corrections (a seam, a gap, a resync), the dts when it has no pts
+  if (m_starveResumeArmed && m_starveAudioNext == DVD_NOPTS_VALUE && !drop)
+    m_starveAudioNext = pPacket->pts != DVD_NOPTS_VALUE ? pPacket->pts : pPacket->dts;
   m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
 
   if (!drop)
@@ -11609,6 +11628,29 @@ void CVideoPlayer::HandleMessages()
 
 void CVideoPlayer::SetCaching(ECacheState state)
 {
+  // issue 27: a starvation emptied the decoder and the render queue too; its resume waits until
+  // the picture is decoded ahead again (RC v6: resumed on the queues' data alone, the picture ran
+  // 250 ms behind the sound for a second), bounded at 3 s from the stall
+  if (state == CACHESTATE_PLAY && m_starveResumeArmed && m_cachingStall &&
+      m_caching == CACHESTATE_INIT && m_CurrentVideo.id >= 0)
+  {
+    constexpr int STARVE_RESUME_FRAMES = 3;
+    int queued = 0, discard = 0, free = 0;
+    m_processInfo->GetRenderBuffers(queued, discard, free);
+    const auto waited = std::chrono::steady_clock::now() - m_stallSince;
+    if (queued < STARVE_RESUME_FRAMES && waited < 3s)
+    {
+      if (!std::exchange(m_starveWaitLogged, true))
+        CLog::Log(LOGINFO, "STARVE resume waits for {} decoded frames ({} queued)",
+                  STARVE_RESUME_FRAMES, queued);
+      return;
+    }
+    if (std::exchange(m_starveWaitLogged, false))
+      CLog::Log(LOGINFO, "STARVE resume: {} frames decoded after {:.0f} ms{}", queued,
+                std::chrono::duration<double, std::milli>(waited).count(),
+                queued < STARVE_RESUME_FRAMES ? " (the 3 s bound)" : "");
+  }
+
   // only the stall check asks for FULL itself; a flush comes as FLUSH
   const bool stall = state == CACHESTATE_FULL && m_caching == CACHESTATE_DONE &&
                      m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
@@ -13471,6 +13513,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   m_starveResumeArmed = false;
+  m_starveWaitLogged = false;
   // 5.E2-9a (D2): a flush inside a P-decided open re-PRIMEs it (same T); the others end it
   // (E2-8a D5)
   if (TxOpen())

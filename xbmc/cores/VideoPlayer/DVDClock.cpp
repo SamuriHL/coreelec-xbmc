@@ -110,6 +110,19 @@ bool CDVDClock::EndStarveFreeze(double& clock, double& ranOn)
   return true;
 }
 
+bool CDVDClock::MoveHeldClock(double clock)
+{
+  std::unique_lock lock(m_critSection);
+  if (!m_pauseClock || m_paused || m_resumeAt || m_starveToken.load())
+    return false;
+  const int64_t current = m_videoRefClock->GetTime();
+  const double at = SystemToPlaying(current);
+  m_pauseClock += static_cast<int64_t>(
+      std::llround((clock - at) * static_cast<double>(m_systemUsed) / DVD_TIME_BASE));
+  DropVsyncPhase(false);
+  return true;
+}
+
 double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
 {
   int64_t current = m_videoRefClock->GetTime(interpolated);

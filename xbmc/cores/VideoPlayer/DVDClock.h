@@ -89,6 +89,8 @@ public:
   //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
   //! it ran). false: none
   bool EndStarveFreeze(double& clock, double& ranOn);
+  //! a paused clock (a stall's, never a user pause or a scheduled resume) moved to `clock`
+  bool MoveHeldClock(double clock);
   void Advance(double time);
 
   //! Resume the clock held at speed 0 at a scheduled instant instead of now
