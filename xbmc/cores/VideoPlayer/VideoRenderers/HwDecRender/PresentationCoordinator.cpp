@@ -3539,7 +3539,9 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
   if (ShadowActive() && CoordinatorBoard().Read(cs) &&
       static_cast<uint64_t>(cs[CS_SEQ]) == tick.seq)
     clockUs = cs[CS_CLOCK_US];
-  if (result.newFrame)
+  // the last frame before a judged starvation stays the reference until its read returns (the
+  // frames P queues right after the read must not move it)
+  if (result.newFrame && !m_starve.readAt)
   {
     m_starve.lastFrameNs = now;
     m_starve.clockAtFrameUs = clockUs;
