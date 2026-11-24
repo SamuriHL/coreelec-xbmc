@@ -1374,6 +1374,8 @@ bool CVideoPlayer::OpenInputStream()
     return false;
   }
   m_renderManager.SetDvdInput(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD));
+  m_preadFileStartNs = 0;
+  m_preadStallDone = false;
 
 #if defined(HAVE_LIBBLURAY)
   m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
@@ -1830,6 +1832,32 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     SynchronizeDemuxer();
 }
 
+void CVideoPlayer::TestReadStall(int64_t nowNs)
+{
+  // test (issue 27): special://profile/pread_stall holds "<ms> <at_s>": the first demuxer read
+  // after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover
+  static const std::pair<int, int> stall = []
+  {
+    const auto line = OUTPUT::ReadTestSwitch("pread_stall");
+    const int ms = line ? std::atoi(line->c_str()) : 0;
+    const auto space = line ? line->find(' ') : std::string::npos;
+    const int at = space == std::string::npos ? 0 : std::max(0, std::atoi(line->c_str() + space));
+    if (ms > 0)
+      CLog::Log(LOGWARNING, "PREAD test: the first read {} s into each file sleeps {} ms", at, ms);
+    return std::pair<int, int>{ms, at};
+  }();
+  if (stall.first <= 0 || m_preadStallDone)
+    return;
+  if (!m_preadFileStartNs)
+    m_preadFileStartNs = nowNs;
+  if (nowNs - m_preadFileStartNs < static_cast<int64_t>(stall.second) * 1000000000)
+    return;
+  m_preadStallDone = true;
+  CLog::Log(LOGWARNING, "PREAD test: read stall {} ms now (clock {:.3f})", stall.first,
+            m_clock.GetClock() / DVD_TIME_BASE);
+  std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
+}
+
 bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 {
   OUTPUT::TestDemuxBlock();
@@ -1867,6 +1895,13 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
   // read a data frame from stream.
   if (m_pDemuxer)
   {
+    // issue 27 (log only): the read in progress, for the coordinator's starvation measurement
+    PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+    const int64_t readStart = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+    reads.readStartNs.store(readStart, std::memory_order_release);
+    TestReadStall(readStart);
     packet = m_pDemuxer->Read();
     // an audio track switch reads again what the other streams already have
     while (packet && !m_recueGate.empty() && RecueGateDrops(packet))
@@ -1874,6 +1909,20 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
       CDVDDemuxUtils::FreeDemuxPacket(packet);
       packet = m_pDemuxer->Read();
     }
+    const int64_t readNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count() -
+                           readStart;
+    reads.readStartNs.store(0, std::memory_order_release);
+    reads.reads.fetch_add(1, std::memory_order_relaxed);
+    int64_t was = reads.maxNs.load(std::memory_order_relaxed);
+    while (readNs > was && !reads.maxNs.compare_exchange_weak(was, readNs))
+    {
+    }
+    if (readNs > 100000000)
+      reads.over100ms.fetch_add(1, std::memory_order_relaxed);
+    if (readNs > 1000000000)
+      reads.over1s.fetch_add(1, std::memory_order_relaxed);
   }
 
   if (packet)
@@ -8862,6 +8911,11 @@ void CVideoPlayer::HandlePlaySpeed()
 
   if (tolerateStall && m_caching != CACHESTATE_DONE)
     SetCaching(CACHESTATE_DONE);
+  // issue 27 (log only): whether a starvation now would be a stall, for the coordinator
+  PRESENTATION::PlayerReads().stallEligible.store(
+      m_playSpeed == DVD_PLAYSPEED_NORMAL && m_caching == CACHESTATE_DONE && !tolerateStall &&
+          !streamEnded && !m_startHeld && !StartGateShut() && !m_pInputStream->IsRealtime(),
+      std::memory_order_relaxed);
 
   if (m_caching == CACHESTATE_FULL)
   {
@@ -11518,8 +11572,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
       m_cachingStall = holdFrom > 0.0;
       m_stallSince = std::chrono::steady_clock::now();
       if (stall)
+      {
+        PRESENTATION::PlayerReads().stalls.fetch_add(1, std::memory_order_relaxed);
         CLog::Log(LOGINFO, "VideoPlayer: stalled at clock {:.3f}, caching (audio kept from {:.3f})",
                   m_clock.GetClock() / DVD_TIME_BASE, holdFrom / DVD_TIME_BASE);
+      }
     }
 
     m_cachingTimer.Set(5000ms);

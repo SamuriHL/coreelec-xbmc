@@ -549,6 +549,20 @@ private:
   void RunWakeTail(); //!< 5.V3-4
   bool m_geometryOnC = false; //!< 5.V3-4: the last tick's session is on the path (C only)
   void ShadowFrameOnScreen(const SPresentTick& tick, double pts, bool playing);
+  //! issue 27 (measurement, log only): a P read in progress while the picture runs out
+  void NoteStarve(const SPresentTick& tick, const SPresentResult& result);
+  struct SStarve
+  {
+    int64_t lastFrameNs = 0; //!< the tick that released the last frame
+    int64_t clockAtFrameUs = -1; //!< CDVDClock at that tick (-1: not read)
+    int64_t readLogged = 0; //!< the read the 500 ms line was logged for
+    int64_t readAt = 0; //!< the read a would-freeze was judged on (0: none)
+    int64_t wouldNs = 0;
+    uint64_t stallsAt = 0;
+    int64_t returnNs = 0;
+    int64_t returnReadMs = 0;
+    int64_t clockAtReturnUs = -1;
+  } m_starve;
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick,
                const SPresentResult& result,

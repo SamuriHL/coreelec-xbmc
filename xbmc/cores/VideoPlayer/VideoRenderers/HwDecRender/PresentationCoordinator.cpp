@@ -3423,6 +3423,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
     if (PRESENTATION::ShadowActive())
       ShadowFrameOnScreen(tick, result.pts, result.playing);
   }
+  NoteStarve(tick, result);
 
   if (!result.configured)
     SetState(State::IDLE, tick.epoch);
@@ -3520,6 +3521,90 @@ void CPresentationCoordinator::RunWakeTail()
   m_report.wakeTails++;
   m_report.wakeWrites += wrote;
   m_report.wakeMaxNs = std::max(m_report.wakeMaxNs, ns);
+}
+
+void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPresentResult& result)
+{
+  using namespace PRESENTATION;
+  SPlayerReads& reads = PlayerReads();
+  if (!result.configured)
+  {
+    m_starve = SStarve();
+    return;
+  }
+  const int64_t now = MonotonicNs();
+  // the clock as RM published it for this tick (the shadow board; -1 when it does not run)
+  int64_t clockUs = -1;
+  int64_t cs[CS_COUNT];
+  if (ShadowActive() && CoordinatorBoard().Read(cs) &&
+      static_cast<uint64_t>(cs[CS_SEQ]) == tick.seq)
+    clockUs = cs[CS_CLOCK_US];
+  if (result.newFrame)
+  {
+    m_starve.lastFrameNs = now;
+    m_starve.clockAtFrameUs = clockUs;
+  }
+  const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
+  const int64_t readMs = readStart ? (now - readStart) / 1000000 : 0;
+  const auto clockText = [](int64_t us)
+  { return us < 0 ? std::string("?") : StringUtils::Format("{:.3f}", us / 1e6); };
+  if (readStart && readMs > 500 && readStart != m_starve.readLogged && result.playing)
+  {
+    m_starve.readLogged = readStart;
+    int64_t aq[AQ_COUNT];
+    const int64_t audioMs =
+        AudioPinsBoard().Read(aq) && aq[AQ_ON_PINS_NS] ? (now - aq[AQ_ON_PINS_NS]) / 1000000 : -1;
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "PREAD read in progress {} ms, clock {} running, last frame {} ms ago, "
+                         "audio on the pins {} ms ago",
+                         readMs, clockText(clockUs),
+                         m_starve.lastFrameNs ? (now - m_starve.lastFrameNs) / 1000000 : -1,
+                         audioMs);
+  }
+  // what a starvation freeze would do (design docs/iss27_design.md §2): no frame for 3 frame
+  // durations while the clock runs, a stall P would judge, and a read in progress over 300 ms
+  const double frameNs = m_frameUs > 0.0 ? m_frameUs * 1000.0 : 41708333.0;
+  if (!m_starve.readAt && readStart && readMs > 300 && result.playing &&
+      reads.stallEligible.load(std::memory_order_relaxed) && m_starve.lastFrameNs &&
+      now - m_starve.lastFrameNs > 3.0 * frameNs)
+  {
+    m_starve.readAt = readStart;
+    m_starve.wouldNs = now;
+    m_starve.stallsAt = reads.stalls.load(std::memory_order_relaxed);
+    m_starve.returnNs = 0;
+    int64_t aq[AQ_COUNT];
+    const bool audioStarved =
+        !AudioPinsBoard().Read(aq) || !aq[AQ_ON_PINS_NS] || now - aq[AQ_ON_PINS_NS] > 100000000;
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "STARVE would freeze at clock {} (no frame for {:.1f} frame durations, "
+                         "read in progress {} ms, audio starved {})",
+                         clockText(clockUs), (now - m_starve.lastFrameNs) / frameNs, readMs,
+                         audioStarved ? 1 : 0);
+  }
+  if (!m_starve.readAt)
+    return;
+  if (!m_starve.returnNs && readStart != m_starve.readAt)
+  {
+    m_starve.returnNs = now;
+    m_starve.returnReadMs = (now - m_starve.readAt) / 1000000;
+    m_starve.clockAtReturnUs = clockUs;
+  }
+  if (!m_starve.returnNs)
+    return;
+  // P's stall path runs at its next loop after the read: judged up to 1 s after the return
+  const bool stalled = reads.stalls.load(std::memory_order_relaxed) != m_starve.stallsAt;
+  if (!stalled && now - m_starve.returnNs < 1000000000)
+    return;
+  const std::string ranOn =
+      m_starve.clockAtReturnUs >= 0 && m_starve.clockAtFrameUs >= 0
+          ? std::to_string((m_starve.clockAtReturnUs - m_starve.clockAtFrameUs) / 1000)
+          : std::string("?");
+  GRAPHICSTICK::GTLogF(LOGINFO,
+                       "STARVE read returned after {} ms, clock ran on {} ms past the last frame, "
+                       "P's stall path {}",
+                       m_starve.returnReadMs, ranOn, stalled ? "taken" : "not taken");
+  m_starve.readAt = 0;
+  m_starve.returnNs = 0;
 }
 
 void CPresentationCoordinator::ShadowFrameOnScreen(const SPresentTick& tick,
@@ -3716,6 +3801,18 @@ void CPresentationCoordinator::LogReport()
   }
   // the video path's log writer, in each report (its drops are lost lines)
   GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
+  // issue 27 (log only): P's demuxer reads in this window (INFO when one took over 100 ms)
+  {
+    PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+    const int64_t n = reads.reads.exchange(0);
+    const int64_t maxNs = reads.maxNs.exchange(0);
+    const int64_t over100 = reads.over100ms.exchange(0);
+    const int64_t over1s = reads.over1s.exchange(0);
+    if (n)
+      GRAPHICSTICK::GTLogF(over100 ? LOGINFO : LOGDEBUG,
+                           "PREAD reads={} max_ms={} over_100ms={} over_1s={}", n, maxNs / 1000000,
+                           over100, over1s);
+  }
   // GT-D21: C's and G's waits for the locks they share (INFO when one waited over 1 ms)
   for (int thread = 0; thread < 2; thread++)
   {

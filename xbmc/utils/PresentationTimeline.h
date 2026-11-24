@@ -192,6 +192,26 @@ inline std::atomic<uint32_t>& TimelineTicks()
   static std::atomic<uint32_t> ticks{0};
   return ticks;
 }
+// Issue 27 (measurement, log only): P's demuxer reads, as the coordinator sees them. P writes,
+// C reads; nothing waits.
+struct SPlayerReads
+{
+  std::atomic<int64_t> readStartNs{
+      0}; //!< CLOCK_MONOTONIC at the start of the read in progress; 0: none
+  std::atomic<bool> stallEligible{false}; //!< P: a stall would be judged now (playing 1x, no menu,
+      //!< still, held start, stream end or realtime stream)
+  std::atomic<uint64_t> stalls{0}; //!< P's stall path taken ("stalled at clock …, caching")
+  std::atomic<int64_t> reads{0}; //!< since C's last report
+  std::atomic<int64_t> maxNs{0};
+  std::atomic<int64_t> over100ms{0};
+  std::atomic<int64_t> over1s{0};
+};
+inline SPlayerReads& PlayerReads()
+{
+  static SPlayerReads reads;
+  return reads;
+}
+
 // Bumped by the audio sink each time a scheduled start lands: the audio
 // follower measures its phase from there.
 inline std::atomic<uint64_t>& AudioLandings()

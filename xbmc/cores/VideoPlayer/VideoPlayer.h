@@ -551,6 +551,10 @@ protected:
   void SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int target);
 
   bool ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream);
+  //! test switch pread_stall (issue 27)
+  void TestReadStall(int64_t nowNs);
+  int64_t m_preadFileStartNs = 0;
+  bool m_preadStallDone = false;
   void HandleDynamicBufferLevel();
   void UpdateMenuDomainQueueDepth(bool segmentOpen);
 
