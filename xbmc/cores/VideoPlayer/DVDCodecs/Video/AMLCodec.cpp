@@ -30,6 +30,7 @@
 #include "utils/log.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/GraphicsRegime.h"
+#include "windowing/amlogic/GuiSnapshot.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "utils/StreamDetails.h"
@@ -2826,8 +2827,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   am_private->hdr_buf.data = NULL;
   pre_header_feeding(am_private, &am_private->am_pkt);
 
-  MAINCOUPLING("CDisplaySettings GetCurrentResolutionInfo");
-  m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iHeight);
+  // 5.H: main's published GUI row (m_Resolution's), today's read before main's first publish;
+  // SetVideoRect overwrites it with the first video rect
+  GUISNAPSHOT::SSnapshot gui;
+  if (GUISNAPSHOT::Read(gui) && gui.valid)
+    m_display_rect = CRect(0, 0, gui.rawRow.width, gui.rawRow.height);
+  else
+  {
+    MAINCOUPLING("CDisplaySettings GetCurrentResolutionInfo");
+    m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iHeight);
+  }
 
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
