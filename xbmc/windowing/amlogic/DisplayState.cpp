@@ -1230,36 +1230,36 @@ bool SStartJob::HasSink()
 
 void SStartJob::OutputDone(bool committed, uint64_t seq)
 {
-  CLog::Log(LOGINFO, "TXSTART output done T={} {} seq={}", T, committed ? "committed" : "no-change",
-            seq);
+  CLog::Log(LOGINFO, "{} output done T={} {} seq={}", Tag(), T,
+            committed ? "committed" : "no-change", seq);
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
     m_sink->OnOutputDone({T, committed, seq, this->seq});
   else
-    CLog::Log(LOGINFO, "TXSTART T={} output done: no sink (the player has exited)", T);
+    CLog::Log(LOGINFO, "{} T={} output done: no sink (the player has exited)", Tag(), T);
 }
 
 void SStartJob::SettleDone(StartSettleKind kind)
 {
   if (m_settleReplied.exchange(true))
   {
-    CLog::Log(LOGINFO, "TXSTART T={} settle {} after the final reply: logged", T,
+    CLog::Log(LOGINFO, "{} T={} settle {} after the final reply: logged", Tag(), T,
               StartSettleKindName(kind));
     return;
   }
   const uint32_t e =
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).e;
-  CLog::Log(LOGINFO, "TXSTART settle done T={} kind={}", T, StartSettleKindName(kind));
+  CLog::Log(LOGINFO, "{} settle done T={} kind={}", Tag(), T, StartSettleKindName(kind));
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
     m_sink->OnSettleDone({T, e, kind, seq});
   else
-    CLog::Log(LOGINFO, "TXSTART T={} settle done: no sink (the player has exited)", T);
+    CLog::Log(LOGINFO, "{} T={} settle done: no sink (the player has exited)", Tag(), T);
 }
 
 void SStartJob::RestoreSettled(uint32_t e)
 {
-  CLog::Log(LOGINFO, "TXSTART T={} restored e={}", T, e);
+  CLog::Log(LOGINFO, "{} T={} restored e={}", Tag(), T, e);
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
     m_sink->OnRestoreSettled(T, e);
@@ -1271,7 +1271,7 @@ bool SStartJob::AdoptAnswer(StartAnswer answer)
   std::unique_lock lock(m_sinkMutex);
   if (!m_sink)
   {
-    CLog::Log(LOGINFO, "TXSTART T={} set={} answer {}: no sink (the player has exited)", T, gen,
+    CLog::Log(LOGINFO, "{} T={} set={} answer {}: no sink (the player has exited)", Tag(), T, gen,
               StartAnswerName(answer));
     return false;
   }
@@ -1280,7 +1280,7 @@ bool SStartJob::AdoptAnswer(StartAnswer answer)
 
 void SStartJob::TxAdopted(StartAdoptForm form)
 {
-  CLog::Log(LOGINFO, "TXSTART adopted T={} {}", T, StartAdoptFormName(form));
+  CLog::Log(LOGINFO, "{} adopted T={} {}", Tag(), T, StartAdoptFormName(form));
   std::unique_lock lock(m_sinkMutex);
   if (m_sink)
     m_sink->OnTxAdopted({T, form, seq});
@@ -1301,7 +1301,7 @@ bool StartJobDropForGuiSet(SStartJob& job, const char* by)
   StartJobState found;
   if (!job.Cas({StartJobState::QUEUED, StartJobState::PARKING}, StartJobState::DROPPED, &found))
     return false;
-  CLog::Log(LOGINFO, "TXSTART job T={} dropped ({})", job.T, by);
+  CLog::Log(LOGINFO, "{} job T={} dropped ({})", job.Tag(), job.T, by);
   return true;
 }
 
@@ -1310,7 +1310,7 @@ AmendOvertake StartJobDropForAmend(SStartJob& job, unsigned int amend)
   StartJobState found;
   if (job.Cas({StartJobState::QUEUED, StartJobState::PARKING}, StartJobState::DROPPED, &found))
   {
-    CLog::Log(LOGINFO, "TXSTART job T={} overtaken by amend {}", job.T, amend);
+    CLog::Log(LOGINFO, "{} job T={} overtaken by amend {}", job.Tag(), job.T, amend);
     return AmendOvertake::OVERTAKEN;
   }
   return found == StartJobState::DROPPED ? AmendOvertake::DROPPED : AmendOvertake::COMMITTED;
@@ -1322,7 +1322,7 @@ bool StartJobDropForExit(SStartJob& job, const char* by)
   if (!job.Cas({StartJobState::NOT_POSTED, StartJobState::QUEUED, StartJobState::PARKING},
                StartJobState::DROPPED, &found))
     return false;
-  CLog::Log(LOGINFO, "TXSTART job T={} dropped ({})", job.T, by);
+  CLog::Log(LOGINFO, "{} job T={} dropped ({})", job.Tag(), job.T, by);
   return true;
 }
 
@@ -1345,7 +1345,7 @@ bool PublishTxOpenJob(const std::shared_ptr<SStartJob>& job)
     }
     open = s_txOpenJob;
   }
-  CLog::Log(LOGINFO, "TXSTART job T={}: not published, T={} still open", job->T, open->T);
+  CLog::Log(LOGINFO, "{} job T={}: not published, T={} still open", job->Tag(), job->T, open->T);
   return false;
 }
 
@@ -1423,7 +1423,7 @@ void NoteFullScreenExit()
 {
   const uint64_t n = ++s_fullScreenExits;
   if (const auto job = TxOpenJob())
-    CLog::Log(LOGINFO, "TXSTART T={} fullscreen exit {} (job {})", job->T, n,
+    CLog::Log(LOGINFO, "{} T={} fullscreen exit {} (job {})", job->Tag(), job->T, n,
               StartJobStateName(job->state.load()));
 }
 
@@ -1473,7 +1473,7 @@ void GuiSetDuringStart(SStartJob& job, bool preActivation)
   if (preActivation)
     s_guiSetPreSeq = seq;
   s_guiSetSeq = seq;
-  CLog::Log(LOGINFO, "TXSTART T={} GUI set notice {} ({}, {}-activation, job {})", job.T, seq,
+  CLog::Log(LOGINFO, "{} T={} GUI set notice {} ({}, {}-activation, job {})", job.Tag(), job.T, seq,
             origin, preActivation ? "pre" : "post",
             dropped ? "dropped" : StartJobStateName(job.state.load()));
 }

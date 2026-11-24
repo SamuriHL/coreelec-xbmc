@@ -457,6 +457,8 @@ struct SStartJob
   double tweakMs = 0.0;
   //! 5.G-3 (docs/phase5_g0_design.md §4.3 c): P's mid-play job on Lane::MIDPLAY
   bool midplay = false;
+  //! the log tag of this job's lines: a mid-play job's are not the start's (5H-L1)
+  const char* Tag() const { return midplay ? "TXMID" : "TXSTART"; }
   //! 5.G-4 (§4.4): a VS10 press's mode, written by W inside the freeze before a forced commit
   //! (-1: none)
   int vs10 = -1;

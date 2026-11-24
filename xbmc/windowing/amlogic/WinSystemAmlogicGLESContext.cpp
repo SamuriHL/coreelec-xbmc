@@ -2439,8 +2439,8 @@ void CWinSystemAmlogicGLESContext::RestoreInStart(const SDriveJob& job)
   // P re-shows the pre-roll once per value (the next picture as the still)
   const uint64_t count = (start->restoreCommit.load() >> 32) + 1;
   start->restoreCommit.store(count << 32 | word.e);
-  CLog::Log(LOGINFO, "TXSTART T={} restore request {} committed in the start e={} ({})", start->T,
-            job.id, word.e, starting ? "STARTING" : "carried SETTLE");
+  CLog::Log(LOGINFO, "{} T={} restore request {} committed in the start e={} ({})", start->Tag(),
+            start->T, job.id, word.e, starting ? "STARTING" : "carried SETTLE");
   if (!starting)
     return;
   // START waits for this Restore's reset (RESTORED{T, e})
@@ -2503,8 +2503,8 @@ void CWinSystemAmlogicGLESContext::ApplyHotplugReplies()
     else
     {
       // code review A-M1: answered, so RM's commit-in-flight does not outlive the start
-      CLog::Log(LOGERROR, "TXSTART T={} recovery set request {} failed: answer failed",
-                recovery.job->T, recovery.id);
+      CLog::Log(LOGERROR, "{} T={} recovery set request {} failed: answer failed",
+                recovery.job->Tag(), recovery.job->T, recovery.id);
       recovery.job->AdoptAnswer(recovery.job->midplay ? DISPLAYSTATE::StartAnswer::FAILED_SET
                                                       : DISPLAYSTATE::StartAnswer::FAILED);
     }
@@ -2828,23 +2828,24 @@ bool CWinSystemAmlogicGLESContext::PostStartJob(
   // then does main apply Start replies (ApplyHotplugReplies)
   if (!m_wHotplug)
   {
-    CLog::Log(LOGINFO, "TXSTART job T={} not posted: the hotplug on W is not live", start->T);
+    CLog::Log(LOGINFO, "{} job T={} not posted: the hotplug on W is not live", start->Tag(),
+              start->T);
     return false;
   }
   if (start->state != DISPLAYSTATE::StartJobState::QUEUED)
   {
-    CLog::Log(LOGERROR, "TXSTART job T={} not posted: state {}", start->T,
+    CLog::Log(LOGERROR, "{} job T={} not posted: state {}", start->Tag(), start->T,
               DISPLAYSTATE::StartJobStateName(start->state));
     return false;
   }
   if (!OUTPUT::COutputWorker::Get().PostIfRunning(OUTPUT::Lane::START, "start job",
                                                   [this, start] { RunStartJob(start); }))
   {
-    CLog::Log(LOGINFO, "TXSTART job T={} not posted: W not running", start->T);
+    CLog::Log(LOGINFO, "{} job T={} not posted: W not running", start->Tag(), start->T);
     return false;
   }
-  CLog::Log(LOGINFO, "TXSTART job T={} posted (P) set={} {} @ {:.3f} hdr={} frac={}", start->T,
-            start->gen, start->res.strId, start->res.fRefreshRate,
+  CLog::Log(LOGINFO, "{} job T={} posted (P) set={} {} @ {:.3f} hdr={} frac={}", start->Tag(),
+            start->T, start->gen, start->res.strId, start->res.fRefreshRate,
             static_cast<int>(start->hdrType), start->fracRequest ? 1 : 0);
   return true;
 }
@@ -2905,7 +2906,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
     if (spanHold && m_wSpanHeldT != start->T)
     {
       m_wSpanHeldT = start->T;
-      CLog::Log(LOGINFO, "TXSTART job T={} held: the display span is open", start->T);
+      CLog::Log(LOGINFO, "{} job T={} held: the display span is open", start->Tag(), start->T);
     }
     // a failed re-post (W stopping) runs on: the unrun job's STOPPING below
     if ((hookHold || spanHold) &&
@@ -2920,7 +2921,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   if (aml_transaction_loss_in_start() && start->state.load() == State::QUEUED &&
       !start->HasSink() && start->Cas({State::QUEUED}, State::DROPPED))
   {
-    CLog::Log(LOGINFO, "TXSTART job T={} dropped: the player has exited", start->T);
+    CLog::Log(LOGINFO, "{} job T={} dropped: the player has exited", start->Tag(), start->T);
     start->SettleDone(Settle::DROPPED);
     return;
   }
@@ -2929,7 +2930,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
   if (aml_transaction_loss_in_start() && start->state.load() == State::QUEUED &&
       StartJobCapsChanged(*start) && start->Cas({State::QUEUED}, State::DROPPED))
   {
-    CLog::Log(LOGINFO, "TXSTART job T={} dropped: the sink's caps changed since DECIDE",
+    CLog::Log(LOGINFO, "{} job T={} dropped: the sink's caps changed since DECIDE", start->Tag(),
               start->T);
     start->SettleDone(Settle::DROPPED);
     return;
@@ -2956,7 +2957,7 @@ void CWinSystemAmlogicGLESContext::RunStartJob(
       start->SettleDone(Settle::DROPPED);
       return;
     }
-    CLog::Log(LOGINFO, "TXSTART job T={} discarded unrun: W is stopping", start->T);
+    CLog::Log(LOGINFO, "{} job T={} discarded unrun: W is stopping", start->Tag(), start->T);
     job->runOrdinal = OUTPUT::COutputWorker::Get().JobsStarted();
     job->commitSeq = OUTPUT::CommitSeq();
     job->kind = OUTPUT::DriveReply::FAILED;
@@ -3108,7 +3109,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   // r14 L3: no ApplyDriveReply, whose default result would overwrite main's backups
   if (!start.ran)
   {
-    CLog::Log(LOGINFO, "TXSTART T={} reply: the job was discarded unrun", start.T);
+    CLog::Log(LOGINFO, "{} T={} reply: the job was discarded unrun", start.Tag(), start.T);
     answer(Answer::FAILED, Form::FAILED);
     return;
   }
@@ -3219,8 +3220,8 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   {
     // E2-8b NOTE: as the hotplug ADOPT's not-in-table exit: GC unmoved; the wire is unknown to
     // main, so the hand-back's set runs in full
-    CLog::Log(LOGERROR, "TXSTART T={} reply: committed mode not in main's table ({} @ {:.3f})",
-              start.T, job->res.strId, job->res.fRefreshRate);
+    CLog::Log(LOGERROR, "{} T={} reply: committed mode not in main's table ({} @ {:.3f})",
+              start.Tag(), start.T, job->res.strId, job->res.fRefreshRate);
     NoteAppliedReply(*job);
     if (job->tornDown)
     {
@@ -3302,7 +3303,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
     catch (...)
     {
     }
-    CLog::Log(LOGERROR, "TXSTART T={} reply dropped after a throw at {}: {}", start.T, step,
+    CLog::Log(LOGERROR, "{} T={} reply dropped after a throw at {}: {}", start.Tag(), start.T, step,
               what);
     NoteAppliedReply(*job);
     const auto state = DISPLAYSTATE::Get();
@@ -3317,8 +3318,8 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
         m_startRecovery = {};
         m_startRecovery.id = OUTPUT::NextDriveId();
         m_startRecovery.job = job->start;
-        CLog::Log(LOGERROR, "TXSTART T={} reply: recovery set {} posted (request {})", start.T,
-                  committed, m_startRecovery.id);
+        CLog::Log(LOGERROR, "{} T={} reply: recovery set {} posted (request {})", start.Tag(),
+                  start.T, committed, m_startRecovery.id);
         CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, committed, 1, nullptr,
                                                    "start-recovery");
         NoteDriveShadowBackups();
@@ -3327,8 +3328,8 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
       }
       // E2-8b NOTE: no recovery set without the committed mode in main's table: failed, so the
       // hand-back's full set decides
-      CLog::Log(LOGERROR, "TXSTART T={} reply: committed mode not in main's table, no recovery",
-                start.T);
+      CLog::Log(LOGERROR, "{} T={} reply: committed mode not in main's table, no recovery",
+                start.Tag(), start.T);
     }
     else if (committed >= 0)
     {
@@ -3339,7 +3340,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
       }
       catch (const std::exception& again)
       {
-        CLog::Log(LOGERROR, "TXSTART T={} reply: the re-map threw too: {}", start.T,
+        CLog::Log(LOGERROR, "{} T={} reply: the re-map threw too: {}", start.Tag(), start.T,
                   again.what());
       }
     }
@@ -3349,7 +3350,7 @@ void CWinSystemAmlogicGLESContext::ApplyStartReply(const std::shared_ptr<SDriveJ
   }
   if (!adopted)
   {
-    CLog::Log(LOGERROR, "TXSTART T={} reply: GC's set did not take the Start job", start.T);
+    CLog::Log(LOGERROR, "{} T={} reply: GC's set did not take the Start job", start.Tag(), start.T);
     NoteAppliedReply(*job);
     answer(Answer::FAILED, Form::FAILED);
     return;
