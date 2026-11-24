@@ -249,6 +249,7 @@ bool CPresentationCoordinator::Start()
   // the sink writes only with the shadow on; elsewhere the starvation is measured
   s_starveOff =
       XFILE::CFile::Exists("special://profile/starve_off") || !aml_presentation_validated();
+  PRESENTATION::PlayerReads().freezeOn.store(!s_starveOff);
   if (XFILE::CFile::Exists("special://profile/starve_off"))
     GRAPHICSTICK::GTLogF(LOGWARNING, "STARVE freeze off (starve_off): measured only");
   if (s_geomWakeAlways)

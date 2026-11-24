@@ -172,6 +172,9 @@ protected:
   bool m_codecSpeedFix = false; //!< 5.C, latched at OpenStream (codecspeed_off)
   int m_speed;
   std::atomic_bool m_stalled = false;
+  //! issue 27: a starvation's last picture held, no still repeats (until a packet or a flush)
+  bool m_stillHeld = false;
+  bool StarveHoldsPicture(std::chrono::milliseconds timeout);
   std::atomic_bool m_startHeld = false;
   std::atomic<int64_t> m_lastDecoderFlushNs{0}; //!< 5.E2-9c D2
   //! 5.E2-9c D6 (transaction_nopicture)

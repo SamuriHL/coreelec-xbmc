@@ -23,6 +23,7 @@
 #include "filesystem/File.h"
 #include "utils/AMLUtils.h"
 #include "utils/MathUtils.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
@@ -582,6 +583,16 @@ void CVideoPlayerVideo::Process()
       if (m_worker && !m_workerTimedOut)
         continue;
 
+      // issue 27: a plain input's read blocked for longer than this timeout, with a stall judged
+      // and the freeze on here, is a starvation, not a still: the last picture holds, as on a
+      // real player (the repeats' invented pts, 4 frames on, put the resume ahead of the real
+      // frames still in the decoder). Held until the next packet or a flush.
+      if (!m_stalled && (m_stillHeld || StarveHoldsPicture(timeout)))
+      {
+        m_idleSince = std::chrono::steady_clock::now();
+        continue;
+      }
+
       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
       if (!m_stalled)
       {
@@ -709,6 +720,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
 
       m_stalled = true;
+      m_stillHeld = false;
       DiagStart();
       if (sync)
       {
@@ -844,6 +856,7 @@ void CVideoPlayerVideo::Process()
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe left, switching to normal playback");
         m_stalled = false;
       }
+      m_stillHeld = false;
 
       bRequestDrop = false;
       iDropDirective = CalcDropRequirement(pts);
@@ -1658,6 +1671,32 @@ void CVideoPlayerVideo::SetSpeed(int speed)
     SendMessage(std::make_shared<CDVDMsgInt>(CDVDMsg::PLAYER_SETSPEED, speed), 1);
   else
     m_speed = speed;
+}
+
+bool CVideoPlayerVideo::StarveHoldsPicture(std::chrono::milliseconds timeout)
+{
+  // lock-free reads of P's and C's flags (I1): no wait on another thread
+  const PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+  if (!reads.plainInput.load(std::memory_order_relaxed) ||
+      !reads.freezeOn.load(std::memory_order_relaxed) ||
+      !reads.stallEligible.load(std::memory_order_relaxed) ||
+      !PRESENTATION::ShadowActive().load(std::memory_order_relaxed))
+    return false;
+  const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
+  if (!readStart)
+    return false;
+  const int64_t ageNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count() -
+                        readStart;
+  if (ageNs < std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count())
+    return false;
+  m_stillHeld = true;
+#if defined(HAS_LIBAMCODEC)
+  GRAPHICSTICK::GTLogF(LOGINFO, "STILL repeats held: read in progress {} ms (no invented pts)",
+                       ageNs / 1000000);
+#endif
+  return true;
 }
 
 void CVideoPlayerVideo::Flush(bool sync)

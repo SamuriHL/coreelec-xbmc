@@ -202,6 +202,9 @@ struct SPlayerReads
       //!< still, held start, stream end or realtime stream)
   std::atomic<uint64_t> stalls{0}; //!< P's stall path taken ("stalled at clock …, caching")
   std::atomic<int64_t> starvedNs{0}; //!< C: when it last judged a starvation (the read-stall test)
+  std::atomic<bool> plainInput{false}; //!< P: a plain file or stream (no disc, no navigation)
+  std::atomic<bool> freezeOn{
+      false}; //!< C: the starvation freeze acts here (validated, no starve_off)
   std::atomic<int64_t> reads{0}; //!< since C's last report
   std::atomic<int64_t> maxNs{0};
   std::atomic<int64_t> over100ms{0};

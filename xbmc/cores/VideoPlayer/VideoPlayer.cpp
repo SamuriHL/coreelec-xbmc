@@ -1377,6 +1377,11 @@ bool CVideoPlayer::OpenInputStream()
   m_preadFileStartNs = 0;
   m_preadStallDone = false;
   m_starveResumeArmed = false;
+  // issue 27: a stall of a plain input is a starvation, never a still (V holds its picture)
+  PRESENTATION::PlayerReads().plainInput.store(
+      !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+      !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) &&
+      !std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream));
 
 #if defined(HAVE_LIBBLURAY)
   m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
@@ -7126,6 +7131,12 @@ bool CVideoPlayer::ScheduleUserResume()
                   sound / DVD_TIME_BASE, pts / DVD_TIME_BASE, (pts - sound) / 1000.0);
         pts = sound;
       }
+      else if (sound >= pts)
+        CLog::Log(LOGINFO,
+                  "STARVE resume at the next frame {:.3f} (the sound's next {:.3f} lands {:.0f} ms "
+                  "after it, silence before it; the held clock {:.3f})",
+                  pts / DVD_TIME_BASE, sound / DVD_TIME_BASE, (sound - pts) / 1000.0,
+                  held / DVD_TIME_BASE);
       else
         CLog::Log(LOGINFO,
                   "STARVE resume at the next frame {:.3f} (the sound's next {:.3f}, the held "
