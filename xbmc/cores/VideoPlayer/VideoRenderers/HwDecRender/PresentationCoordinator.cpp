@@ -956,7 +956,9 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
     int deferred;
     {
       std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
-      if (m_planeOffs.empty())
+      // a flip can land before the worker is back from its ioctl: the off waits for the worker
+      // (its flip result sets m_graphicsOn, and two commits never overlap); it wakes C when back
+      if (m_planeOffs.empty() || m_committing.req)
         return;
       op = m_planeOffs.front();
       m_planeOffs.pop_front();
