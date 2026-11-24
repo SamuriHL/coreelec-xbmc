@@ -27,6 +27,7 @@ set(HEADERS WinSystemAmlogic.h
             GraphicsRegime.h
             GraphicsTick.h
             GuiSnapshot.h
+            LockWait.h
             Seqlock.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGLES)

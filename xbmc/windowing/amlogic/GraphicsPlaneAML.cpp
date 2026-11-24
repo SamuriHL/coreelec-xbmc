@@ -32,6 +32,7 @@
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/amlogic/LockWait.h"
 
 #include <algorithm>
 #include <chrono>
@@ -190,7 +191,7 @@ bool CGraphicsPlaneAML::CanShow() const
 void CGraphicsPlaneAML::Show(SHdrGraphics graphics)
 {
   {
-    std::unique_lock lock(m_showSection);
+    std::unique_lock lock = LOCKWAIT::Take(m_showSection, LOCKWAIT::SHOW);
     // GUNTIMED: posts of a set this thread never took go with the one replacing it
     if (m_hasNext && !m_next.untimed.empty())
       graphics.untimed.insert(graphics.untimed.begin(), m_next.untimed.begin(),
@@ -861,7 +862,7 @@ bool CGraphicsPlaneAML::TakeShown()
 {
   SHdrGraphics next;
   {
-    std::unique_lock lock(m_showSection);
+    std::unique_lock lock = LOCKWAIT::Take(m_showSection, LOCKWAIT::SHOW);
     if (!m_hasNext)
       return false;
     next = std::move(m_next);
@@ -1344,7 +1345,7 @@ void CGraphicsPlaneAML::RenderLibassTimed(SComposition& comp)
     const KODI::SUBTITLES::STYLE::renderOpts opts =
         OVERLAY::LibassRenderOpts(layout, ass, rects.source, rects.dest, rects.view);
     // the images are libass's until its next render, on any thread
-    std::unique_lock lock(handler->RenderSection());
+    std::unique_lock lock = LOCKWAIT::Take(handler->RenderSection(), LOCKWAIT::LIBASS);
     int changes = 0;
     ASS_Image* images = handler->RenderImage(o.pts, opts, layout.style, &changes);
     std::shared_ptr<const OVERLAY::SQuads>& last = m_assLast[handler.get()];

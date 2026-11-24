@@ -16,6 +16,7 @@
 #include "utils/StringUtils.h"
 #include "windowing/amlogic/GraphicsRegime.h"
 #include "utils/log.h"
+#include "windowing/amlogic/LockWait.h"
 
 #include <algorithm>
 
@@ -101,7 +102,7 @@ void Wake()
 {
   std::function<void()> wake;
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     wake = s_wake;
   }
   if (wake)
@@ -160,7 +161,7 @@ void SetRoute(bool on, const char* why)
     return;
   std::string line;
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     if (on && s_endedWhy)
       on = false;
     if (on != s_on)
@@ -195,7 +196,7 @@ bool RouteOn()
 {
   if (!Requested())
     return false;
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_on;
 }
 
@@ -203,7 +204,7 @@ uint64_t RouteSession()
 {
   if (!Requested())
     return 0;
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_session;
 }
 
@@ -213,7 +214,7 @@ void RouteState(bool& on, uint64_t& session)
   session = 0;
   if (!Requested())
     return;
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   on = s_on;
   session = s_session;
 }
@@ -225,7 +226,7 @@ void EndRoute(const char* why)
   bool log = false;
   bool handBack = false;
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     if (!s_endedWhy)
       s_endedWhy = why;
     if (s_on)
@@ -252,13 +253,13 @@ void EndRoute(const char* why)
 
 void NewFile()
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   s_endedWhy = nullptr;
 }
 
 const char* EndedWhy()
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_endedWhy;
 }
 
@@ -266,7 +267,7 @@ void PostQueued(SQueued&& queued)
 {
   size_t dropped = 0;
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     if (!s_on)
       return;
     if (s_queued.size() >= INBOX_CAP)
@@ -285,7 +286,7 @@ void PostQueued(SQueued&& queued)
 void PostFloor(uint64_t floor, const char* why)
 {
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     // M-1: a floor that has not moved (main's late repeat of P's) clears nothing new
     if (!s_on || floor <= s_floor.floor)
       return;
@@ -298,14 +299,14 @@ void PostFloor(uint64_t floor, const char* why)
 
 SFloor Floor()
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_floor;
 }
 
 void PostReleased(const SReleased& released)
 {
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     if (!s_on)
       return;
     s_released = true;
@@ -316,13 +317,13 @@ void PostReleased(const SReleased& released)
 
 void SetWake(std::function<void()> wake)
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   s_wake = std::move(wake);
 }
 
 void Take(SInbox& inbox)
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   inbox.queued = std::exchange(s_queued, {});
   inbox.released = std::exchange(s_released, false);
   inbox.last = s_last;
@@ -334,14 +335,14 @@ void Take(SInbox& inbox)
 void NoteGSide(uint64_t session, bool on)
 {
   {
-    std::unique_lock lock(s_mutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
     s_gSide = {session, on};
   }
 }
 
 SSide GSide()
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_gSide;
 }
 
@@ -352,14 +353,14 @@ void Kick()
 
 void NotePickedSerial(uint64_t session, uint64_t serial)
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   s_pickedSession = session;
   s_pickedSerial = serial;
 }
 
 uint64_t PickedSerial(uint64_t session)
 {
-  std::unique_lock lock(s_mutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_mutex, LOCKWAIT::ROUTE);
   return s_pickedSession == session ? s_pickedSerial : 0;
 }
 
@@ -416,7 +417,7 @@ void PostUntimed(SUntimedState&& state)
     return;
   s_posts.fetch_add(1, std::memory_order_relaxed);
   {
-    std::unique_lock lock(s_untimedMutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_untimedMutex, LOCKWAIT::UNTIMED);
     s_keepAlive.store(state.keepAliveTick, std::memory_order_relaxed);
     std::vector<const CDVDOverlay*> current = Ids(state.current);
     std::vector<const CDVDOverlay*> waiting = Ids(state.waiting);
@@ -461,7 +462,7 @@ void PostUntimed(SUntimedState&& state)
 void SetUntimedHook(bool on)
 {
   {
-    std::unique_lock lock(s_untimedMutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_untimedMutex, LOCKWAIT::UNTIMED);
     s_haveLast = false;
     s_hasPending = false;
     s_pending = SUntimedState();
@@ -472,7 +473,7 @@ void SetUntimedHook(bool on)
 
 bool TakeUntimed(SUntimedState& state, size_t& depth)
 {
-  std::unique_lock lock(s_untimedMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_untimedMutex, LOCKWAIT::UNTIMED);
   depth = s_queue.size();
   if (NewestOff())
   {
@@ -497,7 +498,7 @@ int64_t UntimedKeepAlive()
 
 uint64_t NextUntimedU()
 {
-  std::unique_lock lock(s_untimedMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_untimedMutex, LOCKWAIT::UNTIMED);
   return ++s_u;
 }
 
@@ -665,7 +666,7 @@ void LogWriter()
     {
       if (s_logStop.load())
         break;
-      std::unique_lock lock(s_logMutex);
+      std::unique_lock lock = LOCKWAIT::Take(s_logMutex, LOCKWAIT::GTLOG);
       s_logCond.notify_all(); // a flusher waits for an empty queue
       s_logCond.wait_for(lock, std::chrono::milliseconds(10));
       continue;
@@ -708,7 +709,7 @@ void LogWriter()
       s_logDroppedMarked = dropped;
     }
     s_logWriting = false;
-    std::unique_lock lock(s_logMutex);
+    std::unique_lock lock = LOCKWAIT::Take(s_logMutex, LOCKWAIT::GTLOG);
     s_logLines += count;
     s_logSlow += slow;
     s_logMaxUs = std::max(s_logMaxUs, maxUs);
@@ -775,7 +776,7 @@ void GTLogFlush(int timeoutMs)
     return;
   // the lines queued before this call, not an empty queue (the writer may never see one)
   const uint64_t target = s_logPushed.load();
-  std::unique_lock lock(s_logMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_logMutex, LOCKWAIT::GTLOG);
   s_logCond.wait_for(lock, std::chrono::milliseconds(timeoutMs),
                      [target] { return s_logWritten.load() >= target; });
 }
@@ -817,7 +818,7 @@ void GTLogStop()
 
 std::string GTLogStatsLine(bool reset)
 {
-  std::unique_lock lock(s_logMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_logMutex, LOCKWAIT::GTLOG);
   const std::string line =
       StringUtils::Format("GTLOG lines={} dropped={} slow={} max_us={} queued={}", s_logLines,
                           s_logDropped.load() - s_logDroppedReported, s_logSlow, s_logMaxUs,

@@ -22,6 +22,7 @@
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/ThreadRole.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/amlogic/LockWait.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -273,7 +274,7 @@ void CPresentationCoordinator::Stop()
   StopThread(true);
   aml_presenter_set_wake_fd(-1);
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     m_commitStop = true;
   }
   m_uiCond.notify_all();
@@ -281,7 +282,7 @@ void CPresentationCoordinator::Stop()
 
   std::vector<DumbBuffer> dumbs;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     for (int plane = 0; plane < PLANE_COUNT; plane++)
       Drop(plane, m_planes[plane].ready);
     for (UiBuffer& buffer : m_timed)
@@ -329,7 +330,7 @@ void CPresentationCoordinator::SetTickSource(int tickFd, uint32_t tickCrtc)
 bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
 {
   {
-    std::unique_lock lock(m_videoMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);
     m_video = renderManager;
   }
   // the CRTC: under hotplugworker the published DisplayState's id (5.B3-4); under off HEAD's live
@@ -363,7 +364,7 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
 
 void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
 {
-  std::unique_lock lock(m_videoMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);
   if (m_video != renderManager)
     return;
   m_video = nullptr;
@@ -382,7 +383,7 @@ uint64_t CPresentationCoordinator::Submit(int plane,
   uint64_t seq;
   bool replacedCbuf = false;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // 5.B2-4 (SM4): a buffer of an old surface goes straight back
     if (plane == PLANE_UI && epoch < m_uiEpoch)
     {
@@ -443,7 +444,7 @@ uint64_t CPresentationCoordinator::Submit(int plane,
 
 bool CPresentationCoordinator::WaitTaken(uint64_t seq, std::chrono::milliseconds timeout)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   return m_uiCond.wait_for(lock, timeout, [&] {
     for (const PlaneState& state : m_planes)
       if (state.ready.seq == seq)
@@ -454,7 +455,7 @@ bool CPresentationCoordinator::WaitTaken(uint64_t seq, std::chrono::milliseconds
 
 void CPresentationCoordinator::TakeReturned(int plane, std::vector<gbm_bo*>& returned)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   std::vector<Returned>& from = m_planes[plane].returned;
   for (const Returned& buffer : from)
     returned.push_back(buffer.bo);
@@ -464,7 +465,7 @@ void CPresentationCoordinator::TakeReturned(int plane, std::vector<gbm_bo*>& ret
 void CPresentationCoordinator::TakeReturned(std::vector<gbm_bo*>& returned,
                                             std::vector<uint64_t>& epochs)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   std::vector<Returned>& from = m_planes[PLANE_UI].returned;
   const auto cbuf = [this](uint32_t fb)
   {
@@ -489,7 +490,7 @@ void CPresentationCoordinator::DetachSurface(int plane)
 {
   // parked, and no flip in flight
   CAmlPresenterHold hold("detach surface");
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   AbandonLostCommit(plane);
   ReclaimPlane(plane);
 }
@@ -501,7 +502,7 @@ uint64_t CPresentationCoordinator::DetachUiSurfaceNewEpoch(uint32_t format)
   uint64_t epoch;
   DumbBuffer shown;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // C's buffer up, or its commit's flip lost: it may be on the plane
     if (m_cbuf.fb && (m_cbufUp || m_planes[PLANE_UI].committedCOwned))
     {
@@ -549,7 +550,7 @@ bool CPresentationCoordinator::ReclaimUiForModeSet(uint64_t& newEpoch,
   uint32_t shownFb;
   bool cbufShown;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     AbandonLostCommit(PLANE_UI);
     shownFb = m_planes[PLANE_UI].onScreenFb;
     cbufShown = m_cbufUp;
@@ -569,7 +570,7 @@ bool CPresentationCoordinator::ReclaimUiForModeSet(uint64_t& newEpoch,
   uint64_t previous;
   bool stale;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // done or not, every buffer goes back and nothing shows in C's books (R4-M2, R4-M4); C's
     // own buffer is off the plane with the rest and goes up again with this set's request
     ReclaimPlane(PLANE_UI);
@@ -605,7 +606,7 @@ void CPresentationCoordinator::ForgetUiEpoch(uint64_t epoch)
 {
   int forgotten = 0;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     PlaneState& ui = m_planes[PLANE_UI];
     if (ui.ready.bo && ui.ready.epoch < epoch)
     {
@@ -638,13 +639,13 @@ void CPresentationCoordinator::ForgetUiEpoch(uint64_t epoch)
 
 uint64_t CPresentationCoordinator::UiEpoch()
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   return m_uiEpoch;
 }
 
 bool CPresentationCoordinator::HoldsUiEpochBelow(uint64_t epoch)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   const PlaneState& ui = m_planes[PLANE_UI];
   return (ui.ready.bo && ui.ready.epoch < epoch) ||
          (ui.committedBo && ui.committedEpoch < epoch) || (ui.onScreen && ui.onScreenEpoch < epoch);
@@ -665,7 +666,7 @@ void CPresentationCoordinator::PrepareClearedUi(
   uint32_t fb;
   bool reuse;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     format = m_uiFormat ? m_uiFormat : DRM_FORMAT_ARGB8888;
     reuse = m_cbuf.fb && m_cbuf.width == width && m_cbuf.height == height;
     fb = m_cbuf.fb;
@@ -684,7 +685,7 @@ void CPresentationCoordinator::PrepareClearedUi(
   drmModeAtomicReqPtr req = build(fb, srcWidth, srcHeight);
   bool stale;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     if (!reuse)
     {
       if (m_cbuf.fb)
@@ -780,7 +781,7 @@ bool CPresentationCoordinator::GraphicsPlaneOff(
   uint32_t primaryFb;
   bool on;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     AbandonLostCommit(PLANE_GRAPHICS);
     primaryFb = m_planes[PLANE_UI].onScreenFb;
     on = m_graphicsOn;
@@ -806,7 +807,7 @@ bool CPresentationCoordinator::GraphicsPlaneOff(
       drmModeAtomicFree(req);
     }
   }
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   if (done)
     m_graphicsOn = false;
   // GT-D18: a failed off leaves the plane scanning its buffer out; handing it back would let G
@@ -906,7 +907,7 @@ bool CPresentationCoordinator::PlanesOffForModeSet(
 bool CPresentationCoordinator::RunByC(const std::vector<std::shared_ptr<PlaneOffOp>>& ops,
                                       std::chrono::steady_clock::time_point deadline)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   if (!m_planeOffOpen)
   {
     for (const auto& op : ops)
@@ -954,7 +955,7 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
     std::shared_ptr<PlaneOffOp> op;
     int deferred;
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       if (m_planeOffs.empty())
         return;
       op = m_planeOffs.front();
@@ -980,7 +981,7 @@ void CPresentationCoordinator::RunPlaneOffs(bool held)
               (end - start) / 1000, lateUs, op->uiFlipAtPost ? 1 : 0, deferred);
     m_planeOffTickOwed = ticking;
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       op->epoch = epoch;
       op->result = result;
       op->state = PlaneOffOp::State::DONE;
@@ -1099,7 +1100,7 @@ void CPresentationCoordinator::Drop(int plane, UiBuffer& buffer)
 
 bool CPresentationCoordinator::UiInFlight()
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   if (!m_inFlight)
     return false;
   // A flip that never came (CRTC off mid-flight) no longer blocks a hold. Its
@@ -1138,7 +1139,7 @@ void CPresentationCoordinator::Process()
       m_seenEpochNs = MonotonicNs();
       // a display epoch change can reset the vblank counter: a stale hold ends with it (a mode
       // set's plane-off also drops the buffer, ReclaimPlane)
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       m_planes[PLANE_GRAPHICS].ready.staleDeferred = false;
       m_gtFlipSeqValid = false;
       // GT-6: the cleared buffers' requests were built for the old mode; W builds them again
@@ -1181,7 +1182,7 @@ void CPresentationCoordinator::Process()
     uint64_t fenceSeq[PLANE_COUNT];
     bool inFlight;
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       for (int plane = 0; plane < PLANE_COUNT; plane++)
       {
         fence[plane] = m_planes[plane].ready.fence;
@@ -1205,7 +1206,7 @@ void CPresentationCoordinator::Process()
     int64_t timeoutNs = timeoutMs < 0 ? -1 : static_cast<int64_t>(timeoutMs) * 1000000;
     {
       // a GUI frame held for the slot is committed within its bound even with no tick
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       // the held frame went another way (replaced, dropped at a reclaim): nothing to wait for
       if (m_uiHoldUntilNs && !m_planes[PLANE_UI].ready.req)
         m_uiHoldStartNs = m_uiHoldUntilNs = 0;
@@ -1264,7 +1265,7 @@ void CPresentationCoordinator::Process()
     {
       if (!(fds[3 + plane].revents & (POLLIN | POLLERR)))
         continue;
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       UiBuffer& ready = m_planes[plane].ready;
       // the same submit: its fd may have been closed and the number reused
       if (ready.seq == fenceSeq[plane] && ready.fence == fence[plane])
@@ -1309,7 +1310,7 @@ void CPresentationCoordinator::Process()
       }
       int flips;
       {
-        std::unique_lock lock(m_uiMutex);
+        std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
         flips = m_report.uiFlips;
       }
       if (m_report.ticks || flips >= REPORT_TICKS)
@@ -1357,7 +1358,7 @@ void CPresentationCoordinator::Process()
   if (OUTPUT::PlaneOffOnC())
   {
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       for (const auto& op : m_planeOffs)
         op->state = PlaneOffOp::State::DROPPED;
       m_planeOffs.clear();
@@ -1371,7 +1372,7 @@ void CPresentationCoordinator::FlushKnobLines()
 {
   std::vector<std::string> lines;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     if (m_knobLines.empty())
       return;
     lines.swap(m_knobLines);
@@ -1402,7 +1403,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     k.presented =
         DISPLAYSTATE::KnobsWritten(on) && on == DISPLAYSTATE::TagKnobs(drawn) ? drawn : 0;
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       m_knobOnMirror = true;
     }
     GRAPHICSTICK::GTLogF(LOGINFO, "REGIME C owns the knobs presented={}",
@@ -1481,7 +1482,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
       k.appliedSeen = applied;
       bool cleared;
       {
-        std::unique_lock lock(m_uiMutex);
+        std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
         cleared = m_kUi.fb && m_planes[PLANE_UI].onScreenFb == m_kUi.fb;
       }
       if (cleared && SameClass(applied, k.presented))
@@ -1538,7 +1539,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     // the OSD hold W ended goes once the change of its writes (if any) is under way above
     bool released = false;
     {
-      std::unique_lock lock(m_uiMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
       if (m_osdHold.active && m_osdHold.releaseEpoch && regime.epoch >= m_osdHold.releaseEpoch)
       {
         m_osdHold = SOsdHold();
@@ -1592,7 +1593,7 @@ void CPresentationCoordinator::KnobPoll(int64_t now)
     }
   }
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     m_knobOnMirror = false;
     m_osdHold = SOsdHold();
     for (PlaneState& plane : m_planes)
@@ -1708,7 +1709,7 @@ void CPresentationCoordinator::KnobTick(uint64_t seq, const char* how)
 
 bool CPresentationCoordinator::OsdHeld()
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   return m_osdHold.active;
 }
 
@@ -1727,7 +1728,7 @@ void CPresentationCoordinator::KnobPresent(uint64_t seq, const char* why)
   bool clearedUi;
   bool clearedGfx;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     for (PlaneState& plane : m_planes)
       plane.firstOwed = true;
     clearedUi = m_kUi.fb && m_planes[PLANE_UI].onScreenFb == m_kUi.fb;
@@ -1877,7 +1878,7 @@ bool CPresentationCoordinator::ArmKnobClears()
   DumbBuffer ui;
   DumbBuffer gfx;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     gen = m_kArmGen;
     format = m_uiFormat ? m_uiFormat : DRM_FORMAT_ARGB8888;
     if (m_kUi.fb && m_kUi.width == width && m_kUi.height == height)
@@ -1907,7 +1908,7 @@ bool CPresentationCoordinator::ArmKnobClears()
   bool stale;
   std::vector<DumbBuffer> extra;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     if (freshUi.fb)
     {
       if (m_kUi.fb)
@@ -1950,7 +1951,7 @@ bool CPresentationCoordinator::ArmKnobClears()
 
 bool CPresentationCoordinator::OsdHoldBegin(std::chrono::milliseconds bound)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   if (!m_knobOnMirror)
     return false;
   m_osdHold = SOsdHold();
@@ -1967,7 +1968,7 @@ bool CPresentationCoordinator::OsdHoldBegin(std::chrono::milliseconds bound)
 void CPresentationCoordinator::OsdHoldEnd(uint64_t epoch)
 {
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     if (m_osdHold.active)
       m_osdHold.releaseEpoch = std::max<uint64_t>(epoch, 1);
   }
@@ -2083,7 +2084,7 @@ bool CPresentationCoordinator::UiHoldForSlot()
 void CPresentationCoordinator::CommitUi()
 {
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // the GUI hold ends when its condition does (the tick came, or the 3 ms bound): measured
     // here, before any commit in flight can delay the frame further (that wait is any GUI
     // frame's, not the hold's; RC17 read 16-20 ms by measuring to the commit)
@@ -2388,7 +2389,7 @@ void CPresentationCoordinator::CommitWorker()
   OUTPUT::SetThreadRole("C");
   // The meson commit ioctl can block for a vsync (and, in the worst case,
   // seconds) on the previous commit's cleanup: never on the coordinator.
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   while (!m_commitStop)
   {
     if (!m_committing.req)
@@ -2535,7 +2536,7 @@ void CPresentationCoordinator::CommitWorker()
 void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
 {
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // review rB m6: a unit is refused whole when any of it is an old-regime redraw (item 5 (h)),
     // never split: a part would leave the new untimed state below the old one
     const auto refusedByEpoch = [this](const STimedBuffer& in)
@@ -2632,7 +2633,7 @@ void CPresentationCoordinator::SubmitTimed(std::vector<STimedBuffer>& buffers)
 
 int CPresentationCoordinator::TimedHeld()
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   // GT-D15: a clear is not a composition drawn ahead (it goes at the first slot), so a floor's
   // clear held while C is (a seek's re-prime) no longer takes the segment's first frames' depth;
   // the buffer itself still counts in G's LOCK_CAP
@@ -2652,7 +2653,7 @@ void CPresentationCoordinator::SelectTimed(bool ticked)
     return;
   bool woke = false;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     // review rB m2: read under C's lock, so a buffer of a session that began after the read is
     // never dropped as stale (m_uiMutex -> GRAPHICSTICK's lock, the order NoteUntimedCommitted
     // already takes)
@@ -2965,7 +2966,7 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
   }
   const SReleasedFrame& target = m_gtTarget;
   {
-    std::unique_lock lock(m_uiMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
     bool on;
     uint64_t session;
     GRAPHICSTICK::RouteState(on, session);
@@ -3015,7 +3016,7 @@ void CPresentationCoordinator::SelectTimedLate(int64_t now)
 
 void CPresentationCoordinator::NoteUntimedRoute(std::vector<SUntimedPost> posts)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   for (SUntimedPost& post : posts)
   {
     // a state a flip already passed (G took it after a newer one showed) is judged at once
@@ -3048,13 +3049,13 @@ bool CPresentationCoordinator::UntimedLog()
 
 void CPresentationCoordinator::NoteUntimed(int plane, std::vector<SUntimedPost> posts)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   m_untimedNext[plane].insert(m_untimedNext[plane].end(), posts.begin(), posts.end());
 }
 
 void CPresentationCoordinator::OnFlip(uint64_t tag, unsigned int sequence, int64_t flipNs)
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   if (!m_inFlight || tag != m_inCommitTag)
     return;
   // the newest vblank C has seen (its flip can come before that vblank's tick)
@@ -3303,7 +3304,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
   tick.holdReleaseNs = hold.releaseNs;
 
   const int64_t diagWait = MonotonicNs();
-  std::unique_lock lock(m_videoMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);
   // TEMP TICKDIAG (timebase audit Q6)
   if (MonotonicNs() - diagWait > 5000000)
     GRAPHICSTICK::GTLogF(LOGINFO, "TICKDIAG video mutex wait {} us",
@@ -3450,7 +3451,7 @@ void CPresentationCoordinator::RunWakeTail()
     m_report.wakeTicking++;
     return;
   }
-  std::unique_lock lock(m_videoMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);
   if (!m_video)
     return;
   const int64_t start = MonotonicNs();
@@ -3672,7 +3673,7 @@ void CPresentationCoordinator::Account(const SPresentTick& tick,
 
 void CPresentationCoordinator::LogReport()
 {
-  std::unique_lock lock(m_uiMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_uiMutex, LOCKWAIT::UI);
   const Report& r = m_report;
   if (!r.ticks && !r.uiSubmits)
     return;
@@ -3713,6 +3714,16 @@ void CPresentationCoordinator::LogReport()
   }
   // the video path's log writer, in each report (its drops are lost lines)
   GRAPHICSTICK::GTLogF(LOGINFO, "{}", GRAPHICSTICK::GTLogStatsLine(true));
+  // GT-D21: C's and G's waits for the locks they share (INFO when one waited over 1 ms)
+  for (int thread = 0; thread < 2; thread++)
+  {
+    bool over = false;
+    for (const LOCKWAIT::SCounters& c : LOCKWAIT::g_counters[thread])
+      over |= c.overMs.load(std::memory_order_relaxed) > 0;
+    const std::string locks = LOCKWAIT::ReportLine(thread, true);
+    if (!locks.empty())
+      GRAPHICSTICK::GTLogF(over ? LOGINFO : LOGDEBUG, "{}", locks);
+  }
   // review rB m7: whenever GT-5's route ran in this report's window, both halves per window
   // (G's counters are taken and reset with C's)
   if (GRAPHICSTICK::Requested())

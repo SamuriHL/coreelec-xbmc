@@ -42,6 +42,7 @@
 #include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/GraphicsTick.h"
 #include "windowing/amlogic/GuiSnapshot.h"
+#include "windowing/amlogic/LockWait.h"
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
@@ -6595,6 +6596,12 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
       // the owner C waited behind (over 3 ms), built here after both locks are released
       const int64_t stateWait = us(t0, last(a));
       const int64_t presentWait = us(last(a), last(b));
+      // GT-D21: the takes this tick made (their time point moved off t0); stateAtNs and
+      // presentAtNs are set only when C found the lock taken
+      if (a != t0)
+        LOCKWAIT::Note(LOCKWAIT::RM_STATE, stateAtNs != 0, stateWait * 1000);
+      if (b != t0)
+        LOCKWAIT::Note(LOCKWAIT::RM_PRESENT, presentAtNs != 0, presentWait * 1000);
       if (stateAtNs && stateWait > 3000)
         GRAPHICSTICK::GTLogF(LOGINFO, "RMLOCK C tick waited {} us for statelock: {}", stateWait,
                              CRenderManager::LockOwnerText(stateOwner, stateAtNs));

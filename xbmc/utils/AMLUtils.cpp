@@ -43,6 +43,7 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "filesystem/File.h"
+#include "windowing/amlogic/LockWait.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2737,7 +2738,7 @@ unsigned int s_parkSetEpoch = 0;
 
 bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_holdDepth++;
   s_holds.push_back({site, static_cast<int>(gettid()), 0});
   if (!s_parkSetTid && site && strcmp(site, "mode set") == 0)
@@ -2813,7 +2814,7 @@ bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
 
 bool aml_presenter_hold_rewait(unsigned int epoch, int ms)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
   while (s_presenterRunning && s_holdDepth > 0 && s_parkedEpoch < epoch)
   {
@@ -2826,7 +2827,7 @@ bool aml_presenter_hold_rewait(unsigned int epoch, int ms)
 
 bool aml_presenter_parked()
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   if (s_holdDepth <= 0)
     return false;
   if (!s_presenterRunning)
@@ -2838,7 +2839,7 @@ bool aml_presenter_parked()
 void aml_presenter_hold_release()
 {
   std::string parks;
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   if (s_holdDepth > 0)
     s_holdDepth--;
   const unsigned int epoch = ++s_displayEpoch;
@@ -2870,7 +2871,7 @@ void aml_presenter_hold_release()
 
 bool aml_presenter_check_hold(unsigned int& epoch, bool park, AmlEpochHold* hold)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   epoch = s_displayEpoch.load();
   if (hold)
     *hold = s_epochHoldEpoch == epoch ? s_epochHold : AmlEpochHold{};
@@ -3430,27 +3431,27 @@ uint64_t aml_timing_inputs_gen()
 
 void aml_presenter_set_test_cstall(int ms, int nth)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_cstallMs = ms;
   s_cstallNth = nth;
 }
 
 void aml_presenter_set_running(bool running)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_presenterRunning = running;
   s_holdCond.notify_all();
 }
 
 void aml_presenter_set_wake_fd(int fd)
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_wakeFd = fd;
 }
 
 void aml_presenter_wake()
 {
-  std::unique_lock<std::mutex> lock(s_holdMutex);
+  std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   if (s_wakeFd < 0)
     return;
   const uint64_t one = 1;

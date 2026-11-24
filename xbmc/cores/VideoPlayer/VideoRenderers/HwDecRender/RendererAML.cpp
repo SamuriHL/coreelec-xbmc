@@ -29,6 +29,7 @@
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
 #include "windowing/WinSystem.h"
+#include "windowing/amlogic/LockWait.h"
 
 #include <chrono>
 #include <iterator>
@@ -543,7 +544,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
   {
     std::shared_ptr<CAMLCodec> codec;
     {
-      std::lock_guard<std::mutex> lock(m_rectMutex);
+      std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
       codec = std::move(m_rectCodec);
     }
     if (codec)
@@ -879,13 +880,13 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
     m_c.viewModeGen = facts.viewMode.gen;
     m_c.haveViewMode = true;
     onC = ComputeOnC(facts, m_c.snap, *state, m_c.viewMode);
-    std::lock_guard<std::mutex> lock(m_rectMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
     m_cViewModeValid = true;
     m_cViewModeGen = m_c.viewModeGen;
     m_cViewModeOut = m_c.viewMode;
   }
   {
-    std::lock_guard<std::mutex> lock(m_rectMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
     m_cGeometryValid = true;
     m_cSource = onC.area.sourceRect;
     m_cDest = onC.area.destRect;
@@ -922,7 +923,7 @@ bool CRendererAML::ApplyGeometryOnC(CAMLCodec& codec)
 
 bool CRendererAML::ViewModeFromC(uint64_t gen, VIDEOGEOMETRY::SViewModeOut& out) const
 {
-  std::lock_guard<std::mutex> lock(m_rectMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
   if (!m_cViewModeValid || m_cViewModeGen != gen)
     return false;
   out = m_cViewModeOut;
@@ -934,7 +935,7 @@ bool CRendererAML::VideoGeometryFromC(CRect& source,
                                       CRect& view,
                                       unsigned int& rgen) const
 {
-  std::lock_guard<std::mutex> lock(m_rectMutex);
+  std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
   if (!m_cGeometryValid)
     return false;
   source = m_cSource;
@@ -957,7 +958,7 @@ void CRendererAML::PresentFrame(int index)
   amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE,
                                  amli->m_sessionGen);
   {
-    std::lock_guard<std::mutex> lock(m_rectMutex);
+    std::unique_lock lock = LOCKWAIT::Take(m_rectMutex, LOCKWAIT::RECT);
     m_rectCodec = std::move(amli->m_amlCodec); // also marks the frame processed
   }
   m_prevVPts = pts;
