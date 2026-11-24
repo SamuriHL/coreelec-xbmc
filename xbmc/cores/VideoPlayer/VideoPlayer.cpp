@@ -1376,6 +1376,7 @@ bool CVideoPlayer::OpenInputStream()
   m_renderManager.SetDvdInput(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD));
   m_preadFileStartNs = 0;
   m_preadStallDone = false;
+  m_starveResumeArmed = false;
 
 #if defined(HAVE_LIBBLURAY)
   m_pInputBluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
@@ -1966,6 +1967,8 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                 "STARVE freeze ended: clock paused at {:.3f} (the read took {} ms, the clock "
                 "would have run on {:.0f} ms)",
                 frozenAt / DVD_TIME_BASE, readNs / 1000000, ranOn / 1000.0);
+      m_starveResumeArmed = true;
+      m_starveAudioNext = DVD_NOPTS_VALUE;
       SetCaching(CACHESTATE_FULL);
     }
     reads.reads.fetch_add(1, std::memory_order_relaxed);
@@ -7089,6 +7092,27 @@ bool CVideoPlayer::ScheduleUserResume()
   // no frame out yet (the first speed of a file): nothing to resume to
   if (!m_renderManager.GetResumePts(pts, maxStep))
     return false;
+  // issue 27: after a starvation freeze the outputs ran dry at different points, and the frames
+  // queued to the display ahead of the clock are already out: the resume starts at the sound's
+  // next sample, and the picture on screen holds until the clock reaches its next frame, so no
+  // sound is dropped and no picture is shown twice
+  if (std::exchange(m_starveResumeArmed, false) && m_starveAudioNext != DVD_NOPTS_VALUE)
+  {
+    const double sound = m_starveAudioNext - m_clock.GetAudioOffset();
+    if (sound < pts && sound >= held - DVD_MSEC_TO_TIME(1))
+    {
+      CLog::Log(LOGINFO,
+                "STARVE resume at the sound's next {:.3f} (the next frame {:.3f}: the picture "
+                "holds {:.0f} ms)",
+                sound / DVD_TIME_BASE, pts / DVD_TIME_BASE, (pts - sound) / 1000.0);
+      pts = sound;
+    }
+    else
+      CLog::Log(LOGINFO,
+                "STARVE resume at the next frame {:.3f} (the sound's next {:.3f} is not between "
+                "the held clock {:.3f} and it)",
+                pts / DVD_TIME_BASE, sound / DVD_TIME_BASE, held / DVD_TIME_BASE);
+  }
   if (!m_clock.ScheduleResumeAt(pts, maxStep, RESUME_LEAD, startNs, startClock))
   {
     CLog::Log(LOGINFO,
@@ -8680,6 +8704,11 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
   if (m_CurrentAudio.dts == DVD_NOPTS_VALUE)
     CLog::Log(LOGINFO, "CVideoPlayer::ProcessAudioData - first audio packet pts {:.3f}",
               pPacket->pts / DVD_TIME_BASE);
+
+  // issue 27: the first sound after a starvation freeze, where its resume starts
+  if (m_starveResumeArmed && m_starveAudioNext == DVD_NOPTS_VALUE &&
+      pPacket->pts != DVD_NOPTS_VALUE)
+    m_starveAudioNext = pPacket->pts;
 
   bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
   UpdateTimestamps(m_CurrentAudio, pPacket);
@@ -11649,6 +11678,7 @@ void CVideoPlayer::SetCaching(ECacheState state)
                     .count(),
                 scheduled ? "scheduled" : "at once");
     m_cachingStall = false;
+    m_starveResumeArmed = false;
     if (!scheduled)
       m_clock.SetSpeed(m_playSpeed);
     m_VideoPlayerAudio->SetSpeed(m_playSpeed);
@@ -13440,6 +13470,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  m_starveResumeArmed = false;
   // 5.E2-9a (D2): a flush inside a P-decided open re-PRIMEs it (same T); the others end it
   // (E2-8a D5)
   if (TxOpen())

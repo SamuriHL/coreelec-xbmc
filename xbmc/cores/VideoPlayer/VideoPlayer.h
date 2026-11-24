@@ -555,6 +555,9 @@ protected:
   void TestReadStall(int64_t nowNs);
   int64_t m_preadFileStartNs = 0;
   bool m_preadStallDone = false;
+  //! issue 27: a starvation freeze's resume starts at the sound's next pts (P only)
+  bool m_starveResumeArmed = false;
+  double m_starveAudioNext = DVD_NOPTS_VALUE;
   void HandleDynamicBufferLevel();
   void UpdateMenuDomainQueueDepth(bool segmentOpen);
 
