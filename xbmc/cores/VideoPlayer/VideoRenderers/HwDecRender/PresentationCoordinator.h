@@ -555,6 +555,8 @@ private:
   {
     int64_t lastFrameNs = 0; //!< the tick that released the last frame
     int64_t clockAtFrameUs = -1; //!< CDVDClock at that tick (-1: not read)
+    double lastFramePts = 0.0; //!< the last frame's pts (DVD time)
+    bool frozen = false; //!< this read's freeze was set
     int64_t readLogged = 0; //!< the read the 500 ms line was logged for
     int64_t readAt = 0; //!< the read a would-freeze was judged on (0: none)
     int64_t wouldNs = 0;

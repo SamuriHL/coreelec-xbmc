@@ -135,6 +135,8 @@ std::atomic<bool> s_untimedLog{false};
 //! test only: special://profile/geomwake_always runs the wake tail while ticking too (the old
 //! behaviour), so a run names the slow step by its GEOMWAKE slow line
 std::atomic<bool> s_geomWakeAlways{false};
+//! issue 27: special://profile/starve_off: the starvation is measured, never frozen (today)
+std::atomic<bool> s_starveOff{false};
 
 int64_t MonotonicNs()
 {
@@ -243,6 +245,9 @@ bool CPresentationCoordinator::Start()
   if (s_untimedLog)
     GRAPHICSTICK::GTLogF(LOGWARNING, "GUNTIMED logging on (guntimed_log)");
   s_geomWakeAlways = XFILE::CFile::Exists("special://profile/geomwake_always");
+  s_starveOff = XFILE::CFile::Exists("special://profile/starve_off");
+  if (s_starveOff)
+    GRAPHICSTICK::GTLogF(LOGWARNING, "STARVE freeze off (starve_off): measured only");
   if (s_geomWakeAlways)
     GRAPHICSTICK::GTLogF(LOGWARNING,
                          "GEOMWAKE test: the wake tail runs while ticking (geomwake_always)");
@@ -3545,6 +3550,7 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
   {
     m_starve.lastFrameNs = now;
     m_starve.clockAtFrameUs = clockUs;
+    m_starve.lastFramePts = result.pts;
   }
   const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
   const int64_t readMs = readStart ? (now - readStart) / 1000000 : 0;
@@ -3582,6 +3588,27 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
                          "read in progress {} ms, audio starved {})",
                          clockText(clockUs), (now - m_starve.lastFrameNs) / frameNs, readMs,
                          audioStarved ? 1 : 0);
+    // the freeze (design docs/iss27_design.md §2): only with both outputs dry, so nothing still
+    // playing runs ahead of a stopped clock. The clock stands where the next frame would have
+    // shown; the player makes it a pause there when its read returns. Dekker with P: the read's
+    // stamp is re-read after the freeze is set, P reads the freeze after clearing the stamp
+    m_starve.frozen = false;
+    if (!s_starveOff && audioStarved && m_video)
+    {
+      const double freezeAt = m_starve.lastFramePts + (m_frameUs > 0.0 ? m_frameUs : 41708.3);
+      m_video->StarveFreeze(readStart, freezeAt);
+      if (reads.readStartNs.load() != readStart)
+      {
+        m_video->StarveWithdraw(readStart);
+        GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze withdrawn: the read returned first");
+      }
+      else
+      {
+        m_starve.frozen = true;
+        GRAPHICSTICK::GTLogF(LOGINFO, "STARVE freeze at clock {:.3f} (the last frame {:.3f})",
+                             freezeAt / DVD_TIME_BASE, m_starve.lastFramePts / DVD_TIME_BASE);
+      }
+    }
   }
   if (!m_starve.readAt)
     return;
@@ -3603,8 +3630,9 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
           : std::string("?");
   GRAPHICSTICK::GTLogF(LOGINFO,
                        "STARVE read returned after {} ms, clock ran on {} ms past the last frame, "
-                       "P's stall path {}",
-                       m_starve.returnReadMs, ranOn, stalled ? "taken" : "not taken");
+                       "P's stall path {}{}",
+                       m_starve.returnReadMs, ranOn, stalled ? "taken" : "not taken",
+                       m_starve.frozen ? " (frozen)" : "");
   m_starve.readAt = 0;
   m_starve.returnNs = 0;
 }

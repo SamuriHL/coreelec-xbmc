@@ -67,7 +67,47 @@ double CDVDClock::GetClock(bool interpolated /*= true*/)
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
-  return SystemToPlaying(current);
+  const double playing = SystemToPlaying(current);
+  if (m_starveToken.load())
+    return std::min(playing, m_starveClock.load());
+  return playing;
+}
+
+void CDVDClock::StarveFreeze(int64_t token, double clock)
+{
+  m_starveClock.store(clock);
+  m_starveToken.store(token);
+}
+
+void CDVDClock::StarveWithdraw(int64_t token)
+{
+  m_starveToken.compare_exchange_strong(token, 0);
+}
+
+bool CDVDClock::EndStarveFreeze(double& clock, double& ranOn)
+{
+  if (!m_starveToken.load())
+    return false;
+  std::unique_lock lock(m_critSection);
+  if (!m_starveToken.exchange(0))
+    return false;
+  // the clock as it ran on under the freeze, then paused where the freeze held it: the frames
+  // and the sound after the last ones out resume from there, as from a stall caught at once
+  const int64_t current = m_videoRefClock->GetTime();
+  ApplyScheduledResume(current);
+  m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
+  m_lastSystemTime = current;
+  CancelScheduledResume();
+  SetSpeedAt(DVD_PLAYSPEED_PAUSE, current);
+  const double at = SystemToPlaying(current);
+  const double target = std::min(at, m_starveClock.load());
+  if (m_pauseClock)
+    m_pauseClock += static_cast<int64_t>(
+        std::llround((target - at) * static_cast<double>(m_systemUsed) / DVD_TIME_BASE));
+  DropVsyncPhase(false);
+  clock = target;
+  ranOn = at - target;
+  return true;
 }
 
 double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
@@ -93,7 +133,10 @@ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
-  return SystemToPlaying(current);
+  const double playing = SystemToPlaying(current);
+  if (m_starveToken.load())
+    return std::min(playing, m_starveClock.load());
+  return playing;
 }
 
 double CDVDClock::ReduceVsyncAdjust(double adjustment) const
@@ -328,6 +371,8 @@ bool CDVDClock::ScheduleResumeInPlace(double lead, int64_t& startNs, double& sta
 bool CDVDClock::IsPaused() const
 {
   std::unique_lock lock(m_critSection);
+  if (m_starveToken.load())
+    return true;
   // a scheduled resume whose instant has come runs, though the next GetClock
   // applies it
   if (m_resumeAt && m_videoRefClock->GetTime() >= m_resumeAt)
@@ -339,6 +384,7 @@ void CDVDClock::Reset()
 {
   std::unique_lock lock(m_critSection);
   CancelScheduledResume();
+  m_starveToken.store(0);
   m_bReset = true;
 }
 
@@ -715,6 +761,7 @@ void CDVDClock::Discontinuity(double clock, double absolute)
 {
   std::unique_lock lock(m_critSection);
   CancelScheduledResume();
+  m_starveToken.store(0);
   Rebase(clock, absolute);
   // the clock now stands at an arbitrary point of the display's vsync cadence
   DropVsyncPhase(false);

@@ -10,6 +10,7 @@
 
 #include "threads/CriticalSection.h"
 
+#include <atomic>
 #include <memory>
 #include <stdint.h>
 
@@ -78,6 +79,15 @@ public:
 
   void Pause(bool pause);
   bool IsPaused() const;
+  //! Issue 27: the player's read blocks and the outputs ran dry. The presentation coordinator
+  //! freezes the clock at `clock` without the clock's lock (token: the read's start, never 0);
+  //! readers see it at `clock` and paused until the player ends the freeze
+  void StarveFreeze(int64_t token, double clock);
+  //! the coordinator: the read returned before the freeze took; withdrawn if still `token`'s
+  void StarveWithdraw(int64_t token);
+  //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
+  //! it ran). false: none
+  bool EndStarveFreeze(double& clock, double& ranOn);
   void Advance(double time);
 
   //! Resume the clock held at speed 0 at a scheduled instant instead of now
@@ -156,6 +166,9 @@ protected:
   static unsigned int NextScheduleEpoch();
 
   mutable CCriticalSection m_critSection;
+  //! issue 27: the starvation freeze (written lock-free by the coordinator; 0: none)
+  std::atomic<int64_t> m_starveToken{0};
+  std::atomic<double> m_starveClock{0.0};
   double m_holdFrom = 0.0;
   int64_t m_systemUsed;
   int64_t m_startClock;

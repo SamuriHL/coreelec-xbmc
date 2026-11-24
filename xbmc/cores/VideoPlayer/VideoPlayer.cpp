@@ -1853,11 +1853,16 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
   if (nowNs - m_preadFileStartNs < static_cast<int64_t>(stall.second) * 1000000000)
     return;
   m_preadStallDone = true;
-  // the queues the outputs play from while P sleeps: a stall shorter than them starves nothing
+  // the queues the outputs play from while P sleeps: a stall shorter than them starves nothing.
+  // Seconds queued: the last demuxed dts of the stream ahead of the clock (-1: none)
+  const double clock = m_clock.GetClock();
+  const auto ahead = [clock](double dts)
+  { return dts == DVD_NOPTS_VALUE ? -1.0 : (dts - clock) / DVD_TIME_BASE; };
   CLog::Log(LOGWARNING,
-            "PREAD test: read stall {} ms now (clock {:.3f}, queue levels video {}% audio {}%)",
-            stall.first, m_clock.GetClock() / DVD_TIME_BASE, m_processInfo->GetLevelVQ(),
-            m_VideoPlayerAudio->GetLevel());
+            "PREAD test: read stall {} ms now (clock {:.3f}, queued video {:.1f} s audio {:.1f} s, "
+            "levels video {}% audio {}%)",
+            stall.first, clock / DVD_TIME_BASE, ahead(m_CurrentVideo.dts),
+            ahead(m_CurrentAudio.dts), m_processInfo->GetLevelVQ(), m_VideoPlayerAudio->GetLevel());
   std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
 }
 
@@ -1916,7 +1921,20 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                                std::chrono::steady_clock::now().time_since_epoch())
                                .count() -
                            readStart;
-    reads.readStartNs.store(0, std::memory_order_release);
+    // seq_cst: the coordinator sets a freeze, then re-reads this stamp (issue 27)
+    reads.readStartNs.store(0);
+    double frozenAt = 0.0;
+    double ranOn = 0.0;
+    if (m_clock.EndStarveFreeze(frozenAt, ranOn))
+    {
+      // the outputs ran dry during this read: the stall path from the clock where it stopped,
+      // so the resume lands at the frame on screen (nothing skipped)
+      CLog::Log(LOGINFO,
+                "STARVE freeze ended: clock paused at {:.3f} (the read took {} ms, the clock "
+                "would have run on {:.0f} ms)",
+                frozenAt / DVD_TIME_BASE, readNs / 1000000, ranOn / 1000.0);
+      SetCaching(CACHESTATE_FULL);
+    }
     reads.reads.fetch_add(1, std::memory_order_relaxed);
     int64_t was = reads.maxNs.load(std::memory_order_relaxed);
     while (readNs > was && !reads.maxNs.compare_exchange_weak(was, readNs))
