@@ -6701,10 +6701,14 @@ void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& resul
   result.playing = !m_displayLost && !m_dvdClock.IsPaused();
   if (PRESENTATION::ShadowActive() && tick.vblankNs)
   {
+    if (!result.playing)
+      m_csRunSinceNs = 0;
+    else if (!m_csRunSinceNs)
+      m_csRunSinceNs = tick.vblankNs;
     const int64_t sample[PRESENTATION::CS_COUNT] = {
         static_cast<int64_t>(tick.seq), tick.vblankNs,
         static_cast<int64_t>(m_dvdClock.GetClock()), result.playing ? 1 : 0,
-        std::llround((m_dvdClock.GetClockSpeed() - 1.0) * 1e6)};
+        std::llround((m_dvdClock.GetClockSpeed() - 1.0) * 1e6), m_csRunSinceNs};
     PRESENTATION::CoordinatorBoard().Write(sample);
   }
   STickTiming aheadTiming;

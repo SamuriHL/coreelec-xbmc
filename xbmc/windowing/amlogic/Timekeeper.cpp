@@ -716,9 +716,20 @@ void CTimekeeper::Report()
       const double aheadMs = (static_cast<double>(aq[AQ_PTS_US] - vp[VP_PTS_US]) -
                               static_cast<double>(aq[AQ_ON_PINS_NS] - vp[VP_ON_SCREEN_NS]) / 1000.0) /
                              1000.0;
+      // 5H-P1: a frame put on screen before this run of the clock (the held start frame of a
+      // reopen, the frame of a pause) is still the latest until the next one: its instant
+      // does not pair with the running clock
+      if (cs[CS_RUN_SINCE_NS] && vp[VP_ON_SCREEN_NS] < cs[CS_RUN_SINCE_NS])
+      {
+        if (std::abs(aheadMs) > 5.0)
+          CLog::Log(LOGINFO,
+                    "TIMEKEEPER pins off {:+.2f} ms not counted: video on screen at {} ns, before "
+                    "the clock ran at {} ns",
+                    aheadMs, vp[VP_ON_SCREEN_NS], cs[CS_RUN_SINCE_NS]);
+      }
       // off 1x (trick play, or the instant it starts) the outputs don't pair
       // with a clock that no longer runs 1:1
-      if (std::llabs(cs[CS_SPEED_PPM]) > 10000)
+      else if (std::llabs(cs[CS_SPEED_PPM]) > 10000)
       {
         if (std::abs(aheadMs) > 5.0)
           CLog::Log(LOGINFO, "TIMEKEEPER pins off {:+.2f} ms not counted: clock speed {:+} ppm",

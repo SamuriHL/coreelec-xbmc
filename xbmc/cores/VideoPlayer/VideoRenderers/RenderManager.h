@@ -1037,6 +1037,7 @@ protected:
   TxHintResult TxHintConfigureLocked(float fps, const char* path);
   bool m_graphicsWithheld = false; //!< render thread: withheld at the last FrameMove
   bool m_overlayVisible = false; //!< render thread: at the last GUI pass
+  int64_t m_csRunSinceNs = 0; //!< C: CS_RUN_SINCE_NS of the coordinator board
   //! from a start the clock had yet to make until its display phase is measured:
   //! no early release (it would put a frame up ahead of the start)
   bool m_startGate = false;

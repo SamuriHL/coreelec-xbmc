@@ -91,6 +91,7 @@ enum CoordinatorSample
   CS_CLOCK_US,  // CDVDClock::GetClock() at that tick, in µs
   CS_PLAYING,
   CS_SPEED_PPM, // CDVDClock's speed against the reference clock's ticks, less 1, in ppm
+  CS_RUN_SINCE_NS, // the vblank of the first tick of this run of CS_PLAYING (0: not playing)
   CS_COUNT
 };
 
