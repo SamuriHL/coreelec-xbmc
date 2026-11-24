@@ -1853,8 +1853,11 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
   if (nowNs - m_preadFileStartNs < static_cast<int64_t>(stall.second) * 1000000000)
     return;
   m_preadStallDone = true;
-  CLog::Log(LOGWARNING, "PREAD test: read stall {} ms now (clock {:.3f})", stall.first,
-            m_clock.GetClock() / DVD_TIME_BASE);
+  // the queues the outputs play from while P sleeps: a stall shorter than them starves nothing
+  CLog::Log(LOGWARNING,
+            "PREAD test: read stall {} ms now (clock {:.3f}, queue levels video {}% audio {}%)",
+            stall.first, m_clock.GetClock() / DVD_TIME_BASE, m_processInfo->GetLevelVQ(),
+            m_VideoPlayerAudio->GetLevel());
   std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
 }
 
