@@ -3593,6 +3593,7 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
                          audioStarved ? 1 : 0);
     m_starve.frozen = false;
     m_starve.freezeDone = s_starveOff;
+    reads.starvedNs.store(now, std::memory_order_relaxed);
   }
   if (!m_starve.readAt)
     return;

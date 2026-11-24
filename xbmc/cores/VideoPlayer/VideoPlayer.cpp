@@ -1835,7 +1835,9 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
 void CVideoPlayer::TestReadStall(int64_t nowNs)
 {
   // test (issue 27): special://profile/pread_stall holds "<ms> <at_s>": the first demuxer read
-  // after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover
+  // after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover. A negative
+  // <ms> sleeps until the coordinator judged the outputs starved, then -<ms> more (bounded at
+  // 600 s): the read then outlasts the queues, however much they hold
   static const std::pair<int, int> stall = []
   {
     const auto line = OUTPUT::ReadTestSwitch("pread_stall");
@@ -1844,9 +1846,14 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
     const int at = space == std::string::npos ? 0 : std::max(0, std::atoi(line->c_str() + space));
     if (ms > 0)
       CLog::Log(LOGWARNING, "PREAD test: the first read {} s into each file sleeps {} ms", at, ms);
+    else if (ms < 0)
+      CLog::Log(LOGWARNING,
+                "PREAD test: the first read {} s into each file sleeps until a starvation, then "
+                "{} ms",
+                at, -ms);
     return std::pair<int, int>{ms, at};
   }();
-  if (stall.first <= 0 || m_preadStallDone)
+  if (stall.first == 0 || m_preadStallDone)
     return;
   if (!m_preadFileStartNs)
     m_preadFileStartNs = nowNs;
@@ -1863,7 +1870,33 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
             "levels video {}% audio {}%)",
             stall.first, clock / DVD_TIME_BASE, ahead(m_CurrentVideo.dts),
             ahead(m_CurrentAudio.dts), m_processInfo->GetLevelVQ(), m_VideoPlayerAudio->GetLevel());
-  std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
+  if (stall.first > 0)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
+    return;
+  }
+  const auto steadyNs = []
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  const int64_t limitNs = nowNs + 600000000000LL;
+  int64_t starvedAt = 0;
+  while (steadyNs() < limitNs)
+  {
+    const int64_t starved = PRESENTATION::PlayerReads().starvedNs.load(std::memory_order_relaxed);
+    if (!starvedAt && starved >= nowNs)
+    {
+      starvedAt = starved;
+      CLog::Log(LOGWARNING, "PREAD test: starvation judged after {} ms, {} ms more",
+                (starved - nowNs) / 1000000, -stall.first);
+    }
+    if (starvedAt && steadyNs() - starvedAt >= static_cast<int64_t>(-stall.first) * 1000000)
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  CLog::Log(LOGWARNING, "PREAD test: no starvation in 600 s, the read returns");
 }
 
 bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)

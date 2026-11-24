@@ -201,6 +201,7 @@ struct SPlayerReads
   std::atomic<bool> stallEligible{false}; //!< P: a stall would be judged now (playing 1x, no menu,
       //!< still, held start, stream end or realtime stream)
   std::atomic<uint64_t> stalls{0}; //!< P's stall path taken ("stalled at clock …, caching")
+  std::atomic<int64_t> starvedNs{0}; //!< C: when it last judged a starvation (the read-stall test)
   std::atomic<int64_t> reads{0}; //!< since C's last report
   std::atomic<int64_t> maxNs{0};
   std::atomic<int64_t> over100ms{0};
