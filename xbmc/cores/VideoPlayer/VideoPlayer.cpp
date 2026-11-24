@@ -12583,7 +12583,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       hdrIn.convertByVsEngine = aml_convert_to_dv_by_vs_engine(hint.hdrType);
       hdrIn.deviceSupportsDv = aml_support_dolby_vision();
       hdrIn.displaySupportsDv = aml_display_support_dv();
-      hdrIn.hdr10plusConvert = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      hdrIn.hdr10plusConvert = OUTPUT::CSettingsMirror::Get().GetBool(
           CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
       const AmlHdrOpenDecision hdrShadow = aml_dv_resolve_stream_open(hdrIn);
       const bool vs10NonDvTarget = vs10Mode == DOLBY_VISION_OUTPUT_MODE_HDR10 ||
@@ -12593,7 +12593,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
           (hint.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
            hint.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) &&
           !vs10NonDvTarget && aml_support_dolby_vision() && aml_display_support_dv() &&
-          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          OUTPUT::CSettingsMirror::Get().GetBool(
               CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
       if (hdr10plusConvertCandidate)
         vs10Mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
@@ -12917,7 +12917,8 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if (m_CurrentVideo.id < 0 && !m_restartingStreamPlayer && m_playerOptions.fullscreen &&
       fullScreenRoot() && hint.fpsrate != 0 && hint.fpsscale != 0)
   {
-    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
+    if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) !=
+        ADJUST_REFRESHRATE_OFF)
     {
       const double framerate = DVD_TIME_BASE / CDVDCodecUtils::NormalizeFrameduration(
                                                    (double)DVD_TIME_BASE * hint.fpsscale /
@@ -14904,8 +14905,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
 bool CVideoPlayer::CanTempo()
 {
-  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-      CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
+  return OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK);
 }
 
 int64_t CVideoPlayer::GetUpdatedTime()

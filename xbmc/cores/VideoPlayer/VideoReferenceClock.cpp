@@ -17,6 +17,7 @@
 #include "windowing/VideoSync.h"
 #include "windowing/WinSystem.h"
 #if defined(HAS_LIBAMCODEC)
+#include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
 #endif
 
@@ -56,9 +57,14 @@ void CVideoReferenceClock::Start()
   // Gate the vblank reference clock on the CoreELEC hardware-vsync toggle
   // (default on). Users who hit a regression with the AML hardware vsync clock
   // can fall back to legacy system-clock timing without rebuilding.
+#if defined(HAS_LIBAMCODEC)
+  if (!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK))
+    return;
+#else
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (settings && !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK))
     return;
+#endif
 
   Create();
 }
