@@ -11628,29 +11628,6 @@ void CVideoPlayer::HandleMessages()
 
 void CVideoPlayer::SetCaching(ECacheState state)
 {
-  // issue 27: a starvation emptied the decoder and the render queue too; its resume waits until
-  // the picture is decoded ahead again (RC v6: resumed on the queues' data alone, the picture ran
-  // 250 ms behind the sound for a second), bounded at 3 s from the stall
-  if (state == CACHESTATE_PLAY && m_starveResumeArmed && m_cachingStall &&
-      m_caching == CACHESTATE_INIT && m_CurrentVideo.id >= 0)
-  {
-    constexpr int STARVE_RESUME_FRAMES = 3;
-    int queued = 0, discard = 0, free = 0;
-    m_processInfo->GetRenderBuffers(queued, discard, free);
-    const auto waited = std::chrono::steady_clock::now() - m_stallSince;
-    if (queued < STARVE_RESUME_FRAMES && waited < 3s)
-    {
-      if (!std::exchange(m_starveWaitLogged, true))
-        CLog::Log(LOGINFO, "STARVE resume waits for {} decoded frames ({} queued)",
-                  STARVE_RESUME_FRAMES, queued);
-      return;
-    }
-    if (std::exchange(m_starveWaitLogged, false))
-      CLog::Log(LOGINFO, "STARVE resume: {} frames decoded after {:.0f} ms{}", queued,
-                std::chrono::duration<double, std::milli>(waited).count(),
-                queued < STARVE_RESUME_FRAMES ? " (the 3 s bound)" : "");
-  }
-
   // only the stall check asks for FULL itself; a flush comes as FLUSH
   const bool stall = state == CACHESTATE_FULL && m_caching == CACHESTATE_DONE &&
                      m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
@@ -13513,7 +13490,6 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   m_starveResumeArmed = false;
-  m_starveWaitLogged = false;
   // 5.E2-9a (D2): a flush inside a P-decided open re-PRIMEs it (same T); the others end it
   // (E2-8a D5)
   if (TxOpen())
