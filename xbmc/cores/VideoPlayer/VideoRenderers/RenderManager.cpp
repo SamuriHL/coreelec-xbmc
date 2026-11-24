@@ -657,12 +657,16 @@ void CRenderManager::LogLead(unsigned int fileGen)
 
 void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
 {
-  MAINCOUPLING_ACCESSOR("RM m_statelock");
-  std::unique_lock lock(m_statelock);
-  if (m_pRenderer)
   {
-    m_pRenderer->SetVideoSettings(settings);
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    if (m_pRenderer)
+    {
+      m_pRenderer->SetVideoSettings(settings);
+    }
   }
+  // 5.H: after m_statelock (this runs on the player's callback thread too, and C waits on
+  // m_statelock): it reads only atomics; V takes the settings from the process info
   DecoderSettingsChanged();
 }
 
@@ -943,7 +947,7 @@ void CRenderManager::UpdateGraphicsRoute()
 }
 #endif
 
-// under m_statelock: V applies the decoder side (L6)
+// after a settings or view mode change: V applies the decoder side (L6)
 void CRenderManager::DecoderSettingsChanged()
 {
   if (!m_decoderSideOnV || !m_presenterMode)
