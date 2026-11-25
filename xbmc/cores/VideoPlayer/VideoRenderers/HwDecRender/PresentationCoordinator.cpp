@@ -141,6 +141,13 @@ std::atomic<bool> s_starveOff{false};
 //! still holds its picture (the no-freeze stall: P's stall path under a held picture)
 std::atomic<bool> s_starveNoFreeze{false};
 
+//! ISS27-D2 (log only): the age of the disc I/O call in P's read, -1: none
+int64_t IoMs(int64_t nowNs)
+{
+  const int64_t io = PRESENTATION::PlayerReads().ioStartNs.load(std::memory_order_acquire);
+  return io ? (nowNs - io) / 1000000 : -1;
+}
+
 int64_t MonotonicNs()
 {
   struct timespec ts = {};
@@ -3575,10 +3582,10 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
         AudioPinsBoard().Read(aq) && aq[AQ_ON_PINS_NS] ? (now - aq[AQ_ON_PINS_NS]) / 1000000 : -1;
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "PREAD read in progress {} ms, clock {} running, last frame {} ms ago, "
-                         "audio on the pins {} ms ago",
+                         "audio on the pins {} ms ago, disc I/O in progress {} ms",
                          readMs, clockText(clockUs),
                          m_starve.lastFrameNs ? (now - m_starve.lastFrameNs) / 1000000 : -1,
-                         audioMs);
+                         audioMs, IoMs(now));
   }
   // what a starvation freeze would do (design docs/iss27_design.md §2): no frame for 3 frame
   // durations while the clock runs, a stall P would judge, and a read in progress over 300 ms
@@ -3596,9 +3603,9 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
         !AudioPinsBoard().Read(aq) || !aq[AQ_ON_PINS_NS] || now - aq[AQ_ON_PINS_NS] > 100000000;
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "STARVE would freeze at clock {} (no frame for {:.1f} frame durations, "
-                         "read in progress {} ms, audio starved {})",
+                         "read in progress {} ms, audio starved {}, disc I/O in progress {} ms)",
                          clockText(clockUs), (now - m_starve.lastFrameNs) / frameNs, readMs,
-                         audioStarved ? 1 : 0);
+                         audioStarved ? 1 : 0, IoMs(now));
     m_starve.frozen = false;
     m_starve.freezeDone = s_starveOff;
     reads.starvedNs.store(now, std::memory_order_relaxed);

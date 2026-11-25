@@ -24,6 +24,7 @@
 #include "settings/SettingsComponent.h"
 #include "utils/Geometry.h"
 #include "utils/LanguageTag.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
@@ -1517,6 +1518,7 @@ int dvd_inputstreamnavigator_cb_seek(void * p_stream, uint64_t i_pos)
 
 int dvd_inputstreamnavigator_cb_read(void * p_stream, void * buffer, int i_read)
 {
+  const PRESENTATION::CDiscIoScope io; // ISS27-D2 (log only)
   CDVDInputStreamFile *lpstream = reinterpret_cast<CDVDInputStreamFile*>(p_stream);
 
   int i_ret = 0;
@@ -1564,6 +1566,7 @@ void dvd_logger(void* priv, dvdnav_logger_level_t level, const char* fmt, va_lis
 
 int dvd_inputstreamnavigator_cb_readv(void * p_stream, void * p_iovec, int i_blocks)
 {
+  const PRESENTATION::CDiscIoScope io; // ISS27-D2 (log only)
   // NOTE/TODO: this vectored read callback somehow doesn't seem to be called by libdvdnav.
   // Therefore, the code below isn't really tested, but inspired from the libc_readv code for Win32 in libdvdcss (device.c:713).
   CDVDInputStreamFile *lpstream = reinterpret_cast<CDVDInputStreamFile*>(p_stream);

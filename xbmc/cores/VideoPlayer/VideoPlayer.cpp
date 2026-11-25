@@ -82,6 +82,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1376,6 +1377,7 @@ bool CVideoPlayer::OpenInputStream()
   m_renderManager.SetDvdInput(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD));
   m_preadFileStartNs = 0;
   m_preadStallDone = false;
+  PRESENTATION::PlayerReads().ioStallArmed.store(false);
   m_starveResumeArmed = false;
   m_heldStallResume = false;
   // issue 27: a stall of a plain input is a starvation, never a still (V holds its picture)
@@ -1839,36 +1841,106 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     SynchronizeDemuxer();
 }
 
+namespace
+{
+// test (issue 27): special://profile/pread_stall, parsed once. "<ms> <at_s>": the first demuxer
+// read after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover. A negative
+// <ms> sleeps until the coordinator judged the outputs starved, then -<ms> more (bounded at
+// 600 s): the read then outlasts the queues, however much they hold. "h<ms> <at_s>" sleeps until
+// V holds a starvation's picture, then <ms> more (bounded at 600 s): the no-freeze stall.
+// ISS27-D2: a leading "d" ("d-30000 20", "dh100 20") runs the same stall inside the next disc I/O
+// call of P's read (an image's blocks, a disc file's bytes, a DVD's sectors), from the first read
+// after <at_s> s in which a stall would be judged (playing the title, not a menu or a still)
+struct SPreadStall
+{
+  int ms = 0;
+  int at = 0;
+  bool untilHeld = false;
+  bool discIo = false;
+};
+const SPreadStall& PreadStall()
+{
+  static const SPreadStall stall = []
+  {
+    SPreadStall s;
+    const auto line = OUTPUT::ReadTestSwitch("pread_stall");
+    if (!line)
+      return s;
+    const char* p = line->c_str();
+    s.discIo = *p == 'd';
+    if (s.discIo)
+      ++p;
+    s.untilHeld = *p == 'h';
+    s.ms = s.untilHeld ? -std::max(1, std::atoi(p + 1)) : std::atoi(p);
+    const char* space = std::strchr(p, ' ');
+    s.at = space ? std::max(0, std::atoi(space)) : 0;
+    const char* where = s.discIo ? "the disc I/O of the first read" : "the first read";
+    if (s.ms > 0)
+      CLog::Log(LOGWARNING, "PREAD test: {} {} s into each file sleeps {} ms", where, s.at, s.ms);
+    else if (s.ms < 0)
+      CLog::Log(LOGWARNING, "PREAD test: {} {} s into each file sleeps until {}, then {} ms", where,
+                s.at, s.untilHeld ? "the picture is held" : "a starvation", -s.ms);
+    return s;
+  }();
+  return stall;
+}
+
+int64_t SteadyNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// the stall itself, wherever it runs: <ms> > 0 sleeps that long; < 0 until the starvation (or the
+// held picture), then -<ms> more, bounded at 600 s
+void PreadStallSleep()
+{
+  const SPreadStall& stall = PreadStall();
+  if (stall.ms > 0)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+    return;
+  }
+  const int64_t nowNs = SteadyNs();
+  const int64_t limitNs = nowNs + 600000000000LL;
+  int64_t starvedAt = 0;
+  while (SteadyNs() < limitNs)
+  {
+    const int64_t starved =
+        stall.untilHeld ? (PRESENTATION::PlayerReads().pictureHeldNow.load() ? SteadyNs() : 0)
+                        : PRESENTATION::PlayerReads().starvedNs.load(std::memory_order_relaxed);
+    if (!starvedAt && starved >= nowNs)
+    {
+      starvedAt = starved;
+      CLog::Log(LOGWARNING, "PREAD test: {} after {} ms, {} ms more",
+                stall.untilHeld ? "picture held" : "starvation judged", (starved - nowNs) / 1000000,
+                -stall.ms);
+    }
+    if (starvedAt && SteadyNs() - starvedAt >= static_cast<int64_t>(-stall.ms) * 1000000)
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.untilHeld ? 10 : 100));
+  }
+  CLog::Log(LOGWARNING, "PREAD test: no starvation in 600 s, the read returns");
+}
+void RunDiscIoStall()
+{
+  CLog::Log(LOGWARNING, "PREAD test: the disc I/O stall runs now");
+  PreadStallSleep();
+}
+} // namespace
+
 void CVideoPlayer::TestReadStall(int64_t nowNs)
 {
-  // test (issue 27): special://profile/pread_stall holds "<ms> <at_s>": the first demuxer read
-  // after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover. A negative
-  // <ms> sleeps until the coordinator judged the outputs starved, then -<ms> more (bounded at
-  // 600 s): the read then outlasts the queues, however much they hold. "h<ms> <at_s>" sleeps until
-  // V holds a starvation's picture, then <ms> more (bounded at 600 s): the no-freeze stall
-  static bool untilHeld = false;
-  static const std::pair<int, int> stall = []
-  {
-    const auto line = OUTPUT::ReadTestSwitch("pread_stall");
-    untilHeld = line && !line->empty() && (*line)[0] == 'h';
-    const int ms = !line       ? 0
-                   : untilHeld ? -std::max(1, std::atoi(line->c_str() + 1))
-                               : std::atoi(line->c_str());
-    const auto space = line ? line->find(' ') : std::string::npos;
-    const int at = space == std::string::npos ? 0 : std::max(0, std::atoi(line->c_str() + space));
-    if (ms > 0)
-      CLog::Log(LOGWARNING, "PREAD test: the first read {} s into each file sleeps {} ms", at, ms);
-    else if (ms < 0)
-      CLog::Log(LOGWARNING,
-                "PREAD test: the first read {} s into each file sleeps until {}, then {} ms", at,
-                untilHeld ? "the picture is held" : "a starvation", -ms);
-    return std::pair<int, int>{ms, at};
-  }();
-  if (stall.first == 0 || m_preadStallDone)
+  const SPreadStall& stall = PreadStall();
+  if (stall.ms == 0 || m_preadStallDone)
     return;
   if (!m_preadFileStartNs)
     m_preadFileStartNs = nowNs;
-  if (nowNs - m_preadFileStartNs < static_cast<int64_t>(stall.second) * 1000000000)
+  if (nowNs - m_preadFileStartNs < static_cast<int64_t>(stall.at) * 1000000000)
+    return;
+  // a disc's stall is mid-title: a stall would be judged now
+  if (stall.discIo && !PRESENTATION::PlayerReads().stallEligible.load(std::memory_order_relaxed))
     return;
   m_preadStallDone = true;
   // the queues the outputs play from while P sleeps: a stall shorter than them starves nothing.
@@ -1877,40 +1949,18 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
   const auto ahead = [clock](double dts)
   { return dts == DVD_NOPTS_VALUE ? -1.0 : (dts - clock) / DVD_TIME_BASE; };
   CLog::Log(LOGWARNING,
-            "PREAD test: read stall {} ms now (clock {:.3f}, queued video {:.1f} s audio {:.1f} s, "
-            "levels video {}% audio {}%)",
-            stall.first, clock / DVD_TIME_BASE, ahead(m_CurrentVideo.dts),
-            ahead(m_CurrentAudio.dts), m_processInfo->GetLevelVQ(), m_VideoPlayerAudio->GetLevel());
-  if (stall.first > 0)
+            "PREAD test: read stall {} ms now{} (clock {:.3f}, queued video {:.1f} s audio {:.1f} "
+            "s, levels video {}% audio {}%)",
+            stall.ms, stall.discIo ? ", in the next disc I/O call" : "", clock / DVD_TIME_BASE,
+            ahead(m_CurrentVideo.dts), ahead(m_CurrentAudio.dts), m_processInfo->GetLevelVQ(),
+            m_VideoPlayerAudio->GetLevel());
+  if (stall.discIo)
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(stall.first));
-    return;
+    PRESENTATION::DiscIoStall().store(&RunDiscIoStall);
+    PRESENTATION::PlayerReads().ioStallArmed.store(true);
   }
-  const auto steadyNs = []
-  {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-  };
-  const int64_t limitNs = nowNs + 600000000000LL;
-  int64_t starvedAt = 0;
-  while (steadyNs() < limitNs)
-  {
-    const int64_t starved =
-        untilHeld ? (PRESENTATION::PlayerReads().pictureHeldNow.load() ? steadyNs() : 0)
-                  : PRESENTATION::PlayerReads().starvedNs.load(std::memory_order_relaxed);
-    if (!starvedAt && starved >= nowNs)
-    {
-      starvedAt = starved;
-      CLog::Log(LOGWARNING, "PREAD test: {} after {} ms, {} ms more",
-                untilHeld ? "picture held" : "starvation judged", (starved - nowNs) / 1000000,
-                -stall.first);
-    }
-    if (starvedAt && steadyNs() - starvedAt >= static_cast<int64_t>(-stall.first) * 1000000)
-      return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(untilHeld ? 10 : 100));
-  }
-  CLog::Log(LOGWARNING, "PREAD test: no starvation in 600 s, the read returns");
+  else
+    PreadStallSleep();
 }
 
 bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
@@ -1957,6 +2007,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                                   .count();
     reads.readStartNs.store(readStart, std::memory_order_release);
     TestReadStall(readStart);
+    PRESENTATION::PlayerReadDepth() = 1; // ISS27-D2: the disc I/O inside is P's
     packet = m_pDemuxer->Read();
     // an audio track switch reads again what the other streams already have
     while (packet && !m_recueGate.empty() && RecueGateDrops(packet))
@@ -1964,6 +2015,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
       CDVDDemuxUtils::FreeDemuxPacket(packet);
       packet = m_pDemuxer->Read();
     }
+    PRESENTATION::PlayerReadDepth() = 0;
     const int64_t readNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                std::chrono::steady_clock::now().time_since_epoch())
                                .count() -

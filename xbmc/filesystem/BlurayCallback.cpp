@@ -12,6 +12,7 @@
 #include "FileItemList.h"
 #include "filesystem/Directory.h"
 #include "filesystem/File.h"
+#include "utils/PresentationTimeline.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 
@@ -156,6 +157,7 @@ int64_t CBlurayCallback::file_tell(BD_FILE_H *file)
 
 int64_t CBlurayCallback::file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
 {
+  const PRESENTATION::CDiscIoScope io; // ISS27-D2 (log only)
   return static_cast<int64_t>(static_cast<CFile*>(file->internal)->Read(buf, static_cast<size_t>(size)));
 }
 

@@ -16,6 +16,7 @@
 // writer retries.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <numeric>
 
@@ -209,6 +210,11 @@ struct SPlayerReads
   std::atomic<bool> pictureHeld{false};
   //! V: a starvation's picture held now (until a packet or a flush)
   std::atomic<bool> pictureHeldNow{false};
+  //! ISS27-D2 (log only): the start of the disc I/O call (an image's blocks, a disc file's bytes,
+  //! a DVD's sectors) P is in, inside its demuxer read; 0: none (a navigator or BD-J wait, a still)
+  std::atomic<int64_t> ioStartNs{0};
+  //! ISS27-D2 test: the next disc I/O call inside P's read runs the pread_stall "d..." stall
+  std::atomic<bool> ioStallArmed{false};
   std::atomic<int64_t> reads{0}; //!< since C's last report
   std::atomic<int64_t> maxNs{0};
   std::atomic<int64_t> over100ms{0};
@@ -219,6 +225,52 @@ inline SPlayerReads& PlayerReads()
   static SPlayerReads reads;
   return reads;
 }
+//! P's thread inside its demuxer read: only its disc I/O is stamped (BD-J and the GUI read the
+//! disc too, on their own threads)
+inline int& PlayerReadDepth()
+{
+  thread_local int depth = 0;
+  return depth;
+}
+//! ISS27-D2 test: the armed pread_stall "d..." stall, run inside a disc I/O call (P sets it)
+inline std::atomic<void (*)()>& DiscIoStall()
+{
+  static std::atomic<void (*)()> stall{nullptr};
+  return stall;
+}
+//! ISS27-D2 (log only): stamps a disc I/O call made inside P's read (the outermost one)
+class CDiscIoScope
+{
+public:
+  CDiscIoScope()
+  {
+    if (PlayerReadDepth() != 1)
+      return;
+    m_on = true;
+    PlayerReadDepth() = 2;
+    PlayerReads().ioStartNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count(),
+                                  std::memory_order_release);
+    if (PlayerReads().ioStallArmed.exchange(false))
+    {
+      if (void (*stall)() = DiscIoStall().load())
+        stall();
+    }
+  }
+  ~CDiscIoScope()
+  {
+    if (!m_on)
+      return;
+    PlayerReads().ioStartNs.store(0, std::memory_order_release);
+    PlayerReadDepth() = 1;
+  }
+  CDiscIoScope(const CDiscIoScope&) = delete;
+  CDiscIoScope& operator=(const CDiscIoScope&) = delete;
+
+private:
+  bool m_on = false;
+};
 
 // Bumped by the audio sink each time a scheduled start lands: the audio
 // follower measures its phase from there.

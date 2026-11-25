@@ -2109,6 +2109,7 @@ int CDVDInputStreamBluray::ReadNav(uint8_t* buf, int buf_size)
 
 int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
 {
+  const PRESENTATION::CDiscIoScope io; // ISS27-D2 (log only)
   std::shared_ptr<CBlurayIsoCache> cache;
   {
     std::lock_guard<std::mutex> lock(m_isoCacheMutex);

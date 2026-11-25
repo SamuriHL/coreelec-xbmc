@@ -607,6 +607,7 @@ void CVideoPlayerVideo::Process()
 
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe detected, switching to forced {:f} fps",
                   m_fFrameRate);
+        LogStillEntry(timeout);
         m_stalled = true;
         pts += frametime * 4;
       }
@@ -1673,6 +1674,32 @@ void CVideoPlayerVideo::SetSpeed(int speed)
     SendMessage(std::make_shared<CDVDMsgInt>(CDVDMsg::PLAYER_SETSPEED, speed), 1);
   else
     m_speed = speed;
+}
+
+void CVideoPlayerVideo::LogStillEntry(std::chrono::milliseconds timeout)
+{
+  // ISS27-D2 (log only): what tells a disc still from a disc stall at the still's entry: P's read
+  // and the disc I/O call in it (a navigator or BD-J wait, a still, has none), lock-free
+  const PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
+  const int64_t ioStart = reads.ioStartNs.load(std::memory_order_acquire);
+#if defined(HAS_LIBAMCODEC)
+  GRAPHICSTICK::GTLogF(
+      LOGINFO,
+      "STILL repeats: read in progress {} ms, disc I/O in progress {} ms, timeout {} ms, input {}, "
+      "stall-eligible {}, freeze on {}",
+      readStart ? (now - readStart) / 1000000 : -1, ioStart ? (now - ioStart) / 1000000 : -1,
+      timeout.count(), reads.plainInput.load(std::memory_order_relaxed) ? "plain" : "disc",
+      reads.stallEligible.load(std::memory_order_relaxed) ? 1 : 0,
+      reads.freezeOn.load(std::memory_order_relaxed) ? 1 : 0);
+#else
+  (void)now;
+  (void)readStart;
+  (void)ioStart;
+#endif
 }
 
 void CVideoPlayerVideo::SetStillHeld(bool held)
