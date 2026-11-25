@@ -279,7 +279,7 @@ bool AC3FramesCRCValid(const uint8_t* data, unsigned int size)
       else if (fscod == 1)
         frameBytes = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0)) * 2;
       else
-        frameBytes = bitRate * 8;
+        frameBytes = bitRate * 6; // 32 kHz: 3 words per kbps (issue 36; was * 8)
     }
     else if (bsid <= 0x11)
       frameBytes = ((((frame[2] & 0x7) << 8) | frame[3]) + 1) * 2;
@@ -388,7 +388,7 @@ void CAEStreamParser::ProcessAC3DialNorm(uint8_t* data, unsigned int size)
           framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
           break;
         case 2:
-          framewords = bitRate * 4;
+          framewords = bitRate * 3; // 32 kHz (issue 36; was * 4)
           break;
       }
       frameBytes = framewords * 2;
