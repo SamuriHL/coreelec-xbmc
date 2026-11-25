@@ -13,6 +13,7 @@
 #include "utils/MemUtils.h"
 #include "DVDVideoCodecAmlogic.h"
 #include "windowing/amlogic/GraphicsTick.h"
+#include "utils/PresentationTimeline.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
@@ -741,6 +742,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     return false;
 
   DrainMetadataToClock();
+  PublishPairing();
+  if (PRESENTATION::StallDiagLine())
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "STALLDIAG decoder in: {} dts {:.3f} pts {:.3f} | pairing {} queued, head "
+                         "{} dts {:.3f} | decoder in {:.3f} out {:.3f}",
+                         packet.isELPackage ? "EL" : (m_dualLayer ? "BL" : "AU"),
+                         packet.dts / DVD_TIME_BASE, packet.pts / DVD_TIME_BASE, m_packages.size(),
+                         m_packages.empty() ? "-" : (std::get<2>(m_packages.front()) ? "EL" : "BL"),
+                         m_packages.empty() ? 0.0 : std::get<3>(m_packages.front()) / DVD_TIME_BASE,
+                         PRESENTATION::StallDiag().decoderInPts.load() / DVD_TIME_BASE,
+                         PRESENTATION::StallDiag().decoderOutPts.load() / DVD_TIME_BASE);
 
   // Latch on arrival, once per JUMP rather than once per delivery. The
   // transport re-delivers the identical packet - on every AddData retry
@@ -1041,6 +1053,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.dts,
                                               packet.pts, pairDts));
           m_packagesBytes += iSize;
+          PublishPairing();
           GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
@@ -1239,6 +1252,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   data_added = m_Codec->AddData(pData, iSize, mergedDts,
                                 m_hints.ptsinvalid ? DVD_NOPTS_VALUE : mergedPts);
 
+  if (data_added)
+    PRESENTATION::StallDiag().decoderInPts.store(mergedPts, std::memory_order_relaxed);
   if (data_added && packet.pData)
   {
     m_pendingMeta.Inherit(m_lastMeta);
@@ -1391,6 +1406,17 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
   }
 }
 
+void CDVDVideoCodecAmlogic::PublishPairing()
+{
+  // ISS27-D2 (log only): the BL/EL pairing state, for the still entry's line
+  PRESENTATION::SStallDiag& diag = PRESENTATION::StallDiag();
+  diag.pairQueued.store(static_cast<int>(m_packages.size()), std::memory_order_relaxed);
+  diag.pairHead.store(m_packages.empty() ? -1 : (std::get<2>(m_packages.front()) ? 1 : 0),
+                      std::memory_order_relaxed);
+  diag.pairHeadDts.store(m_packages.empty() ? 0.0 : std::get<3>(m_packages.front()),
+                         std::memory_order_relaxed);
+}
+
 void CDVDVideoCodecAmlogic::PopPackageFront()
 {
   if (m_packages.empty())
@@ -1401,6 +1427,7 @@ void CDVDVideoCodecAmlogic::PopPackageFront()
   const size_t bytes = std::get<1>(pkt);
   m_packagesBytes -= std::min(m_packagesBytes, bytes);
   m_packages.pop_front();
+  PublishPairing();
 }
 
 void CDVDVideoCodecAmlogic::Abort()
@@ -1596,6 +1623,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
     }
   }
 
+  if (retVal == VC_PICTURE)
+  {
+    PRESENTATION::StallDiag().decoderOutPts.store(pVideoPicture->pts, std::memory_order_relaxed);
+    if (PRESENTATION::StallDiagLine())
+      GRAPHICSTICK::GTLogF(LOGINFO, "STALLDIAG decoder out: pts {:.3f} | decoder in {:.3f}",
+                           pVideoPicture->pts / DVD_TIME_BASE,
+                           PRESENTATION::StallDiag().decoderInPts.load() / DVD_TIME_BASE);
+  }
   return retVal;
 }
 

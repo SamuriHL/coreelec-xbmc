@@ -165,6 +165,7 @@ private:
   // pairing never converges this list would otherwise grow until the process
   // is OOM-killed.
   std::list<DLDemuxPacket> m_packages;
+  void PublishPairing();
 
   uint32_t m_metadataToken{0};
   bool m_metaLeadLogged{false};

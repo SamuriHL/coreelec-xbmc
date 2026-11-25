@@ -225,6 +225,46 @@ inline SPlayerReads& PlayerReads()
   static SPlayerReads reads;
   return reads;
 }
+//! ISS27-D2 (log only): where a stalled title's frames are. P, V and the AML codec write; the
+//! still entry and the stall-window lines read. Lock-free, relaxed: a log, not a decision
+struct SStallDiag
+{
+  std::atomic<double> demuxBlDts{0.0}; //!< P: the last base-layer (main video) packet demuxed
+  std::atomic<double> demuxBlPts{0.0};
+  std::atomic<double> demuxElDts{0.0}; //!< P: the last enhancement-layer packet demuxed
+  std::atomic<double> demuxElPts{0.0};
+  std::atomic<int> pairQueued{0}; //!< codec: BL/EL packets waiting for their partner
+  std::atomic<int> pairHead{-1}; //!< codec: the oldest waiting one: 0 BL, 1 EL, -1 none
+  std::atomic<double> pairHeadDts{0.0};
+  std::atomic<double> decoderInPts{0.0}; //!< codec: the last access unit the decoder accepted
+  std::atomic<double> decoderOutPts{0.0}; //!< codec: the last picture the decoder gave out
+  std::atomic<int64_t> untilNs{0}; //!< P: the window lines run until then after a long read
+  std::atomic<int> lines{0}; //!< lines left in this window
+};
+inline SStallDiag& StallDiag()
+{
+  static SStallDiag diag;
+  return diag;
+}
+//! the stall window: P's read in progress for 300 ms or more, or up to 3 s after one returned;
+//! 600 lines at most per window. True: log this line
+inline bool StallDiagLine()
+{
+  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const int64_t read = PlayerReads().readStartNs.load(std::memory_order_relaxed);
+  SStallDiag& diag = StallDiag();
+  const bool on =
+      (read && now - read >= 300000000) || now < diag.untilNs.load(std::memory_order_relaxed);
+  if (!on)
+  {
+    diag.lines.store(600, std::memory_order_relaxed);
+    return false;
+  }
+  return diag.lines.fetch_sub(1, std::memory_order_relaxed) > 0;
+}
+
 //! P's thread inside its demuxer read: only its disc I/O is stamped (BD-J and the GUI read the
 //! disc too, on their own threads)
 inline int& PlayerReadDepth()

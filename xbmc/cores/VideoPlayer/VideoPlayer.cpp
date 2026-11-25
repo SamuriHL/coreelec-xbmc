@@ -2033,6 +2033,10 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                            readStart;
     // seq_cst: the coordinator sets a freeze, then re-reads this stamp (issue 27)
     reads.readStartNs.store(0);
+    // ISS27-D2 (log only): the stall window's lines run 3 s past a long read
+    if (readNs >= 300000000)
+      PRESENTATION::StallDiag().untilNs.store(readStart + readNs + 3000000000LL,
+                                              std::memory_order_relaxed);
     double frozenAt = 0.0;
     double ranOn = 0.0;
     if (m_clock.EndStarveFreeze(frozenAt, ranOn))
@@ -8731,6 +8735,8 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
     ProcessAudioID3Data(pStream, pPacket);
   else if (pPacket->isELPackage)
   {
+    PRESENTATION::StallDiag().demuxElDts.store(pPacket->dts, std::memory_order_relaxed);
+    PRESENTATION::StallDiag().demuxElPts.store(pPacket->pts, std::memory_order_relaxed);
     CLog::Log(LOGDEBUG, "CVideoPlayer::ProcessPacket packet from enhancement layer: size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms",
       pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0);
     // a disc clip's EL can be muxed ahead of its first BL: before the BL opens
@@ -8874,6 +8880,8 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
 void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
+  PRESENTATION::StallDiag().demuxBlDts.store(pPacket->dts, std::memory_order_relaxed);
+  PRESENTATION::StallDiag().demuxBlPts.store(pPacket->pts, std::memory_order_relaxed);
   CheckStreamChanges(m_CurrentVideo, pStream);
   bool checkcont = false;
 

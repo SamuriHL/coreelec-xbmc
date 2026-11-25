@@ -1695,10 +1695,37 @@ void CVideoPlayerVideo::LogStillEntry(std::chrono::milliseconds timeout)
       timeout.count(), reads.plainInput.load(std::memory_order_relaxed) ? "plain" : "disc",
       reads.stallEligible.load(std::memory_order_relaxed) ? 1 : 0,
       reads.freezeOn.load(std::memory_order_relaxed) ? 1 : 0);
+  LogStallFrames("still entry");
 #else
   (void)now;
   (void)readStart;
   (void)ioStart;
+#endif
+}
+
+void CVideoPlayerVideo::LogStallFrames(const char* at)
+{
+  // ISS27-D2 (log only): where the stalled title's frames are when the picture runs dry: demuxed
+  // (P), queued to V, waiting for their BL/EL partner, in the decoder, out of it
+#if defined(HAS_LIBAMCODEC)
+  const PRESENTATION::SStallDiag& diag = PRESENTATION::StallDiag();
+  const int head = diag.pairHead.load(std::memory_order_relaxed);
+  GRAPHICSTICK::GTLogF(
+      LOGINFO,
+      "STALLDIAG {}: demuxed BL dts {:.3f} pts {:.3f}, EL dts {:.3f} pts {:.3f} | V queue {} "
+      "packets {:.3f} s | pairing {} queued, head {} dts {:.3f} | decoder in {:.3f} out {:.3f} | "
+      "clock {:.3f}",
+      at, diag.demuxBlDts.load() / DVD_TIME_BASE, diag.demuxBlPts.load() / DVD_TIME_BASE,
+      diag.demuxElDts.load() / DVD_TIME_BASE, diag.demuxElPts.load() / DVD_TIME_BASE,
+      m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET), m_messageQueue.GetTimeSize(),
+      diag.pairQueued.load(),
+      head < 0 ? "-"
+      : head   ? "EL"
+               : "BL",
+      diag.pairHeadDts.load() / DVD_TIME_BASE, diag.decoderInPts.load() / DVD_TIME_BASE,
+      diag.decoderOutPts.load() / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE);
+#else
+  (void)at;
 #endif
 }
 
@@ -1712,8 +1739,7 @@ bool CVideoPlayerVideo::StarveHoldsPicture(std::chrono::milliseconds timeout)
 {
   // lock-free reads of P's and C's flags (I1): no wait on another thread
   const PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
-  if (!reads.plainInput.load(std::memory_order_relaxed) ||
-      !reads.freezeOn.load(std::memory_order_relaxed) ||
+  if (!reads.freezeOn.load(std::memory_order_relaxed) ||
       !reads.stallEligible.load(std::memory_order_relaxed) ||
       !PRESENTATION::ShadowActive().load(std::memory_order_relaxed))
     return false;
@@ -1724,14 +1750,40 @@ bool CVideoPlayerVideo::StarveHoldsPicture(std::chrono::milliseconds timeout)
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count() -
                         readStart;
-  if (ageNs < std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count())
+  const int64_t timeoutNs = std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count();
+  if (ageNs < timeoutNs)
     return false;
+  // ISS27-D2: a disc or navigable input holds only on a stall in its I/O (the image's blocks, a
+  // disc file's bytes, a DVD's sectors) as old as this timeout: a still, a navigator wait or a
+  // BD-J presentation wait has no disc I/O call in progress (D2 probes v1/v2: every real still
+  // -1, the stalls 10347-10903 ms)
+  const bool plain = reads.plainInput.load(std::memory_order_relaxed);
+  int64_t ioAgeNs = -1;
+  if (!plain)
+  {
+    const int64_t ioStart = reads.ioStartNs.load(std::memory_order_acquire);
+    if (!ioStart)
+      return false;
+    ioAgeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch())
+                  .count() -
+              ioStart;
+    if (ioAgeNs < timeoutNs)
+      return false;
+  }
   SetStillHeld(true);
   // P is in the read: its stall check runs after it returns, when a packet may have ended the hold
   PRESENTATION::PlayerReads().pictureHeld.store(true, std::memory_order_release);
 #if defined(HAS_LIBAMCODEC)
-  GRAPHICSTICK::GTLogF(LOGINFO, "STILL repeats held: read in progress {} ms (no invented pts)",
-                       ageNs / 1000000);
+  if (plain)
+    GRAPHICSTICK::GTLogF(LOGINFO, "STILL repeats held: read in progress {} ms (no invented pts)",
+                         ageNs / 1000000);
+  else
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "STILL repeats held: read in progress {} ms, disc I/O in progress {} ms "
+                         "(no invented pts)",
+                         ageNs / 1000000, ioAgeNs / 1000000);
+  LogStallFrames("hold");
 #endif
   return true;
 }

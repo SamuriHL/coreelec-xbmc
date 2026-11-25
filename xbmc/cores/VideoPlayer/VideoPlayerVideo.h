@@ -178,6 +178,7 @@ protected:
   bool StarveHoldsPicture(std::chrono::milliseconds timeout);
   void SetStillHeld(bool held);
   void LogStillEntry(std::chrono::milliseconds timeout);
+  void LogStallFrames(const char* at);
   std::atomic_bool m_startHeld = false;
   std::atomic<int64_t> m_lastDecoderFlushNs{0}; //!< 5.E2-9c D2
   //! 5.E2-9c D6 (transaction_nopicture)
