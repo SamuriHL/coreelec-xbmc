@@ -1378,6 +1378,7 @@ bool CVideoPlayer::OpenInputStream()
   m_preadFileStartNs = 0;
   m_preadStallDone = false;
   PRESENTATION::PlayerReads().ioStallArmed.store(false);
+  m_preadWaitLogged = false;
   m_starveResumeArmed = false;
   m_heldStallResume = false;
   // issue 27: a stall of a plain input is a starvation, never a still (V holds its picture)
@@ -1941,7 +1942,17 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
     return;
   // a disc's stall is mid-title: a stall would be judged now
   if (stall.discIo && !PRESENTATION::PlayerReads().stallEligible.load(std::memory_order_relaxed))
+  {
+    // once per file: a void run names it (D2 probe v1: the disc menu, never a stall-eligible read)
+    if (!std::exchange(m_preadWaitLogged, true))
+      CLog::Log(LOGWARNING,
+                "PREAD test: the disc I/O stall is due but waits for a read a stall would be "
+                "judged in (menu {}, still images {}, caching {}, start held {}, gate shut {})",
+                IsInMenuInternal() ? 1 : 0,
+                (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES) ? 1 : 0,
+                static_cast<int>(m_caching), m_startHeld ? 1 : 0, StartGateShut() ? 1 : 0);
     return;
+  }
   m_preadStallDone = true;
   // the queues the outputs play from while P sleeps: a stall shorter than them starves nothing.
   // Seconds queued: the last demuxed dts of the stream ahead of the clock (-1: none)
