@@ -1798,6 +1798,8 @@ void CActiveAESink::ClearShadowPins()
   const int64_t values[PRESENTATION::AQ_COUNT] = {0, 0};
   PRESENTATION::AudioPinsBoard().Write(values);
   m_shadowAudible = false;
+  m_shadowEndPtsUs = 0;
+  m_shadowEndPinsNs = 0;
 }
 
 void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
@@ -1808,7 +1810,19 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
   if (samples->pkt->nb_samples == 0 || !samples->labelled || !writtenFrames ||
       !m_sinkFormat.m_sampleRate)
   {
-    if (m_shadowAudible)
+    // ISS27-D2: the silence of an underrun (the engine had nothing) keeps where the sound ended,
+    // for the coordinator's sound-first starvation; any other silence clears it too
+    if (samples == &m_sampleOfSilence && m_shadowEndPinsNs)
+    {
+      if (m_shadowAudible)
+      {
+        const int64_t values[PRESENTATION::AQ_COUNT] = {0, 0, 0, m_shadowEndPtsUs,
+                                                        m_shadowEndPinsNs};
+        PRESENTATION::AudioPinsBoard().Write(values);
+        m_shadowAudible = false;
+      }
+    }
+    else if (m_shadowAudible || m_shadowEndPinsNs)
       ClearShadowPins();
     return;
   }
@@ -1825,9 +1839,15 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
                      : static_cast<double>(samples->timestamp);
   const double ptsMs =
       startMs - (rate ? static_cast<double>(samples->pkt_start_offset) * 1000.0 / rate : 0.0);
+  // the buffer's end: its frames at the sink's rate (a passthrough burst's too)
+  const double durationS =
+      static_cast<double>(writtenFrames) / static_cast<double>(m_sinkFormat.m_sampleRate);
+  m_shadowEndPtsUs = static_cast<int64_t>(ptsMs * 1000.0 + durationS * 1e6);
+  m_shadowEndPinsNs = onPinsNs + static_cast<int64_t>(durationS * 1e9);
   const int64_t values[PRESENTATION::AQ_COUNT] = {
       static_cast<int64_t>(ptsMs * 1000.0), onPinsNs,
-      static_cast<int64_t>((ptsMs - samples->labelLagMs) * 1000.0)};
+      static_cast<int64_t>((ptsMs - samples->labelLagMs) * 1000.0), m_shadowEndPtsUs,
+      m_shadowEndPinsNs};
   PRESENTATION::AudioPinsBoard().Write(values);
   if (!m_shadowAudible)
     CLog::Log(LOGINFO,

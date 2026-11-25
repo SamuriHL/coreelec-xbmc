@@ -153,6 +153,8 @@ protected:
   std::atomic<unsigned int> m_committedStart{0};
   std::atomic<unsigned int> m_abandonedStart{0};
   bool m_shadowAudible = false;
+  int64_t m_shadowEndPtsUs = 0; //!< ISS27-D2: the end of the last audible buffer published
+  int64_t m_shadowEndPinsNs = 0;
   int64_t m_starvedSinceNs = 0; // silence written while the clock runs
   unsigned int m_starvedBuffers = 0;
   void SwapInit(CSampleBuffer* samples);

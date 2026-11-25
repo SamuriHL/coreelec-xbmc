@@ -567,6 +567,9 @@ private:
     int64_t returnNs = 0;
     int64_t returnReadMs = 0;
     int64_t clockAtReturnUs = -1;
+    bool soundFirst = false; //!< ISS27-D2: judged on the sound's end, the picture still running
+    int64_t soundEndUs = 0; //!< the sound's end pts then
+    int64_t soundTried = 0; //!< the read a sound-first freeze was ruled out on
   } m_starve;
   void SetState(State state, unsigned int epoch);
   void Account(const SPresentTick& tick,
