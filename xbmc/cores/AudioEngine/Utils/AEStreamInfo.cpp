@@ -900,7 +900,10 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
         framesize = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
         break;
       case 2:
-        framesize = bitRate * 4;
+        // 1536 samples at 32 kHz = 48 ms: bitRate * 6 bytes = bitRate * 3 words (ATSC A/52 table
+        // 5.18, e.g. 192 kbps = 576 words). * 4 never matched a real frame, so a 32 kHz AC-3 stream
+        // failed the CRC and the frame-chain check and synced on false sync words (issue 36).
+        framesize = bitRate * 3;
         break;
     }
 

@@ -134,7 +134,13 @@ bool CActiveAESink::SupportsFormat(const std::string &device, AEAudioFormat &for
             switch (format.m_streamInfo.m_type)
             {
               case CAEStreamInfo::STREAM_TYPE_EAC3:
-                samplerate = 192000;
+                // IEC 61937 carries E-AC-3 at 4x its sample rate (as CAEBitstreamPacker::
+                // GetOutputRate): 192 kHz for 48 kHz, 176.4 kHz for 44.1 kHz, 128 kHz for 32 kHz.
+                // 128 kHz is not an HDMI rate, so a 32 kHz stream must decode, not be passed
+                // through at a rate ALSA rounds to 96 kHz (3/4 speed, issue 36). An unknown rate
+                // keeps the old 192 kHz check.
+                samplerate = format.m_streamInfo.m_sampleRate ? format.m_streamInfo.m_sampleRate * 4
+                                                              : 192000;
                 break;
 
               case CAEStreamInfo::STREAM_TYPE_TRUEHD:
