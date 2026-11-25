@@ -308,4 +308,7 @@ private:
   // with nothing in the log. Report one, and its recovery.
   std::chrono::steady_clock::time_point m_park_start{};
   bool            m_park_reported = false;
+  //! ISS27-D2: a starvation (P's read stalled, or its picture held) defers the stall timeout
+  bool StarvationDefersTimeout();
+  int64_t m_stallDeferredRead = -1; //!< the read the deferral was logged for
 };

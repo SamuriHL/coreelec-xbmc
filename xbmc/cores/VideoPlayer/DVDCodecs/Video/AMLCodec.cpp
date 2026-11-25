@@ -28,6 +28,7 @@
 #include "cores/VideoPlayer/VideoRenderers/VideoGeometry.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
+#include "utils/PresentationTimeline.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/GuiSnapshot.h"
@@ -4153,6 +4154,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return CDVDVideoCodec::VC_NONE;
   }
+  else if (ret == EAGAIN && elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout) &&
+           StarvationDefersTimeout())
+  {
+    // ISS27-D2: a starvation is not a decoder hang. The decoder has nothing new to decode while
+    // P's read is blocked (an HEVC tail below the parser's fetch quantum still reads as data),
+    // and the flush's reset and replay re-showed an old frame during the freeze (D2 probe v4).
+    // The stall clock is parked; with data flowing again the timeout is armed as before
+    m_tp_last_frame = std::chrono::steady_clock::now();
+    return CDVDVideoCodec::VC_BUFFER;
+  }
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR,
@@ -4166,6 +4177,30 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   }
 
   return CDVDVideoCodec::VC_BUFFER;
+}
+
+bool CAMLCodec::StarvationDefersTimeout()
+{
+  // validated hardware with the shadow on (the starvation freeze's gate): elsewhere today's
+  if (!aml_presentation_validated() || !PRESENTATION::ShadowActive().load())
+    return false;
+  const PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+  const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
+  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  // a stalled read (a normal one lasts milliseconds), or the starvation's held picture
+  const bool stalledRead = readStart && now - readStart >= 300000000;
+  if (!stalledRead && !reads.pictureHeldNow.load(std::memory_order_acquire))
+    return false;
+  if (readStart != m_stallDeferredRead)
+  {
+    m_stallDeferredRead = readStart;
+    CLog::Log(LOGINFO, "AML stall timeout deferred: read in progress {} ms{}",
+              readStart ? (now - readStart) / 1000000 : -1,
+              reads.pictureHeldNow.load(std::memory_order_relaxed) ? " (the picture held)" : "");
+  }
+  return true;
 }
 
 void CAMLCodec::SetNonBlocking(bool on)
