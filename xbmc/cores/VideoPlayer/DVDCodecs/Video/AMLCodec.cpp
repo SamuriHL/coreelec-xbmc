@@ -4185,12 +4185,22 @@ bool CAMLCodec::StarvationDefersTimeout()
   if (!aml_presentation_validated() || !PRESENTATION::ShadowActive().load())
     return false;
   const PRESENTATION::SPlayerReads& reads = PRESENTATION::PlayerReads();
+  // the freeze's own gates (starve_off, the input's eligibility): elsewhere the timeout stands
+  if (!reads.freezeOn.load(std::memory_order_relaxed) ||
+      !reads.stallEligible.load(std::memory_order_relaxed))
+    return false;
   const int64_t readStart = reads.readStartNs.load(std::memory_order_acquire);
   const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
                           .count();
-  // a stalled read (a normal one lasts milliseconds), or the starvation's held picture
-  const bool stalledRead = readStart && now - readStart >= 300000000;
+  // a stalled read (a normal one lasts milliseconds; on a disc or navigable input a disc I/O
+  // call that old, as a still or a navigator wait has none), or the starvation's held picture
+  bool stalledRead = readStart && now - readStart >= 300000000;
+  if (stalledRead && !reads.plainInput.load(std::memory_order_relaxed))
+  {
+    const int64_t ioStart = reads.ioStartNs.load(std::memory_order_acquire);
+    stalledRead = ioStart && now - ioStart >= 300000000;
+  }
   if (!stalledRead && !reads.pictureHeldNow.load(std::memory_order_acquire))
     return false;
   if (readStart != m_stallDeferredRead)
