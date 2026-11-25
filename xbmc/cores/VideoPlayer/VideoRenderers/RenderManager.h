@@ -626,6 +626,8 @@ public:
   //! issue 27, the coordinator (lock-free): the player's clock frozen at a starvation
   void StarveFreeze(int64_t token, double clock) { m_dvdClock.StarveFreeze(token, clock); }
   bool StarveWithdraw(int64_t token) { return m_dvdClock.StarveWithdraw(token); }
+  //! ISS27-D2: lock-free (an atomic), for the coordinator
+  double AudioLead() const { return m_dvdClock.AudioLead(); }
   unsigned int DecoderSettingsGen() const
   {
     return m_decoderSettingsGen.load(std::memory_order_relaxed);

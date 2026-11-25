@@ -3593,30 +3593,38 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
   // picture holds early and nothing is dropped at the resume. The end is the sink's, kept only
   // through an underrun's silence, and it must fall inside this read; the input as for V's hold
   // (plain, or a disc I/O call in progress 300 ms or more)
+  // The end is a sample pts: on the clock it is that less the audio offset and the vsync
+  // adjustment (a sample reaches the pins at clock + both, CAudioSinkAE::GetClock). It must not lie
+  // past the picture's next frame: a picture that stopped short of the sound is the picture's
+  // starvation (a freeze past its next frame leaves the resume no step back to it)
   int64_t aqs[AQ_COUNT];
-  if (!s_starveOff && !s_starveNoFreeze && ShadowActive() && !m_starve.readAt && readStart &&
-      readMs > 300 && readStart != m_starve.soundTried && result.playing &&
+  double soundEndClock = 0.0;
+  if (!s_starveOff && !s_starveNoFreeze && ShadowActive() && m_video && !m_starve.readAt &&
+      readStart && readMs > 300 && readStart != m_starve.soundTried && result.playing &&
       reads.stallEligible.load(std::memory_order_relaxed) && m_starve.lastFrameNs &&
       now - m_starve.lastFrameNs <= 3.0 * frameNs && AudioPinsBoard().Read(aqs) &&
       !aqs[AQ_ON_PINS_NS] && aqs[AQ_END_PINS_NS] > readStart && now >= aqs[AQ_END_PINS_NS] &&
-      (reads.plainInput.load(std::memory_order_relaxed) || IoMs(now) >= 300))
+      (reads.plainInput.load(std::memory_order_relaxed) || IoMs(now) >= 300) &&
+      (soundEndClock = static_cast<double>(aqs[AQ_END_PTS_US]) - m_video->AudioLead(),
+       soundEndClock <= m_starve.lastFramePts + frameNs / 1000.0 + 1000.0))
   {
     m_starve.readAt = readStart;
     m_starve.wouldNs = now;
     m_starve.stallsAt = reads.stalls.load(std::memory_order_relaxed);
     m_starve.returnNs = 0;
     m_starve.soundFirst = true;
-    m_starve.soundEndUs = aqs[AQ_END_PTS_US];
+    m_starve.soundEndUs = static_cast<int64_t>(soundEndClock);
     GRAPHICSTICK::GTLogF(LOGINFO,
-                         "STARVE would freeze at the sound's end {:.3f} (the sound ran dry {} ms "
-                         "ago, clock {}, the last frame {:.3f} {} ms ago, read in progress {} ms, "
-                         "disc I/O in progress {} ms)",
-                         aqs[AQ_END_PTS_US] / 1e6, (now - aqs[AQ_END_PINS_NS]) / 1000000,
+                         "STARVE would freeze at the sound's end {:.3f} (sample pts {:.3f}, audio "
+                         "lead {:.1f} ms; the sound ran dry {} ms ago, clock {}, the last frame "
+                         "{:.3f} {} ms ago, read in progress {} ms, disc I/O in progress {} ms)",
+                         soundEndClock / DVD_TIME_BASE, aqs[AQ_END_PTS_US] / 1e6,
+                         m_video->AudioLead() / 1000.0, (now - aqs[AQ_END_PINS_NS]) / 1000000,
                          clockText(clockUs), m_starve.lastFramePts / DVD_TIME_BASE,
                          (now - m_starve.lastFrameNs) / 1000000, readMs, IoMs(now));
     m_starve.frozen = false;
     m_starve.freezeDone = s_starveOff;
-    reads.starvedNs.store(now, std::memory_order_relaxed);
+    // the starvation counts as judged (the read-stall test's clock) once its freeze is taken
   }
   // what a starvation freeze would do (design docs/iss27_design.md §2): no frame for 3 frame
   // durations while the clock runs, a stall P would judge, and a read in progress over 300 ms
@@ -3753,6 +3761,8 @@ void CPresentationCoordinator::TryStarveFreeze(int64_t readStart, int64_t clockU
     return;
   }
   m_starve.frozen = true;
+  if (m_starve.soundFirst)
+    PlayerReads().starvedNs.store(now, std::memory_order_relaxed);
   if (m_starve.soundFirst)
     GRAPHICSTICK::GTLogF(LOGINFO,
                          "STARVE freeze at the sound's end {:.3f} (the last frame {:.3f}, the "

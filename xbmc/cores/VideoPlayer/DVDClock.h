@@ -89,6 +89,8 @@ public:
   //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
   //! it ran). false: none
   bool EndStarveFreeze(double& clock, double& ranOn);
+  //! ISS27-D2: the audio offset plus the vsync adjustment (DVD time), lock-free for the coordinator
+  double AudioLead() const { return m_audioLeadPub.load(std::memory_order_relaxed); }
   //! a paused clock moved to `clock`: not under the display hold's Pause(), a scheduled resume or
   //! a freeze. A user pause (speed 0) after a stall keeps the stall's resume, so its play moves
   //! the clock the same way
@@ -197,6 +199,8 @@ protected:
   double m_vSyncAdjustHint = 0.0; // the phase last held before a drop
   bool m_vSyncAdjustHintValid = false;
   double m_audioOffset = 0.0;
+  std::atomic<double> m_audioLeadPub{0.0}; //!< m_audioOffset + m_vSyncAdjust, published
+  void PublishAudioLead();
   unsigned int m_vSyncPhaseGeneration = 0;
   double m_frameTime;
   double m_vblankTime = 0.0;

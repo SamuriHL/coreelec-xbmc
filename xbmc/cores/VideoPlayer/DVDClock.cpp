@@ -218,6 +218,7 @@ void CDVDClock::SetVsyncAdjust(double adjustment, unsigned int phaseGeneration)
     return;
 
   m_vSyncAdjust = ReduceVsyncAdjust(adjustment);
+  PublishAudioLead();
   m_vSyncAdjustHasPhase = true;
   m_vSyncAdjustPending = false;
 }
@@ -226,6 +227,7 @@ void CDVDClock::ResetVsyncAdjust()
 {
   std::unique_lock lock(m_critSection);
   m_vSyncAdjust = 0;
+  PublishAudioLead();
   m_vSyncAdjustHasPhase = false;
   m_vSyncAdjustHintValid = false;
   m_vSyncAdjustPending = true;
@@ -264,6 +266,7 @@ void CDVDClock::DropVsyncPhase(bool settled)
   else if (settled)
     m_vSyncAdjustHintValid = false;
   m_vSyncAdjust = 0;
+  PublishAudioLead();
   m_vSyncAdjustHasPhase = false;
   m_vSyncPhaseGeneration++;
 }
@@ -443,6 +446,14 @@ void CDVDClock::SetAudioOffset(double offset)
 {
   std::unique_lock lock(m_critSection);
   m_audioOffset = offset;
+  PublishAudioLead();
+}
+
+void CDVDClock::PublishAudioLead()
+{
+  // ISS27-D2: a sample of pts p reaches the pins when clock + vsync adjust + audio offset >= p
+  // (CAudioSinkAE::GetClock): the coordinator puts the sound's end on the clock with it, lock-free
+  m_audioLeadPub.store(m_audioOffset + m_vSyncAdjust, std::memory_order_relaxed);
 }
 
 double CDVDClock::GetAudioOffset() const
@@ -610,6 +621,7 @@ void CDVDClock::ApplyScheduledResume(int64_t current)
       m_resumeSpeed == DVD_PLAYSPEED_NORMAL)
   {
     m_vSyncAdjust = 0;
+    PublishAudioLead();
     m_gridLandingPhase = 0;
     m_vSyncAdjustHasPhase = true;
     m_vSyncAdjustHintValid = false;
@@ -699,6 +711,7 @@ void CDVDClock::SetSpeedAt(int iSpeed, int64_t current)
     const double paused =
         static_cast<double>(current - m_pauseClock) * DVD_TIME_BASE / m_systemFrequency;
     m_vSyncAdjust = ReduceVsyncAdjust(m_vSyncAdjust + fmod(paused, StepTime()));
+    PublishAudioLead();
     m_vSyncPhaseGeneration++;
   }
   else if (m_pauseClock || newfreq != m_systemUsed)
