@@ -292,11 +292,21 @@ static int64_t dvd_file_seek(void* h, int64_t pos, int whence)
   if (interrupt_cb(h))
     return AVERROR_EXIT;
 
-  std::shared_ptr<CDVDInputStream> pInputStream = static_cast<CDVDDemuxFFmpeg*>(h)->m_pInput;
+  CDVDDemuxFFmpeg* demuxer = static_cast<CDVDDemuxFFmpeg*>(h);
+  std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
   if (whence == AVSEEK_SIZE)
     return pInputStream->GetLength();
-  else
-    return pInputStream->Seek(pos, whence & ~AVSEEK_FORCE);
+  // ISS27-D3: a seek inside the packet read (a demuxer's resync) is the source's time, as a read
+  const bool hold = demuxer->m_timeoutHeldInSource;
+  const std::chrono::milliseconds left = hold ? demuxer->ReadTimeoutLeft() : 0ms;
+  const auto seekStart = std::chrono::steady_clock::now();
+  const int64_t ret = pInputStream->Seek(pos, whence & ~AVSEEK_FORCE);
+  if (hold)
+    demuxer->HoldTimeoutForSourceRead(
+        left, std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - seekStart)
+                  .count());
+  return ret;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -337,8 +347,8 @@ void CDVDDemuxFFmpeg::HoldTimeoutForSourceRead(std::chrono::milliseconds left, i
   m_timeout.Set(left);
   if (heldMs >= 1000)
     CLog::Log(LOGINFO,
-              "CDVDDemuxFFmpeg::Read - the source held a read {} ms; the read timeout keeps its "
-              "{} ms left (ISS27-D3)",
+              "CDVDDemuxFFmpeg::Read - a source read or seek took {} ms; the packet read's "
+              "timeout keeps its {} ms left (ISS27-D3)",
               heldMs, left.count());
 }
 
@@ -1290,7 +1300,9 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 
         // timeout reads after 100ms
         m_timeout.Set(20s);
-        m_timeoutHeldInSource = true; // ISS27-D3
+        // ISS27-D3: not for a realtime input (live TV, PVR): there the timeout stays the
+        // wall-clock bound that hands the player loop back during a signal loss, as today
+        m_timeoutHeldInSource = m_pInput && !m_pInput->IsRealtime();
         m_pkt.result = av_read_frame(m_pFormatContext, &m_pkt.pkt);
         m_timeoutHeldInSource = false;
         m_timeout.SetInfinite();

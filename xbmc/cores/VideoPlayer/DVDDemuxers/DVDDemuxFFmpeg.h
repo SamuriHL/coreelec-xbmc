@@ -133,8 +133,8 @@ public:
   // ISS27-D3: the packet read's timeout bounds the demuxer's own work, not the source's: a read
   // the source holds (a NAS or disc stall) must not end the packet read when it returns, which
   // makes ffmpeg flush the PES it is building as a cut-short packet (mpegts) and skip the rest.
-  // While set (the packet read only), the read callback keeps the time left across the source's
-  // read. Demux thread only, as m_timeout.
+  // While set (the packet read of a non-realtime input only), the read and seek callbacks keep
+  // the time left across the source's call. Demux thread only, as m_timeout.
   bool m_timeoutHeldInSource{false};
   void HoldTimeoutForSourceRead(std::chrono::milliseconds left, int64_t heldMs);
   std::chrono::milliseconds ReadTimeoutLeft() const;
