@@ -11805,6 +11805,9 @@ void CVideoPlayer::SetCaching(ECacheState state)
         // issue 27: no freeze, a held picture: the clock may have run on past the next frame
         m_heldStallResume = !m_starveResumeArmed && m_heldStallPending &&
                             PRESENTATION::PlayerReads().plainInput.load();
+        // the picture is held: the frames after the clock that arrive now were never out
+        if (m_heldStallPending)
+          m_clock.SetStarveHold();
         CLog::Log(LOGINFO, "VideoPlayer: stalled at clock {:.3f}, caching (audio kept from {:.3f})",
                   m_clock.GetClock() / DVD_TIME_BASE, holdFrom / DVD_TIME_BASE);
       }

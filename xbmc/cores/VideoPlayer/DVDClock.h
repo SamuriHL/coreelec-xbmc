@@ -89,6 +89,11 @@ public:
   //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
   //! it ran). false: none
   bool EndStarveFreeze(double& clock, double& ranOn);
+  //! ISS27-D2: a starvation's pause (its freeze, or P's stall under V's held picture) until the
+  //! resume or a withdraw: the paused selection keeps no display latency (the frames after the
+  //! held clock were never out). Lock-free
+  bool StarveHold() const { return m_starveHold.load(std::memory_order_acquire); }
+  void SetStarveHold() { m_starveHold.store(true, std::memory_order_release); }
   //! ISS27-D2: the audio offset plus the vsync adjustment (DVD time), lock-free for the coordinator
   double AudioLead() const { return m_audioLeadPub.load(std::memory_order_relaxed); }
   //! a paused clock moved to `clock`: not under the display hold's Pause(), a scheduled resume or
@@ -200,6 +205,7 @@ protected:
   bool m_vSyncAdjustHintValid = false;
   double m_audioOffset = 0.0;
   std::atomic<double> m_audioLeadPub{0.0}; //!< m_audioOffset + m_vSyncAdjust, published
+  std::atomic<bool> m_starveHold{false};
   void PublishAudioLead();
   unsigned int m_vSyncPhaseGeneration = 0;
   double m_frameTime;

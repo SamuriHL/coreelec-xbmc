@@ -5769,11 +5769,28 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
   const bool keepLatency =
       !m_displayLost && m_pRenderer && m_pRenderer->VideoBypassesFramebuffer();
   double renderPts = frameOnScreen;
-  if (!isPaused || keepLatency)
+  // ISS27-D2: a starvation's pause keeps none: the frames after the held clock arrive after the
+  // freeze and were never out, so the screen holds the clock's frame until the resume
+  const bool starveHold = isPaused && m_dvdClock.StarveHold();
+  if ((!isPaused || keepLatency) && !starveHold)
     renderPts += m_displayLatency;
 
   const double nextFramePts =
       m_dvdClock.GetClockSpeed() < 0 ? renderPts : m_Queue[m_queued.front()].pts;
+  if (!starveHold)
+    m_starveHoldLogged = false;
+  else if (!m_starveHoldLogged && nextFramePts > renderPts &&
+           nextFramePts <= renderPts + m_displayLatency)
+  {
+    m_starveHoldLogged = true;
+#if defined(HAS_LIBAMCODEC)
+    GRAPHICSTICK::GTLogF(
+        LOGINFO,
+        "STARVE hold: frame {:.3f} held back at the held clock {:.3f} (the display "
+        "latency would release it)",
+        nextFramePts / DVD_TIME_BASE, frameOnScreen / DVD_TIME_BASE);
+#endif
+  }
 
   bool syncOffCentred = false;
   double syncOffMargin = 0.0;

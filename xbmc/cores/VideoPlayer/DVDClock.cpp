@@ -76,12 +76,16 @@ double CDVDClock::GetClock(bool interpolated /*= true*/)
 void CDVDClock::StarveFreeze(int64_t token, double clock)
 {
   m_starveClock.store(clock);
+  m_starveHold.store(true);
   m_starveToken.store(token);
 }
 
 bool CDVDClock::StarveWithdraw(int64_t token)
 {
-  return m_starveToken.compare_exchange_strong(token, 0);
+  if (!m_starveToken.compare_exchange_strong(token, 0))
+    return false;
+  m_starveHold.store(false);
+  return true;
 }
 
 bool CDVDClock::EndStarveFreeze(double& clock, double& ranOn)
@@ -401,6 +405,7 @@ void CDVDClock::Reset()
   std::unique_lock lock(m_critSection);
   CancelScheduledResume();
   m_starveToken.store(0);
+  m_starveHold.store(false);
   m_bReset = true;
 }
 
@@ -494,6 +499,8 @@ bool CDVDClock::ScheduleResumeAt(
   DropVsyncPhase(false);
   m_scheduleEpoch = NextScheduleEpoch();
   m_scheduleValid = true;
+  // the start's own selection (a pending start) takes the frames from here
+  m_starveHold.store(false);
   startNs = m_scheduleNs;
   startClock = m_scheduleClock;
   return true;
@@ -692,6 +699,8 @@ void CDVDClock::SetSpeedAt(int iSpeed, int64_t current)
       m_pauseClock = current;
     return;
   }
+  // running again (a resume at once): the starvation's hold ends
+  m_starveHold.store(false);
 
   int64_t newfreq = m_systemFrequency * DVD_PLAYSPEED_NORMAL / iSpeed;
 
@@ -788,6 +797,7 @@ void CDVDClock::Discontinuity(double clock, double absolute)
   std::unique_lock lock(m_critSection);
   CancelScheduledResume();
   m_starveToken.store(0);
+  m_starveHold.store(false);
   Rebase(clock, absolute);
   // the clock now stands at an arbitrary point of the display's vsync cadence
   DropVsyncPhase(false);

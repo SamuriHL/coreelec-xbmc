@@ -1046,6 +1046,7 @@ protected:
   //! from a start the clock had yet to make until its display phase is measured:
   //! no early release (it would put a frame up ahead of the start)
   bool m_startGate = false;
+  bool m_starveHoldLogged = false; //!< ISS27-D2: the first frame a starvation hold kept back logged
   std::atomic_bool m_sessionModeDecided{false}; //!< this file's first output mode is set
   std::atomic<unsigned int> m_incomingSegmentGen{0}; //!< generation of the pictures queued next
 
