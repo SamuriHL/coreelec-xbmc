@@ -130,6 +130,16 @@ public:
   // and they are atomics.
   std::atomic<bool> m_brokenFileDetected{false};
   std::atomic<int64_t> m_sourceReadBytes{0};
+  // ISS27-D3: the packet read's timeout bounds the demuxer's own work, not the source's: a read
+  // the source holds (a NAS or disc stall) must not end the packet read when it returns, which
+  // makes ffmpeg flush the PES it is building as a cut-short packet (mpegts) and skip the rest.
+  // While set (the packet read only), the read callback keeps the time left across the source's
+  // read. Demux thread only, as m_timeout.
+  bool m_timeoutHeldInSource{false};
+  void HoldTimeoutForSourceRead(std::chrono::milliseconds left, int64_t heldMs);
+  std::chrono::milliseconds ReadTimeoutLeft() const;
+  // Abort() is one-way and survives a read the timeout was held across (Open() clears it)
+  std::atomic<bool> m_abortRequested{false};
   // after a read: where its data began, in the AVIO and in the input stream
   void NoteReadAnchor(int64_t ioPos);
   // the AVIO position of the next read (its pos counts the bytes read)

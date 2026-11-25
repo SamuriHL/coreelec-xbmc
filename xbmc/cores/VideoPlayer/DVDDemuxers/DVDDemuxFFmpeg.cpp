@@ -187,7 +187,16 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   std::shared_ptr<CDVDInputStream> pInputStream = demuxer->m_pInput;
   // the AVIO is not seekable: its pos counts the bytes read, the domain of AVPacket.pos
   const int64_t ioPos = demuxer->ReadIoPos();
+  // ISS27-D3: during the packet read, the time the source holds this read does not count
+  const bool hold = demuxer->m_timeoutHeldInSource;
+  const std::chrono::milliseconds left = hold ? demuxer->ReadTimeoutLeft() : 0ms;
+  const auto readStart = std::chrono::steady_clock::now();
   int len = pInputStream->Read(buf, size);
+  if (hold)
+    demuxer->HoldTimeoutForSourceRead(
+        left, std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - readStart)
+                  .count());
   if (len == 0)
     return AVERROR_EOF;
   if (len > 0)
@@ -317,8 +326,27 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
   ff_flush_avutil_log_buffers();
 }
 
+std::chrono::milliseconds CDVDDemuxFFmpeg::ReadTimeoutLeft() const
+{
+  return m_timeout.GetTimeLeft();
+}
+
+void CDVDDemuxFFmpeg::HoldTimeoutForSourceRead(std::chrono::milliseconds left, int64_t heldMs)
+{
+  // the time left before the source's read: the demuxer's own work is all the timeout bounds
+  m_timeout.Set(left);
+  if (heldMs >= 1000)
+    CLog::Log(LOGINFO,
+              "CDVDDemuxFFmpeg::Read - the source held a read {} ms; the read timeout keeps its "
+              "{} ms left (ISS27-D3)",
+              heldMs, left.count());
+}
+
 bool CDVDDemuxFFmpeg::Aborted()
 {
+  if (m_abortRequested.load(std::memory_order_relaxed))
+    return true;
+
   if (m_timeout.IsTimePast())
     return true;
 
@@ -399,6 +427,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
 
   // try to abort after 30 seconds
   m_timeout.Set(30s);
+  m_abortRequested = false;
 
   m_brokenFileDetected = false;
   m_sourceReadBytes = 0;
@@ -935,6 +964,7 @@ void CDVDDemuxFFmpeg::Flush()
 
 void CDVDDemuxFFmpeg::Abort()
 {
+  m_abortRequested.store(true, std::memory_order_relaxed);
   m_timeout.SetExpired();
 }
 
@@ -1260,7 +1290,9 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 
         // timeout reads after 100ms
         m_timeout.Set(20s);
+        m_timeoutHeldInSource = true; // ISS27-D3
         m_pkt.result = av_read_frame(m_pFormatContext, &m_pkt.pkt);
+        m_timeoutHeldInSource = false;
         m_timeout.SetInfinite();
 
         // BD glued playitem seams: a corrupt PES is the outgoing clip's
