@@ -243,6 +243,8 @@ struct SStallDiag
   std::atomic<double> pairHeadDts{0.0};
   std::atomic<double> decoderInPts{0.0}; //!< codec: the last access unit the decoder accepted
   std::atomic<double> decoderOutPts{0.0}; //!< codec: the last picture the decoder gave out
+  std::atomic<int> poolInUse{0}; //!< codec: AML video buffers out (decoder frames Kodi holds)
+  std::atomic<int> poolSize{0};
   std::atomic<int64_t> untilNs{0}; //!< P: the window lines run until then after a long read
   std::atomic<int> lines{0}; //!< lines left in this window
 };

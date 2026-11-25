@@ -1714,7 +1714,7 @@ void CVideoPlayerVideo::LogStallFrames(const char* at)
       LOGINFO,
       "STALLDIAG {}: demuxed BL dts {:.3f} pts {:.3f}, EL dts {:.3f} pts {:.3f} | V queue {} "
       "packets {:.3f} s | pairing {} queued, head {} dts {:.3f} | decoder in {:.3f} out {:.3f} | "
-      "clock {:.3f}",
+      "pool in use {} of {} | clock {:.3f}",
       at, diag.demuxBlDts.load() / DVD_TIME_BASE, diag.demuxBlPts.load() / DVD_TIME_BASE,
       diag.demuxElDts.load() / DVD_TIME_BASE, diag.demuxElPts.load() / DVD_TIME_BASE,
       m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET), m_messageQueue.GetTimeSize(),
@@ -1723,7 +1723,8 @@ void CVideoPlayerVideo::LogStallFrames(const char* at)
       : head   ? "EL"
                : "BL",
       diag.pairHeadDts.load() / DVD_TIME_BASE, diag.decoderInPts.load() / DVD_TIME_BASE,
-      diag.decoderOutPts.load() / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE);
+      diag.decoderOutPts.load() / DVD_TIME_BASE, diag.poolInUse.load(), diag.poolSize.load(),
+      m_pClock->GetClock() / DVD_TIME_BASE);
 #else
   (void)at;
 #endif

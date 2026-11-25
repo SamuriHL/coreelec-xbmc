@@ -2049,6 +2049,11 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                 frozenAt / DVD_TIME_BASE, readNs / 1000000, ranOn / 1000.0);
       m_starveResumeArmed = true;
       m_heldStallResume = false;
+      CLog::Log(
+          LOGINFO, "STALLDIAG read returned: pool in use {} of {} | decoder in {:.3f} out {:.3f}",
+          PRESENTATION::StallDiag().poolInUse.load(), PRESENTATION::StallDiag().poolSize.load(),
+          PRESENTATION::StallDiag().decoderInPts.load() / DVD_TIME_BASE,
+          PRESENTATION::StallDiag().decoderOutPts.load() / DVD_TIME_BASE);
       m_starveAudioNext = DVD_NOPTS_VALUE;
       SetCaching(CACHESTATE_FULL);
     }
@@ -7173,6 +7178,16 @@ bool CVideoPlayer::ScheduleUserResume()
   // no frame out yet (the first speed of a file): nothing to resume to
   if (!m_renderManager.GetResumePts(pts, maxStep))
     return false;
+  if (m_starveResumeArmed || m_heldStallResume)
+  {
+    // ISS27-D3 (log only): the decoder frames Kodi holds at a starvation's resume
+    const PRESENTATION::SStallDiag& diag = PRESENTATION::StallDiag();
+    CLog::Log(LOGINFO,
+              "STALLDIAG resume: pool in use {} of {} | decoder in {:.3f} out {:.3f} | next frame "
+              "{:.3f} held {:.3f}",
+              diag.poolInUse.load(), diag.poolSize.load(), diag.decoderInPts.load() / DVD_TIME_BASE,
+              diag.decoderOutPts.load() / DVD_TIME_BASE, pts / DVD_TIME_BASE, held / DVD_TIME_BASE);
+  }
   // issue 27: after a starvation freeze the outputs ran dry at different points, and the frames
   // queued to the display ahead of the clock are already out: the resume starts at the sound's
   // next sample, and the picture on screen holds until the clock reaches its next frame, so no

@@ -90,6 +90,11 @@ CVideoBuffer* CAMLVideoBufferPool::Get()
   }
   int bufferIdx(m_freeBuffers.back());
   m_freeBuffers.pop_back();
+  // ISS27-D3 (log only): the decoder frames Kodi holds
+  PRESENTATION::StallDiag().poolInUse.store(
+      static_cast<int>(m_videoBuffers.size() - m_freeBuffers.size()), std::memory_order_relaxed);
+  PRESENTATION::StallDiag().poolSize.store(static_cast<int>(m_videoBuffers.size()),
+                                           std::memory_order_relaxed);
 
   m_videoBuffers[bufferIdx]->Acquire(shared_from_this());
 
@@ -106,6 +111,8 @@ void CAMLVideoBufferPool::Return(int id)
     m_videoBuffers[id]->m_amlCodec = nullptr;
   }
   m_freeBuffers.push_back(id);
+  PRESENTATION::StallDiag().poolInUse.store(
+      static_cast<int>(m_videoBuffers.size() - m_freeBuffers.size()), std::memory_order_relaxed);
 }
 
 /***************************************************************************/
