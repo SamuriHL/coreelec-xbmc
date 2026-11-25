@@ -3717,13 +3717,15 @@ void CPresentationCoordinator::TryStarveFreeze(int64_t readStart, int64_t clockU
   // the clock past the next frame's time by less than a few frames (a stale last frame from
   // before a seek, a flush or another file is far from it), and the last sound within 100 ms of
   // it (a resume then neither drops sound nor plays picture without it)
+  // the last sound on the clock: its sample pts less the audio offset and the vsync adjustment
+  const double lastSoundClock =
+      audioRead ? static_cast<double>(aq[AQ_PTS_US]) - m_video->AudioLead() : 0.0;
   const char* why = nullptr;
   if (static_cast<double>(clockUs) < freezeAt - 1000.0)
     why = "the clock is not past the next frame";
   else if (static_cast<double>(clockUs) - freezeAt > 6.0 * frameUs)
     why = "the clock ran past the last frame by more than 6 frames";
-  else if (!m_starve.soundFirst && audioRead &&
-           std::abs(static_cast<double>(aq[AQ_PTS_US]) - freezeAt) > 100000.0)
+  else if (!m_starve.soundFirst && audioRead && std::abs(lastSoundClock - freezeAt) > 100000.0)
     why = "the last sound is more than 100 ms from the last frame";
   else if (m_starve.soundFirst && audioRead)
     why = "the sound came back";
@@ -3743,10 +3745,11 @@ void CPresentationCoordinator::TryStarveFreeze(int64_t readStart, int64_t clockU
   }
   if (why)
   {
-    GRAPHICSTICK::GTLogF(
-        LOGINFO, "STARVE no freeze: {} (clock {}, next frame {:.3f}, last sound {})", why,
-        StringUtils::Format("{:.3f}", clockUs / 1e6), freezeAt / DVD_TIME_BASE,
-        audioRead ? StringUtils::Format("{:.3f}", aq[AQ_PTS_US] / 1e6) : std::string("none"));
+    GRAPHICSTICK::GTLogF(LOGINFO,
+                         "STARVE no freeze: {} (clock {}, next frame {:.3f}, last sound {})", why,
+                         StringUtils::Format("{:.3f}", clockUs / 1e6), freezeAt / DVD_TIME_BASE,
+                         audioRead ? StringUtils::Format("{:.3f}", lastSoundClock / DVD_TIME_BASE)
+                                   : std::string("none"));
     return;
   }
   // Dekker with P: the read's stamp is re-read after the freeze is set; P reads the freeze after
