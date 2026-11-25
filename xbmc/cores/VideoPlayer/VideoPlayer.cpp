@@ -2048,6 +2048,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                 "would have run on {:.0f} ms)",
                 frozenAt / DVD_TIME_BASE, readNs / 1000000, ranOn / 1000.0);
       m_starveResumeArmed = true;
+      m_starveReadStartNs = readStart;
       m_heldStallResume = false;
       CLog::Log(
           LOGINFO, "STALLDIAG read returned: pool in use {} of {} | decoder in {:.3f} out {:.3f}",
@@ -7215,8 +7216,11 @@ bool CVideoPlayer::ScheduleUserResume()
     double soundPts = DVD_NOPTS_VALUE;
     const char* soundFrom = "";
     int64_t aq[PRESENTATION::AQ_COUNT];
+    // the end must fall inside this freeze's read, as C judges it: an older one (an earlier real
+    // gap) is not where this sound goes on
     if (m_CurrentAudio.id >= 0 && PRESENTATION::AudioPinsBoard().Read(aq) &&
-        aq[PRESENTATION::AQ_END_PINS_NS] && !aq[PRESENTATION::AQ_ON_PINS_NS])
+        aq[PRESENTATION::AQ_END_PINS_NS] > m_starveReadStartNs && m_starveReadStartNs &&
+        !aq[PRESENTATION::AQ_ON_PINS_NS])
     {
       soundPts = static_cast<double>(aq[PRESENTATION::AQ_END_PTS_US]);
       soundFrom = "the sink's kept end";
@@ -7244,8 +7248,9 @@ bool CVideoPlayer::ScheduleUserResume()
                     ? -1.0
                     : (m_starveAudioNext - m_clock.GetAudioOffset()) / DVD_TIME_BASE);
       // the held clock goes back when the sound ran dry before it (the freeze point is the
-      // picture's), so the resume never drops sound that was not played: plain inputs only (a
-      // disc's clock carries its timeline), within C's bound on that gap (100 ms)
+      // picture's), so the resume never drops sound that was not played: up to 150 ms on plain
+      // inputs only (C's bound on that gap is 100 ms); any input goes back up to a frame to the
+      // frame grid below
       const bool plain = PRESENTATION::PlayerReads().plainInput.load();
       bool atSound = sound < pts && (sound >= held - DVD_MSEC_TO_TIME(1) ||
                                      (plain && held - sound <= DVD_MSEC_TO_TIME(150)));
@@ -7256,7 +7261,8 @@ bool CVideoPlayer::ScheduleUserResume()
       // frame of silence
       double start = sound;
       if (atSound && frameTime > 0.0)
-        start = pts - std::ceil((pts - sound) / frameTime - 1e-6) * frameTime;
+        start = pts - std::ceil((pts - sound - 1.0) / frameTime) *
+                          frameTime; // 1 us: the end's own truncation
       if (atSound && start < held - DVD_MSEC_TO_TIME(1))
       {
         // less than a frame behind (the grid's), or the sound's own move back (plain inputs)
@@ -11874,6 +11880,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
     m_cachingStall = false;
     m_starveResumeArmed = false;
     m_heldStallResume = false;
+    m_starveReadStartNs = 0;
+    // not scheduled (a user pause during the stall, among others): the starvation's hold ends,
+    // a user pause keeps the display latency
+    if (!scheduled)
+      m_clock.ClearStarveHold();
     if (!scheduled)
       m_clock.SetSpeed(m_playSpeed);
     m_VideoPlayerAudio->SetSpeed(m_playSpeed);

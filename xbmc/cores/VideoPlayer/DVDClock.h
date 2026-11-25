@@ -94,6 +94,7 @@ public:
   //! held clock were never out). Lock-free
   bool StarveHold() const { return m_starveHold.load(std::memory_order_acquire); }
   void SetStarveHold() { m_starveHold.store(true, std::memory_order_release); }
+  void ClearStarveHold() { m_starveHold.store(false, std::memory_order_release); }
   //! ISS27-D2: the audio offset plus the vsync adjustment (DVD time), lock-free for the coordinator
   double AudioLead() const { return m_audioLeadPub.load(std::memory_order_relaxed); }
   //! a paused clock moved to `clock`: not under the display hold's Pause(), a scheduled resume or

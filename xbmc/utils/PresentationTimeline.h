@@ -110,8 +110,9 @@ enum AudioPins
   AQ_ON_PINS_NS, // CLOCK_MONOTONIC at which that sample leaves the HDMI pins
   AQ_LABEL_US, // the label of that sample: pts less the codec's label lag
   // ISS27-D2: the end of the last audible buffer, kept through the silence of an underrun (the
-  // first three read 0 then) and cleared with them by anything else (flush, close, pause, a
-  // track change, a seek, a speed change)
+  // first three read 0 then) and through a pause that takes nothing back from a sink an underrun
+  // ran dry; cleared with them by anything else (a flush, a close, a pause that takes samples
+  // back, pause bursts or muted frames, a track change, a seek, a speed change)
   AQ_END_PTS_US, // pts just past its last sample
   AQ_END_PINS_NS, // CLOCK_MONOTONIC at which that point leaves the HDMI pins
   AQ_COUNT
