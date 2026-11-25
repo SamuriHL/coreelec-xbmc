@@ -6196,13 +6196,15 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
   return true;
 }
 
-bool CRenderManager::GetResumePts(double& pts, double& maxStep)
+bool CRenderManager::GetResumePts(double& pts, double& maxStep, double* frameTime)
 {
   MAINCOUPLING_ACCESSOR("RM m_statelock");
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED || m_vConfiguring || m_fps <= 0.0f)
     return false;
   const double frametime = DVD_TIME_BASE / static_cast<double>(m_fps);
+  if (frameTime)
+    *frameTime = frametime;
   MAINCOUPLING_ACCESSOR("RM m_presentlock");
   std::unique_lock presentLock(m_presentlock);
   if (!m_queued.empty())

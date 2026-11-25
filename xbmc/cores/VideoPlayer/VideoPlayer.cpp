@@ -7176,7 +7176,8 @@ bool CVideoPlayer::ScheduleUserResume()
   int64_t startNs = 0;
   double startClock = 0.0;
   // no frame out yet (the first speed of a file): nothing to resume to
-  if (!m_renderManager.GetResumePts(pts, maxStep))
+  double frameTime = 0.0;
+  if (!m_renderManager.GetResumePts(pts, maxStep, &frameTime))
     return false;
   if (m_starveResumeArmed || m_heldStallResume)
   {
@@ -7245,21 +7246,38 @@ bool CVideoPlayer::ScheduleUserResume()
       // the held clock goes back when the sound ran dry before it (the freeze point is the
       // picture's), so the resume never drops sound that was not played: plain inputs only (a
       // disc's clock carries its timeline), within C's bound on that gap (100 ms)
-      bool atSound = sound < pts && sound >= held - DVD_MSEC_TO_TIME(1);
-      if (!atSound && sound < held - DVD_MSEC_TO_TIME(1) && held - sound <= DVD_MSEC_TO_TIME(150) &&
-          PRESENTATION::PlayerReads().plainInput.load() && m_clock.MoveHeldClock(sound))
+      const bool plain = PRESENTATION::PlayerReads().plainInput.load();
+      bool atSound = sound < pts && (sound >= held - DVD_MSEC_TO_TIME(1) ||
+                                     (plain && held - sound <= DVD_MSEC_TO_TIME(150)));
+      // ISS27-D2: the clock starts on the frame grid (the frame pts sequence through the next
+      // frame), at its last point at or before the sound's next: a clock started on the sound's
+      // own pts leaves every frame after it up to half a vsync off its vblank for the rest of the
+      // film (D2 probe v5: -18 ms on am9pro). The sound then lands at its pts, after less than a
+      // frame of silence
+      double start = sound;
+      if (atSound && frameTime > 0.0)
+        start = pts - std::ceil((pts - sound) / frameTime - 1e-6) * frameTime;
+      if (atSound && start < held - DVD_MSEC_TO_TIME(1))
       {
-        CLog::Log(LOGINFO, "STARVE held clock moved back {:.0f} ms to the sound's end {:.3f}",
-                  (held - sound) / 1000.0, sound / DVD_TIME_BASE);
-        atSound = true;
+        // less than a frame behind (the grid's), or the sound's own move back (plain inputs)
+        const double back = held - start;
+        if ((back <= frameTime + DVD_MSEC_TO_TIME(1) ||
+             (plain && back <= DVD_MSEC_TO_TIME(150) + frameTime)) &&
+            m_clock.MoveHeldClock(start))
+          CLog::Log(LOGINFO, "STARVE held clock moved back {:.0f} ms to the frame grid {:.3f}",
+                    back / 1000.0, start / DVD_TIME_BASE);
+        else
+          atSound = false;
       }
       if (atSound)
       {
         CLog::Log(LOGINFO,
-                  "STARVE resume at the sound's next {:.3f} (the next frame {:.3f}: the picture "
+                  "STARVE resume at the frame grid {:.3f} before the sound's next {:.3f} (the "
+                  "sound lands {:.1f} ms after the start; the next frame {:.3f}: the picture "
                   "holds {:.0f} ms)",
-                  sound / DVD_TIME_BASE, pts / DVD_TIME_BASE, (pts - sound) / 1000.0);
-        pts = sound;
+                  start / DVD_TIME_BASE, sound / DVD_TIME_BASE, (sound - start) / 1000.0,
+                  pts / DVD_TIME_BASE, (pts - start) / 1000.0);
+        pts = start;
       }
       else if (sound >= pts)
         CLog::Log(LOGINFO,
