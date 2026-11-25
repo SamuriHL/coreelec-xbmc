@@ -1587,7 +1587,12 @@ void CActiveAESink::Hold(double fromMs)
     }
     msg->Release();
   }
-  ClearShadowPins();
+  // ISS27-D2: a pause of a sink an underrun ran dry takes nothing back: where the sound ended is
+  // still where it goes on (the starvation's resume reads it)
+  if (m_handBack.empty() && !rewound && !m_shadowAudible && m_shadowEndPinsNs)
+    KeepShadowEnd();
+  else
+    ClearShadowPins();
   CLog::Log(LOGINFO,
             "CActiveAESink: pause from pts {:.3f} ms took back {} buffers, {} frames ({:.1f} ms) "
             "from the device, first pts {:.3f} ms",
@@ -1782,12 +1787,24 @@ double CActiveAESink::HoldPcm(double fromMs)
       }
     }
   }
-  ClearShadowPins();
+  // ISS27-D2: as for a burst stream: nothing taken back after an underrun keeps the sound's end
+  if (!rewound && !m_shadowAudible && m_shadowEndPinsNs)
+    KeepShadowEnd();
+  else
+    ClearShadowPins();
   CLog::Log(LOGINFO,
             "CActiveAESink: pause from pts {:.3f} ms cut PCM at pts {:.3f} ms, {} frames "
             "({:.1f} ms) taken back, {} faded",
             fromMs, cutMs, rewound, rate ? rewound * 1000.0 / rate : 0.0, faded);
   return cutMs;
+}
+
+void CActiveAESink::KeepShadowEnd()
+{
+  // the first three cleared (nothing audible), the end of the last audible buffer kept
+  const int64_t values[PRESENTATION::AQ_COUNT] = {0, 0, 0, m_shadowEndPtsUs, m_shadowEndPinsNs};
+  PRESENTATION::AudioPinsBoard().Write(values);
+  m_shadowAudible = false;
 }
 
 void CActiveAESink::ClearShadowPins()
@@ -1815,12 +1832,7 @@ void CActiveAESink::ShadowOnPins(CSampleBuffer* samples,
     if (samples == &m_sampleOfSilence && m_shadowEndPinsNs)
     {
       if (m_shadowAudible)
-      {
-        const int64_t values[PRESENTATION::AQ_COUNT] = {0, 0, 0, m_shadowEndPtsUs,
-                                                        m_shadowEndPinsNs};
-        PRESENTATION::AudioPinsBoard().Write(values);
-        m_shadowAudible = false;
-      }
+        KeepShadowEnd();
     }
     else if (m_shadowAudible || m_shadowEndPinsNs)
       ClearShadowPins();

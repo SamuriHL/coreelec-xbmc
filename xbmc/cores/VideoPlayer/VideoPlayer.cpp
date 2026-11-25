@@ -7207,16 +7207,41 @@ bool CVideoPlayer::ScheduleUserResume()
   }
   if (std::exchange(m_starveResumeArmed, false))
   {
+    // ISS27-D2: the sound's next sample is where it ran dry: the sink's kept end (the pins board
+    // keeps it through an underrun's silence; a flush, seek, pause or track change clears it).
+    // Else the first timestamped packet sent on (a TrueHD stream's packets mostly carry none: the
+    // first with a pts lies past the continuation, D2 probe v5 am9pro HS)
+    double soundPts = DVD_NOPTS_VALUE;
+    const char* soundFrom = "";
+    int64_t aq[PRESENTATION::AQ_COUNT];
+    if (m_CurrentAudio.id >= 0 && PRESENTATION::AudioPinsBoard().Read(aq) &&
+        aq[PRESENTATION::AQ_END_PINS_NS] && !aq[PRESENTATION::AQ_ON_PINS_NS])
+    {
+      soundPts = static_cast<double>(aq[PRESENTATION::AQ_END_PTS_US]);
+      soundFrom = "the sink's kept end";
+    }
+    else if (m_starveAudioNext != DVD_NOPTS_VALUE)
+    {
+      soundPts = m_starveAudioNext;
+      soundFrom = "the first timestamped packet";
+    }
     if (m_CurrentAudio.id < 0)
       CLog::Log(LOGINFO, "STARVE resume at the next frame {:.3f} (no audio stream)",
                 pts / DVD_TIME_BASE);
-    else if (m_starveAudioNext == DVD_NOPTS_VALUE)
+    else if (soundPts == DVD_NOPTS_VALUE)
       CLog::Log(LOGINFO,
                 "STARVE resume at the next frame {:.3f} (no sound sent on before the resume)",
                 pts / DVD_TIME_BASE);
     else
     {
-      const double sound = m_starveAudioNext - m_clock.GetAudioOffset();
+      const double sound = soundPts - m_clock.GetAudioOffset();
+      CLog::Log(LOGINFO,
+                "STARVE resume: the sound's next {:.3f} from {} (the first timestamped packet "
+                "{:.3f})",
+                sound / DVD_TIME_BASE, soundFrom,
+                m_starveAudioNext == DVD_NOPTS_VALUE
+                    ? -1.0
+                    : (m_starveAudioNext - m_clock.GetAudioOffset()) / DVD_TIME_BASE);
       // the held clock goes back when the sound ran dry before it (the freeze point is the
       // picture's), so the resume never drops sound that was not played: plain inputs only (a
       // disc's clock carries its timeline), within C's bound on that gap (100 ms)

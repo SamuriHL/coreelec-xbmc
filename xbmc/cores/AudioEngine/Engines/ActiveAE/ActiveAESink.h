@@ -150,6 +150,7 @@ protected:
   unsigned int OutputSamples(CSampleBuffer* samples);
   void ShadowOnPins(CSampleBuffer* samples, unsigned int writtenFrames, const AEDelayStatus& status);
   void ClearShadowPins();
+  void KeepShadowEnd(); //!< ISS27-D2: nothing audible, the last audible buffer's end kept
   std::atomic<unsigned int> m_committedStart{0};
   std::atomic<unsigned int> m_abandonedStart{0};
   bool m_shadowAudible = false;
