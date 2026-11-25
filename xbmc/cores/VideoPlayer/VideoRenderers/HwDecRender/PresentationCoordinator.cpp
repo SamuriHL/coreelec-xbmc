@@ -137,6 +137,9 @@ std::atomic<bool> s_untimedLog{false};
 std::atomic<bool> s_geomWakeAlways{false};
 //! issue 27: special://profile/starve_off: the starvation is measured, never frozen (today)
 std::atomic<bool> s_starveOff{false};
+//! test only: special://profile/starve_nofreeze: the starvation is judged, never frozen, while V
+//! still holds its picture (the no-freeze stall: P's stall path under a held picture)
+std::atomic<bool> s_starveNoFreeze{false};
 
 int64_t MonotonicNs()
 {
@@ -250,6 +253,10 @@ bool CPresentationCoordinator::Start()
   s_starveOff =
       XFILE::CFile::Exists("special://profile/starve_off") || !aml_presentation_validated();
   PRESENTATION::PlayerReads().freezeOn.store(!s_starveOff);
+  s_starveNoFreeze = XFILE::CFile::Exists("special://profile/starve_nofreeze");
+  if (s_starveNoFreeze)
+    GRAPHICSTICK::GTLogF(
+        LOGWARNING, "STARVE freeze off for the test (starve_nofreeze): the picture hold stays");
   if (XFILE::CFile::Exists("special://profile/starve_off"))
     GRAPHICSTICK::GTLogF(LOGWARNING, "STARVE freeze off (starve_off): measured only");
   if (s_geomWakeAlways)
@@ -3604,7 +3611,7 @@ void CPresentationCoordinator::NoteStarve(const SPresentTick& tick, const SPrese
   // the next frame would have shown; the player makes it a pause there when its read returns
   if (!m_starve.freezeDone && readStart == m_starve.readAt && !m_starve.returnNs &&
       result.playing && reads.stallEligible.load(std::memory_order_relaxed) && m_video &&
-      ShadowActive())
+      ShadowActive() && !s_starveNoFreeze)
     TryStarveFreeze(readStart, clockUs, frameNs);
   // a BD-J presentation wait inside the read moves its stamp (DVDInputStreamBluray): the clock
   // must run for it, so a freeze taken before it is released, as today

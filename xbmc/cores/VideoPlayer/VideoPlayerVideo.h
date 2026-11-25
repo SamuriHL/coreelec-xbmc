@@ -68,7 +68,8 @@ public:
   bool IsSubtitleEnabled() override { return m_bRenderSubs; }
   double GetSubtitleDelay() override { return m_iSubtitleDelay; }
   void SetSubtitleDelay(double delay) override { m_iSubtitleDelay = delay; }
-  bool IsStalled() const override { return m_stalled; }
+  // issue 27: a held starvation picture is a stall to P, as the still repeats it replaces were
+  bool IsStalled() const override { return m_stalled || m_stillHeld; }
   void SetStartHeld(bool held) override { m_startHeld = held; }
   int64_t LastDecoderFlushNs() const override { return m_lastDecoderFlushNs.load(); }
   void SetTxNoPicture(int64_t untilNs) override { m_txNoPictureUntilNs = untilNs; }
@@ -173,8 +174,9 @@ protected:
   int m_speed;
   std::atomic_bool m_stalled = false;
   //! issue 27: a starvation's last picture held, no still repeats (until a packet or a flush)
-  bool m_stillHeld = false;
+  std::atomic_bool m_stillHeld = false;
   bool StarveHoldsPicture(std::chrono::milliseconds timeout);
+  void SetStillHeld(bool held);
   std::atomic_bool m_startHeld = false;
   std::atomic<int64_t> m_lastDecoderFlushNs{0}; //!< 5.E2-9c D2
   //! 5.E2-9c D6 (transaction_nopicture)

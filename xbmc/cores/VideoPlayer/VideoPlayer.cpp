@@ -1377,6 +1377,7 @@ bool CVideoPlayer::OpenInputStream()
   m_preadFileStartNs = 0;
   m_preadStallDone = false;
   m_starveResumeArmed = false;
+  m_heldStallResume = false;
   // issue 27: a stall of a plain input is a starvation, never a still (V holds its picture)
   PRESENTATION::PlayerReads().plainInput.store(
       !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
@@ -1843,20 +1844,24 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
   // test (issue 27): special://profile/pread_stall holds "<ms> <at_s>": the first demuxer read
   // after <at_s> s of reading a file sleeps <ms>, inside the read P's stamps cover. A negative
   // <ms> sleeps until the coordinator judged the outputs starved, then -<ms> more (bounded at
-  // 600 s): the read then outlasts the queues, however much they hold
+  // 600 s): the read then outlasts the queues, however much they hold. "h<ms> <at_s>" sleeps until
+  // V holds a starvation's picture, then <ms> more (bounded at 600 s): the no-freeze stall
+  static bool untilHeld = false;
   static const std::pair<int, int> stall = []
   {
     const auto line = OUTPUT::ReadTestSwitch("pread_stall");
-    const int ms = line ? std::atoi(line->c_str()) : 0;
+    untilHeld = line && !line->empty() && (*line)[0] == 'h';
+    const int ms = !line       ? 0
+                   : untilHeld ? -std::max(1, std::atoi(line->c_str() + 1))
+                               : std::atoi(line->c_str());
     const auto space = line ? line->find(' ') : std::string::npos;
     const int at = space == std::string::npos ? 0 : std::max(0, std::atoi(line->c_str() + space));
     if (ms > 0)
       CLog::Log(LOGWARNING, "PREAD test: the first read {} s into each file sleeps {} ms", at, ms);
     else if (ms < 0)
       CLog::Log(LOGWARNING,
-                "PREAD test: the first read {} s into each file sleeps until a starvation, then "
-                "{} ms",
-                at, -ms);
+                "PREAD test: the first read {} s into each file sleeps until {}, then {} ms", at,
+                untilHeld ? "the picture is held" : "a starvation", -ms);
     return std::pair<int, int>{ms, at};
   }();
   if (stall.first == 0 || m_preadStallDone)
@@ -1891,16 +1896,19 @@ void CVideoPlayer::TestReadStall(int64_t nowNs)
   int64_t starvedAt = 0;
   while (steadyNs() < limitNs)
   {
-    const int64_t starved = PRESENTATION::PlayerReads().starvedNs.load(std::memory_order_relaxed);
+    const int64_t starved =
+        untilHeld ? (PRESENTATION::PlayerReads().pictureHeldNow.load() ? steadyNs() : 0)
+                  : PRESENTATION::PlayerReads().starvedNs.load(std::memory_order_relaxed);
     if (!starvedAt && starved >= nowNs)
     {
       starvedAt = starved;
-      CLog::Log(LOGWARNING, "PREAD test: starvation judged after {} ms, {} ms more",
-                (starved - nowNs) / 1000000, -stall.first);
+      CLog::Log(LOGWARNING, "PREAD test: {} after {} ms, {} ms more",
+                untilHeld ? "picture held" : "starvation judged", (starved - nowNs) / 1000000,
+                -stall.first);
     }
     if (starvedAt && steadyNs() - starvedAt >= static_cast<int64_t>(-stall.first) * 1000000)
       return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(untilHeld ? 10 : 100));
   }
   CLog::Log(LOGWARNING, "PREAD test: no starvation in 600 s, the read returns");
 }
@@ -1973,6 +1981,7 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
                 "would have run on {:.0f} ms)",
                 frozenAt / DVD_TIME_BASE, readNs / 1000000, ranOn / 1000.0);
       m_starveResumeArmed = true;
+      m_heldStallResume = false;
       m_starveAudioNext = DVD_NOPTS_VALUE;
       SetCaching(CACHESTATE_FULL);
     }
@@ -7101,6 +7110,19 @@ bool CVideoPlayer::ScheduleUserResume()
   // queued to the display ahead of the clock are already out: the resume starts at the sound's
   // next sample, and the picture on screen holds until the clock reaches its next frame, so no
   // sound is dropped and no picture is shown twice
+  // issue 27, no freeze: the clock ran on under a held picture (no still repeats ahead of it) until
+  // P stalled; it goes back to the next frame, and the sound, which ran on, lands after it
+  if (std::exchange(m_heldStallResume, false) && pts < held - DVD_MSEC_TO_TIME(1))
+  {
+    if (held - pts <= DVD_MSEC_TO_TIME(1000) && m_clock.MoveHeldClock(pts))
+      CLog::Log(LOGINFO,
+                "STILL resume at the next frame {:.3f}: held clock moved back {:.0f} ms (it ran on "
+                "under the held picture)",
+                pts / DVD_TIME_BASE, (held - pts) / 1000.0);
+    else
+      CLog::Log(LOGINFO, "STILL resume: the clock ran {:.0f} ms past the next frame {:.3f}, kept",
+                (held - pts) / 1000.0, pts / DVD_TIME_BASE);
+  }
   if (std::exchange(m_starveResumeArmed, false))
   {
     if (m_CurrentAudio.id < 0)
@@ -7114,10 +7136,11 @@ bool CVideoPlayer::ScheduleUserResume()
     {
       const double sound = m_starveAudioNext - m_clock.GetAudioOffset();
       // the held clock goes back when the sound ran dry before it (the freeze point is the
-      // picture's), so the resume never drops sound that was not played
+      // picture's), so the resume never drops sound that was not played: plain inputs only (a
+      // disc's clock carries its timeline), within C's bound on that gap (100 ms)
       bool atSound = sound < pts && sound >= held - DVD_MSEC_TO_TIME(1);
-      if (!atSound && sound < held - DVD_MSEC_TO_TIME(1) && held - sound < DVD_MSEC_TO_TIME(2000) &&
-          m_clock.MoveHeldClock(sound))
+      if (!atSound && sound < held - DVD_MSEC_TO_TIME(1) && held - sound <= DVD_MSEC_TO_TIME(150) &&
+          PRESENTATION::PlayerReads().plainInput.load() && m_clock.MoveHeldClock(sound))
       {
         CLog::Log(LOGINFO, "STARVE held clock moved back {:.0f} ms to the sound's end {:.3f}",
                   (held - sound) / 1000.0, sound / DVD_TIME_BASE);
@@ -9011,6 +9034,12 @@ bool CVideoPlayer::ShouldDeferSync(bool ready, std::chrono::steady_clock::time_p
 
 void CVideoPlayer::HandlePlaySpeed()
 {
+  // issue 27: V held a starvation's picture while P was in the read (taken every pass, so a held
+  // picture a freeze or a caching already covers never stalls later)
+  const bool pictureHeld =
+      PRESENTATION::PlayerReads().pictureHeld.exchange(false, std::memory_order_acq_rel);
+  m_heldStallPending =
+      pictureHeld || PRESENTATION::PlayerReads().pictureHeldNow.load(std::memory_order_acquire);
   const bool isInMenu = IsInMenuInternal();
   const bool tolerateStall =
       isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
@@ -9109,7 +9138,7 @@ void CVideoPlayer::HandlePlaySpeed()
     {
       // take action if audio or video stream is stalled
       if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
-           (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
+           ((m_VideoPlayerVideo->IsStalled() || pictureHeld) && m_CurrentVideo.inited)) &&
           m_syncTimer.IsTimePast())
       {
         if (m_pInputStream->IsRealtime())
@@ -11687,6 +11716,9 @@ void CVideoPlayer::SetCaching(ECacheState state)
       if (stall)
       {
         PRESENTATION::PlayerReads().stalls.fetch_add(1, std::memory_order_relaxed);
+        // issue 27: no freeze, a held picture: the clock may have run on past the next frame
+        m_heldStallResume = !m_starveResumeArmed && m_heldStallPending &&
+                            PRESENTATION::PlayerReads().plainInput.load();
         CLog::Log(LOGINFO, "VideoPlayer: stalled at clock {:.3f}, caching (audio kept from {:.3f})",
                   m_clock.GetClock() / DVD_TIME_BASE, holdFrom / DVD_TIME_BASE);
       }
@@ -11709,6 +11741,7 @@ void CVideoPlayer::SetCaching(ECacheState state)
                 scheduled ? "scheduled" : "at once");
     m_cachingStall = false;
     m_starveResumeArmed = false;
+    m_heldStallResume = false;
     if (!scheduled)
       m_clock.SetSpeed(m_playSpeed);
     m_VideoPlayerAudio->SetSpeed(m_playSpeed);
@@ -13501,6 +13534,7 @@ void CVideoPlayer::CheckStreamPlayerAlive(CCurrentStream& current,
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
   m_starveResumeArmed = false;
+  m_heldStallResume = false;
   // 5.E2-9a (D2): a flush inside a P-decided open re-PRIMEs it (same T); the others end it
   // (E2-8a D5)
   if (TxOpen())

@@ -294,6 +294,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
     m_pVideoCodec->SetNonBlocking(false);
   m_hints = hint;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
+  SetStillHeld(false);
   m_rewindStalled = false;
   m_packets.clear();
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
@@ -660,6 +661,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      SetStillHeld(false);
       WorkerCancelStart();
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
@@ -720,7 +722,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
 
       m_stalled = true;
-      m_stillHeld = false;
+      SetStillHeld(false);
       DiagStart();
       if (sync)
       {
@@ -856,7 +858,7 @@ void CVideoPlayerVideo::Process()
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe left, switching to normal playback");
         m_stalled = false;
       }
-      m_stillHeld = false;
+      SetStillHeld(false);
 
       bRequestDrop = false;
       iDropDirective = CalcDropRequirement(pts);
@@ -1673,6 +1675,12 @@ void CVideoPlayerVideo::SetSpeed(int speed)
     m_speed = speed;
 }
 
+void CVideoPlayerVideo::SetStillHeld(bool held)
+{
+  m_stillHeld = held;
+  PRESENTATION::PlayerReads().pictureHeldNow.store(held, std::memory_order_release);
+}
+
 bool CVideoPlayerVideo::StarveHoldsPicture(std::chrono::milliseconds timeout)
 {
   // lock-free reads of P's and C's flags (I1): no wait on another thread
@@ -1691,7 +1699,9 @@ bool CVideoPlayerVideo::StarveHoldsPicture(std::chrono::milliseconds timeout)
                         readStart;
   if (ageNs < std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count())
     return false;
-  m_stillHeld = true;
+  SetStillHeld(true);
+  // P is in the read: its stall check runs after it returns, when a packet may have ended the hold
+  PRESENTATION::PlayerReads().pictureHeld.store(true, std::memory_order_release);
 #if defined(HAS_LIBAMCODEC)
   GRAPHICSTICK::GTLogF(LOGINFO, "STILL repeats held: read in progress {} ms (no invented pts)",
                        ageNs / 1000000);

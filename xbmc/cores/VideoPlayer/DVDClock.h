@@ -89,7 +89,9 @@ public:
   //! the player, after each read: a freeze becomes a pause at its clock (never past the clock as
   //! it ran). false: none
   bool EndStarveFreeze(double& clock, double& ranOn);
-  //! a paused clock (a stall's, never a user pause or a scheduled resume) moved to `clock`
+  //! a paused clock moved to `clock`: not under the display hold's Pause(), a scheduled resume or
+  //! a freeze. A user pause (speed 0) after a stall keeps the stall's resume, so its play moves
+  //! the clock the same way
   bool MoveHeldClock(double clock);
   void Advance(double time);
 
