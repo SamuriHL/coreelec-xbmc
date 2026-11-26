@@ -626,6 +626,7 @@ private:
   bool m_commitStop = false;
   std::thread m_commitThread;
   bool m_flipLostLogged = false;
+  int64_t m_testParkFlipUntilNs = 0; //!< test (5H-G2 parkflip), C only
   // 5.B2-7, under m_uiMutex
   std::deque<std::shared_ptr<PlaneOffOp>> m_planeOffs;
   std::atomic<bool> m_planeOffOpen{false}; //!< C's loop runs and takes plane offs

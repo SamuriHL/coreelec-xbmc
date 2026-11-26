@@ -2727,6 +2727,13 @@ int s_cstallNth = 0; //!< 0: every mode set
 int s_cstallSets = 0;
 unsigned int s_cstallEpoch = 0;
 std::chrono::steady_clock::time_point s_cstallUntil;
+// test (5H-G2 parkflip): see aml_presenter_set_test_parkflip
+std::atomic<int> s_pfMs{0};
+std::atomic<bool> s_pfArm{false}; //!< the next UI commit is the park's
+std::atomic<bool> s_pfTook{false}; //!< C took a commit for the armed park
+std::atomic<bool> s_pfMainStall{false};
+unsigned int s_pfEpoch = 0; //!< under s_holdMutex
+std::chrono::steady_clock::time_point s_pfStart;
 // 5.B2-1: the holds taken while a mode set's hold is held, logged at its release
 unsigned int s_parkSet = 0;
 int s_parkSetTid = 0;
@@ -2738,6 +2745,24 @@ unsigned int s_parkSetEpoch = 0;
 
 bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
 {
+  // test (5H-G2 parkflip): before the hold mutex (C's loop takes it every pass), wait for C's next
+  // UI commit, so this park meets a UI flip in flight
+  bool parkFlip = false;
+  if (const int pfMs = s_pfMs.load(); pfMs > 0 && site && strcmp(site, "mode set") == 0)
+  {
+    s_pfTook = false;
+    s_pfArm = true;
+    const auto armed = std::chrono::steady_clock::now();
+    while (!s_pfTook.load() &&
+           std::chrono::steady_clock::now() - armed < std::chrono::milliseconds(500))
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    s_pfArm = false;
+    parkFlip = s_pfTook.load();
+    if (parkFlip)
+      s_pfMainStall = true;
+    else
+      CLog::Log(LOGWARNING, "PARKFLIP no UI commit in 500 ms (void)");
+  }
   std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_holdDepth++;
   s_holds.push_back({site, static_cast<int>(gettid()), 0});
@@ -2767,6 +2792,11 @@ bool aml_presenter_hold_acquire(const char* site, unsigned int* heldEpoch)
     *heldEpoch = epoch;
   if (s_parkSetTid == static_cast<int>(gettid()) && s_parkCount == 1)
     s_parkSetEpoch = epoch;
+  if (parkFlip)
+  {
+    s_pfEpoch = epoch;
+    s_pfStart = std::chrono::steady_clock::now();
+  }
   if (!s_presenterRunning)
     return true;
   if (s_cstallMs > 0 && site && strcmp(site, "mode set") == 0 &&
@@ -2883,6 +2913,14 @@ bool aml_presenter_check_hold(unsigned int& epoch, bool park, AmlEpochHold* hold
       return true;
     s_parkedEpoch = epoch;
     s_holdCond.notify_all();
+    if (s_pfEpoch != 0 && epoch == s_pfEpoch)
+    {
+      CLog::Log(LOGWARNING, "PARKFLIP ack epoch={} waited_ms={} (the flip in flight ended)", epoch,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - s_pfStart)
+                    .count());
+      s_pfEpoch = 0;
+    }
   }
   return true;
 }
@@ -3434,6 +3472,28 @@ void aml_presenter_set_test_cstall(int ms, int nth)
   std::unique_lock lock = LOCKWAIT::Take(s_holdMutex, LOCKWAIT::HOLD);
   s_cstallMs = ms;
   s_cstallNth = nth;
+}
+
+void aml_presenter_set_test_parkflip(int ms)
+{
+  if (s_pfMs.exchange(ms) != ms && ms > 0)
+    CLog::Log(LOGWARNING, "PARKFLIP armed: a mode set's park meets a UI flip held {} ms", ms);
+}
+
+int aml_presenter_test_parkflip_commit()
+{
+  bool armed = true;
+  if (!s_pfArm.compare_exchange_strong(armed, false))
+    return 0;
+  s_pfTook = true;
+  const int ms = s_pfMs.load();
+  CLog::Log(LOGWARNING, "PARKFLIP flip withheld {} ms (the park's UI commit)", ms);
+  return ms;
+}
+
+bool aml_presenter_test_parkflip_mainstall()
+{
+  return s_pfMainStall.exchange(false);
 }
 
 void aml_presenter_set_running(bool running)

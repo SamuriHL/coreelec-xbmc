@@ -1218,6 +1218,14 @@ void CPresentationCoordinator::Process()
 
     struct pollfd fds[3 + PLANE_COUNT] = {
         {m_wakeFd, POLLIN, 0}, {m_masterFd, POLLIN, 0}, {-1, POLLIN, 0}};
+    // test (5H-G2 parkflip): the withheld flip's event stays unread until the hook's time
+    if (m_testParkFlipUntilNs)
+    {
+      if (MonotonicNs() < m_testParkFlipUntilNs)
+        fds[1].fd = -1;
+      else
+        m_testParkFlipUntilNs = 0;
+    }
     if (video)
       fds[2].fd = timeline ? m_tickFd.load() : m_vblankFd;
     else if (knobTicks)
@@ -2365,6 +2373,10 @@ void CPresentationCoordinator::CommitUi()
     m_flipLostLogged = false;
     m_commitNs = MonotonicNs();
     m_inFlightCommitNs = m_commitNs;
+    // test (5H-G2 parkflip): an armed mode-set park takes this commit; its flip event is read
+    // only after the hook's time, so the park's ack meets the flip in flight
+    if (const int pfMs = aml_presenter_test_parkflip_commit())
+      m_testParkFlipUntilNs = m_commitNs + static_cast<int64_t>(pfMs) * 1000000;
   }
   m_uiCond.notify_all();
 }

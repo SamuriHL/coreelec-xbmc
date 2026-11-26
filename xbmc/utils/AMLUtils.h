@@ -596,6 +596,14 @@ void aml_presenter_set_running(bool running);
 //! 5.B2-1 test (outputdrive_cstall): withhold the ack of a mode set's park for ms
 //! nth > 0: only the nth mode set's park from here on
 void aml_presenter_set_test_cstall(int ms, int nth = 0);
+//! test (5H-G2 parkflip, vconfigure_mainstall "<form> parkflip <ms>"): a mode set's park waits
+//! (<= 500 ms, before its hold) for C's next UI commit; C then withholds that flip's event ms, so
+//! the park's ack waits on a UI flip in flight, and main runs the stall form meanwhile. Main sets it
+void aml_presenter_set_test_parkflip(int ms);
+//! C, at a UI commit: the armed park takes this commit (returns ms to withhold, else 0)
+int aml_presenter_test_parkflip_commit();
+//! main, at FrameMove: the park took a commit, run the stall form now (once)
+bool aml_presenter_test_parkflip_mainstall();
 //! an eventfd the coordinator polls, woken by every hold acquire; -1 = none
 void aml_presenter_set_wake_fd(int fd);
 //! 5.V3-3: wake C (main's GUI snapshot publish); non-blocking

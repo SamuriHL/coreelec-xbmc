@@ -180,7 +180,7 @@ const SVStall& VStall()
                                             "gfxlock", "settinglock", "resource"};
     static constexpr const char* events[] = {"start", "firstpic", "flush",        "outputchanged",
                                              "stop",  "nextfile", "afterpublish", "after-set",
-                                             "playing", "geometry", "settings"};
+                                             "playing", "geometry", "settings", "parkflip"};
     SVStall result;
     const auto line = OUTPUT::ReadTestSwitch("vconfigure_mainstall");
     if (!line)
@@ -192,6 +192,10 @@ const SVStall& VStall()
         std::find_if(std::begin(events), std::end(events),
                      [&](const char* e) { return fields[1] == e; }) != std::end(events))
       result = {fields[0], fields[1], std::atoi(fields[2].c_str())};
+    // 5H-G2: parkflip arms the park side in AMLUtils; main runs the form when the park took a
+    // UI commit (FrameMove)
+    if (result.ms > 0 && result.event == "parkflip")
+      aml_presenter_set_test_parkflip(result.ms);
     if (result.ms > 0 && result.event == "settings")
       CLog::Log(LOGWARNING,
                 "GEOMETRYTICK test stall {} of {} ms on the outbound thread before the settings load "
@@ -1670,6 +1674,10 @@ void CRenderManager::FrameMove()
   TestStall("nextfile");
   TestStall("playing");
 #if defined(HAS_LIBAMCODEC)
+  // test (5H-G2 parkflip): a mode set's park met a UI flip in flight; main stalls in the form
+  // while C's ack waits on it
+  if (VStallAt("parkflip") && aml_presenter_test_parkflip_mainstall())
+    TestStall("parkflip", true);
   // the local path, uncached: special:// re-enters CFile::Exists with the directory cache, which
   // hides a file created after the cache was filled
   static const std::string trigger = CSpecialProtocol::TranslatePath("special://temp/geometrystall_now");
@@ -2117,6 +2125,10 @@ void CRenderManager::TestStall(const char* event, bool immediate)
 
 void CRenderManager::PreInit()
 {
+#if defined(HAS_LIBAMCODEC)
+  // the test switch is read before the file's first mode set (parkflip arms AMLUtils at the read)
+  VStallAt("parkflip");
+#endif
   BeginFile();
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
