@@ -8195,8 +8195,12 @@ void CVideoPlayer::Process()
 
 #if defined(HAS_LIBAMCODEC)
   TestLegacyRenderLoopClient();
-  // 5.V2-5: posted, never waiting on main's render loop
-  if (aml_vconfigure_on())
+  // 5.V2-5: posted, never waiting on main's render loop. 5H-G1 Q-B (user 2026-11-26: switch-off
+  // sessions are in I1's scope): on a validated SoC a vconfigure_off session posts too, so P never
+  // waits on m_renderLoopSection (main holds it across the legacy clients' FrameMove) nor, with the
+  // handle, on the gfx lock in SetFullScreenVideo (OpenStream posts the fullscreen notice).
+  // Unvalidated SoCs keep today's direct calls
+  if (aml_vconfigure_on() || aml_presentation_validated())
   {
     m_renderLoopHandle = std::make_shared<RenderLoopHandle>();
     m_renderLoopHandle->client = this;

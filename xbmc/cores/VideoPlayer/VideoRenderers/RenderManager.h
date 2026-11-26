@@ -738,8 +738,16 @@ protected:
   }
 
   //! vblankNs: the hardware vblank the coordinator woke on (0 = none), or
-  //! -1 on the render thread, which asks the win system
-  void PrepareNextRender(int64_t vblankNs, const STickTiming* timing = nullptr);
+  //! -1 on the render thread, which passes the win system's reading taken before m_presentlock
+  //! (5H-G1 Q-B: the query is a DRM ioctl that waits out a kernel modeset at a replug)
+  struct SMainLatency
+  {
+    float ms = 0.0f; //!< GetFrameLatencyAdjustment() at atNs (0 = no phase)
+    int64_t atNs = 0; //!< CLOCK_MONOTONIC when it was read
+  };
+  void PrepareNextRender(int64_t vblankNs,
+                         const STickTiming* timing = nullptr,
+                         const SMainLatency* mainLatency = nullptr);
   bool IsPresenting();
   bool IsGuiLayer();
 

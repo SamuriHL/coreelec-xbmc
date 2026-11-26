@@ -1799,6 +1799,17 @@ void CRenderManager::FrameMove()
     LogPinRefused("pin skipped");
   else
   {
+    // 5H-G1 Q-B: main's frame selection reads the vblank phase before m_presentlock. The read is
+    // a DRM ioctl that waits out the kernel's modeset at a replug (hpd restore, 44-130 ms seen
+    // under outputdrive_off), and C waited behind main's m_presentlock for all of it
+    SMainLatency mainLatency;
+    if (!(V24On() && m_presenterMode))
+    {
+      mainLatency.ms = CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment();
+      struct timespec now = {};
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      mainLatency.atNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+    }
     MAINCOUPLING_ACCESSOR("RM m_presentlock");
     std::unique_lock lock2(m_presentlock);
     CMainHold hold("FrameMove present");
@@ -1818,7 +1829,7 @@ void CRenderManager::FrameMove()
     // commit holding m_presentlock
     const bool mainPresents = !(V24On() && m_presenterMode);
     if (m_presentstep == PRESENT_READY && mainPresents)
-      PrepareNextRender(-1);
+      PrepareNextRender(-1, nullptr, &mainLatency);
     // without the presenter the render thread takes the worker's start picture
     if (mainPresents && forced && m_forceGen >= 0 && m_presentstep != PRESENT_READY)
     {
@@ -5843,7 +5854,9 @@ void CRenderManager::CSampleOffsetStats::AddPhase(double err)
   m_bucket[m_last].phaseSum += err;
 }
 
-void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timing)
+void CRenderManager::PrepareNextRender(int64_t vblankNs,
+                                       const STickTiming* timing,
+                                       const SMainLatency* mainLatency)
 {
   if (m_queued.empty())
   {
@@ -5927,8 +5940,24 @@ void CRenderManager::PrepareNextRender(int64_t vblankNs, const STickTiming* timi
       if (x >= 0.0 && x < 60000.0)
         m_sampleOffset.Add(x, aml_last_present_rendered());
     }
-    frameLatencyAdjustment =
-        static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment());
+    if (mainLatency && mainLatency->atNs > 0)
+    {
+      // the reading taken before m_presentlock, aged to now: the same value the query would give
+      // here, and stale past 100 ms as the query's own rule
+      if (mainLatency->ms > 0.0f)
+      {
+        struct timespec now = {};
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const int64_t nowNs = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+        const double aged =
+            static_cast<double>(mainLatency->ms) +
+            static_cast<double>(std::max<int64_t>(0, nowNs - mainLatency->atNs)) / 1000000.0;
+        frameLatencyAdjustment = aged <= 100.0 ? aged : 0.0;
+      }
+    }
+    else
+      frameLatencyAdjustment =
+          static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment());
   }
   else
   {
