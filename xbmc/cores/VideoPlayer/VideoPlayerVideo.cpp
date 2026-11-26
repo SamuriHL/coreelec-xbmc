@@ -1949,7 +1949,9 @@ bool CVideoPlayerVideo::PrepareOutput(const VideoPicture* pPicture)
                                 orientation,
                                 m_pVideoCodec->GetAllowedReferences()))
   {
-    CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
+    // E214-1: a configure held for the coordinator is retried, not a failure
+    if (!m_renderManager.TxConfigureHeld())
+      CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
     return false;
   }
   // 5.V3-4: per picture, as the decoder or the renderer can change
@@ -1984,7 +1986,15 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
       m_worker && pPicture->videoBuffer == m_heldBuffer && pPicture->pts == m_heldPts;
   m_heldBuffer = nullptr;
   if (!retry && !PrepareOutput(pPicture))
+  {
+    // E214-1: the worker keeps the picture and its messages, and offers it again
+    if (m_renderManager.TakeTxConfigureHeld() && m_worker)
+    {
+      m_outputRetryAt = std::chrono::steady_clock::now() + 50ms;
+      return OUTPUT_AGAIN;
+    }
     return OUTPUT_ABORT;
+  }
 
   // calculate the time we need to delay this picture before displaying
   double iPlayingClock, iCurrentClock;

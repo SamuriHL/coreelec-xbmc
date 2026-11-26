@@ -1415,6 +1415,7 @@ protected:
   }
   //! D2/D3: latched at the bound until the hint job is posted
   bool m_txHintDecide = false;
+  bool m_txHintHeld = false; //!< E214-1: the bound was a picture V holds for the coordinator
   //! D3: a hint job was posted; kept until START or an exit (a re-PRIME keeps it)
   bool m_txHintJob = false;
   std::chrono::steady_clock::time_point m_txHintBoundAt{}; //!< D3: the window wait counts from it

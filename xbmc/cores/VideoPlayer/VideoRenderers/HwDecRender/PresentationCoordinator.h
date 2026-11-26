@@ -65,6 +65,8 @@ public:
   void SetTickSource(int tickFd, uint32_t tickCrtc);
   //! Returns with no presentation step running.
   void DetachVideo(CRenderManager* renderManager);
+  //! CLOCK_MONOTONIC ns of the last vblank event (AttachVideo's delivery test)
+  int64_t LastVblankNs();
 
   enum Plane
   {

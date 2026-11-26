@@ -5655,9 +5655,9 @@ void CVideoPlayer::TxDecide()
       facts.fps = r.info.fRefreshRate;
     facts.frac = r.frac;
     CLog::Log(LOGERROR,
-              "TXSTART set={} T={} no-picture DECIDE (5 s bound) facts fps {:.3f} {}x{} hdr {} "
+              "TXSTART set={} T={} no-picture DECIDE ({}) facts fps {:.3f} {}x{} hdr {} "
               "frac {} fpsInvalid {} interlaceHint {}",
-              m_txEngagedGen, m_txJob->T, facts.fps, facts.width, facts.height,
+              m_txEngagedGen, m_txJob->T, m_txHintHeld ? "held picture" : "5 s bound", facts.fps, facts.width, facts.height,
               static_cast<int>(facts.hdrType), facts.frac ? 1 : 0, facts.fpsInvalid ? 1 : 0,
               facts.interlaceHint ? 1 : 0);
   }
@@ -6916,13 +6916,26 @@ void CVideoPlayer::CheckStartGate()
       m_txLostAt = {};
     }
     // 5.E2-9c D2 (ruling 1): no picture 5 s into PRIME: the mode is decided from the hints
+    // E214-1: V holds the set's picture for the coordinator, whose vblanks come back with this
+    // start's own mode set: decided from the hints at once (ruling Q1 2026-11-20)
+    const bool heldPicture = m_txEngagedGen != 0 &&
+                             m_renderManager.TxConfigureHeldGen() == m_txEngagedGen;
     if (TxPrimeBoundOpen() && state == State::UNCONFIGURED && m_txStep == TxStep::NONE &&
-        !m_txHintDecide && std::chrono::steady_clock::now() - m_startGateSince >= 5s)
+        !m_txHintDecide &&
+        (heldPicture || std::chrono::steady_clock::now() - m_startGateSince >= 5s))
     {
       m_txHintDecide = true;
+      m_txHintHeld = heldPicture;
       m_txHintBoundAt = std::chrono::steady_clock::now();
-      CLog::Log(LOGINFO, "TXSTART set={} T={} PRIME bound (5 s): no picture, DECIDE from the hints",
-                m_txEngagedGen, m_txJob->T);
+      if (heldPicture)
+        CLog::Log(LOGINFO,
+                  "TXSTART set={} T={} PRIME: the picture is held for the coordinator, DECIDE "
+                  "from the hints",
+                  m_txEngagedGen, m_txJob->T);
+      else
+        CLog::Log(LOGINFO,
+                  "TXSTART set={} T={} PRIME bound (5 s): no picture, DECIDE from the hints",
+                  m_txEngagedGen, m_txJob->T);
       const int64_t flushNs = m_VideoPlayerVideo->LastDecoderFlushNs();
       const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 m_txHintBoundAt.time_since_epoch())

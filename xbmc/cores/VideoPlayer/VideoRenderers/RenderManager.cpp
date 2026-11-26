@@ -1060,6 +1060,34 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     }
   }
 
+#if defined(HAS_LIBAMCODEC)
+  {
+    const char* holdWhy = nullptr;
+    if (TxAttachWaits(holdWhy))
+    {
+      if (!m_txAttachHold.sinceNs)
+      {
+        m_txAttachHold.sinceNs = m_txAttachHold.edgeNs;
+        m_txConfigureHeldGen = m_txAttachHold.gen;
+        CLog::Log(LOGINFO, "TXGATE configure held set={}: no presentation coordinator ({})",
+                  m_txAttachHold.gen, holdWhy);
+      }
+      m_txConfigureHeld = true;
+      return false;
+    }
+    if (m_txAttachHold.sinceNs)
+    {
+      struct timespec ts = {};
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+      CLog::Log(LOGINFO, "TXGATE configure released set={} after {} ms ({})", m_txAttachHold.gen,
+                (now - m_txAttachHold.sinceNs) / 1000000, holdWhy);
+      m_txAttachHold.sinceNs = 0;
+      m_txConfigureHeldGen = 0;
+    }
+  }
+#endif
+
   const std::string hdrStr = CStreamDetails::HdrTypeToString(picture.hdrType);
   CLog::Log(LOGDEBUG,
             "CRenderManager::Configure - change configuration. {}x{}. display: {}x{}. framerate: "
@@ -1134,6 +1162,27 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   }
   if (retryAttach && StartCoordinator())
     CLog::Log(LOGINFO, "CRenderManager::Configure - presentation coordinator attached at a configure");
+  else if (retryAttach)
+  {
+    // E214-1: the attach failed (no vblank in its wait): an engaged set waits for the next one
+    const char* holdWhy = nullptr;
+    if (m_txAttachHold.gen != 0 && !m_txAttachHold.bounded)
+    {
+      struct timespec ts = {};
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      m_txAttachHold.edgeNs = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+    }
+    if (TxAttachWaits(holdWhy))
+    {
+      if (!m_txAttachHold.sinceNs)
+        m_txAttachHold.sinceNs = m_txAttachHold.edgeNs;
+      m_txConfigureHeldGen = m_txAttachHold.gen;
+      CLog::Log(LOGINFO, "TXGATE configure held set={}: the attach failed ({})",
+                m_txAttachHold.gen, holdWhy);
+      m_txConfigureHeld = true;
+      return false;
+    }
+  }
   if (V24On())
   {
     const char* why = nullptr;
@@ -4953,6 +5002,79 @@ void CRenderManager::TxReacceptLocked(const char* why, STxLog& log)
   log.lines.push_back(StringUtils::Format("TXGATE {} set={}: the start picture is re-accepted", why,
                                           m_txGateGen.load()));
 }
+
+#if defined(HAS_LIBAMCODEC)
+// E214-1: an engaged start's first picture inside a display span waits for the coordinator
+// instead of taking main's pass (a legacy verdict). True while it waits; `why` names the wait,
+// or on false what ended it
+bool CRenderManager::TxAttachWaits(const char*& why)
+{
+  why = "candidate gone";
+  if (!V24On() || !V34On() || !aml_transaction_loss_in_start() || aml_transaction_skip("gate") ||
+      aml_transaction_skip("spanattach"))
+    return false;
+  // leaf reads, before the RM locks
+  const bool spanOpen =
+      OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).spanOpen;
+  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
+  const int64_t lastVblankNs = coordinator ? coordinator->LastVblankNs() : 0;
+  unsigned int gen = 0;
+  {
+    MAINCOUPLING_ACCESSOR("RM m_statelock");
+    std::unique_lock lock(m_statelock);
+    if (m_coordinator || m_coordinatorStopped || m_closed)
+      return false;
+    MAINCOUPLING_ACCESSOR("RM m_presentlock");
+    std::unique_lock lock2(m_presentlock);
+    if (m_txGate.candidate && m_txGateGen != 0 && m_txGateGen == m_txEngagedGen)
+      gen = m_txGateGen;
+  }
+  if (!gen)
+    return false;
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  auto& hold = m_txAttachHold;
+  if (hold.gen != gen)
+  {
+    hold = {};
+    hold.gen = gen;
+    hold.edgeNs = now;
+  }
+  if (hold.bounded)
+  {
+    why = "bound 10 s";
+    return false;
+  }
+  const bool lost = m_displayLost;
+  if (spanOpen)
+    hold.boundFromNs = 0;
+  else
+  {
+    if (!hold.boundFromNs)
+      hold.boundFromNs = now;
+    if (now - hold.boundFromNs > 10'000'000'000LL)
+    {
+      hold.bounded = true;
+      why = "bound 10 s";
+      return false;
+    }
+  }
+  if (spanOpen || lost)
+  {
+    hold.edgeNs = now;
+    why = spanOpen ? "span open" : "display lost";
+    return true;
+  }
+  if (lastVblankNs <= hold.edgeNs)
+  {
+    why = "no vblank since the span";
+    return true;
+  }
+  why = "vblank back";
+  return false;
+}
+#endif
 
 void CRenderManager::ClearTxGateLocked(const char* why, STxLog& log)
 {

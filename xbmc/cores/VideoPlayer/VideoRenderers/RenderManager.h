@@ -340,6 +340,11 @@ public:
   void SetTxEngagedGen(unsigned int gen) { m_txEngagedGen = gen; }
   //! P: the engaged set RM gave a legacy verdict for (0 = none)
   unsigned int TxLegacyVerdict() const { return m_txLegacyVerdict.load(); }
+  //! E214-1, V: the last Configure(picture) was held for the coordinator (consumed)
+  bool TakeTxConfigureHeld() { return m_txConfigureHeld.exchange(false); }
+  bool TxConfigureHeld() const { return m_txConfigureHeld.load(); }
+  //! E214-1, P: the engaged set whose first picture V holds for the coordinator (0 = none)
+  unsigned int TxConfigureHeldGen() const { return m_txConfigureHeldGen.load(); }
   // 5.E2-8b: the engaged start decided on P, main shut out (docs/phase5_e2_8b_impl.md). Every
   // call below is a no-op on a not-engaged open (m_txShutGen 0, no outcome record)
   //! E2-8b D8: an exit's `how` for a job not past its drop CAS (or never posted)
@@ -1170,6 +1175,18 @@ protected:
   std::atomic<int64_t> m_txGraphicsFromNs{0}; //!< 5.E2-9b D3: steady_clock ns; 0 = none
   std::atomic<unsigned int> m_txEngagedGen{0};
   std::atomic<unsigned int> m_txLegacyVerdict{0};
+  //! E214-1: an engaged set's configure held while the display gives no vblanks
+  std::atomic_bool m_txConfigureHeld{false};
+  std::atomic<unsigned int> m_txConfigureHeldGen{0};
+  struct
+  {
+    unsigned int gen = 0; //!< the set held; other members belong to it
+    int64_t sinceNs = 0; //!< the hold's start
+    int64_t edgeNs = 0; //!< a vblank after this releases (b)
+    int64_t boundFromNs = 0; //!< the 10 s bound's start (span closed); 0 = not counting
+    bool bounded = false; //!< the bound ran out: this set is not held again
+  } m_txAttachHold; //!< V only
+  bool TxAttachWaits(const char*& why);
   bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section
   bool m_txPrerollThisTick = false; //!< C: this tick's flip is the pre-roll
   bool m_txFirstRelease = false; //!< C: the next release is the engaged open's first (no drop)
