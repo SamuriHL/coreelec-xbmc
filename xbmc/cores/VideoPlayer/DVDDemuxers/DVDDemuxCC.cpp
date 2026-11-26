@@ -27,6 +27,7 @@
 #include <iterator>
 #include <ranges>
 #include <utility>
+#include "windowing/amlogic/SettingsMirror.h"
 
 namespace COLOR = KODI::UTILS::COLOR;
 
@@ -243,7 +244,7 @@ void CDVDDemuxCC::Handler(int service, void *userdata)
     stream.language = CLanguageTag::Undetermined();
 
     auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-    if (settings->GetBool(CSettings::SETTING_SUBTITLES_CAPTIONSIMPAIRED))
+    if (OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_SUBTITLES_CAPTIONSIMPAIRED))
       stream.flags = FLAG_HEARING_IMPAIRED;
 
     stream.codec = AV_CODEC_ID_TEXT;

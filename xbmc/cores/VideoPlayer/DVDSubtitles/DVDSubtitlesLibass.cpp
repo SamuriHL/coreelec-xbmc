@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace KODI::SUBTITLES::STYLE;
 using namespace KODI::UTILS;
@@ -181,7 +182,7 @@ void CDVDSubtitlesLibass::Configure()
   }
 
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const bool overrideFont = settings->GetBool(CSettings::SETTING_SUBTITLES_OVERRIDEFONTS);
+  const bool overrideFont = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_SUBTITLES_OVERRIDEFONTS);
   // Get temporary fonts
   if (!overrideFont && XFILE::CDirectory::Exists(FONT::FONTPATH::TEMP, false))
   {

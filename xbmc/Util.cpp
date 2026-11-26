@@ -117,6 +117,7 @@
 #include <vector>
 
 #include <fstrcmp.h>
+#include "windowing/amlogic/SettingsMirror.h"
 
 #ifdef HAS_OPTICAL_DRIVE
 using namespace MEDIA_DETECT;
@@ -2087,7 +2088,7 @@ void CUtil::ScanForExternalSubtitles(const std::string& strMovie, std::vector<st
   const std::string subtitleExtensions = CServiceBroker::GetFileExtensionProvider().GetSubtitleExtensions();
   GetItemsToScan(strBasePath, subtitleExtensions, common_sub_dirs, items);
 
-  const std::string customPath = CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(CSettings::SETTING_SUBTITLES_CUSTOMPATH);
+  const std::string customPath = OUTPUT::CSettingsMirror::Get().GetString(CSettings::SETTING_SUBTITLES_CUSTOMPATH);
 
   if (!CMediaSettings::GetInstance().GetAdditionalSubtitleDirectoryChecked() && !customPath.empty()) // to avoid checking non-existent directories (network) every time..
   {

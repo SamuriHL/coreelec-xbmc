@@ -7,6 +7,7 @@
  */
 
 #include "DVDDemuxFFmpeg.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include "DVDDemuxUtils.h"
 #include "DVDInputStreams/DVDInputStream.h"
@@ -995,7 +996,7 @@ void CDVDDemuxFFmpeg::SetSpeed(int iSpeed)
   int maxSmoothFF = 4;
   if (auto comp = CServiceBroker::GetSettingsComponent(); comp != nullptr)
     if (auto settings = comp->GetSettings(); settings != nullptr)
-      maxSmoothFF = settings->GetInt(CSettings::SETTING_VIDEOPLAYER_MAX_SMOOTH_FF_SPEED);
+      maxSmoothFF = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_VIDEOPLAYER_MAX_SMOOTH_FF_SPEED);
 
   AVDiscard discard = AVDISCARD_NONE;
   if (m_speed > maxSmoothFF * DVD_PLAYSPEED_NORMAL)
@@ -1713,7 +1714,7 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
 
     // A seek into a corrupt or truncated file can have ffmpeg scanning forever
     // looking for a usable point. Bound it, but only when the user has opted in.
-    const bool detectBroken = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+    const bool detectBroken = OUTPUT::CSettingsMirror::Get().GetBool(
         CSettings::SETTING_COREELEC_DETECT_BROKEN_FILES);
     const int64_t seekReadBytesStart = m_sourceReadBytes;
 
@@ -2061,7 +2062,7 @@ void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
     return;
 
   const bool preferHdr10Plus =
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1;
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1;
 
   // What the preference actually asks for. "Prefer HDR10+" means an HDR10 or
   // HDR10+ picture - NOT merely "not Dolby Vision", which would also match an
@@ -2895,7 +2896,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
       }
       case AVMEDIA_TYPE_SUBTITLE:
       {
-        if (pStream->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_TELETEXTENABLED))
+        if (pStream->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT && OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_TELETEXTENABLED))
         {
           CDemuxStreamTeletext* st = new CDemuxStreamTeletext();
           stream = st;
@@ -3385,7 +3386,7 @@ unsigned int CDVDDemuxFFmpeg::HLSSelectProgram()
 {
   unsigned int prog = UINT_MAX;
 
-  int bandwidth = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_NETWORK_BANDWIDTH) * 1000;
+  int bandwidth = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_NETWORK_BANDWIDTH) * 1000;
   if (bandwidth <= 0)
     bandwidth = INT_MAX;
 

@@ -7,6 +7,7 @@
  */
 
 #include "FileCache.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include "CircularCache.h"
 #include "File.h"
@@ -150,7 +151,7 @@ bool CFileCache::Open(const CURL& url)
     return false;
 
   const unsigned int cacheMemSize =
-      settings->GetInt(CSettings::SETTING_FILECACHE_MEMORYSIZE) * 1024 * 1024;
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_FILECACHE_MEMORYSIZE) * 1024 * 1024;
 
   m_source->IoControl(IOControl::SET_CACHE, this);
 
@@ -162,7 +163,7 @@ bool CFileCache::Open(const CURL& url)
 
   // Determine the best chunk size we can use
   m_chunkSize = CFile::DetermineChunkSize(m_source->GetChunkSize(),
-                                          settings->GetInt(CSettings::SETTING_FILECACHE_CHUNKSIZE));
+                                          OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_FILECACHE_CHUNKSIZE));
   CLog::Log(LOGDEBUG,
             "CFileCache::{} - <{}> source chunk size is {}, setting cache chunk size to {}",
             __FUNCTION__, m_sourcePath, m_source->GetChunkSize(), m_chunkSize);
@@ -274,7 +275,7 @@ void CFileCache::Process()
   if (!settings)
     return;
 
-  float readFactor = settings->GetInt(CSettings::SETTING_FILECACHE_READFACTOR) / 100.0f;
+  float readFactor = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_FILECACHE_READFACTOR) / 100.0f;
 
   const bool useAdaptativeReadFactor = (readFactor < 1.0f);
 

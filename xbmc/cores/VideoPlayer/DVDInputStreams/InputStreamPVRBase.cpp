@@ -17,6 +17,7 @@
 #include "settings/SettingsComponent.h"
 #include "utils/LanguageTag.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace KODI::UTILS;
 
@@ -320,7 +321,7 @@ void CInputStreamPVRBase::UpdateStreamMap()
       dStream = streamSubtitle;
     }
     else if (stream.iCodecType == PVR_CODEC_TYPE_RDS &&
-             CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+             OUTPUT::CSettingsMirror::Get().GetBool(
                  "pvrplayback.enableradiords"))
     {
       std::shared_ptr<CDemuxStreamRadioRDS> streamRadioRDS;

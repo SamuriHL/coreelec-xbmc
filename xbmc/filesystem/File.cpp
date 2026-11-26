@@ -28,6 +28,7 @@
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace XFILE;
 
@@ -295,7 +296,7 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
 
         const CacheBufferMode cacheBufferMode =
             (settings) ? static_cast<CacheBufferMode>(
-                             settings->GetInt(CSettings::SETTING_FILECACHE_BUFFERMODE))
+                             OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_FILECACHE_BUFFERMODE))
                        : CacheBufferMode::NETWORK;
 
         if ((cacheBufferMode == CacheBufferMode::INTERNET &&

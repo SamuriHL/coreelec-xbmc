@@ -7,6 +7,7 @@
  */
 
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "windowing/amlogic/SettingsMirror.h"
 #include "ActiveAEResampleFFMPEG.h"
 #include "ServiceBroker.h"
 #include "settings/Settings.h"
@@ -187,7 +188,7 @@ bool CActiveAEResampleFFMPEG::Init(SampleConfig dstConfig,
     av_opt_set_double(m_pContext, "rematrix_maxval", 1.0, 0);
   }
 
-  int boost_center = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("audiooutput.boostcenter");
+  int boost_center = OUTPUT::CSettingsMirror::Get().GetInt("audiooutput.boostcenter");
   if (boost_center)
   {
     float gain = pow(10.0f, ((float)(-3 + boost_center))/20.0f);

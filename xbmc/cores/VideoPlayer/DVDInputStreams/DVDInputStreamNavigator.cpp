@@ -37,6 +37,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include "windowing/amlogic/SettingsMirror.h"
 
 /*****************************************************************************
 * iovec structure: vectored data entry
@@ -194,7 +195,7 @@ bool CDVDInputStreamNavigator::Open()
     return false;
   }
 
-  int region = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_DVDS_PLAYERREGION);
+  int region = OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_DVDS_PLAYERREGION);
   int mask = 0;
   if(region > 0)
     mask = 1 << (region-1);
@@ -281,7 +282,7 @@ bool CDVDInputStreamNavigator::Open()
   }
 
   // jump directly to title menu
-  if(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_DVDS_AUTOMENU))
+  if(OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_DVDS_AUTOMENU))
   {
     int len, event;
     uint8_t buf[2048];

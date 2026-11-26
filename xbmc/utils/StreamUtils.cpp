@@ -7,6 +7,7 @@
  */
 
 #include "StreamUtils.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include "LangInfo.h"
 #include "ServiceBroker.h"
@@ -45,7 +46,7 @@ int CompareTier(bool lh, bool rh)
 StreamUtils::AudioPreferences StreamUtils::AudioPreferences::Current()
 {
   const std::shared_ptr<CSettings> settings{CServiceBroker::GetSettingsComponent()->GetSettings()};
-  const std::string setting{settings->GetString(CSettings::SETTING_LOCALE_AUDIOLANGUAGE)};
+  const std::string setting{OUTPUT::CSettingsMirror::Get().GetString(CSettings::SETTING_LOCALE_AUDIOLANGUAGE)};
 
   AudioPreferences preferences;
   preferences.mediaDefault =
@@ -59,11 +60,11 @@ StreamUtils::AudioPreferences StreamUtils::AudioPreferences::Current()
     preferences.language = g_langInfo.GetAudioLanguage(true);
 
   preferences.preferHearingImpaired =
-      settings->GetBool(CSettings::SETTING_ACCESSIBILITY_AUDIOHEARING);
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_ACCESSIBILITY_AUDIOHEARING);
   preferences.preferVisualImpaired =
-      settings->GetBool(CSettings::SETTING_ACCESSIBILITY_AUDIOVISUAL);
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_ACCESSIBILITY_AUDIOVISUAL);
   preferences.preferDefaultFlag =
-      settings->GetBool(CSettings::SETTING_VIDEOPLAYER_PREFERDEFAULTFLAG);
+      OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_VIDEOPLAYER_PREFERDEFAULTFLAG);
 
   return preferences;
 }

@@ -17,6 +17,7 @@
 #include "utils/FileUtils.h"
 #include "utils/FontUtils.h"
 #include "utils/URIUtils.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace KODI;
 using namespace SUBTITLES;
@@ -165,7 +166,7 @@ bool CSubtitlesSettings::IsOverrideFonts() const
 OverrideStyles CSubtitlesSettings::GetOverrideStyles() const
 {
   return static_cast<OverrideStyles>(
-      m_settings->GetInt(CSettings::SETTING_SUBTITLES_OVERRIDESTYLES));
+      OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_SUBTITLES_OVERRIDESTYLES));
 }
 
 float CSubtitlesSettings::GetVerticalMarginPerc() const

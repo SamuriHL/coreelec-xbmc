@@ -45,6 +45,7 @@
 #include "utils/log.h"
 
 #include <mutex>
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace XFILE;
 using namespace PVR;
@@ -883,7 +884,7 @@ unsigned int CDVDRadioRDSData::DecodeTA_TP(const uint8_t* msgElement)
   bool traffic_announcement = (msgElement[3] & 1) != 0;
   bool traffic_programme    = (msgElement[3] & 2) != 0;
 
-  if (traffic_announcement && !m_TA_TP_TrafficAdvisory && traffic_programme && dsn == 0 && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool("pvrplayback.trafficadvisory"))
+  if (traffic_announcement && !m_TA_TP_TrafficAdvisory && traffic_programme && dsn == 0 && OUTPUT::CSettingsMirror::Get().GetBool("pvrplayback.trafficadvisory"))
   {
     CGUIDialogKaiToast::QueueNotification(
         CGUIDialogKaiToast::Warning,
@@ -893,7 +894,7 @@ unsigned int CDVDRadioRDSData::DecodeTA_TP(const uint8_t* msgElement)
     auto& components = CServiceBroker::GetAppComponents();
     const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
     m_TA_TP_TrafficVolume = appVolume->GetVolumePercent();
-    float trafAdvVol = (float)CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("pvrplayback.trafficadvisoryvolume");
+    float trafAdvVol = (float)OUTPUT::CSettingsMirror::Get().GetInt("pvrplayback.trafficadvisoryvolume");
     if (trafAdvVol)
       appVolume->SetVolume(m_TA_TP_TrafficVolume + trafAdvVol);
 
@@ -902,7 +903,7 @@ unsigned int CDVDRadioRDSData::DecodeTA_TP(const uint8_t* msgElement)
     CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::PVR, "RDSRadioTA", data);
   }
 
-  if (!traffic_announcement && m_TA_TP_TrafficAdvisory && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool("pvrplayback.trafficadvisory"))
+  if (!traffic_announcement && m_TA_TP_TrafficAdvisory && OUTPUT::CSettingsMirror::Get().GetBool("pvrplayback.trafficadvisory"))
   {
     m_TA_TP_TrafficAdvisory = false;
     auto& components = CServiceBroker::GetAppComponents();

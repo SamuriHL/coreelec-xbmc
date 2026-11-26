@@ -7,6 +7,7 @@
  */
 
 #include "ActiveAE.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include "ActiveAEDeviceChange.h"
 #include "ActiveAESettings.h"
@@ -3949,7 +3950,8 @@ void CActiveAE::Deamplify(CSoundPacket &dstSample)
 
 void CActiveAE::LoadSettings(AEAudioFormat *format)
 {
-  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+  const auto* settings = &OUTPUT::CSettingsMirror::Get();
   int soc_id = aml_get_cpufamily_id();
 
   m_settings.device = settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE);
@@ -4237,7 +4239,7 @@ bool CActiveAE::SupportsFormat(AEAudioFormat &format, std::string *device)
 {
   AEDeviceList devices;
   AEDeviceType pt_device_type =
-    m_sink.GetDeviceType(CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE));
+    m_sink.GetDeviceType(OUTPUT::CSettingsMirror::Get().GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE));
 
   m_sink.EnumerateOutputDevices(devices, true);
 
@@ -4260,11 +4262,11 @@ bool CActiveAE::SupportsFormat(AEAudioFormat &format, std::string *device)
 bool CActiveAE::SupportsRaw(AEAudioFormat &format)
 {
   // check if passthrough is enabled
-  if (!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
+  if (!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
     return false;
 
   // fixed config disabled passthrough
-  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
+  if (OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
     return false;
 
   // check if the format is enabled in settings
@@ -4332,7 +4334,8 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
 {
   if (settingId == CSettings::SETTING_AUDIOOUTPUT_SAMPLERATE)
   {
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (m_sink.GetDeviceType(settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)) == AE_DEVTYPE_IEC958)
       return true;
     if (settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
@@ -4340,12 +4343,12 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_CHANNELS)
   {
-    if (m_sink.GetDeviceType(CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)) != AE_DEVTYPE_IEC958)
+    if (m_sink.GetDeviceType(OUTPUT::CSettingsMirror::Get().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)) != AE_DEVTYPE_IEC958)
       return true;
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH)
   {
-    if (m_sink.HasPassthroughDevice() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
+    if (m_sink.HasPassthroughDevice() && OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
       return true;
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH)
@@ -4354,7 +4357,8 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
     format.m_dataFormat = AE_FMT_RAW;
     format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTS_512;
     format.m_sampleRate = 48000;
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (SupportsFormat(format) &&
         settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
       return true;
@@ -4365,7 +4369,8 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
     format.m_dataFormat = AE_FMT_RAW;
     format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_TRUEHD;
     format.m_streamInfo.m_sampleRate = 192000;
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (SupportsFormat(format) &&
         settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
       return true;
@@ -4375,7 +4380,8 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
     AEAudioFormat format;
     format.m_dataFormat = AE_FMT_RAW;
     format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD;
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (SupportsFormat(format) &&
         settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
       return true;
@@ -4386,7 +4392,8 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
     format.m_dataFormat = AE_FMT_RAW;
     format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_EAC3;
     format.m_streamInfo.m_sampleRate = 48000; // the sink check uses 4x this rate (issue 36)
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (SupportsFormat(format) &&
         settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED)
       return true;
@@ -4394,12 +4401,13 @@ bool CActiveAE::IsSettingVisible(const std::string &settingId)
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_STEREOUPMIX)
   {
     if (m_sink.HasPassthroughDevice() ||
-        CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS) > AE_CH_LAYOUT_2_0)
+        OUTPUT::CSettingsMirror::Get().GetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS) > AE_CH_LAYOUT_2_0)
     return true;
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_AC3TRANSCODE)
   {
-    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    // 5H-G1 Q-C: the AE thread and P/A read the lock-free mirror
+    const auto* settings = &OUTPUT::CSettingsMirror::Get();
     if (m_sink.HasPassthroughDevice() &&
         settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH) &&
         settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) != AE_CONFIG_FIXED &&

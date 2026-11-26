@@ -13,6 +13,7 @@
  */
 
 #include "DVDAudioCodecPassthrough.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "ServiceBroker.h"
@@ -52,15 +53,6 @@ CDVDAudioCodecPassthrough::CDVDAudioCodecPassthrough(CProcessInfo &processInfo, 
   m_format.m_streamInfo.m_type = streamType;
   m_deviceIsRAW = processInfo.WantsRawPassthrough();
 
-  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
-  {
-    if (const auto settings = settingsComponent->GetSettings())
-      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM,
-                                        CSettings::SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM,
-                                        CSettings::SETTING_COREELEC_AUDIO_TRUEHD_DIALNORM,
-                                        CSettings::SETTING_COREELEC_AUDIO_DTS_DIALNORM});
-  }
-
   if (m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
   {
     m_trueHDBuffer.resize(TRUEHD_BUF_SIZE);
@@ -72,12 +64,6 @@ CDVDAudioCodecPassthrough::CDVDAudioCodecPassthrough(CProcessInfo &processInfo, 
 
 CDVDAudioCodecPassthrough::~CDVDAudioCodecPassthrough(void)
 {
-  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
-  {
-    if (const auto settings = settingsComponent->GetSettings())
-      settings->UnregisterCallback(this);
-  }
-
   GapSummary("close");
   Dispose();
 }
@@ -89,24 +75,17 @@ void CDVDAudioCodecPassthrough::SetLavStyleSyncEnabled(bool enabled)
   m_lavStyleSyncEnabled = enabled;
 }
 
+// 5H-G1 Q-C: read from the lock-free settings mirror, on P or A, at the open and at each packet
+// (a change applies from the next packet, as the callback did; registering a callback on P/A took
+// CSettings' callback lock, which main holds across every setting change)
 void CDVDAudioCodecPassthrough::UpdateDialNormSettings()
 {
-  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
-  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
-  if (!settings)
-    return;
-
-  m_defeatAC3DialNorm = settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM);
+  const auto& mirror = OUTPUT::CSettingsMirror::Get();
+  m_defeatAC3DialNorm = mirror.GetBool(CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM);
   m_defeatEAC3AtmosDialNorm =
-      settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM);
-  m_defeatTrueHDDialNorm = settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_TRUEHD_DIALNORM);
-  m_defeatDTSDialNorm = settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_DTS_DIALNORM);
-}
-
-void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
-{
-  if (setting)
-    UpdateDialNormSettings();
+      mirror.GetBool(CSettings::SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM);
+  m_defeatTrueHDDialNorm = mirror.GetBool(CSettings::SETTING_COREELEC_AUDIO_TRUEHD_DIALNORM);
+  m_defeatDTSDialNorm = mirror.GetBool(CSettings::SETTING_COREELEC_AUDIO_DTS_DIALNORM);
 }
 
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
@@ -214,6 +193,7 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
   // Rewriting E-AC-3 dialnorm breaks JOC (Atmos) rendering on receivers, so Atmos
   // needs its own opt-in.
+  UpdateDialNormSettings();
   m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm && (!m_isEAC3JOC || m_defeatEAC3AtmosDialNorm));
   m_parser.SetDefeatTrueHDDialNorm(m_defeatTrueHDDialNorm);
   m_parser.SetDefeatDTSDialNorm(m_defeatDTSDialNorm);

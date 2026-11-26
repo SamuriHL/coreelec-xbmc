@@ -230,15 +230,15 @@ public:
   {
     auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     const std::string subLangSetting =
-        settings->GetString(CSettings::SETTING_LOCALE_SUBTITLELANGUAGE);
+        OUTPUT::CSettingsMirror::Get().GetString(CSettings::SETTING_LOCALE_SUBTITLELANGUAGE);
 
     m_isSubNone = StringUtils::EqualsNoCase(subLangSetting, LANGINFO::subLanguageNone);
     m_isPrefOriginal = StringUtils::EqualsNoCase(subLangSetting, LANGINFO::subLanguageOriginal);
     m_isPrefForced = StringUtils::EqualsNoCase(subLangSetting, LANGINFO::subLanguageForcedOnly);
-    m_isPrefHearingImp = settings->GetBool(CSettings::SETTING_ACCESSIBILITY_SUBHEARING);
+    m_isPrefHearingImp = OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_ACCESSIBILITY_SUBHEARING);
     // The setting keeps its value while disabled for none and forced_only
     m_hideSameAudioLang = !m_isSubNone && !m_isPrefForced &&
-                          settings->GetBool(CSettings::SETTING_SUBTITLES_HIDESAMEAUDIOLANGUAGE);
+                          OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_SUBTITLES_HIDESAMEAUDIOLANGUAGE);
 
     // Prefer the subtitle language setting; none, original and forced_only name no language, so
     // fall back to the audio setting, and default, original and mediadefault name none either,
@@ -8712,7 +8712,7 @@ void CVideoPlayer::Process()
     }
 
     // demux video stream
-    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_SUBTITLES_PARSECAPTIONS) && CheckIsCurrent(m_CurrentVideo, pStream, pPacket))
+    if (OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_SUBTITLES_PARSECAPTIONS) && CheckIsCurrent(m_CurrentVideo, pStream, pPacket))
     {
       if (m_pCCDemuxer)
       {
@@ -9374,7 +9374,7 @@ void CVideoPlayer::HandlePlaySpeed()
       m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall && !streamEnded &&
       m_caching == CACHESTATE_DONE && m_CurrentAudio.inited && m_CurrentVideo.inited &&
       m_VideoPlayerAudio->IsStalled() && m_VideoPlayerVideo->IsStalled() &&
-      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      OUTPUT::CSettingsMirror::Get().GetBool(
           CSettings::SETTING_COREELEC_DETECT_BROKEN_FILES);
 
   if (brokenFileGate)

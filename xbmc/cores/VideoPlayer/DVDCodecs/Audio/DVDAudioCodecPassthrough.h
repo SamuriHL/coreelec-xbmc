@@ -18,7 +18,6 @@
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
-#include "settings/lib/ISettingCallback.h"
 
 #include <atomic>
 #include <climits>
@@ -32,7 +31,7 @@
 class CProcessInfo;
 class CPackerMAT;
 
-class CDVDAudioCodecPassthrough : public CDVDAudioCodec, public ISettingCallback
+class CDVDAudioCodecPassthrough : public CDVDAudioCodec
 {
 public:
   CDVDAudioCodecPassthrough(CProcessInfo &processInfo, CAEStreamInfo::DataType streamType);
@@ -48,7 +47,6 @@ public:
   std::string GetName() override { return m_codecName; }
   int GetBufferSize() override;
 
-  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 
   //============================================================================
   // LAV Audio passthrough A/V sync (OFF by default)

@@ -17,7 +17,9 @@
 #include "utils/log.h"
 #include "windowing/amlogic/GraphicsRegime.h"
 #include "windowing/amlogic/OutputWorker.h"
+#include "windowing/amlogic/ThreadRole.h"
 
+#include <algorithm>
 #include <optional>
 
 namespace OUTPUT
@@ -79,15 +81,80 @@ const char* const MIRRORED[] = {
     CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE,
     CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE,
     CSettings::SETTING_VIDEOPLAYER_QUITSTEREOMODEONSTOP,
+    // 5H-G1 Q-C (user 2026-11-26): every other setting P, V and A read
+    // P: stream selection (OpenDefaultStreams), subtitles, captions, the packet loop
+    CSettings::SETTING_LOCALE_SUBTITLELANGUAGE,
+    CSettings::SETTING_LOCALE_AUDIOLANGUAGE,
+    CSettings::SETTING_ACCESSIBILITY_SUBHEARING,
+    CSettings::SETTING_ACCESSIBILITY_AUDIOHEARING,
+    CSettings::SETTING_ACCESSIBILITY_AUDIOVISUAL,
+    CSettings::SETTING_VIDEOPLAYER_PREFERDEFAULTFLAG,
+    CSettings::SETTING_SUBTITLES_HIDESAMEAUDIOLANGUAGE,
+    CSettings::SETTING_SUBTITLES_PARSECAPTIONS,
+    CSettings::SETTING_SUBTITLES_CAPTIONSIMPAIRED,
+    CSettings::SETTING_SUBTITLES_CUSTOMPATH,
+    CSettings::SETTING_SUBTITLES_OVERRIDEFONTS,
+    CSettings::SETTING_SUBTITLES_OVERRIDESTYLES,
+    CSettings::SETTING_VIDEOPLAYER_TELETEXTENABLED,
+    CSettings::SETTING_COREELEC_DETECT_BROKEN_FILES,
+    // P: demuxer and input streams
+    CSettings::SETTING_VIDEOPLAYER_MAX_SMOOTH_FF_SPEED,
+    CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY,
+    CSettings::SETTING_NETWORK_BANDWIDTH,
+    CSettings::SETTING_DVDS_PLAYERREGION,
+    CSettings::SETTING_DVDS_AUTOMENU,
+    "pvrplayback.enableradiords",
+    "pvrplayback.trafficadvisory",
+    "pvrplayback.trafficadvisoryvolume",
+    // P: file opens and the cache thread
+    CSettings::SETTING_FILECACHE_BUFFERMODE,
+    CSettings::SETTING_FILECACHE_MEMORYSIZE,
+    CSettings::SETTING_FILECACHE_CHUNKSIZE,
+    CSettings::SETTING_FILECACHE_READFACTOR,
+    // P/A: the passthrough codec's dialnorm
+    CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM,
+    CSettings::SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM,
+    CSettings::SETTING_COREELEC_AUDIO_TRUEHD_DIALNORM,
+    CSettings::SETTING_COREELEC_AUDIO_DTS_DIALNORM,
+    // P/A and the AE thread: ActiveAE's LoadSettings, SupportsRaw/SupportsFormat, the resampler
+    CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE,
+    CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE,
+    CSettings::SETTING_AUDIOOUTPUT_CONFIG,
+    CSettings::SETTING_AUDIOOUTPUT_CHANNELS,
+    CSettings::SETTING_AUDIOOUTPUT_SAMPLERATE,
+    CSettings::SETTING_AUDIOOUTPUT_STEREOUPMIX,
+    CSettings::SETTING_AUDIOOUTPUT_MAINTAINORIGINALVOLUME,
+    CSettings::SETTING_AUDIOOUTPUT_GUISOUNDMODE,
+    CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_AC3TRANSCODE,
+    CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH,
+    CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK,
+    CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY,
+    CSettings::SETTING_AUDIOOUTPUT_ATEMPOTHRESHOLD,
+    CSettings::SETTING_AUDIOOUTPUT_STREAMNOISE,
+    CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE,
+    CSettings::SETTING_AUDIOOUTPUT_MIXSUBLEVEL,
+    CSettings::SETTING_AUDIOOUTPUT_LOWLATENCY,
+    "audiooutput.boostcenter",
 };
 
-int ValueOf(const CSetting& setting)
+int IntOf(const CSetting& setting)
 {
   if (setting.GetType() == SettingType::Boolean)
     return static_cast<const CSettingBool&>(setting).GetValue() ? 1 : 0;
   if (setting.GetType() == SettingType::Integer)
     return static_cast<const CSettingInt&>(setting).GetValue();
   return 0;
+}
+
+// a read of an ID the table does not hold, on a non-main thread: the inventory names it
+void NoteMiss()
+{
+  MAINCOUPLING("SettingsMirror miss");
 }
 } // namespace
 
@@ -97,26 +164,65 @@ CSettingsMirror& CSettingsMirror::Get()
   return mirror;
 }
 
+CSettingsMirror::CSettingsMirror()
+{
+  for (const char* id : MIRRORED)
+  {
+    if (std::ranges::any_of(m_slots, [id](const auto& slot) { return slot->id == id; }))
+      continue;
+    auto slot = std::make_unique<SSlot>();
+    slot->id = id;
+    m_slots.push_back(std::move(slot));
+  }
+  std::ranges::sort(m_slots, {}, [](const auto& slot) -> const std::string& { return slot->id; });
+}
+
+const CSettingsMirror::SSlot* CSettingsMirror::Find(const std::string& id) const
+{
+  if (!m_started.load(std::memory_order_acquire))
+    return nullptr;
+  const auto it = std::ranges::lower_bound(m_slots, id, {}, [](const auto& slot) -> const std::string&
+                                           { return slot->id; });
+  if (it == m_slots.end() || (*it)->id != id || !(*it)->present.load(std::memory_order_acquire))
+    return nullptr;
+  return it->get();
+}
+
+void CSettingsMirror::StoreSlot(SSlot& slot, const CSetting& setting)
+{
+  const SettingType type = setting.GetType();
+  slot.type.store(static_cast<int>(type), std::memory_order_relaxed);
+  if (type == SettingType::String)
+    slot.stringValue.store(std::make_shared<const std::string>(
+                               static_cast<const CSettingString&>(setting).GetValue()),
+                           std::memory_order_release);
+  else if (type == SettingType::Number)
+    slot.numberValue.store(static_cast<const CSettingNumber&>(setting).GetValue(),
+                           std::memory_order_release);
+  else
+    slot.intValue.store(IntOf(setting), std::memory_order_release);
+  slot.present.store(true, std::memory_order_release);
+}
+
 SettingsContainer CSettingsMirror::Load()
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   SettingsContainer ids;
-  std::unique_lock lock(m_mutex);
-  for (const char* id : MIRRORED)
+  std::optional<int> peakValue;
+  for (const auto& slot : m_slots)
   {
-    const auto setting = settings->GetSetting(id);
+    const auto setting = settings->GetSetting(slot->id);
     if (!setting)
     {
-      CLog::Log(LOGWARNING, "OUTPUT: setting {} not found, not mirrored", id);
+      slot->present.store(false, std::memory_order_release);
+      CLog::Log(LOGWARNING, "OUTPUT: setting {} not found, not mirrored", slot->id);
       continue;
     }
-    m_values[id] = ValueOf(*setting);
-    ids.insert(id);
+    StoreSlot(*slot, *setting);
+    ids.insert(slot->id);
+    if (slot->id == CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE)
+      peakValue = slot->intValue.load(std::memory_order_relaxed);
   }
-  const auto peak = m_values.find(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
-  const std::optional<int> peakValue =
-      peak != m_values.end() ? std::optional<int>(peak->second) : std::nullopt;
-  lock.unlock();
   // 5.G2 GT-2 (M6): a profile load's peak is a GUI-only regime epoch
   if (peakValue)
     DISPLAYSTATE::PublishRegimePeak(*peakValue);
@@ -126,31 +232,26 @@ SettingsContainer CSettingsMirror::Load()
 void CSettingsMirror::Start()
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  {
-    std::unique_lock lock(m_mutex);
-    if (m_started)
-      return;
-  }
+  std::unique_lock lock(m_mutex);
+  if (m_started.load())
+    return;
   const SettingsContainer ids = Load();
-  {
-    std::unique_lock lock(m_mutex);
-    m_check = XFILE::CFile::Exists("special://profile/settingsmirror_check");
-    m_started = true;
-  }
+  m_check.store(XFILE::CFile::Exists("special://profile/settingsmirror_check"));
+  m_started.store(true, std::memory_order_release);
   settings->RegisterCallback(this, ids);
   // a profile load sets every value with the callbacks off
   settings->GetSettingsManager()->RegisterSettingsHandler(this);
-  CLog::Log(LOGINFO, "OUTPUT: {} settings mirrored{}", ids.size(),
-            m_check ? ", every read checked against CSettings (settingsmirror_check)" : "");
+  CLog::Log(LOGINFO, "OUTPUT: {} settings mirrored (lock-free reads){}", ids.size(),
+            m_check.load() ? ", every read checked against CSettings (settingsmirror_check)"
+                           : "");
 }
 
 void CSettingsMirror::Stop()
 {
   {
     std::unique_lock lock(m_mutex);
-    if (!m_started)
+    if (!m_started.exchange(false))
       return;
-    m_started = false;
   }
   if (const auto component = CServiceBroker::GetSettingsComponent())
     if (const auto settings = component->GetSettings())
@@ -162,11 +263,8 @@ void CSettingsMirror::Stop()
 
 void CSettingsMirror::OnSettingsLoaded()
 {
-  {
-    std::unique_lock lock(m_mutex);
-    if (!m_started)
-      return;
-  }
+  if (!m_started.load())
+    return;
   Load();
   CLog::Log(LOGINFO, "OUTPUT: settings mirror reloaded");
 }
@@ -180,14 +278,15 @@ bool CSettingsMirror::OnSettingChanging(const std::shared_ptr<const CSetting>& s
 
 void CSettingsMirror::Store(const std::shared_ptr<const CSetting>& setting)
 {
-  const int value = ValueOf(*setting);
-  {
-    std::unique_lock lock(m_mutex);
-    m_values[setting->GetId()] = value;
-  }
+  const std::string& id = setting->GetId();
+  const auto it = std::ranges::lower_bound(m_slots, id, {}, [](const auto& slot) -> const std::string&
+                                           { return slot->id; });
+  if (it == m_slots.end() || (*it)->id != id)
+    return;
+  StoreSlot(**it, *setting);
   // 5.G2 GT-2 (M6): main's peak read takes this value, so the published peak changes with it
-  if (setting->GetId() == CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE)
-    DISPLAYSTATE::PublishRegimePeak(value);
+  if (id == CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE)
+    DISPLAYSTATE::PublishRegimePeak((*it)->intValue.load(std::memory_order_relaxed));
 }
 
 CSettingsMirror::CScopedValue::CScopedValue(const std::string& id, int value)
@@ -204,50 +303,107 @@ CSettingsMirror::CScopedValue::~CScopedValue()
 
 bool CSettingsMirror::IsMirrored(const std::string& id) const
 {
-  std::unique_lock lock(m_mutex);
-  return m_started && m_values.count(id) != 0;
+  return Find(id) != nullptr;
+}
+
+void CSettingsMirror::Check(const std::string& id, const SSlot& slot) const
+{
+  // never on W: a setting's writer may hold its lock while main waits on W
+  if (!m_check.load(std::memory_order_relaxed) || COutputWorker::Get().OnWorker())
+    return;
+  const auto component = CServiceBroker::GetSettingsComponent();
+  const auto settings = component ? component->GetSettings() : nullptr;
+  const auto setting = settings ? settings->GetSetting(id) : nullptr;
+  if (!setting)
+    return;
+  const auto type = static_cast<SettingType>(slot.type.load(std::memory_order_relaxed));
+  if (type == SettingType::String)
+  {
+    const auto mine = slot.stringValue.load(std::memory_order_acquire);
+    const std::string actual = setting->GetType() == SettingType::String
+                                   ? static_cast<const CSettingString&>(*setting).GetValue()
+                                   : std::string();
+    if (!mine || *mine != actual)
+      CLog::Log(LOGWARNING, "OUTPUT: settings mirror DIFF {}: mirror '{}' CSettings '{}'", id,
+                mine ? *mine : std::string(), actual);
+  }
+  else if (type == SettingType::Number)
+  {
+    const double mine = slot.numberValue.load(std::memory_order_acquire);
+    const double actual = setting->GetType() == SettingType::Number
+                              ? static_cast<const CSettingNumber&>(*setting).GetValue()
+                              : 0.0;
+    if (mine != actual)
+      CLog::Log(LOGWARNING, "OUTPUT: settings mirror DIFF {}: mirror {} CSettings {}", id, mine,
+                actual);
+  }
+  else
+  {
+    const int mine = slot.intValue.load(std::memory_order_acquire);
+    const int actual = IntOf(*setting);
+    if (mine != actual)
+      CLog::Log(LOGWARNING, "OUTPUT: settings mirror DIFF {}: mirror {} CSettings {}", id, mine,
+                actual);
+  }
 }
 
 int CSettingsMirror::GetInt(const std::string& id) const
 {
   if (t_override && t_overrideId == id)
     return t_overrideValue;
-  int value = 0;
-  bool mirrored = false;
-  bool check = false;
+  if (const SSlot* slot = Find(id))
   {
-    std::unique_lock lock(m_mutex);
-    const auto it = m_values.find(id);
-    if (m_started && it != m_values.end())
-    {
-      value = it->second;
-      mirrored = true;
-      check = m_check;
-    }
+    Check(id, *slot);
+    // as before: a bool reads 0/1, a string or number 0
+    return slot->intValue.load(std::memory_order_acquire);
   }
+  // before Start, or a setting not in the list: today's read
+  if (m_started.load(std::memory_order_relaxed))
+    NoteMiss();
   const auto component = CServiceBroker::GetSettingsComponent();
   const auto settings = component ? component->GetSettings() : nullptr;
-  if (!mirrored)
-  {
-    // before Start, or a setting not in the list: today's read
-    const auto setting = settings ? settings->GetSetting(id) : nullptr;
-    return setting ? ValueOf(*setting) : 0;
-  }
-  // never on W: a setting's writer may hold its lock while main waits on W
-  if (check && settings && !COutputWorker::Get().OnWorker())
-  {
-    const auto setting = settings->GetSetting(id);
-    const int actual = setting ? ValueOf(*setting) : 0;
-    if (actual != value)
-      CLog::Log(LOGWARNING, "OUTPUT: settings mirror DIFF {}: mirror {} CSettings {}", id, value,
-                actual);
-  }
-  return value;
+  const auto setting = settings ? settings->GetSetting(id) : nullptr;
+  return setting ? IntOf(*setting) : 0;
 }
 
 bool CSettingsMirror::GetBool(const std::string& id) const
 {
   return GetInt(id) != 0;
+}
+
+std::string CSettingsMirror::GetString(const std::string& id) const
+{
+  if (const SSlot* slot = Find(id))
+  {
+    Check(id, *slot);
+    if (static_cast<SettingType>(slot->type.load(std::memory_order_relaxed)) !=
+        SettingType::String)
+      return {};
+    const auto value = slot->stringValue.load(std::memory_order_acquire);
+    return value ? *value : std::string();
+  }
+  if (m_started.load(std::memory_order_relaxed))
+    NoteMiss();
+  const auto component = CServiceBroker::GetSettingsComponent();
+  const auto settings = component ? component->GetSettings() : nullptr;
+  return settings ? settings->GetString(id) : std::string();
+}
+
+double CSettingsMirror::GetNumber(const std::string& id) const
+{
+  if (const SSlot* slot = Find(id))
+  {
+    Check(id, *slot);
+    if (static_cast<SettingType>(slot->type.load(std::memory_order_relaxed)) !=
+        SettingType::Number)
+      return 0.0;
+    return slot->numberValue.load(std::memory_order_acquire);
+  }
+  if (m_started.load(std::memory_order_relaxed))
+    NoteMiss();
+  const auto component = CServiceBroker::GetSettingsComponent();
+  const auto settings = component ? component->GetSettings() : nullptr;
+  return settings ? settings->GetNumber(id) : 0.0;
 }
 
 } // namespace OUTPUT
