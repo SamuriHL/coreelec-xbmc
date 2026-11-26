@@ -110,6 +110,10 @@ public:
                                         std::string& identification,
                                         bool& isReference);
 
+  //! test (vconfigure_mainstall settinglock, 5H-G2): the exclusive lock a SetValue holds across
+  //! its OnSettingChanging/OnSettingChanged callbacks
+  CSharedSection& TestExclusiveSection() const { return m_critical; }
+
 protected:
   // implementation of ISettingCallback
   bool OnSettingChanging(const std::shared_ptr<const CSetting>& setting) override;

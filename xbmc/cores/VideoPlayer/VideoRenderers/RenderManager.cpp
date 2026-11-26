@@ -37,6 +37,9 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
+#include "settings/lib/Setting.h"
+#include "settings/lib/SettingSection.h"
+#include "settings/lib/SettingsManager.h"
 #include "utils/AMLUtils.h"
 #include "windowing/amlogic/DisplayState.h"
 #include "windowing/amlogic/GraphicsRegime.h"
@@ -46,6 +49,7 @@
 #include "windowing/amlogic/OutputWorker.h"
 #include "windowing/amlogic/SettingsMirror.h"
 #include "windowing/amlogic/ThreadRole.h"
+#include "windowing/amlogic/WinSystemAmlogic.h"
 #else
 #define MAINCOUPLING(what) static_cast<void>(0)
 #define MAINCOUPLING_ACCESSOR(what) static_cast<void>(0)
@@ -154,8 +158,11 @@ void TimingInputsWritten()
 }
 
 // test: special://profile/vconfigure_mainstall holds "<form> <event> <ms>"; main stalls once per
-// arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock) or
-// statelock (holding m_statelock). 5.V3's geometry (V3-4) is armed by each special://temp/
+// arming of the event: form sleep (no lock), overlay (the next overlay pass, inside its lock),
+// statelock (holding m_statelock), and the three locks main holds for long by design that no
+// video-side thread may need (5H-G2, draft 42 §13): gfxlock (the graphic context), settinglock
+// (every setting's exclusive lock, as a SetValue holds one across its callbacks) and resource
+// (W's player-call guard, m_resourceSection). 5.V3's geometry (V3-4) is armed by each special://temp/
 // geometrystall_now (main deletes it), so W's and V's changes land while main sleeps; settings
 // (V3-7) sleeps on P's outbound thread before the per-file settings load
 struct SVStall
@@ -169,7 +176,8 @@ const SVStall& VStall()
 {
   static const SVStall stall = []
   {
-    static constexpr const char* forms[] = {"sleep", "overlay", "statelock"};
+    static constexpr const char* forms[] = {"sleep",   "overlay",     "statelock",
+                                            "gfxlock", "settinglock", "resource"};
     static constexpr const char* events[] = {"start", "firstpic", "flush",        "outputchanged",
                                              "stop",  "nextfile", "afterpublish", "after-set",
                                              "playing", "geometry", "settings"};
@@ -1992,6 +2000,48 @@ void CRenderManager::TestStall(const char* event, bool immediate)
     std::unique_lock lock(m_statelock);
     CMainHold hold("test stall");
     t_holdInjected = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+    return;
+  }
+  if (stall.form == "gfxlock")
+  {
+    std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
+    return;
+  }
+  if (stall.form == "resource")
+  {
+    auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+    if (!winSystem)
+    {
+      CLog::Log(LOGWARNING, "VCONFIGURE test stall resource: not the Amlogic windowing, skipped");
+      return;
+    }
+    winSystem->RunUnderPlayerGuard(
+        [&stall] { std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms)); }, false);
+    return;
+  }
+  if (stall.form == "settinglock")
+  {
+    // try_lock: a setting busy in another thread's SetValue is skipped, never waited on (that
+    // thread's callbacks may wait for main)
+    std::vector<std::unique_lock<CSharedSection>> held;
+    int busy = 0;
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    for (const auto& section : settings->GetSettingsManager()->GetSections())
+      for (const auto& category : section->GetCategories())
+        for (const auto& group : category->GetGroups())
+          for (const auto& setting : group->GetSettings())
+          {
+            std::unique_lock<CSharedSection> lock(setting->TestExclusiveSection(),
+                                                  std::try_to_lock);
+            if (lock.owns_lock())
+              held.push_back(std::move(lock));
+            else
+              ++busy;
+          }
+    CLog::Log(LOGWARNING, "VCONFIGURE test stall settinglock: {} setting locks held, {} busy",
+              held.size(), busy);
     std::this_thread::sleep_for(std::chrono::milliseconds(stall.ms));
     return;
   }
