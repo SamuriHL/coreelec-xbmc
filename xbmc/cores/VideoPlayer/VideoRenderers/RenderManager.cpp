@@ -1067,7 +1067,9 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     {
       if (!m_txAttachHold.sinceNs)
       {
-        m_txAttachHold.sinceNs = m_txAttachHold.edgeNs;
+        struct timespec ts = {};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        m_txAttachHold.sinceNs = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
         m_txConfigureHeldGen = m_txAttachHold.gen;
         CLog::Log(LOGINFO, "TXGATE configure held set={}: no presentation coordinator ({})",
                   m_txAttachHold.gen, holdWhy);
@@ -1075,16 +1077,9 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       m_txConfigureHeld = true;
       return false;
     }
-    if (m_txAttachHold.sinceNs)
-    {
-      struct timespec ts = {};
-      clock_gettime(CLOCK_MONOTONIC, &ts);
-      const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
-      CLog::Log(LOGINFO, "TXGATE configure released set={} after {} ms ({})", m_txAttachHold.gen,
-                (now - m_txAttachHold.sinceNs) / 1000000, holdWhy);
-      m_txAttachHold.sinceNs = 0;
-      m_txConfigureHeldGen = 0;
-    }
+    // "attach": the hold stays recorded until the attach below succeeds or the hold ends
+    if (m_txAttachHold.sinceNs && std::strcmp(holdWhy, "attach") != 0)
+      TxAttachReleased(holdWhy);
   }
 #endif
 
@@ -1164,24 +1159,35 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     CLog::Log(LOGINFO, "CRenderManager::Configure - presentation coordinator attached at a configure");
   else if (retryAttach)
   {
-    // E214-1: the attach failed (no vblank in its wait): an engaged set waits for the next one
+    // E214-1: the attach failed (no vblank in its wait): a held set tries again, paced
     const char* holdWhy = nullptr;
-    if (m_txAttachHold.gen != 0 && !m_txAttachHold.bounded)
-    {
-      struct timespec ts = {};
-      clock_gettime(CLOCK_MONOTONIC, &ts);
-      m_txAttachHold.edgeNs = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
-    }
     if (TxAttachWaits(holdWhy))
     {
       if (!m_txAttachHold.sinceNs)
-        m_txAttachHold.sinceNs = m_txAttachHold.edgeNs;
-      m_txConfigureHeldGen = m_txAttachHold.gen;
-      CLog::Log(LOGINFO, "TXGATE configure held set={}: the attach failed ({})",
-                m_txAttachHold.gen, holdWhy);
+      {
+        struct timespec ts = {};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        m_txAttachHold.sinceNs = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+        m_txConfigureHeldGen = m_txAttachHold.gen;
+        CLog::Log(LOGINFO, "TXGATE configure held set={}: the attach failed ({})",
+                  m_txAttachHold.gen, holdWhy);
+      }
       m_txConfigureHeld = true;
       return false;
     }
+    if (m_txAttachHold.sinceNs)
+      TxAttachReleased(holdWhy);
+  }
+  if (m_txAttachHold.sinceNs)
+  {
+    bool attached;
+    {
+      MAINCOUPLING_ACCESSOR("RM m_statelock");
+      std::unique_lock lock(m_statelock);
+      attached = m_coordinator != nullptr;
+    }
+    if (attached)
+      TxAttachReleased("attached");
   }
   if (V24On())
   {
@@ -5005,8 +5011,10 @@ void CRenderManager::TxReacceptLocked(const char* why, STxLog& log)
 
 #if defined(HAS_LIBAMCODEC)
 // E214-1: an engaged start's first picture inside a display span waits for the coordinator
-// instead of taking main's pass (a legacy verdict). True while it waits; `why` names the wait,
-// or on false what ended it
+// instead of taking main's pass (a legacy verdict). The coordinator queues no vblank events
+// while no video is attached, so past the span the attach itself is retried, paced; a
+// deferred Restore keeps the CRTC dark until the start's own mode set. True while it waits;
+// `why` names the wait, or on false what ended it ("attach": try the attach now)
 bool CRenderManager::TxAttachWaits(const char*& why)
 {
   why = "candidate gone";
@@ -5016,8 +5024,8 @@ bool CRenderManager::TxAttachWaits(const char*& why)
   // leaf reads, before the RM locks
   const bool spanOpen =
       OUTPUT::COutputWorker::UnpackWord(OUTPUT::COutputWorker::Get().LoadWord()).spanOpen;
-  CPresentationCoordinator* coordinator = CPresentationCoordinator::Get();
-  const int64_t lastVblankNs = coordinator ? coordinator->LastVblankNs() : 0;
+  auto* winSystem = dynamic_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  const bool restoreOwed = winSystem && winSystem->RestoreOwed();
   unsigned int gen = 0;
   {
     MAINCOUPLING_ACCESSOR("RM m_statelock");
@@ -5039,14 +5047,21 @@ bool CRenderManager::TxAttachWaits(const char*& why)
   {
     hold = {};
     hold.gen = gen;
-    hold.edgeNs = now;
+  }
+  const bool lost = m_displayLost;
+  if (spanOpen || lost || restoreOwed)
+    hold.spanSeen = true;
+  // a start that saw no span keeps today's path: one attach at the configure
+  if (!hold.spanSeen)
+  {
+    why = "no span";
+    return false;
   }
   if (hold.bounded)
   {
     why = "bound 10 s";
     return false;
   }
-  const bool lost = m_displayLost;
   if (spanOpen)
     hold.boundFromNs = 0;
   else
@@ -5060,19 +5075,31 @@ bool CRenderManager::TxAttachWaits(const char*& why)
       return false;
     }
   }
-  if (spanOpen || lost)
+  if (spanOpen || lost || restoreOwed)
   {
-    hold.edgeNs = now;
-    why = spanOpen ? "span open" : "display lost";
+    why = spanOpen ? "span open" : lost ? "display lost" : "restore owed";
     return true;
   }
-  if (lastVblankNs <= hold.edgeNs)
+  // each try waits up to 150 ms on V for a vblank (AttachVideo)
+  if (hold.lastTryNs && now - hold.lastTryNs < 250'000'000LL)
   {
-    why = "no vblank since the span";
+    why = "attach retry";
     return true;
   }
-  why = "vblank back";
+  hold.lastTryNs = now;
+  why = "attach";
   return false;
+}
+
+void CRenderManager::TxAttachReleased(const char* why)
+{
+  struct timespec ts = {};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const int64_t now = static_cast<int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  CLog::Log(LOGINFO, "TXGATE configure released set={} after {} ms ({})", m_txAttachHold.gen,
+            (now - m_txAttachHold.sinceNs) / 1000000, why);
+  m_txAttachHold.sinceNs = 0;
+  m_txConfigureHeldGen = 0;
 }
 #endif
 

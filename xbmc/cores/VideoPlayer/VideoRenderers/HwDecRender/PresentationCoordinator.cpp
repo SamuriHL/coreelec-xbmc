@@ -385,12 +385,6 @@ bool CPresentationCoordinator::AttachVideo(CRenderManager* renderManager)
   return delivering;
 }
 
-int64_t CPresentationCoordinator::LastVblankNs()
-{
-  std::unique_lock lock(m_vblankMutex);
-  return m_lastVblankNs;
-}
-
 void CPresentationCoordinator::DetachVideo(CRenderManager* renderManager)
 {
   std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);

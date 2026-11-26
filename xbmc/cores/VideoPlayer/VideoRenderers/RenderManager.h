@@ -1181,12 +1181,14 @@ protected:
   struct
   {
     unsigned int gen = 0; //!< the set held; other members belong to it
-    int64_t sinceNs = 0; //!< the hold's start
-    int64_t edgeNs = 0; //!< a vblank after this releases (b)
+    int64_t sinceNs = 0; //!< the hold's start; 0 = not held
     int64_t boundFromNs = 0; //!< the 10 s bound's start (span closed); 0 = not counting
+    int64_t lastTryNs = 0; //!< the last attach try after the span
+    bool spanSeen = false; //!< a span, a loss or an owed Restore seen for this set
     bool bounded = false; //!< the bound ran out: this set is not held again
   } m_txAttachHold; //!< V only
   bool TxAttachWaits(const char*& why);
+  void TxAttachReleased(const char* why);
   bool m_txPrerollDue = false; //!< C: committed and not lost, read in the m_statelock section
   bool m_txPrerollThisTick = false; //!< C: this tick's flip is the pre-roll
   bool m_txFirstRelease = false; //!< C: the next release is the engaged open's first (no drop)
