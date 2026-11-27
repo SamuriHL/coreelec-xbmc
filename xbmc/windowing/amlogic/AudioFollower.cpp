@@ -41,6 +41,8 @@ constexpr double CLOCK_SPEED_PPM = 100.0; // off 1:1 by more: the content does n
 constexpr size_t FIT_SECONDS = 60;
 constexpr size_t FIT_MIN = 30;
 constexpr int REPORT_SECONDS = 10;
+// P5-42: a vblank more than this off the grid the anchor counts on (sequence x nominal period)
+constexpr double GRID_BREAK_NS = 500000;
 
 double Median(std::vector<double> v)
 {
@@ -222,6 +224,7 @@ void CAudioFollower::Run()
   bool haveDrift = false;            // d0 fitted at least once since the sink opened
   double lastDrift = 0;
   int64_t lastMono = 0;
+  int64_t gridSeq = 0, gridNs = 0;   // the last real vblank seen (P5-42)
 
   std::vector<double> bin;           // ψ samples in the current second
   int64_t binStartNs = 0;
@@ -314,7 +317,35 @@ void CAudioFollower::Run()
       rate = ap[AP_RATE];
       epoch = tl[TL_EPOCH];
       reset();
+      gridNs = 0;
     }
+
+    // P5-42: the anchor counts on one vblank grid: time = sequence x nominal period. A dark
+    // CRTC (a display loss and its restore, a mode set at the same period) leaves the kernel's
+    // sequence short of the vblanks' time (G12B: ~18 vblanks over a 1 s loss), and a mode set
+    // at the same period moves the grid's phase; neither bumps TL_EPOCH. Either way the grid
+    // the anchor counts on is gone: measure afresh on the new one, as after a pause.
+    if (gridNs && tl[TL_VBLANK_NS] != gridNs)
+    {
+      const double gridPeriodNs =
+          1e9 * static_cast<double>(tl[TL_PERIOD_NUM]) / tl[TL_PERIOD_DEN];
+      const int64_t counted = tl[TL_KERNEL_SEQ] - gridSeq;
+      const double off = static_cast<double>(tl[TL_VBLANK_NS] - gridNs) - counted * gridPeriodNs;
+      if (std::fabs(off) > GRID_BREAK_NS && anchored)
+      {
+        CLog::Log(LOGINFO,
+                  "FOLLOWER open {}: the vblank grid broke: {} vblanks counted over {:.3f} ms, "
+                  "{:+.3f} ms off the grid; measuring afresh",
+                  openId, counted, (tl[TL_VBLANK_NS] - gridNs) / 1e6, off / 1e6);
+        anchored = false;
+        landingPending = true;
+        psi.clear();
+        appliedRecent.clear();
+        appliedIntegral = 0;
+      }
+    }
+    gridNs = tl[TL_VBLANK_NS];
+    gridSeq = tl[TL_KERNEL_SEQ];
 
     // Paused, the sink plays pause bursts in whole milliseconds: its count is
     // no phase. Hold the trim, and on resume measure afresh from there.
