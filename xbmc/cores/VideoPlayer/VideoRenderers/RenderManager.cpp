@@ -6833,7 +6833,7 @@ void CRenderManager::LogFpsMismatch(const SFpsMismatch& run, int64_t endNs, bool
 
 void CRenderManager::PresentTick(const SPresentTick& tick, SPresentResult& result)
 {
-  // TEMP TICKDIAG (timebase audit Q6): where a slow coordinator tick spends its time
+  // TICKDIAG (P5-2: kept): where a slow coordinator tick spends its time
   using diagClock = std::chrono::steady_clock;
   const auto diag0 = diagClock::now();
   auto diagLock = diag0, diagPresent = diag0, diagPrepare = diag0, diagFrame = diag0;

@@ -2450,7 +2450,7 @@ void CPresentationCoordinator::CommitWorker()
     m_committing = Committing();
     m_diagUnblockedNs = MonotonicNs();
     m_report.commitMax = std::max(m_report.commitMax, took);
-    // TEMP TICKDIAG (timebase audit Q6)
+    // TICKDIAG (P5-2: kept): a slow commit, logged through GTLOG (never blocks)
     if (took >= 20000.0)
       GRAPHICSTICK::GTLogF(LOGINFO, "TICKDIAG commit {:.0f} us (ui {} graphics {})", took,
                 commit.has[PLANE_UI], commit.has[PLANE_GRAPHICS]);
@@ -3342,7 +3342,7 @@ bool CPresentationCoordinator::RunVideoTick(SPresentTick& tick)
 
   const int64_t diagWait = MonotonicNs();
   std::unique_lock lock = LOCKWAIT::Take(m_videoMutex, LOCKWAIT::VIDEO);
-  // TEMP TICKDIAG (timebase audit Q6)
+  // TICKDIAG (P5-2: kept): a slow video mutex wait, logged through GTLOG
   if (MonotonicNs() - diagWait > 5000000)
     GRAPHICSTICK::GTLogF(LOGINFO, "TICKDIAG video mutex wait {} us",
               (MonotonicNs() - diagWait) / 1000);
