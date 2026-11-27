@@ -252,10 +252,19 @@ bool CWinSystemAmlogic::MessagePump()
   // 5.B3-7b: main's sets are applied and their GuiInputs published. A late reply is taken only
   // at a top-level pump; a nested one (a modal) publishes GC as it stands, as HEAD's nested
   // HotplugEvent read it, so the hotplug waits at most one pump there
-  if (m_wHotplug && m_mainRequests == 0 &&
-      (m_lateReplies == 0 || (CServiceBroker::GetGUI() &&
-                              CServiceBroker::GetGUI()->GetWindowManager().IsNested())))
-    m_guiInputsStale = false;
+  if (m_wHotplug && m_mainRequests == 0)
+  {
+    const bool nested =
+        CServiceBroker::GetGUI() && CServiceBroker::GetGUI()->GetWindowManager().IsNested();
+    if (m_lateReplies == 0 || nested)
+    {
+      m_guiInputsStale = false;
+      // P5-61: W counts a late reply before it raises the flag, so one that lands between the
+      // check and the store is seen here
+      if (!nested && m_lateReplies != 0)
+        m_guiInputsStale = true;
+    }
+  }
   DISPLAYSTATE::Tick();
   return false;
 }
