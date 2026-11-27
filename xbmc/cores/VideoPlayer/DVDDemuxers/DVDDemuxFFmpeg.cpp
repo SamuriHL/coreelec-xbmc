@@ -578,6 +578,8 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
       {
         CLog::Log(LOGERROR, "{} - error probing input format, {}", __FUNCTION__,
                   CURL::GetRedacted(strFile));
+        // E210-9: Reset() keeps reading this object: never leave an unopened context
+        Dispose();
         return false;
       }
       else
