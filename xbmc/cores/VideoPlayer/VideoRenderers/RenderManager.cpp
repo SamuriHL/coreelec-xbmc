@@ -6759,6 +6759,10 @@ void CRenderManager::ReencodeOnOutputChange()
     CMainHold hold("B2-8 re-encode", false);
     if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
       outcome = "not configured, the next picture configures";
+    // P5-89: a non-AML renderer's ConfigChanged reads m_picture's null videoBuffer, as V2-3's
+    // on path refuses it
+    else if (!dynamic_cast<CRendererAML*>(m_pRenderer.get()))
+      outcome = "not an Amlogic renderer, no GUI encoding";
     else if (!m_pRenderer->ConfigChanged(m_picture))
       outcome = "encoding current";
     else
