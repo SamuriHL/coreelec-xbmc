@@ -170,6 +170,7 @@ private:
   std::string   GetVfmMap(const std::string &name);
   void          SetVfmMap(const std::string &name, const std::string &map);
   int           DequeueBuffer();
+  uint64_t      RestampDecodeOrder(uint64_t label, bool& stray);
   unsigned int  GetDecoderVideoRate();
   std::string   GetHDRStaticMetadata(bool dv_enable);
 
@@ -187,6 +188,11 @@ private:
   bool             m_speedFix = false; //!< 5.C, latched at OpenDecoder
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
+  //! P5-93: VC-1 with decode-order timestamps (AVI, MKV VfW mode)
+  bool             m_restamp = false;
+  bool             m_restampAnchored = false;
+  double           m_restampPrev = 0.0;
+  int              m_restampStrays = 0;
   uint32_t         m_bufferIndex;
 
   CRect            m_dst_rect;

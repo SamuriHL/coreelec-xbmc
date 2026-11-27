@@ -2204,6 +2204,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
   m_decoderEos = false;
   BDSTAGE::DecoderOpen();
   m_cur_pts = DVD_NOPTS_VALUE;
+  m_restamp = false;
+  m_restampAnchored = false;
   m_dst_rect.SetRect(0, 0, 0, 0);
   m_zoom = -1.0f;
   m_contrast = -1;
@@ -2738,7 +2740,11 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL, bool isDualSt
     case VFORMAT_VC1:
       // vc1 in an avi file
       if (m_hints.ptsinvalid)
+      {
         am_private->gcodec.param = (void*)KEYFRAME_PTS_ONLY;
+        // P5-93: every picture then comes out labelled with its decode time
+        m_restamp = true;
+      }
       am_private->gcodec.dec_mode = STREAM_TYPE_SINGLE;
       break;
     case VFORMAT_HEVC:
@@ -3277,6 +3283,7 @@ void CAMLCodec::Reset()
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_state = 0;
+  m_restampAnchored = false;
   m_buffer_level_ready = false;
   m_starve_bypass = false;
   m_no_data_since_reset = true;
@@ -3764,6 +3771,43 @@ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len, int
   return level;
 }
 
+// P5-93: the pictures come out in display order, each labelled with its own
+// decode time. That is a B picture's display time; an I or P picture shows
+// after the B pair decoded behind it, at the next anchor's decode time, so
+// its label lags the picture before it: it takes that picture's time plus a
+// frame (ffmpeg's times, frame for frame). A label far behind is a stray (the
+// decoder hands out a P picture ~14 frames late, its picture shown 0.5 s
+// ago in the stream) and is dropped here. Three that agree are a real jump.
+uint64_t CAMLCodec::RestampDecodeOrder(uint64_t label, bool& stray)
+{
+  stray = false;
+  const double dur = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
+  const double l = static_cast<double>(label);
+  if (dur <= 0.0 || !m_restampAnchored || l > m_restampPrev + dur / 2)
+  {
+    m_restampAnchored = true;
+    m_restampPrev = l;
+    m_restampStrays = 0;
+    return label;
+  }
+  if (l < m_restampPrev - 4 * dur)
+  {
+    if (++m_restampStrays < 3)
+    {
+      stray = true;
+      return label;
+    }
+    CLog::Log(LOGINFO, "CAMLCodec::RestampDecodeOrder: labels {:.0f} ms back, following them",
+              (m_restampPrev - l) / 1000);
+    m_restampPrev = l;
+    m_restampStrays = 0;
+    return label;
+  }
+  m_restampStrays = 0;
+  m_restampPrev += dur;
+  return static_cast<uint64_t>(std::llround(m_restampPrev));
+}
+
 int CAMLCodec::DequeueBuffer()
 {
   v4l2_buffer vbuf = v4l2_buffer();
@@ -3782,20 +3826,35 @@ int CAMLCodec::DequeueBuffer()
 
   if (ret == 0)
   {
+    const uint64_t lastPts = m_last_pts;
     m_last_pts = m_cur_pts;
 
     m_cur_pts =  static_cast<uint64_t>(static_cast<uint32_t>(vbuf.timestamp.tv_sec)) << 32;
     m_cur_pts += static_cast<uint32_t>(vbuf.timestamp.tv_usec);
+    bool stray = false;
+    if (m_restamp)
+      m_cur_pts = RestampDecodeOrder(m_cur_pts, stray);
 
     GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGAVTIMING, "CAMLCodec::DequeueBuffer: pts:{:.3f} idx:{:d}",
   			static_cast<double>(m_cur_pts) /  DVD_TIME_BASE, vbuf.index);
 
+    const uint32_t lastIndex = m_bufferIndex;
     m_bufferIndex = vbuf.index;
     if (m_releaseInOrder)
     {
       std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
       if (amlVideoFile == m_amlVideoFile)
         m_outstanding.push_back({vbuf.index, false});
+    }
+    if (stray)
+    {
+      GRAPHICSTICK::GTLogFC(LOGDEBUG, LOGVIDEO, "CAMLCodec::DequeueBuffer: stray label {:.3f} idx:{:d} dropped",
+                static_cast<double>(m_cur_pts) / DVD_TIME_BASE, vbuf.index);
+      m_cur_pts = m_last_pts;
+      m_last_pts = lastPts;
+      m_bufferIndex = lastIndex;
+      ReleaseFrame(vbuf.index, true, m_sessionGen.load());
+      return EAGAIN;
     }
   }
   else if (ret != EAGAIN)
@@ -4010,7 +4069,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     m_tp_last_frame = std::chrono::steady_clock::now();
     BDSTAGE::PictureEmitted();
 
-    if (m_last_pts == DVD_NOPTS_VALUE)
+    // P5-93: a stray's label says nothing about the frame interval
+    if (m_last_pts == DVD_NOPTS_VALUE || m_restamp)
       pVideoPicture->iDuration = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
     else
     {
