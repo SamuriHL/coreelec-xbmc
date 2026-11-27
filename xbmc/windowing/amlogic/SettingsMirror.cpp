@@ -111,6 +111,8 @@ const char* const MIRRORED[] = {
     CSettings::SETTING_FILECACHE_MEMORYSIZE,
     CSettings::SETTING_FILECACHE_CHUNKSIZE,
     CSettings::SETTING_FILECACHE_READFACTOR,
+    // CDirectory::GetDirectory's hidden-file filter (P lists a disc or a folder at a start)
+    CSettings::SETTING_FILELISTS_SHOWHIDDEN,
     // P/A: the passthrough codec's dialnorm
     CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM,
     CSettings::SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM,

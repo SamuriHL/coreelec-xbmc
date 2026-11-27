@@ -29,6 +29,7 @@
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 #include "video/VideoFileItemClassify.h"
+#include "windowing/amlogic/SettingsMirror.h"
 
 using namespace KODI;
 using namespace XFILE;
@@ -270,7 +271,7 @@ bool CDirectory::GetDirectory(const CURL& url,
     }
     // filter hidden files
     //! @todo we shouldn't be checking the gui setting here, callers should use getHidden instead
-    if (!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_FILELISTS_SHOWHIDDEN) && !(hints.flags & DIR_FLAG_GET_HIDDEN))
+    if (!OUTPUT::CSettingsMirror::Get().GetBool(CSettings::SETTING_FILELISTS_SHOWHIDDEN) && !(hints.flags & DIR_FLAG_GET_HIDDEN))
     {
       for (int i = 0; i < items.Size(); ++i)
       {
