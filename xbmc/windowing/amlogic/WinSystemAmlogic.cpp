@@ -243,8 +243,28 @@ void CWinSystemAmlogic::HotplugEvent()
   std::string preferred_mode = m_amlDisplay->aml_get_preferred_mode();
   RESOLUTION res = static_cast<RESOLUTION>(RES_DESKTOP);
 
+  // RefreshResolutions() makes the live mode the desktop; during playback that
+  // is the video's mode, so keep the desktop we had if it is still offered
+  const RESOLUTION_INFO desktop = CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP);
+
   CDisplaySettings::GetInstance().ClearCustomResolutions();
   RefreshResolutions();
+
+  if (m_videoModeAtHotplug)
+  {
+    for (size_t i = RES_CUSTOM; i < CDisplaySettings::GetInstance().ResolutionInfoSize(); i++)
+    {
+      const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(i);
+      if (StringUtils::EqualsNoCase(info.strId, desktop.strId) &&
+          std::abs(info.fRefreshRate - desktop.fRefreshRate) < 0.01f &&
+          info.dwFlags == desktop.dwFlags)
+      {
+        CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = info;
+        break;
+      }
+    }
+  }
+
   CDisplaySettings::GetInstance().ApplyCalibrations();
 
   if (!preferred_mode.empty())
