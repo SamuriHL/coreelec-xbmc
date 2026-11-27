@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <unordered_set>
 
 #include <dlfcn.h>
 #include <unistd.h>
@@ -64,6 +65,17 @@ void LogMainCoupling(const SCouplingSite& site, int role, const void* caller)
   else
     CLog::Log(LOGINFO, "MAINCOUPLING {}@{}:{} role={} tid={} caller={}", site.what, file,
               site.line, ROLE_NAMES[role], gettid(), caller);
+}
+
+void NoteSettingRead(const char* what, const std::string& id)
+{
+  const int role = ThreadRole();
+  if (role <= ROLE_MAIN)
+    return;
+  thread_local std::unordered_set<std::string> seen;
+  if (seen.insert(id).second)
+    CLog::Log(LOGINFO, "MAINCOUPLING setting {} {} role={} tid={}", what, id, ROLE_NAMES[role],
+              gettid());
 }
 
 } // namespace OUTPUT

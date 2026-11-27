@@ -202,6 +202,7 @@ std::shared_ptr<CSettingSection> CSettingsBase::GetSection(const std::string& se
 bool CSettingsBase::GetBool(const std::string& id) const
 {
   MAINCOUPLING_ACCESSOR("CSettings GetBool");
+  OUTPUT::NoteSettingRead("GetBool", id);
   return m_settingsManager->GetBool(id);
 }
 
@@ -218,6 +219,7 @@ bool CSettingsBase::ToggleBool(const std::string& id)
 int CSettingsBase::GetInt(const std::string& id) const
 {
   MAINCOUPLING_ACCESSOR("CSettings GetInt");
+  OUTPUT::NoteSettingRead("GetInt", id);
   return m_settingsManager->GetInt(id);
 }
 
@@ -229,6 +231,7 @@ bool CSettingsBase::SetInt(const std::string& id, int value)
 double CSettingsBase::GetNumber(const std::string& id) const
 {
   MAINCOUPLING_ACCESSOR("CSettings GetNumber");
+  OUTPUT::NoteSettingRead("GetNumber", id);
   return m_settingsManager->GetNumber(id);
 }
 
@@ -240,6 +243,7 @@ bool CSettingsBase::SetNumber(const std::string& id, double value)
 std::string CSettingsBase::GetString(const std::string& id) const
 {
   MAINCOUPLING_ACCESSOR("CSettings GetString");
+  OUTPUT::NoteSettingRead("GetString", id);
   return m_settingsManager->GetString(id);
 }
 

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 #include <cstdint>
 
 // Phase 5 step 5.V1: the role of a video-side thread (design I1), for MAINCOUPLING. Thread names
@@ -48,6 +49,11 @@ struct SCouplingSite
 };
 
 void LogMainCoupling(const SCouplingSite& site, int role, const void* caller);
+
+//! 5H-G1 Q-C: a tagged video-side thread read setting <id> from CSettings, not the mirror. Logs
+//! "MAINCOUPLING setting <what> <id> role=<role>" once per (thread, id); the set is the thread's own
+//! (no lock). The caller of an accessor does not resolve in the stripped binary; the id does.
+void NoteSettingRead(const char* what, const std::string& id);
 
 //! the last MAINCOUPLING site this thread passed: RM's tracked locks name their take by it
 //! (RC22: the binary is stripped and LTO-built, so a return address does not resolve)
