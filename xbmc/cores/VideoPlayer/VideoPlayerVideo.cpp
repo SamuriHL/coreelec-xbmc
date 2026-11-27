@@ -279,6 +279,8 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
   // stream's (a stale "progressive" with a stale interlace flag halved the next file's rate)
   m_streamHwDecoder = m_pVideoCodec && hwDecoder;
   m_vfmt.clear();
+  // as ResetVideoCodecInfo does for a fresh open; the vfmt read sets it again
+  m_processInfo.SetVideoInterlaced(false);
   m_retryProgressive = 0;
   // a decoder opened inside a pause or a display hold starts paused (P4-38)
   m_codecSpeedFix = aml_codec_speed_fix();
