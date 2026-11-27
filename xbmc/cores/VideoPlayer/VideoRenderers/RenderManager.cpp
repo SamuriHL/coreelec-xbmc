@@ -3601,6 +3601,7 @@ const char* TxAnswerName(CRenderManager::TxAnswer answer)
       return "behind-gui";
     case A::FAILED:
     case A::FAILED_SET:
+    case A::DROPPED:
       return "failed";
     case A::RECOVERING:
       return "recovering";
@@ -3716,6 +3717,12 @@ void CRenderManager::HandBackTxLocked(STxResolution& r, bool rmRetry)
     else
       r.note = " (frac arm restored)";
   }
+  // as the early drop's reraise: the job never reached the wire
+  else if (m_txOutcome.answer == TxAnswer::DROPPED)
+  {
+    RestoreTxArmLocked("start job dropped");
+    r.note = " (frac arm restored)";
+  }
 }
 
 void CRenderManager::LogTxOutcomeLocked(const STxResolution& r) const
@@ -3748,7 +3755,7 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
       m_txCommitInFlight = false;
     }
     else if (a == TxAnswer::BEHIND || a == TxAnswer::FAILED || a == TxAnswer::FAILED_SET ||
-             a == TxAnswer::RECOVERING)
+             a == TxAnswer::DROPPED || a == TxAnswer::RECOVERING)
       r.action = "wait"; // code review B-H1 (b): the wait cells are logged
     return;
   }

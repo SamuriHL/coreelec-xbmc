@@ -583,6 +583,8 @@ struct STransactionHooks
   int startCasDelayMs = 0;
   //! transaction_capschange: W's caps check reads the sink as changed once
   bool capsChange = false;
+  //! transaction_latedrop: a GUI set drops the Start job just after a fullscreen exit read it
+  bool lateDrop = false;
 };
 STransactionHooks aml_transaction_hooks();
 void aml_timing_inputs_bump();

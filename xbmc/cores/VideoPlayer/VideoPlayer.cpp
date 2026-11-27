@@ -4537,9 +4537,13 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     using Need = CRenderManager::TxNeed;
     bool past = false;
     if (need == Need::LEFT && m_txStep == TxStep::POSTED)
+    {
       // r9 M1: a fullscreen exit after the post never drops the job; code review A-M1: one GC
       // dropped never reaches the wire and is answered by nobody (reraise)
       past = m_txJob->state.load() != State::DROPPED;
+      if (past && aml_transaction_hooks().lateDrop)
+        DISPLAYSTATE::StartJobDropForGuiSet(*m_txJob, "transaction_latedrop");
+    }
     else if (m_txJob->state.load() == State::NOT_POSTED)
       m_txJob->Cas({State::NOT_POSTED}, State::DROPPED); // never posted: nothing to log
     else if (!DISPLAYSTATE::StartJobDropForExit(*m_txJob, site))
@@ -4564,7 +4568,7 @@ void CVideoPlayer::EndTransactionToLegacy(const char* site,
     {
       CLog::Log(LOGINFO, "TXSTART T={} dropped by a GUI set at the exit: answer failed",
                 m_txJob->T);
-      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::FAILED);
+      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::DROPPED);
       m_txEndedLeft = false;
     }
   }
@@ -6072,7 +6076,7 @@ void CVideoPlayer::TxOnReply(CDVDMsg& msg)
     if (r.kind == STxReply::Kind::SETTLE_DONE &&
         r.settle == DISPLAYSTATE::StartSettleKind::DROPPED && m_txJob && r.T == m_txJob->T &&
         std::exchange(m_txEndedLeft, false) && m_txEndedGen && m_txEndedGen == m_txJob->gen)
-      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::FAILED);
+      m_renderManager.TxAdoptAnswer(m_txEndedGen, CRenderManager::TxAnswer::DROPPED);
     return;
   }
   // 5.E2-12a D2.1 (r2 M-5): an overtaken or superseded job's reply, queued before its sink was

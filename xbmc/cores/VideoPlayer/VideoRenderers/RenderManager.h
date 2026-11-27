@@ -377,6 +377,7 @@ public:
     BEHIND_GUI,
     FAILED,
     FAILED_SET,
+    DROPPED, //!< failed: a GUI set dropped the job after a `left` exit, before the wire
     RECOVERING,
     RECOVERED,
   };

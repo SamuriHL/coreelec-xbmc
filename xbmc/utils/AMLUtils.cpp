@@ -3219,6 +3219,7 @@ STransactionHooks ReadTransactionHooks()
     }
   }
   hooks.capsChange = TransactionHookFlag("transaction_capschange");
+  hooks.lateDrop = TransactionHookFlag("transaction_latedrop");
   return hooks;
 }
 } // namespace
