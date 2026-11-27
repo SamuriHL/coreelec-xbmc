@@ -776,8 +776,9 @@ protected:
   std::chrono::steady_clock::time_point m_recueSince;
   unsigned int m_recueDropped = 0;
   bool m_recueJoinPending = false;
-  bool PrepareRecue(int64_t& pos);
-  bool StartRecue(int64_t pos);
+  //! P5-12a: an audio or a subtitle switch re-reads its stream alone
+  bool PrepareRecue(int64_t& pos, StreamType kind);
+  bool StartRecue(int64_t pos, StreamType kind);
   bool RecueGateDrops(const DemuxPacket* packet);
   void NoteDelivered(const DemuxPacket* packet);
   void ClearRecue();
