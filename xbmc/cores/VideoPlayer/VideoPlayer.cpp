@@ -5562,9 +5562,12 @@ void CVideoPlayer::TxDecide()
   // 5.E2-9c D3: the PRIME bound's latch (no picture; TxStartGatePass clears it for one)
   const bool hint = m_txHintDecide;
   // as main's UpdateResolution (a3f8a5614c): a window the fullscreen switch closes may set its
-  // own mode on the way out; a Back ends the wait for step 1
+  // own mode on the way out; a Back ends the wait for step 1. GTD16-1: only the calibration
+  // window does (its restore), so any other start decides on its own fullscreen request and a
+  // later exit is the job's `left` exit
   if (!DISPLAYSTATE::FullScreenVideoWindowActive() &&
-      DISPLAYSTATE::FullScreenExits() == m_txExitsAtOpen)
+      DISPLAYSTATE::FullScreenExits() == m_txExitsAtOpen &&
+      DISPLAYSTATE::GetDecideInputs().calibrating)
   {
     // a hint decision's render timeout counts from the bound (no configure)
     if (!m_renderManager.TxRenderTimedOut(
