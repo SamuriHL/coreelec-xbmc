@@ -2872,9 +2872,15 @@ bool CDVDInputStreamBluray::CanRecueFrom(int64_t pos)
   return !why;
 }
 
-bool CDVDInputStreamBluray::Recue(int64_t pos)
+bool CDVDInputStreamBluray::Recue(int64_t pos, bool exact)
 {
+#if defined(BD_HAVE_SEEK_PACKET)
+  // the GOP before the packet is what the video already has (7-12 MB on M3GAN)
+  const int64_t landed = exact ? bd_seek_packet(m_bd, static_cast<uint64_t>(pos))
+                               : bd_seek(m_bd, static_cast<uint64_t>(pos));
+#else
   const int64_t landed = bd_seek(m_bd, static_cast<uint64_t>(pos));
+#endif
   if (landed < 0)
     return false;
   ResetIsoCacheAccessPattern();

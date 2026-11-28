@@ -10262,7 +10262,8 @@ bool CVideoPlayer::StartRecue(int64_t pos, StreamType kind)
         it->first == std::make_pair(static_cast<int64_t>(kept.demuxerId), kept.id);
     it = current ? std::next(it) : m_recueGate.erase(it);
   }
-  if (!m_pInputBluray->Recue(pos))
+  // a subtitle keeps the entry point: its display set is muxed ahead of the clock
+  if (!m_pInputBluray->Recue(pos, audio))
   {
     m_recueGate.clear();
     return false;

@@ -463,9 +463,10 @@ public:
   /* An audio track switch reads the title again from `pos` for the new track
    * only (design 15.34): only within the playitem being read, with nothing
    * held or pending, outside BD-J titles (an xlet re-anchors on a seek) and
-   * MVC. Recue seeks there by byte; the read then snaps to an entry point. */
+   * MVC. Recue seeks there by byte; the read snaps to an entry point unless
+   * `exact` (libbluray patch 24: from the packet, for a new audio track only). */
   bool CanRecueFrom(int64_t pos);
-  bool Recue(int64_t pos);
+  bool Recue(int64_t pos, bool exact);
 
   /* disc carries BD-J titles: the menu->title decoder keep-alive is scoped to
    * HDMV-only discs until the BD-J interaction (avformat teardown crash under
