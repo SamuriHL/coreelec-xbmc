@@ -3506,6 +3506,10 @@ CRenderManager::ModeFirstState CRenderManager::GetModeFirstState(unsigned int ge
     return ModeFirstState::UNCONFIGURED;
   if (m_modeFirstDecidedGen == gen)
     return ModeFirstState::DECIDED;
+  // E28B-12a: a windowed hand-back's trigger waits for the return to fullscreen
+  if (m_txOutcome.leftHandBack && m_txOutcome.handedBack && m_txOutcome.gen == gen &&
+      !m_modeFirstInFlight && !m_resolutionInFlight)
+    return ModeFirstState::UNCHANGED;
   if (m_bTriggerUpdateResolution || m_modeFirstInFlight || m_resolutionInFlight)
     return ModeFirstState::PENDING;
   return ModeFirstState::UNCHANGED;
@@ -3785,8 +3789,12 @@ void CRenderManager::ResolveTxOutcomeLocked(STxResolution& r)
       if (adopted || a == TxAnswer::BEHIND)
         CountTxStartLocked(r, adopted ? "count" : "count-only");
       else
-        // failed: main decides when fullscreen again (legacy's rm retry, bounded by the cap)
+      {
+        // failed: main decides when fullscreen again (legacy's rm retry). E28B-12a: nothing
+        // to decide while windowed, so CN opens on the GUI's mode, the trigger kept
         HandBackTxLocked(r, true);
+        o.leftHandBack = true;
+      }
       m_txCommitInFlight = false;
       return;
     case TxNeed::JOB_OK:

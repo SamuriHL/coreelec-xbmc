@@ -1000,6 +1000,7 @@ protected:
     TxAnswer answer = TxAnswer::NONE;
     bool counted = false;
     bool handedBack = false; //!< RM set the trigger for main (hand-back or reraise)
+    bool leftHandBack = false; //!< E28B-12a: handed back windowed, main decides on the return
     bool anchor = false; //!< the count sets the disc-mode anchor (the start's choice, D4)
   } m_txOutcome;
   //! E2-8b D5b: one table step's effect, applied after m_statelock
