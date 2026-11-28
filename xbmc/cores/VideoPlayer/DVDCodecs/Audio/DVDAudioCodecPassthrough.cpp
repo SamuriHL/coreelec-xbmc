@@ -525,9 +525,75 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   // the next packet's frame would replace it in the buffer
   do
   {
-    m_frameDropped = false;
-    GetFrame(frame);
-  } while (m_frameDropped && m_boundaryEnabled);
+    do
+    {
+      m_frameDropped = false;
+      GetFrame(frame);
+    } while (m_frameDropped && m_boundaryEnabled);
+  } while (!CollectBurst(frame));
+}
+
+// P5-94: an E-AC-3 syncframe of 1, 2 or 3 blocks is a part of an IEC 61937 burst
+// (6 blocks, 32 ms). Everything after the codec counts a buffer as one burst of
+// GetDuration(): it was told 32 ms for each part, and the output ran six times
+// fast for 1-block streams (Dreamgirls). The parts go out together, with the
+// first one's time; a pad or a jump in the times closes a burst early.
+bool CDVDAudioCodecPassthrough::CollectBurst(DVDAudioFrame& frame)
+{
+  if (frame.nb_frames == 0)
+    return true;
+  const CAEStreamInfo& info = frame.format.m_streamInfo;
+  if (info.m_type != CAEStreamInfo::STREAM_TYPE_EAC3 || info.m_repeat <= 1)
+  {
+    m_burstUnits = 0;
+    m_burstBytes = 0;
+    return true;
+  }
+
+  const auto emit = [this](DVDAudioFrame& out)
+  {
+    out = m_burstFrame;
+    out.data[0] = m_burst[m_burstFill].data();
+    out.nb_frames = m_burstBytes;
+    out.framesOut = 0;
+    out.format.m_streamInfo.m_repeat = 1;
+    m_burstFill = 1 - m_burstFill;
+    m_burstUnits = 0;
+    m_burstBytes = 0;
+  };
+  const auto add = [this](const DVDAudioFrame& part)
+  {
+    std::vector<uint8_t>& buf = m_burst[m_burstFill];
+    if (buf.size() < m_burstBytes + part.nb_frames)
+      buf.resize(m_burstBytes + part.nb_frames);
+    memcpy(buf.data() + m_burstBytes, part.data[0], part.nb_frames);
+    if (m_burstUnits == 0)
+      m_burstFrame = part;
+    else
+      m_burstFrame.duration += part.duration;
+    m_burstBytes += part.nb_frames;
+    m_burstUnits++;
+  };
+
+  if (m_burstUnits > 0)
+  {
+    const double expected = m_burstFrame.pts + m_burstFrame.duration;
+    const bool jump = frame.pts != DVD_NOPTS_VALUE && m_burstFrame.pts != DVD_NOPTS_VALUE &&
+                      std::abs(frame.pts - expected) > DVD_MSEC_TO_TIME(1);
+    if (frame.padBefore != 0.0 || jump ||
+        m_burstFrame.format.m_streamInfo.m_repeat != info.m_repeat)
+    {
+      const DVDAudioFrame part = frame;
+      emit(frame);
+      add(part);
+      return true;
+    }
+  }
+  add(frame);
+  if (m_burstUnits < info.m_repeat)
+    return false;
+  emit(frame);
+  return true;
 }
 
 void CDVDAudioCodecPassthrough::GetFrame(DVDAudioFrame& frame)
@@ -545,6 +611,10 @@ void CDVDAudioCodecPassthrough::GetFrame(DVDAudioFrame& frame)
   frame.planes = 1;
   frame.bits_per_sample = m_hints.bitspersample;
   frame.duration = DVD_MSEC_TO_TIME(frame.format.m_streamInfo.GetDuration());
+  // P5-94: a syncframe of fewer than 6 blocks is that part of a burst's time
+  if (frame.format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 &&
+      frame.format.m_streamInfo.m_repeat > 1)
+    frame.duration /= frame.format.m_streamInfo.m_repeat;
 
   if (!m_lavStyleSyncEnabled)
   {
@@ -894,6 +964,8 @@ void CDVDAudioCodecPassthrough::ClearBoundary()
 
 void CDVDAudioCodecPassthrough::Reset()
 {
+  m_burstUnits = 0;
+  m_burstBytes = 0;
   GapSummary("reset");
   m_gapPackets.clear();
   m_gapD = GapDetail{};

@@ -166,6 +166,13 @@ private:
   unsigned int m_boundaryDrops{0}; // overlapped incoming frames still to drop
   bool m_boundaryDropMark{false}; // a mark frame was among them
   bool m_frameDropped{false};
+  //! P5-94: E-AC-3 syncframes of fewer than 6 blocks go out as whole bursts
+  bool CollectBurst(DVDAudioFrame& frame);
+  std::vector<uint8_t> m_burst[2];
+  int m_burstFill{0}; // the buffer being filled; the other one was handed out
+  unsigned int m_burstUnits{0};
+  unsigned int m_burstBytes{0};
+  DVDAudioFrame m_burstFrame{};
   double m_lastJitter{0.0};
   // pts less the label of the content emitted (TIMEKEEPER pins by label)
   double m_labelLag{0.0};
